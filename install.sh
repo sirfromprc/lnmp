@@ -15,7 +15,7 @@ else
     Stack=$1
 fi
 
-LNMP_Ver='2.0'
+LNMP_Ver='2.1'
 . lnmp.conf
 . include/main.sh
 . include/init.sh
@@ -116,6 +116,8 @@ Init_Install()
         Install_MariaDB_105
     elif [ "${DBSelect}" = "10" ]; then
         Install_MariaDB_106
+    elif [ "${DBSelect}" = "11" ]; then
+        Install_MySQL_84
     fi
     TempMycnf_Clean
     Clean_DB_Src_Dir
@@ -150,6 +152,8 @@ Install_PHP()
         Install_PHP_81
     elif [ "${PHPSelect}" = "13" ]; then
         Install_PHP_82
+    elif [ "${PHPSelect}" = "14" ]; then
+        Install_PHP_83
     fi
     Clean_PHP_Src_Dir
 }

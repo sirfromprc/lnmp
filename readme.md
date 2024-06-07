@@ -19,7 +19,7 @@ LNMP一键安装包是一个用Linux Shell编写的可以为CentOS/RHEL/Fedora/D
 
 * LNMP官网：<https://lnmp.org>
 * 作者: licess <admin@lnmp.org>
-* 问题反馈&技术支持论坛：<https://bbs.vpser.net/forum-25-1.html>
+* 问题反馈&技术支持论坛：<https://bbs.lnmp.com/forum-25-1.html>
 * 打赏捐赠：<https://lnmp.org/donation.html>
 
 ## LNMP安装
@@ -34,7 +34,7 @@ LNMP一键安装包是一个用Linux Shell编写的可以为CentOS/RHEL/Fedora/D
 
 ## 常用功能说明
 
-**以下操作需在lnmp安装包目录下执行，如lnmp2.0**
+**以下操作需在lnmp安装包目录下执行，如lnmp2.1**
 
 ### 自定义参数
 lnmp.conf配置文件，可以修改lnmp.conf自定义下载服务器地址、网站/数据库目录及添加nginx模块和php编译参数；不论安装升级都会调用该文件里的设置(如果修改了默认的参数建议备份此文件)；
@@ -124,13 +124,14 @@ MariaDB 10.4 | 7 | PHP 7.1 | 7 | | | |
 MariaDB 10.5 | 8 | PHP 7.2 | 8 | | | |
 MariaDB 10.6 | 9 | PHP 7.3 | 9 | | | |
 MariaDB 10.11 | 10 | PHP 7.4 | 10 | | | |
-不安装数据库 | 0 | PHP 8.0 | 11 | | | |
-| | | PHP 8.1 | 12 | | | |
+MySQL 8.4 | 11 | PHP 8.0 | 11 | | | |
+不安装数据库 | 0 | PHP 8.1 | 12 | | | |
 | | | PHP 8.2 | 13 | | | |
+| | | PHP 8.3 | 14 | | | |
 
 * 以LNMP模式，默认选项安装MySQL 5.5、MySQL root密码设置为lnmp.org、启用InnoDB、PHP 5.6、不安装内存分配器为例，先执行([建议先运行screen](https://www.vpser.net/manage/run-screen-lnmp.html))，再下载解压lnmp安装包：
 
-`wget http://soft.vpser.net/lnmp/lnmp2.0beta.tar.gz -cO lnmp2.0beta.tar.gz && tar zxf lnmp2.0beta.tar.gz && cd lnmp2.0`
+`wget http://soft.lnmp.com/lnmp/lnmp2.0.tar.gz -cO lnmp2.0.tar.gz && tar zxf lnmp2.0.tar.gz && cd lnmp2.0`
 
 然后设置无人值守参数并安装：
 
@@ -212,4 +213,4 @@ MariaDB 10.11 | 10 | PHP 7.4 | 10 | | | |
 
 ## 技术支持
 
-**技术支持论坛：<https://bbs.vpser.net/forum-25-1.html>**
+**技术支持论坛：<https://bbs.lnmp.com/forum-25-1.html>**
