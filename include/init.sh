@@ -473,7 +473,7 @@ Check_Download()
     if [ "${Stack}" != "lamp" ]; then
         Download_Files https://nginx.org/download/${Nginx_Ver}.tar.gz ${Nginx_Ver}.tar.gz
     fi
-    if [[ "${DBSelect}" =~ ^[12345]|11$ ]]; then
+    if [[ "${DBSelect}" =~ ^[123456]$ ]]; then
         if [[ "${Bin}" = "y" && "${DBSelect}" =~ ^[2-4]$ ]]; then
             Mysql_Ver_Short=$(echo ${Mysql_Ver} | sed 's/mysql-//' | cut -d. -f1-2)
             Download_Files https://cdn.mysql.com/Downloads/MySQL-${Mysql_Ver_Short}/${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz
@@ -486,7 +486,7 @@ Check_Download()
             if [ $? -ne 0 ]; then
                 Download_Files https://cdn.mysql.com/archives/mysql-8.0/${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz
             fi
-        elif [[ "${Bin}" = "y" && "${DBSelect}" = "11" ]]; then
+        elif [[ "${Bin}" = "y" && "${DBSelect}" = "6" ]]; then
             Download_Files https://cdn.mysql.com/Downloads/MySQL-8.4/${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz
             if [ $? -ne 0 ]; then
                 Download_Files https://cdn.mysql.com/archives/mysql-8.4/${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz
@@ -498,7 +498,7 @@ Check_Download()
                 Download_Files https://cdn.mysql.com/archives/mysql-${Mysql_Ver_Short}/${Mysql_Ver}.tar.gz ${Mysql_Ver}.tar.gz
             fi
         fi
-    elif [[ "${DBSelect}" =~ ^[6789]|10$ ]]; then
+    elif [[ "${DBSelect}" =~ ^[789]|1[0-1]$ ]]; then
         Mariadb_Version_Short=$(echo ${Mariadb_Ver} | cut -d- -f2)
         if [ "${Bin}" = "y" ]; then
             MariaDB_FileName="${Mariadb_Ver}-linux-systemd-${DB_ARCH}"

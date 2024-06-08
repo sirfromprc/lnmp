@@ -131,7 +131,7 @@ Install_Database()
 {
     echo "============================check files=================================="
     cd ${cur_dir}/src
-    if [[ "${DBSelect}" =~ ^[12345]$ ]]; then
+    if [[ "${DBSelect}" =~ ^[123456]$ ]]; then
         if [[ "${Bin}" = "y" && "${DBSelect}" =~ ^[2-4]$ ]]; then
             Mysql_Ver_Short=$(echo ${Mysql_Ver} | sed 's/mysql-//' | cut -d. -f1-2)
             Download_Files https://cdn.mysql.com/Downloads/MySQL-${Mysql_Ver_Short}/${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz
@@ -154,7 +154,7 @@ Install_Database()
                 sleep 5
                 exit 1
             fi
-        elif [[ "${Bin}" = "y" && "${DBSelect}" = "11" ]]; then
+        elif [[ "${Bin}" = "y" && "${DBSelect}" = "6" ]]; then
             Download_Files https://cdn.mysql.com/Downloads/MySQL-8.4/${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz
             [[ $? -ne 0 ]] && Download_Files https://cdn.mysql.com/archives/mysql-8.4/${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz
             if [ ! -s ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz ]; then
@@ -174,7 +174,7 @@ Install_Database()
                 exit 1
             fi
         fi
-    elif [[ "${DBSelect}" =~ ^[6789]|10$ ]]; then
+    elif [[ "${DBSelect}" =~ ^[789]|1[0-1]$ ]]; then
         Mariadb_Version_Short=$(echo ${Mariadb_Ver} | cut -d- -f2)
         if [ "${Bin}" = "y" ]; then
             MariaDB_FileName="${Mariadb_Ver}-linux-systemd-${DB_ARCH}"
@@ -221,24 +221,24 @@ Install_Database()
     elif [ "${DBSelect}" = "5" ]; then
         Install_MySQL_80
     elif [ "${DBSelect}" = "6" ]; then
-        Install_MariaDB_5
-    elif [ "${DBSelect}" = "7" ]; then
-        Install_MariaDB_103
-    elif [ "${DBSelect}" = "8" ]; then
-        Install_MariaDB_104
-    elif [ "${DBSelect}" = "9" ]; then
-        Install_MariaDB_105
-    elif [ "${DBSelect}" = "10" ]; then
-        Install_MariaDB_106
-    elif [ "${DBSelect}" = "11" ]; then
         Install_MySQL_84
+    elif [ "${DBSelect}" = "7" ]; then
+        Install_MariaDB_5
+    elif [ "${DBSelect}" = "8" ]; then
+        Install_MariaDB_103
+    elif [ "${DBSelect}" = "9" ]; then
+        Install_MariaDB_104
+    elif [ "${DBSelect}" = "10" ]; then
+        Install_MariaDB_105
+    elif [ "${DBSelect}" = "11" ]; then
+        Install_MariaDB_106
     fi
     TempMycnf_Clean
 
-    if [[ "${DBSelect}" =~ ^[6789]|10$ ]]; then
+    if [[ "${DBSelect}" =~ ^[789]|1[0-1]$ ]]; then
         StartUp mariadb
         StartOrStop start mariadb
-    elif [[ "${DBSelect}" =~ ^[12345]|11$ ]]; then
+    elif [[ "${DBSelect}" =~ ^[123456]$ ]]; then
         StartUp mysql
         StartOrStop start mysql
     fi
@@ -246,10 +246,10 @@ Install_Database()
     Clean_DB_Src_Dir
     Check_DB_Files
     if [[ "${isDB}" = "ok" ]]; then
-        if [[ "${DBSelect}" =~ ^[12345]|11$ ]]; then
+        if [[ "${DBSelect}" =~ ^[123456]$ ]]; then
             Echo_Green "MySQL root password: ${DB_Root_Password}"
             Echo_Green "Install ${Mysql_Ver} completed! enjoy it."
-        elif [[ "${DBSelect}" =~ ^[6789]|10$ ]]; then
+        elif [[ "${DBSelect}" =~ ^[789]|1[0-1]$ ]]; then
             Echo_Green "MariaDB root password: ${DB_Root_Password}"
             Echo_Green "Install ${Mariadb_Ver} completed! enjoy it."
         fi

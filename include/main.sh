@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-DB_Info=('MySQL 5.1.73' 'MySQL 5.5.62' 'MySQL 5.6.51' 'MySQL 5.7.44' 'MySQL 8.0.37' 'MariaDB 5.5.68' 'MariaDB 10.4.34' 'MariaDB 10.5.25' 'MariaDB 10.6.18' 'MariaDB 10.11.8' 'MySQL 8.4.0')
+DB_Info=('MySQL 5.1.73' 'MySQL 5.5.62' 'MySQL 5.6.51' 'MySQL 5.7.44' 'MySQL 8.0.37' 'MySQL 8.4.0' 'MariaDB 5.5.68' 'MariaDB 10.4.34' 'MariaDB 10.5.25' 'MariaDB 10.6.18' 'MariaDB 10.11.8')
 PHP_Info=('PHP 5.2.17' 'PHP 5.3.29' 'PHP 5.4.45' 'PHP 5.5.38' 'PHP 5.6.40' 'PHP 7.0.33' 'PHP 7.1.33' 'PHP 7.2.34' 'PHP 7.3.33' 'PHP 7.4.33' 'PHP 8.0.30' 'PHP 8.1.29' 'PHP 8.2.20' 'PHP 8.3.8')
 Apache_Info=('Apache 2.2.34' 'Apache 2.4.57')
 
@@ -138,7 +138,7 @@ Database_Selection()
         ;;
     6)
         echo "You will install ${DB_Info[5]}"
-        if [[ "${DB_ARCH}" = "x86_64" || "${DB_ARCH}" = "i686" ]]; then
+        if [[ "${DB_ARCH}" = "x86_64" || "${DB_ARCH}" = "i686" || "${DB_ARCH}" = "aarch64" ]]; then
             if [ -z ${Bin} ]; then
                 read -p "Using Generic Binaries [y/n]: " Bin
             fi
@@ -225,7 +225,7 @@ Database_Selection()
         ;;
     9)
         echo "You will install ${DB_Info[8]}"
-        if [[ "${DB_ARCH}" = "x86_64" ]]; then
+        if [[ "${DB_ARCH}" = "x86_64" || "${DB_ARCH}" = "i686" ]]; then
             if [ -z ${Bin} ]; then
                 read -p "Using Generic Binaries [y/n]: " Bin
             fi
@@ -283,7 +283,7 @@ Database_Selection()
         ;;
     11)
         echo "You will install ${DB_Info[10]}"
-        if [[ "${DB_ARCH}" = "x86_64" || "${DB_ARCH}" = "i686" || "${DB_ARCH}" = "aarch64" ]]; then
+        if [[ "${DB_ARCH}" = "x86_64" ]]; then
             if [ -z ${Bin} ]; then
                 read -p "Using Generic Binaries [y/n]: " Bin
             fi
@@ -318,16 +318,16 @@ Database_Selection()
         DBSelect="2"
     esac
 
-    if [ "${Bin}" != "y" ] && [[ "${DBSelect}" =~ ^5|[7-9]|1[0-1]$ ]] && [ $(awk '/MemTotal/ {printf( "%d\n", $2 / 1024 )}' /proc/meminfo) -le 1024 ]; then
+    if [ "${Bin}" != "y" ] && [[ "${DBSelect}" =~ ^56|[8-9]|1[0-1]$ ]] && [ $(awk '/MemTotal/ {printf( "%d\n", $2 / 1024 )}' /proc/meminfo) -le 1024 ]; then
         echo "Memory less than 1GB, can't install MySQL 8.0 or MairaDB 10.3+!"
         exit 1
     fi
 
-    if [[ "${DBSelect}" =~ ^[6789]|10$ ]]; then
+    if [[ "${DBSelect}" =~ ^[789]|1[0-1]$ ]]; then
         MySQL_Bin="/usr/local/mariadb/bin/mysql"
         MySQL_Config="/usr/local/mariadb/bin/mysql_config"
         MySQL_Dir="/usr/local/mariadb"
-    elif [[ "${DBSelect}" =~ ^[12345]|11$ ]]; then
+    elif [[ "${DBSelect}" =~ ^[123456]$ ]]; then
         MySQL_Bin="/usr/local/mysql/bin/mysql"
         MySQL_Config="/usr/local/mysql/bin/mysql_config"
         MySQL_Dir="/usr/local/mysql"
@@ -807,9 +807,9 @@ Print_APP_Ver()
         echo "${Nginx_Ver}"
     fi
 
-    if [[ "${DBSelect}" =~ ^[12345]|11$ ]]; then
+    if [[ "${DBSelect}" =~ ^[123456]$ ]]; then
         echo "${Mysql_Ver}"
-    elif [[ "${DBSelect}" =~ ^[6789]|10$ ]]; then
+    elif [[ "${DBSelect}" =~ ^[789]|1[0-1]$ ]]; then
         echo "${Mariadb_Ver}"
     elif [ "${DBSelect}" = "0" ]; then
         echo "Do not install MySQL/MariaDB!"
@@ -837,9 +837,9 @@ Print_APP_Ver()
     if [ "${Enable_Nginx_Lua}" = "y" ]; then
         echo "enable Nginx Lua."
     fi
-    if [[ "${DBSelect}" =~ ^[12345]|11$ ]]; then
+    if [[ "${DBSelect}" =~ ^[123456]$ ]]; then
         echo "Database Directory: ${MySQL_Data_Dir}"
-    elif [[ "${DBSelect}" =~ ^[6789]|10$ ]]; then
+    elif [[ "${DBSelect}" =~ ^[789]|1[0-1]$ ]]; then
         echo "Database Directory: ${MariaDB_Data_Dir}"
     elif [ "${DBSelect}" = "0" ]; then
         echo "Do not install MySQL/MariaDB!"

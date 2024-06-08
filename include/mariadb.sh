@@ -3,7 +3,7 @@
 MariaDB_WITHSSL()
 {
     if openssl version | grep -Eqi "OpenSSL 1.1.*"; then
-        if [[ "${DBSelect}" =~ ^7$ ]] || echo "${mariadb_version}" | grep -Eqi '^10.[01].'; then
+        if [[ "${DBSelect}" =~ ^8$ ]] || echo "${mariadb_version}" | grep -Eqi '^10.[01].'; then
             Install_Openssl
             MariaDBWITHSSL='-DWITH_SSL=/usr/local/openssl'
         else
@@ -57,7 +57,7 @@ EOF
 user=root
 password=''
 EOF
-        if [[ "${DBSelect}" =~ ^[89]|10$ ]] || echo "${mariadb_version}" | grep -Eqi '^10.[4-6].'; then
+        if [[ "${DBSelect}" =~ ^[9]|1[0-1]$ ]] || echo "${mariadb_version}" | grep -Eqi '^10.[4-6].'; then
             /usr/local/mariadb/bin/mysql --defaults-file=~/.emptymy.cnf -e "SET PASSWORD = PASSWORD('${DB_Root_Password}');"
         else
             /usr/local/mariadb/bin/mysql --defaults-file=~/.emptymy.cnf -e "UPDATE mysql.user SET Password=PASSWORD('${DB_Root_Password}') WHERE User='root';"
