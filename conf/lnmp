@@ -1330,13 +1330,13 @@ Add_SSL()
 
         if [ "${ssl_choice}" == "2" ]; then
             echo "Generate ssl certificate using Let's Encrypt..."
-            /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server letsencrypt --issue ${letsdomain} -w ${vhostdir} -k 2048 --reloadcmd "/etc/init.d/nginx reload"
+            /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server letsencrypt --issue ${letsdomain} -w ${vhostdir} --keylength ec-256 --reloadcmd "/etc/init.d/nginx reload"
         elif [ "${ssl_choice}" == "3" ]; then
             echo "Generate ssl certificate using BuyPass..."
-            /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server buypass --issue ${letsdomain} -w ${vhostdir} -k 2048 --days 170 --reloadcmd "/etc/init.d/nginx reload"
+            /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server buypass --issue ${letsdomain} -w ${vhostdir} --keylength ec-256 --days 170 --reloadcmd "/etc/init.d/nginx reload"
         elif [ "${ssl_choice}" == "4" ]; then
             echo "Generate ssl certificate using ZeroSSL..."
-            /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server zerossl --issue ${letsdomain} -w ${vhostdir} -k 2048 --reloadcmd "/etc/init.d/nginx reload"
+            /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server zerossl --issue ${letsdomain} -w ${vhostdir} --keylength ec-256 --reloadcmd "/etc/init.d/nginx reload"
         fi
         lets_status=$?
 
@@ -1398,10 +1398,10 @@ Add_Dns_SSL()
 
     echo "Generate ssl certificate using ${ca_server}..."
     if [ "${provider}" != "" ]; then
-        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} -k 2048 --dns ${dns_provider} --reloadcmd "/etc/init.d/nginx reload"
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} --keylength ec-256 --dns ${dns_provider} --reloadcmd "/etc/init.d/nginx reload"
         lets_status=$?
     else
-        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} -k 2048 --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} --keylength ec-256 --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
         Echo_Yellow "Please add the above TXT record to the domain in 120 seconds!!!"
         echo
         Sleep_Sec 120
