@@ -1479,10 +1479,10 @@ Add_Dns_SSL_Only()
 
     echo "Starting create SSL Certificate use ${ca_server}..."
     if [ "${provider}" != "" ]; then
-        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} -k 2048 --dns ${dns_provider} --reloadcmd "/etc/init.d/nginx reload"
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} --keylength ec-256 --dns ${dns_provider} --reloadcmd "/etc/init.d/nginx reload"
         lets_status=$?
     else
-        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} -k 2048 --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} --keylength ec-256 --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
         Echo_Yellow "Please add the above TXT record to the domain in 120 seconds!!!"
         echo
         Sleep_Sec 120
