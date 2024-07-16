@@ -26,11 +26,11 @@ Install_Nginx_Lua()
     if [ "${Enable_Nginx_Lua}" = 'y' ]; then
         echo "Installing Lua for Nginx..."
         cd ${cur_dir}/src
-        Download_Files ${Download_Mirror}/lib/lua/${Luajit_Ver}.tar.gz ${Luajit_Ver}.tar.gz
-        Download_Files ${Download_Mirror}/lib/lua/${LuaNginxModule}.tar.gz ${LuaNginxModule}.tar.gz
-        Download_Files ${Download_Mirror}/lib/lua/${NgxDevelKit}.tar.gz ${NgxDevelKit}.tar.gz
-        Download_Files ${Download_Mirror}/lib/lua/${LuaRestyCore}.tar.gz ${LuaRestyCore}.tar.gz
-        Download_Files ${Download_Mirror}/lib/lua/${LuaRestyLrucache}.tar.gz ${LuaRestyLrucache}.tar.gz
+        wget https://github.com/openresty/luajit2/archive/refs/tags/v2.1-20230410.1.tar.gz -O ${Luajit_Ver}.tar.gz
+        wget https://github.com/openresty/lua-nginx-module/archive/refs/tags/v0.10.26.tar.gz -O ${LuaNginxModule}.tar.gz
+        wget https://github.com/vision5/ngx_devel_kit/archive/refs/tags/v0.3.3.tar.gz -O ${NgxDevelKit}.tar.gz
+        wget https://github.com/openresty/lua-resty-core/archive/refs/tags/v0.1.28.tar.gz -O ${LuaRestyCore}.tar.gz
+        wget https://github.com/openresty/lua-resty-lrucache/archive/refs/tags/v0.13.tar.gz -O ${LuaRestyLrucache}.tar.gz
 
         Echo_Blue "[+] Installing ${Luajit_Ver}... "
         tar zxf ${LuaNginxModule}.tar.gz
