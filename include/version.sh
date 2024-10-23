@@ -93,7 +93,7 @@ elif [ "${ApacheSelect}" = "2" ]; then
     Apache_Ver='httpd-2.4.57'
 fi
 
-Pureftpd_Ver='pure-ftpd-1.0.51'
+Pureftpd_Ver='pure-ftpd-1.0.52'
 
 XCache_Ver='xcache-3.2.0'
 ImageMagick_Ver='ImageMagick-7.1.1-8'
