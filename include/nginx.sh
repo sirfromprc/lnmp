@@ -29,7 +29,7 @@ Install_Nginx_Lua()
         wget https://github.com/openresty/luajit2/archive/refs/tags/v2.1-20260701.tar.gz -O ${Luajit_Ver}.tar.gz
         wget https://github.com/openresty/lua-nginx-module/archive/refs/tags/v0.10.31.tar.gz -O ${LuaNginxModule}.tar.gz
         wget https://github.com/vision5/ngx_devel_kit/archive/refs/tags/v0.3.4.tar.gz -O ${NgxDevelKit}.tar.gz
-        wget https://github.com/openresty/lua-resty-core/archive/refs/tags/v0.1.32.tar.gz -O ${LuaRestyCore}.tar.gz
+        wget https://github.com/openresty/lua-resty-core/archive/refs/tags/v0.1.34rc3.tar.gz -O ${LuaRestyCore}.tar.gz
         wget https://github.com/openresty/lua-resty-lrucache/archive/refs/tags/v0.15.tar.gz -O ${LuaRestyLrucache}.tar.gz
 
         Echo_Blue "[+] Installing ${Luajit_Ver}... "
