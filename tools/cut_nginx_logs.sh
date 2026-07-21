@@ -17,11 +17,10 @@ save_days=30
 ############################################
 mkdir -p $log_files_dir
 
-log_files_num=${#log_files_name[@]}
-
 #cut nginx log files
-for((i=0;i<$log_files_num;i++));do
-mv ${log_files_path}${log_files_name[i]}.log ${log_files_dir}/${log_files_name[i]}_$(date -d "yesterday" +"%Y%m%d").log
+for name in "${log_files_name[@]}"; do
+    file="${name##*/}"
+    mv "${log_files_path}${file}.log" "${log_files_dir}/${file}_$(date -d "yesterday" +"%Y%m%d").log"
 done
 
 #delete 30 days ago nginx log files
