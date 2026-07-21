@@ -19,8 +19,8 @@ mkdir -p $log_files_dir
 
 #cut nginx log files
 for name in "${log_files_name[@]}"; do
-    file="${name##*/}"
-    mv "${log_files_path}${file}.log" "${log_files_dir}/${file}_$(date -d "yesterday" +"%Y%m%d").log"
+    logfile="${name##*/}"
+    mv "${log_files_path}${name}.log" "${log_files_dir}/${logfile}_$(date -d "yesterday" +"%Y%m%d").log"
 done
 
 #delete 30 days ago nginx log files
