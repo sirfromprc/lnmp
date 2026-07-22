@@ -26,11 +26,14 @@ Install_Nginx_Lua()
     if [ "${Enable_Nginx_Lua}" = 'y' ]; then
         echo "Installing Lua for Nginx..."
         cd ${cur_dir}/src
-        wget https://github.com/openresty/luajit2/archive/refs/tags/v2.1-20260701.tar.gz -O ${Luajit_Ver}.tar.gz
-        wget https://github.com/openresty/lua-nginx-module/archive/refs/tags/v0.10.31.tar.gz -O ${LuaNginxModule}.tar.gz
-        wget https://github.com/vision5/ngx_devel_kit/archive/refs/tags/v0.3.4.tar.gz -O ${NgxDevelKit}.tar.gz
-        wget https://github.com/openresty/lua-resty-core/archive/refs/tags/v0.1.34rc3.tar.gz -O ${LuaRestyCore}.tar.gz
-        wget https://github.com/openresty/lua-resty-lrucache/archive/refs/tags/v0.15.tar.gz -O ${LuaRestyLrucache}.tar.gz
+        wget "https://github.com/openresty/luajit2/archive/refs/tags/v${Luajit_Ver#luajit2-}.tar.gz" -O "${Luajit_Ver}.tar.gz"
+        wget "https://github.com/openresty/lua-nginx-module/archive/refs/tags/v${LuaNginxModule#lua-nginx-module-}.tar.gz" -O "${LuaNginxModule}.tar.gz"
+        wget "https://github.com/vision5/ngx_devel_kit/archive/refs/tags/v${NgxDevelKit#ngx_devel_kit-}.tar.gz" -O "${NgxDevelKit}.tar.gz"
+        wget "https://github.com/openresty/lua-resty-core/archive/refs/tags/v${LuaRestyCore#lua-resty-core-}.tar.gz" -O "${LuaRestyCore}.tar.gz"
+        wget "https://github.com/openresty/lua-resty-lrucache/archive/refs/tags/v${LuaRestyLrucache#lua-resty-lrucache-}.tar.gz" -O "${LuaRestyLrucache}.tar.gz"
+        # 新增：lua-resty-lock、lua-cjson， LuaRestyLock='lua-resty-lock-0.09'  LuaCjson='lua-cjson-2.1.0.19'
+        wget "https://github.com/openresty/lua-resty-lock/archive/refs/tags/v${LuaRestyLock#lua-resty-lock-}.tar.gz" -O "${LuaRestyLock}.tar.gz"
+        wget "https://github.com/openresty/lua-cjson/archive/refs/tags/${LuaCjson#lua-cjson-}.tar.gz" -O "${LuaCjson}.tar.gz"
 
         Echo_Blue "[+] Installing ${Luajit_Ver}... "
         tar zxf ${LuaNginxModule}.tar.gz
@@ -63,6 +66,18 @@ EOF
         cd -
         Tar_Cd ${LuaRestyLrucache}.tar.gz ${LuaRestyLrucache}
         make install PREFIX=/usr/local/nginx
+        cd -
+
+        # 【新增】lua-resty-lock（纯 Lua，依赖 lua-resty-core）
+        Tar_Cd ${LuaRestyLock}.tar.gz ${LuaRestyLock}
+        make install PREFIX=/usr/local/nginx
+        cd -
+
+        # 【新增】lua-cjson（C 扩展，需针对 LuaJIT 头文件单独编译）
+        Tar_Cd ${LuaCjson}.tar.gz ${LuaCjson}
+        make LUA_INCLUDE_DIR=${LUAJIT_INC}
+        mkdir -p /usr/local/nginx/lib/lualib
+        cp cjson.so /usr/local/nginx/lib/lualib/
         cd -
 
         Nginx_Ver_Com=$(${cur_dir}/include/version_compare 1.21.5 ${Nginx_Version})
