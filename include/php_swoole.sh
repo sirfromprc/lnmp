@@ -15,55 +15,17 @@ Install_PHP_Swoole()
         exit 1
     fi
 
-    if echo "${Cur_PHP_Version}" | grep -Eqi '^8.[0-3].'; then
-        Download_Files https://pecl.php.net/get/${PHPSwoole_Ver}.tgz ${PHPSwoole_Ver}.tgz
-        Tar_Cd ${PHPSwoole_Ver}.tgz ${PHPSwoole_Ver}
-        ${PHP_Path}/bin/phpize
-        ./configure --with-php-config=${PHP_Path}/bin/php-config --enable-openssl --enable-http2 --enable-swoole-json
-        make && make install
-        cd -
-        rm -rf ${PHPSwoole_Ver}
-    elif echo "${Cur_PHP_Version}" | grep -Eqi '^7.[2-4].'; then
-        Download_Files https://pecl.php.net/get//swoole-4.8.13.tgz swoole-4.8.13.tgz
-        Tar_Cd swoole-4.8.13.tgz swoole-4.8.13
-        ${PHP_Path}/bin/phpize
-        ./configure --with-php-config=${PHP_Path}/bin/php-config --enable-openssl --enable-http2 --enable-swoole-json
-        make && make install
-        cd -
-        rm -rf swoole-4.8.13
-    elif echo "${Cur_PHP_Version}" | grep -Eqi '^7.1.'; then
-        Download_Files https://pecl.php.net/get/swoole-4.5.11.tgz swoole-4.5.11.tgz
-        Tar_Cd swoole-4.5.11.tgz swoole-4.5.11
-        ${PHP_Path}/bin/phpize
-        ./configure --with-php-config=${PHP_Path}/bin/php-config --enable-openssl --enable-http2 --enable-swoole-json
-        make && make install
-        cd -
-        rm -rf swoole-4.5.11
-    elif echo "${Cur_PHP_Version}" | grep -Eqi '^7.0.'; then
-        Download_Files https://pecl.php.net/get/swoole-4.3.6.tgz swoole-4.3.6.tgz
-        Tar_Cd swoole-4.3.6.tgz swoole-4.3.6
-        ${PHP_Path}/bin/phpize
-        ./configure --with-php-config=${PHP_Path}/bin/php-config --enable-openssl --enable-http2
-        make && make install
-        cd -
-        rm -rf swoole-4.3.6
-    elif echo "${Cur_PHP_Version}" | grep -Eqi '^5.[3-6].'; then
-        Download_Files https://pecl.php.net/get/swoole-1.10.5.tgz swoole-1.10.5.tgz
-        Tar_Cd swoole-1.10.5.tgz swoole-1.10.5
-        ${PHP_Path}/bin/phpize
-        ./configure --with-php-config=${PHP_Path}/bin/php-config --enable-openssl
-        make && make install
-        cd -
-        rm -rf swoole-1.10.5
-    elif echo "${Cur_PHP_Version}" | grep -Eqi '^5.2.'; then
-        Download_Files https://pecl.php.net/get/swoole-1.6.10.tgz swoole-1.6.10.tgz
-        Tar_Cd swoole-1.6.10.tgz swoole-1.6.10
-        ${PHP_Path}/bin/phpize
-        ./configure --with-php-config=${PHP_Path}/bin/php-config --enable-openssl
-        make && make install
-        cd -
-        rm -rf swoole-1.6.10
-    fi
+    # 保留的 PHP 全部是 8.x，统一用 PHPSwoole_Ver，改走 pecl 官方源。
+    # 旧正则 '^8.[0-3].' 无法匹配 PHP 8.4 和 8.5，
+    # 什么都没编译却仍写 009-swoole.ini，属既存 bug，随收敛一并消失。
+    Download_Files https://pecl.php.net/get/${PHPSwoole_Ver}.tgz ${PHPSwoole_Ver}.tgz
+    Require_File "${PHPSwoole_Ver}.tgz" "pecl swoole"
+    Tar_Cd ${PHPSwoole_Ver}.tgz ${PHPSwoole_Ver}
+    ${PHP_Path}/bin/phpize
+    ./configure --with-php-config=${PHP_Path}/bin/php-config --enable-openssl --enable-http2 --enable-swoole-json
+    make && make install
+    cd -
+    rm -rf ${PHPSwoole_Ver}
 
     cat >${PHP_Path}/conf.d/009-swoole.ini<<EOF
 extension = "swoole.so"

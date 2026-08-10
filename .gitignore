@@ -1,0 +1,26 @@
+
+.claude/
+.upstream/
+
+# 下载缓存与构建产物
+src/*.tar.gz
+src/*.tar.bz2
+src/*.tar.xz
+src/*.tgz
+src/*.zip
+!src/checksums.sha256
+!src/patch/
+
+# 编辑器与系统垃圾
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# 运行期产物
+*.log
+dist/
+
+# 开发期跟踪文件，不随发布包分发
+todo.md
+HANDOVER.md

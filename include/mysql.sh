@@ -1,19 +1,13 @@
 #!/usr/bin/env bash
 
-MySQL_ARM_Patch()
+# MySQL_Branch — 返回当前操作的 MySQL 主版本号（如 5.7 / 8.0 / 8.4）
+# 安装路径由 Set_DB_Profile 设定 DB_Branch；升级路径只有用户输入的 mysql_version。
+MySQL_Branch()
 {
-    if [ "${Is_ARM}" = "y" ]; then
-        patch -p1 < ${cur_dir}/src/patch/mysql-5.5-fix-arm-client_plugin.patch
-    fi
-}
-
-MySQL_Gcc7_Patch()
-{
-    if gcc -dumpversion|grep -Eq "^[7-9]|10"; then
-        echo "gcc version: 7+"
-        if [ "${DBSelect}" = "1" ] || echo "${mysql_version}" | grep -Eqi '^5.1.'; then
-            patch -p1 < ${cur_dir}/src/patch/mysql-5.1-mysql-gcc7.patch
-        fi
+    if [ "${DB_Kind}" = "mysql" ] && [ -n "${DB_Branch}" ]; then
+        echo "${DB_Branch}"
+    elif [ -n "${mysql_version}" ]; then
+        echo "${mysql_version}" | cut -d. -f1-2
     fi
 }
 
@@ -41,28 +35,39 @@ MySQL_Sec_Setting()
     /etc/init.d/mysql restart
     sleep 2
 
-    /usr/local/mysql/bin/mysqladmin -u root password "${DB_Root_Password}"
+    # 先确认客户端本身跑得起来。跑不起来时下面每一步都会失败，
+    # 这里把原始的动态链接报错打出来，并直接置初始化失败标记。
+    Check_DB_Client_Runnable /usr/local/mysql/bin/mysql
+
+    # 指定 --defaults-file 使其只读 /etc/my.cnf。初始化后的 root 密码为空，
+    # 但残留的 ~/.my.cnf 会让客户端带旧密码连接，本步骤将因此失败。
+    #
+    # 两条设置途径互为备份，第一条失败是可以接受的。它的报错先收起来，
+    # 只有两条都失败时才展示，避免在正常安装过程中打印会被误认为故障的错误。
+    local first_error
+    first_error=$(/usr/local/mysql/bin/mysqladmin --defaults-file=/etc/my.cnf \
+                  -u root password "${DB_Root_Password}" 2>&1)
     if [ $? -ne 0 ]; then
-        echo "failed, try other way..."
+        echo "mysqladmin 方式未生效，改用空密码连接设置（安装流程的正常分支）。"
         /etc/init.d/mysql restart
-        cat >~/.emptymy.cnf<<EOF
+        ( umask 077; cat >"${HOME}/.emptymy.cnf"<<EOF
 [client]
 user=root
 password=''
+socket=/tmp/mysql.sock
 EOF
-        if [ "${DBSelect}" = "4" ] || echo "${mysql_version}" | grep -Eqi '^5.7.'; then
-            /usr/local/mysql/bin/mysql --defaults-file=~/.emptymy.cnf -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('${DB_Root_Password}');"
-            [ $? -eq 0 ] && echo "Set password Sucessfully." || echo "Set password failed!"
-        elif [ "${DBSelect}" = "5" ] || echo "${mysql_version}" | grep -Eqi '^8.'; then
-            /usr/local/mysql/bin/mysql --defaults-file=~/.emptymy.cnf -e "SET PASSWORD FOR 'root'@'localhost' = '${DB_Root_Password}';"
-            [ $? -eq 0 ] && echo "Set password Sucessfully." || echo "Set password failed!"
+        )
+        if /usr/local/mysql/bin/mysql --defaults-file="${HOME}/.emptymy.cnf" \
+             -e "SET PASSWORD FOR 'root'@'localhost' = '$(SQL_Escape "${DB_Root_Password}")';"; then
+            echo "Set password Sucessfully."
         else
-            /usr/local/mysql/bin/mysql --defaults-file=~/.emptymy.cnf -e "UPDATE mysql.user SET Password=PASSWORD('${DB_Root_Password}') WHERE User='root';"
-            [ $? -eq 0 ] && echo "Set password Sucessfully." || echo "Set password failed!"
-            /usr/local/mysql/bin/mysql --defaults-file=~/.emptymy.cnf -e "FLUSH PRIVILEGES;"
-            [ $? -eq 0 ] && echo "FLUSH PRIVILEGES Sucessfully." || echo "FLUSH PRIVILEGES failed!"
+            Echo_Red "root 密码设置失败，两种方式均未成功。"
+            Echo_Red "mysqladmin 的报错：${first_error}"
+            DB_Init_Failed='y'
+            DB_Init_Errors="${DB_Init_Errors}
+  - 设置 root 密码"
         fi
-        rm -f ~/.emptymy.cnf
+        rm -f "${HOME}/.emptymy.cnf"
     fi
     /etc/init.d/mysql restart
 
@@ -71,28 +76,16 @@ EOF
     if [ $? -eq 0 ]; then
         echo "OK, MySQL root password correct."
     fi
-    echo "Update root password..."
-    if [ "${DBSelect}" = "4" ] || echo "${mysql_version}" | grep -Eqi '^5.7.'; then
-        Do_Query "UPDATE mysql.user SET authentication_string=PASSWORD('${DB_Root_Password}') WHERE User='root';"
-    elif [ "${DBSelect}" = "5" ] || echo "${mysql_version}" | grep -Eqi '^8.0.'; then
-        Do_Query "SET PASSWORD FOR 'root'@'localhost' = '${DB_Root_Password}';"
-    else
-        Do_Query "UPDATE mysql.user SET Password=PASSWORD('${DB_Root_Password}') WHERE User='root';"
-    fi
-    [ $? -eq 0 ] && echo " ... Success." || echo " ... Failed!"
-    echo "Remove anonymous users..."
-    Do_Query "DELETE FROM mysql.user WHERE User='';"
-    Do_Query "DROP USER ''@'%';"
-    [ $? -eq 0 ] && echo " ... Success." || echo " ... Failed!"
-    echo "Disallow root login remotely..."
-    Do_Query "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
-    [ $? -eq 0 ] && echo " ... Success." || echo " ... Failed!"
-    echo "Remove test database..."
-    Do_Query "DROP DATABASE test;"
-    [ $? -eq 0 ] && echo " ... Success." || echo " ... Failed!"
-    echo "Reload privilege tables..."
-    Do_Query "FLUSH PRIVILEGES;"
-    [ $? -eq 0 ] && echo " ... Success." || echo " ... Failed!"
+    DB_Init_Step "Update root password" \
+        "SET PASSWORD FOR 'root'@'localhost' = '$(SQL_Escape "${DB_Root_Password}")';"
+    DB_Init_Step "Remove anonymous users" \
+        "DELETE FROM mysql.user WHERE User='';"
+    DB_Init_Step "Disallow root login remotely" \
+        "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
+    DB_Init_Step "Remove test database" \
+        "DROP DATABASE IF EXISTS test;"
+    DB_Init_Step "Reload privilege tables" \
+        "FLUSH PRIVILEGES;"
 
     /etc/init.d/mysql restart
     /etc/init.d/mysql stop
@@ -175,6 +168,50 @@ MySQL_Opt()
     fi
 }
 
+# ---------------------------------------------------------------------------
+# MySQL_Deprecated_Opt — 把 /etc/my.cnf 里 MySQL 8.4 已弃用的项换成等价写法
+#
+# 8.4 启动时会对下面三项报 deprecation warning：
+#   binlog_format            8.4 只剩 ROW 一种取值，显式设置已无意义
+#   innodb_log_file_size     \ 两项合并为 innodb_redo_log_capacity
+#   innodb_log_files_in_group/  （8.0.30 引入，8.4 起是唯一的配置方式）
+#
+# 放在 MySQL_Opt 之后执行：先由 MySQL_Opt 按内存分档算出 innodb_log_file_size，
+# 这里再换算成等价的 redo 容量。旧配置默认 2 个日志文件，故总量为 ×2。
+#
+# 只对 8.4 及以上生效；8.0 仍然接受旧写法，不动它以免影响既有实例的行为。
+# ---------------------------------------------------------------------------
+MySQL_Deprecated_Opt()
+{
+    local branch size num unit
+
+    # 升级路径以用户输入的目标版本为准。MySQL_Branch 会优先返回 lnmp.conf 里
+    # DBSelect 派生的 DB_Branch，那是安装时的选择，未必等于本次要升到的版本。
+    if [ -n "${mysql_version:-}" ]; then
+        branch=$(echo "${mysql_version}" | cut -d. -f1-2)
+    else
+        branch=$(MySQL_Branch)
+    fi
+    [ -n "${branch}" ] || return 0
+    Version_GE "${branch}" 8.4 || return 0
+    [ -s /etc/my.cnf ] || return 0
+
+    size=$(awk -F= '/^innodb_log_file_size/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' /etc/my.cnf)
+    num=${size%[MGmg]}
+    unit=${size#"${num}"}
+    # 取不到值（例如上游模板改过）时用 MySQL 自己的默认值 100M，不做换算
+    if [ -z "${num}" ] || echo "${num}" | grep -qv '^[0-9]\+$'; then
+        num=50
+        unit=M
+    fi
+    [ -z "${unit}" ] && unit=M
+
+    sed -i "s#^innodb_log_file_size.*#innodb_redo_log_capacity = $((num * 2))${unit}#" /etc/my.cnf
+    sed -i '/^innodb_log_files_in_group/d' /etc/my.cnf
+    # binlog_format 直接删除：8.4 的唯一取值 ROW 就是默认值
+    sed -i '/^binlog_format/d' /etc/my.cnf
+}
+
 Check_MySQL_Data_Dir()
 {
     if [ -d "${MySQL_Data_Dir}" ]; then
@@ -187,511 +224,23 @@ Check_MySQL_Data_Dir()
     fi
 }
 
-Install_MySQL_51()
-{
-    Echo_Blue "[+] Installing ${Mysql_Ver}..."
-    rm -f /etc/my.cnf
-    Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
-    MySQL_Gcc7_Patch
-    if [ "${InstallInnodb}" = "y" ]; then
-        ./configure --prefix=/usr/local/mysql --with-extra-charsets=complex --enable-thread-safe-client --enable-assembler --with-mysqld-ldflags=-all-static --with-charset=utf8 --enable-thread-safe-client --with-big-tables --with-readline --with-ssl --with-embedded-server --enable-local-infile --with-plugins=innobase ${MySQL51MAOpt}
-    else
-        ./configure --prefix=/usr/local/mysql --with-extra-charsets=complex --enable-thread-safe-client --enable-assembler --with-mysqld-ldflags=-all-static --with-charset=utf8 --enable-thread-safe-client --with-big-tables --with-readline --with-ssl --with-embedded-server --enable-local-infile ${MySQL51MAOpt}
-    fi
-    sed -i '/set -ex;/,/done/d' Makefile
-    Make_Install
-
-    groupadd mysql
-    useradd -s /sbin/nologin -M -g mysql mysql
-
-    cat > /etc/my.cnf<<EOF
-[client]
-#password	= your_password
-port		= 3306
-socket		= /tmp/mysql.sock
-
-[mysqld]
-port		= 3306
-socket		= /tmp/mysql.sock
-datadir = ${MySQL_Data_Dir}
-skip-external-locking
-key_buffer_size = 16M
-max_allowed_packet = 1M
-table_open_cache = 64
-sort_buffer_size = 512K
-net_buffer_length = 8K
-read_buffer_size = 256K
-read_rnd_buffer_size = 512K
-myisam_sort_buffer_size = 8M
-thread_cache_size = 8
-query_cache_size = 8M
-tmp_table_size = 16M
-
-#skip-networking
-max_connections = 500
-max_connect_errors = 100
-open_files_limit = 65535
-
-log-bin=mysql-bin
-binlog_format=mixed
-server-id	= 1
-expire_logs_days = 10
-
-default_storage_engine = InnoDB
-#innodb_file_per_table = 1
-#innodb_data_home_dir = ${MySQL_Data_Dir}
-#innodb_data_file_path = ibdata1:10M:autoextend
-#innodb_log_group_home_dir = ${MySQL_Data_Dir}
-#innodb_buffer_pool_size = 16M
-#innodb_additional_mem_pool_size = 2M
-#innodb_log_file_size = 5M
-#innodb_log_buffer_size = 8M
-#innodb_flush_log_at_trx_commit = 1
-#innodb_lock_wait_timeout = 50
-
-[mysqldump]
-quick
-max_allowed_packet = 16M
-
-[mysql]
-no-auto-rehash
-
-[myisamchk]
-key_buffer_size = 20M
-sort_buffer_size = 20M
-read_buffer = 2M
-write_buffer = 2M
-
-[mysqlhotcopy]
-interactive-timeout
-EOF
-    if [ "${InstallInnodb}" = "y" ]; then
-        sed -i 's/^#innodb/innodb/g' /etc/my.cnf
-    else
-        sed -i '/^default_storage_engine/d' /etc/my.cnf
-        sed -i 's#default_storage_engine.*#default_storage_engine = MyISAM#' /etc/my.cnf
-    fi
-    MySQL_Opt
-    Check_MySQL_Data_Dir
-    chown -R mysql:mysql /usr/local/mysql
-    /usr/local/mysql/bin/mysql_install_db --user=mysql --datadir=${MySQL_Data_Dir}
-    chown -R mysql:mysql ${MySQL_Data_Dir}
-    \cp /usr/local/mysql/share/mysql/mysql.server /etc/init.d/mysql
-    chmod 755 /etc/init.d/mysql
-
-    cat > /etc/ld.so.conf.d/mysql.conf<<EOF
-    /usr/local/mysql/lib/mysql
-    /usr/local/lib
-EOF
-    ldconfig
-
-    ln -sf /usr/local/mysql/lib/mysql /usr/lib/mysql
-    ln -sf /usr/local/mysql/include/mysql /usr/include/mysql
-
-    MySQL_Sec_Setting
-}
-
-Install_MySQL_55()
-{
-    if [ "${Bin}" = "y" ]; then
-        Echo_Blue "[+] Installing ${Mysql_Ver} Using Generic Binaries..."
-        Tar_Cd ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz
-        mkdir /usr/local/mysql
-        mv ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}/* /usr/local/mysql/
-    else
-        Echo_Blue "[+] Installing ${Mysql_Ver} Using Source code..."
-        if [ "${isOpenSSL3}" = "y" ]; then
-            MySQL_WITH_SSL='-DWITH_SSL=bundled'
-        else
-            MySQL_WITH_SSL=''
-        fi
-        Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
-        MySQL_ARM_Patch
-        if  g++ -dM -E -x c++ /dev/null | grep -F __cplusplus | cut -d' ' -f3 | grep -Eqi "^2017|202[0-9]"; then
-            sed -i '1s/^/set(CMAKE_CXX_STANDARD 11)\n/' CMakeLists.txt
-        fi
-        if echo "${Rocky_Version}" | grep -Eqi "^9"; then
-            sed -i 's@^INCLUDE(cmake/abi_check.cmake)@#INCLUDE(cmake/abi_check.cmake)@' CMakeLists.txt
-        fi
-        cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_READLINE=1 -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_SSL}
-        Make_Install
-    fi
-
-    groupadd mysql
-    useradd -s /sbin/nologin -M -g mysql mysql
-
-    cat > /etc/my.cnf<<EOF
-[client]
-#password	= your_password
-port		= 3306
-socket		= /tmp/mysql.sock
-
-[mysqld]
-port		= 3306
-socket		= /tmp/mysql.sock
-datadir = ${MySQL_Data_Dir}
-skip-external-locking
-key_buffer_size = 16M
-max_allowed_packet = 1M
-table_open_cache = 64
-sort_buffer_size = 512K
-net_buffer_length = 8K
-read_buffer_size = 256K
-read_rnd_buffer_size = 512K
-myisam_sort_buffer_size = 8M
-thread_cache_size = 8
-query_cache_size = 8M
-tmp_table_size = 16M
-
-#skip-networking
-max_connections = 500
-max_connect_errors = 100
-open_files_limit = 65535
-
-log-bin=mysql-bin
-binlog_format=mixed
-server-id	= 1
-expire_logs_days = 10
-
-default_storage_engine = InnoDB
-#innodb_file_per_table = 1
-#innodb_data_home_dir = ${MySQL_Data_Dir}
-#innodb_data_file_path = ibdata1:10M:autoextend
-#innodb_log_group_home_dir = ${MySQL_Data_Dir}
-#innodb_buffer_pool_size = 16M
-#innodb_additional_mem_pool_size = 2M
-#innodb_log_file_size = 5M
-#innodb_log_buffer_size = 8M
-#innodb_flush_log_at_trx_commit = 1
-#innodb_lock_wait_timeout = 50
-
-[mysqldump]
-quick
-max_allowed_packet = 16M
-
-[mysql]
-no-auto-rehash
-
-[myisamchk]
-key_buffer_size = 20M
-sort_buffer_size = 20M
-read_buffer = 2M
-write_buffer = 2M
-
-[mysqlhotcopy]
-interactive-timeout
-
-${MySQLMAOpt}
-EOF
-    if [ "${InstallInnodb}" = "y" ]; then
-        sed -i 's/^#innodb/innodb/g' /etc/my.cnf
-    else
-        sed -i '/^default_storage_engine/d' /etc/my.cnf
-        sed -i '/skip-external-locking/i\default_storage_engine = MyISAM\nloose-skip-innodb' /etc/my.cnf
-    fi
-    MySQL_Opt
-    Check_MySQL_Data_Dir
-    chown -R mysql:mysql /usr/local/mysql
-    /usr/local/mysql/scripts/mysql_install_db --defaults-file=/etc/my.cnf --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql
-    chown -R mysql:mysql ${MySQL_Data_Dir}
-    \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
-    \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service
-    chmod 755 /etc/init.d/mysql
-
-    cat > /etc/ld.so.conf.d/mysql.conf<<EOF
-/usr/local/mysql/lib
-/usr/local/lib
-EOF
-    ldconfig
-    ln -sf /usr/local/mysql/lib/mysql /usr/lib/mysql
-    ln -sf /usr/local/mysql/include/mysql /usr/include/mysql
-
-    MySQL_Sec_Setting
-}
-
-Install_MySQL_56()
-{
-    if [ "${Bin}" = "y" ]; then
-        Echo_Blue "[+] Installing ${Mysql_Ver} Using Generic Binaries..."
-        Tar_Cd ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz
-        mkdir /usr/local/mysql
-        mv ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}/* /usr/local/mysql/
-    else
-        Echo_Blue "[+] Installing ${Mysql_Ver} Using Source code..."
-        if [ "${isOpenSSL3}" = "y" ]; then
-            Install_Openssl_New
-            MySQL_WITH_SSL='-DWITH_SSL=/usr/local/openssl1.1.1'
-        else
-            MySQL_WITH_SSL=''
-        fi
-        Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
-        if  g++ -dM -E -x c++ /dev/null | grep -F __cplusplus | cut -d' ' -f3 | grep -Eqi "^2017|202[0-9]"; then
-            sed -i '1s/^/set(CMAKE_CXX_STANDARD 11)\n/' CMakeLists.txt
-        fi
-        if echo "${Rocky_Version}" | grep -Eqi "^9"; then
-            sed -i 's@^INCLUDE(cmake/abi_check.cmake)@#INCLUDE(cmake/abi_check.cmake)@' CMakeLists.txt
-        fi
-        cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_SSL}
-        Make_Install
-    fi
-
-    groupadd mysql
-    useradd -s /sbin/nologin -M -g mysql mysql
-
-    cat > /etc/my.cnf<<EOF
-[client]
-#password   = your_password
-port        = 3306
-socket      = /tmp/mysql.sock
-
-[mysqld]
-port        = 3306
-socket      = /tmp/mysql.sock
-datadir = ${MySQL_Data_Dir}
-skip-external-locking
-key_buffer_size = 16M
-max_allowed_packet = 1M
-table_open_cache = 64
-sort_buffer_size = 512K
-net_buffer_length = 8K
-read_buffer_size = 256K
-read_rnd_buffer_size = 512K
-myisam_sort_buffer_size = 8M
-thread_cache_size = 8
-query_cache_size = 8M
-tmp_table_size = 16M
-performance_schema_max_table_instances = 500
-
-explicit_defaults_for_timestamp = true
-#skip-networking
-max_connections = 500
-max_connect_errors = 100
-open_files_limit = 65535
-
-log-bin=mysql-bin
-binlog_format=mixed
-server-id   = 1
-expire_logs_days = 10
-
-#loose-innodb-trx=0
-#loose-innodb-locks=0
-#loose-innodb-lock-waits=0
-#loose-innodb-cmp=0
-#loose-innodb-cmp-per-index=0
-#loose-innodb-cmp-per-index-reset=0
-#loose-innodb-cmp-reset=0
-#loose-innodb-cmpmem=0
-#loose-innodb-cmpmem-reset=0
-#loose-innodb-buffer-page=0
-#loose-innodb-buffer-page-lru=0
-#loose-innodb-buffer-pool-stats=0
-#loose-innodb-metrics=0
-#loose-innodb-ft-default-stopword=0
-#loose-innodb-ft-inserted=0
-#loose-innodb-ft-deleted=0
-#loose-innodb-ft-being-deleted=0
-#loose-innodb-ft-config=0
-#loose-innodb-ft-index-cache=0
-#loose-innodb-ft-index-table=0
-#loose-innodb-sys-tables=0
-#loose-innodb-sys-tablestats=0
-#loose-innodb-sys-indexes=0
-#loose-innodb-sys-columns=0
-#loose-innodb-sys-fields=0
-#loose-innodb-sys-foreign=0
-#loose-innodb-sys-foreign-cols=0
-
-default_storage_engine = InnoDB
-#innodb_file_per_table = 1
-#innodb_data_home_dir = ${MySQL_Data_Dir}
-#innodb_data_file_path = ibdata1:10M:autoextend
-#innodb_log_group_home_dir = ${MySQL_Data_Dir}
-#innodb_buffer_pool_size = 16M
-#innodb_log_file_size = 5M
-#innodb_log_buffer_size = 8M
-#innodb_flush_log_at_trx_commit = 1
-#innodb_lock_wait_timeout = 50
-
-[mysqldump]
-quick
-max_allowed_packet = 16M
-
-[mysql]
-no-auto-rehash
-
-[myisamchk]
-key_buffer_size = 20M
-sort_buffer_size = 20M
-read_buffer = 2M
-write_buffer = 2M
-
-[mysqlhotcopy]
-interactive-timeout
-
-${MySQLMAOpt}
-EOF
-
-    if [ "${InstallInnodb}" = "y" ]; then
-        sed -i 's/^#innodb/innodb/g' /etc/my.cnf
-    else
-        sed -i '/^default_storage_engine/d' /etc/my.cnf
-        sed -i '/skip-external-locking/i\innodb=OFF\nignore-builtin-innodb\nskip-innodb\ndefault_storage_engine = MyISAM\ndefault_tmp_storage_engine = MyISAM' /etc/my.cnf
-        sed -i 's/^#loose-innodb/loose-innodb/g' /etc/my.cnf
-    fi
-    MySQL_Opt
-    Check_MySQL_Data_Dir
-    chown -R mysql:mysql /usr/local/mysql
-    /usr/local/mysql/scripts/mysql_install_db --defaults-file=/etc/my.cnf --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql
-    chown -R mysql:mysql ${MySQL_Data_Dir}
-    \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
-    \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service
-    chmod 755 /etc/init.d/mysql
-
-    cat > /etc/ld.so.conf.d/mysql.conf<<EOF
-    /usr/local/mysql/lib
-    /usr/local/lib
-EOF
-    ldconfig
-    ln -sf /usr/local/mysql/lib/mysql /usr/lib/mysql
-    ln -sf /usr/local/mysql/include/mysql /usr/include/mysql
-
-    MySQL_Sec_Setting
-}
-
-Install_MySQL_57()
-{
-    rm -f /etc/my.cnf
-    if [ "${Bin}" = "y" ]; then
-        Echo_Blue "[+] Installing ${Mysql_Ver} Using Generic Binaries..."
-        Tar_Cd ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz
-        mkdir /usr/local/mysql
-        mv ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}/* /usr/local/mysql/
-    else
-        Echo_Blue "[+] Installing ${Mysql_Ver} Using Source code..."
-        if [ "${isOpenSSL3}" = "y" ]; then
-            Install_Openssl_New
-            MySQL_WITH_SSL='-DWITH_SSL=/usr/local/openssl1.1.1'
-        else
-            MySQL_WITH_SSL=''
-        fi
-        Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
-        Install_Boost
-        if echo "${Rocky_Version}" | grep -Eqi "^9"; then
-            sed -i 's@^INCLUDE(cmake/abi_check.cmake)@#INCLUDE(cmake/abi_check.cmake)@' CMakeLists.txt
-        fi
-        cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_SSL} ${MySQL_WITH_BOOST}
-        Make_Install
-    fi
-
-    groupadd mysql
-    useradd -s /sbin/nologin -M -g mysql mysql
-
-    cat > /etc/my.cnf<<EOF
-[client]
-#password   = your_password
-port        = 3306
-socket      = /tmp/mysql.sock
-
-[mysqld]
-port        = 3306
-socket      = /tmp/mysql.sock
-datadir = ${MySQL_Data_Dir}
-skip-external-locking
-key_buffer_size = 16M
-max_allowed_packet = 1M
-table_open_cache = 64
-sort_buffer_size = 512K
-net_buffer_length = 8K
-read_buffer_size = 256K
-read_rnd_buffer_size = 512K
-myisam_sort_buffer_size = 8M
-thread_cache_size = 8
-query_cache_size = 8M
-tmp_table_size = 16M
-performance_schema_max_table_instances = 500
-
-explicit_defaults_for_timestamp = true
-#skip-networking
-max_connections = 500
-max_connect_errors = 100
-open_files_limit = 65535
-
-log-bin=mysql-bin
-binlog_format=mixed
-server-id   = 1
-expire_logs_days = 10
-early-plugin-load = ""
-
-default_storage_engine = InnoDB
-innodb_file_per_table = 1
-innodb_data_home_dir = ${MySQL_Data_Dir}
-innodb_data_file_path = ibdata1:10M:autoextend
-innodb_log_group_home_dir = ${MySQL_Data_Dir}
-innodb_buffer_pool_size = 16M
-innodb_log_file_size = 5M
-innodb_log_buffer_size = 8M
-innodb_flush_log_at_trx_commit = 1
-innodb_lock_wait_timeout = 50
-
-[mysqldump]
-quick
-max_allowed_packet = 16M
-
-[mysql]
-no-auto-rehash
-
-[myisamchk]
-key_buffer_size = 20M
-sort_buffer_size = 20M
-read_buffer_size = 2M
-write_buffer_size = 2M
-
-[mysqlhotcopy]
-interactive-timeout
-
-${MySQLMAOpt}
-EOF
-
-    MySQL_Opt
-    Check_MySQL_Data_Dir
-    chown -R mysql:mysql /usr/local/mysql
-    /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql
-    chown -R mysql:mysql ${MySQL_Data_Dir}
-    \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
-    \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service
-    chmod 755 /etc/init.d/mysql
-
-    cat > /etc/ld.so.conf.d/mysql.conf<<EOF
-    /usr/local/mysql/lib
-    /usr/local/lib
-EOF
-    ldconfig
-    ln -sf /usr/local/mysql/lib/mysql /usr/lib/mysql
-    ln -sf /usr/local/mysql/include/mysql /usr/include/mysql
-
-    MySQL_Sec_Setting
-}
-
 Install_MySQL_80()
 {
     rm -f /etc/my.cnf
     if [ "${Bin}" = "y" ]; then
         Echo_Blue "[+] Installing ${Mysql_Ver} Using Generic Binaries..."
-        Tar_Cd ${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz
-        mkdir /usr/local/mysql
-        mv ${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}/* /usr/local/mysql/
+        Install_DB_Bin_Tarball "${DB_Bin_Tarball}" /usr/local/mysql
     else
         Echo_Blue "[+] Installing ${Mysql_Ver} Using Source code..."
         Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
         Install_Boost
         mkdir build && cd build
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
-        Make_Install
+        Make_Install || exit 1
     fi
 
     groupadd mysql
     useradd -s /sbin/nologin -M -g mysql mysql
-
     cat > /etc/my.cnf<<EOF
 [client]
 #password   = your_password
@@ -701,6 +250,25 @@ socket      = /tmp/mysql.sock
 [mysqld]
 port        = 3306
 socket      = /tmp/mysql.sock
+# 默认仅监听回环地址，避免数据库在安装完成后直接暴露到公网。
+#
+# 防火墙里虽然有一条 3306 drop，但那是第二道防线：nftables 缺失、
+# 规则写入失败、或者管理员自己调整防火墙时，唯一还挡着的就是这一行。
+
+#
+# 确实需要远程连库时，改成具体地址（不要用 0.0.0.0），
+# 同时在防火墙里按来源 IP 放行，并确认账号的 Host 授权范围。
+bind-address = 127.0.0.1
+# bind-address 管不到 X Protocol（33060 端口）。它由独立的
+# mysqlx_bind_address 控制，默认值是 *，也就是说只写上面那行的话，
+# 33060 仍会监听所有地址；2026-08 回归测试结果如下：
+#   LISTEN 127.0.0.1:3306   （已收敛）
+#   LISTEN *:33060          （仍然敞开）
+# X Protocol 能执行和 3306 等价的 SQL，堵了 3306 却漏了它等于没堵。
+#
+# loose- 前缀：X Plugin 被显式关闭（mysqlx=OFF）时这个选项就不存在，
+# 不加前缀 mysqld 会因「未知选项」拒绝启动。加了则降级为一条警告。
+loose-mysqlx-bind-address = 127.0.0.1
 datadir = ${MySQL_Data_Dir}
 skip-external-locking
 key_buffer_size = 16M
@@ -759,6 +327,8 @@ ${MySQLMAOpt}
 EOF
 
     MySQL_Opt
+    # 8.4 及以上把弃用项换成等价写法；8.0 走进去会直接返回
+    MySQL_Deprecated_Opt
     Check_MySQL_Data_Dir
     chown -R mysql:mysql /usr/local/mysql
     /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql
@@ -766,7 +336,6 @@ EOF
     \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
     \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service
     chmod 755 /etc/init.d/mysql
-
     cat > /etc/ld.so.conf.d/mysql.conf<<EOF
     /usr/local/mysql/lib
     /usr/local/lib
@@ -783,21 +352,18 @@ Install_MySQL_84()
     rm -f /etc/my.cnf
     if [ "${Bin}" = "y" ]; then
         Echo_Blue "[+] Installing ${Mysql_Ver} Using Generic Binaries..."
-        Tar_Cd ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz
-        mkdir /usr/local/mysql
-        mv ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}/* /usr/local/mysql/
+        Install_DB_Bin_Tarball "${DB_Bin_Tarball}" /usr/local/mysql
     else
         Echo_Blue "[+] Installing ${Mysql_Ver} Using Source code..."
         Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
         Install_Boost
         mkdir build && cd build
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
-        Make_Install
+        Make_Install || exit 1
     fi
 
     groupadd mysql
     useradd -s /sbin/nologin -M -g mysql mysql
-
     cat > /etc/my.cnf<<EOF
 [client]
 #password   = your_password
@@ -807,6 +373,25 @@ socket      = /tmp/mysql.sock
 [mysqld]
 port        = 3306
 socket      = /tmp/mysql.sock
+# 默认仅监听回环地址，避免数据库在安装完成后直接暴露到公网。
+#
+# 防火墙里虽然有一条 3306 drop，但那是第二道防线：nftables 缺失、
+# 规则写入失败、或者管理员自己调整防火墙时，唯一还挡着的就是这一行。
+
+#
+# 确实需要远程连库时，改成具体地址（不要用 0.0.0.0），
+# 同时在防火墙里按来源 IP 放行，并确认账号的 Host 授权范围。
+bind-address = 127.0.0.1
+# bind-address 管不到 X Protocol（33060 端口）。它由独立的
+# mysqlx_bind_address 控制，默认值是 *，也就是说只写上面那行的话，
+# 33060 仍会监听所有地址；2026-08 回归测试结果如下：
+#   LISTEN 127.0.0.1:3306   （已收敛）
+#   LISTEN *:33060          （仍然敞开）
+# X Protocol 能执行和 3306 等价的 SQL，堵了 3306 却漏了它等于没堵。
+#
+# loose- 前缀：X Plugin 被显式关闭（mysqlx=OFF）时这个选项就不存在，
+# 不加前缀 mysqld 会因「未知选项」拒绝启动。加了则降级为一条警告。
+loose-mysqlx-bind-address = 127.0.0.1
 datadir = ${MySQL_Data_Dir}
 skip-external-locking
 key_buffer_size = 16M
@@ -865,6 +450,8 @@ ${MySQLMAOpt}
 EOF
 
     MySQL_Opt
+    # 8.4 及以上把弃用项换成等价写法；8.0 走进去会直接返回
+    MySQL_Deprecated_Opt
     Check_MySQL_Data_Dir
     chown -R mysql:mysql /usr/local/mysql
     /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql
@@ -872,7 +459,6 @@ EOF
     \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
     \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service
     chmod 755 /etc/init.d/mysql
-
     cat > /etc/ld.so.conf.d/mysql.conf<<EOF
     /usr/local/mysql/lib
     /usr/local/lib

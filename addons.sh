@@ -13,15 +13,17 @@ action2=$2
 
 . lnmp.conf
 . include/main.sh
+. include/verify.sh
+. include/firewall.sh
+. include/profile.sh
 . include/init.sh
 . include/version.sh
-. include/eaccelerator.sh
-. include/xcache.sh
 . include/memcached.sh
 . include/opcache.sh
 . include/redis.sh
 . include/imageMagick.sh
-. include/ionCube.sh
+# ionCube 相关逻辑一直内联在本文件里，本包没有 include/ionCube.sh。
+# 下面两个内联函数：一个说明当前状态，一个供装过的机器干净卸载。
 . include/apcu.sh
 . include/php_exif.sh
 . include/php_fileinfo.sh
@@ -30,34 +32,51 @@ action2=$2
 . include/php_sodium.sh
 . include/php_imap.sh
 . include/php_swoole.sh
-. include/php_SourceGuardian.sh
+
+ionCube_NotWired_Notice()
+{
+    Echo_Yellow "ionCube Loader 当前未接入本包的安装流程。"
+    Echo_Yellow "这不是安全判定 —— 官方域名发布的预编译 Loader 是可接受的，"
+    Echo_Yellow "只是尚未按架构补齐 src/checksums.sha256 里的校验条目。"
+    Echo_Yellow "现在需要的话，请到 https://www.ioncube.com/loaders.php 取官方包自行安装。"
+}
+
+# 卸载入口保留：装过的机器需要一条干净的移除路径。
+# 只删 ini 并重启 PHP，不下载、不落地任何二进制。
+# /usr/local/ioncube 保留，由使用者自行决定是否删。
+Uninstall_ionCube()
+{
+    echo "You will uninstall ionCube..."
+    Press_Start
+    rm -f ${PHP_Path}/conf.d/001-ioncube.ini
+    Restart_PHP
+    Echo_Green "Uninstall ionCube completed."
+    Echo_Yellow "注意：/usr/local/ioncube 下的 .so 未删除，如不再需要请手工 rm -rf。"
+}
 
 Display_Addons_Menu()
 {
     echo "##### cache / optimizer / accelerator #####"
-    echo "  1: eAccelerator"
-    echo "  2: XCache"
-    echo "  3: Memcached"
-    echo "  4: opcache"
-    echo "  5: Redis"
-    echo "  6: apcu"
+    echo "  1: Memcached"
+    echo "  2: opcache"
+    echo "  3: Redis"
+    echo "  4: apcu"
     echo "##### Image Processing #####"
-    echo "  7: imageMagick"
-    echo "##### encryption/decryption utility for PHP #####"
-    echo "  8: ionCube Loader"
-    echo "  9: SourceGuardian Loader"
+    echo "  5: imageMagick"
+    echo "##### 暂未接入 #####"
+    echo "  6: ionCube Loader (not wired up yet, see below)"
     echo "##### PHP Modules/Extensions #####"
-    echo " 10: Exif"
-    echo " 11: Fileinfo"
-    echo " 12: Ldap"
-    echo " 13: Bz2"
-    echo " 14: Sodium"
-    echo " 15: Imap"
-    echo " 16: Swoole"
+    echo "  7: Exif"
+    echo "  8: Fileinfo"
+    echo "  9: Ldap"
+    echo " 10: Bz2"
+    echo " 11: Sodium"
+    echo " 12: Imap"
+    echo " 13: Swoole"
     echo "#################################################"
     echo " exit: Exit current script"
     echo "#################################################"
-    read -p "Enter your choice (1, 2, 3, 4, 5, 6, 7, 8... or exit): " action2
+    read -p "Enter your choice (1 - 13, or exit): " action2
 }
 
 Restart_PHP()
@@ -73,11 +92,11 @@ Restart_PHP()
 
 clear
 echo "+-----------------------------------------------------------------------+"
-echo "|            Addons script for LNMP V2.1, Written by Licess             |"
+echo "|            Addons script for LNMP V2.3, Written by Licess             |"
 echo "+-----------------------------------------------------------------------+"
 echo "|    A tool to Install cache,optimizer,accelerator...addons for LNMP    |"
 echo "+-----------------------------------------------------------------------+"
-echo "|           For more information please visit https://lnmp.org          |"
+echo "|          Upstream-official sources only, checksums enforced            |"
 echo "+-----------------------------------------------------------------------+"
 
 Select_PHP()
@@ -85,7 +104,7 @@ Select_PHP()
     if [ "${action2}" == "exit" ]; then
         exit 1
     fi
-    if [[ ! -s /usr/local/php5.2/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.2.conf ]] && [[ ! -s /usr/local/php5.3/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.3.conf ]] && [[ ! -s /usr/local/php5.4/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.4.conf ]] && [[ ! -s /usr/local/php5.5/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.5.conf ]] && [[ ! -s /usr/local/php5.6/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.6.conf ]] && [[ ! -s /usr/local/php7.0/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.0.conf ]] && [[ ! -s /usr/local/php7.1/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.1.conf ]] && [[ ! -s /usr/local/php7.2/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.2.conf ]] && [[ ! -s /usr/local/php7.3/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.3.conf ]] && [[ ! -s /usr/local/php7.4/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.4.conf ]] && [[ ! -s /usr/local/php8.0/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.0.conf ]] && [[ ! -s /usr/local/php8.1/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.1.conf ]] && [[ ! -s /usr/local/php8.2/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.2.conf ]]; then
+    if [[ ! -s /usr/local/php5.2/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.2.conf ]] && [[ ! -s /usr/local/php5.3/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.3.conf ]] && [[ ! -s /usr/local/php5.4/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.4.conf ]] && [[ ! -s /usr/local/php5.5/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.5.conf ]] && [[ ! -s /usr/local/php5.6/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.6.conf ]] && [[ ! -s /usr/local/php7.0/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.0.conf ]] && [[ ! -s /usr/local/php7.1/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.1.conf ]] && [[ ! -s /usr/local/php7.2/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.2.conf ]] && [[ ! -s /usr/local/php7.3/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.3.conf ]] && [[ ! -s /usr/local/php7.4/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.4.conf ]] && [[ ! -s /usr/local/php8.0/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.0.conf ]] && [[ ! -s /usr/local/php8.1/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.1.conf ]] && [[ ! -s /usr/local/php8.2/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.2.conf ]] && [[ ! -s /usr/local/php8.3/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.3.conf ]] && [[ ! -s /usr/local/php8.4/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.4.conf ]] && [[ ! -s /usr/local/php8.5/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.5.conf ]]; then
         PHP_Path='/usr/local/php'
         PHPFPM_Initd='/etc/init.d/php-fpm'
     else
@@ -131,7 +150,16 @@ Select_PHP()
         if [[ -s /usr/local/php8.2/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.2.conf && -s /etc/init.d/php-fpm8.2 ]]; then
             Echo_Green "14: PHP 8.2 [found]"
         fi
-        Echo_Yellow "Enter your choice (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 or 14): "
+        if [[ -s /usr/local/php8.3/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.3.conf && -s /etc/init.d/php-fpm8.3 ]]; then
+            Echo_Green "15: PHP 8.3 [found]"
+        fi
+        if [[ -s /usr/local/php8.4/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.4.conf && -s /etc/init.d/php-fpm8.4 ]]; then
+            Echo_Green "16: PHP 8.4 [found]"
+        fi
+        if [[ -s /usr/local/php8.5/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.5.conf && -s /etc/init.d/php-fpm8.5 ]]; then
+            Echo_Green "17: PHP 8.5 [found]"
+        fi
+        Echo_Yellow "Enter your choice (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 or 17): "
         read php_select
         case "${php_select}" in
             1)
@@ -204,6 +232,21 @@ Select_PHP()
                 PHP_Path='/usr/local/php8.2'
                 PHPFPM_Initd='/etc/init.d/php-fpm8.2'
                 ;;
+            15)
+                echo "Current selection: PHP `/usr/local/php8.3/bin/php-config --version`"
+                PHP_Path='/usr/local/php8.3'
+                PHPFPM_Initd='/etc/init.d/php-fpm8.3'
+                ;;
+            16)
+                echo "Current selection: PHP `/usr/local/php8.4/bin/php-config --version`"
+                PHP_Path='/usr/local/php8.4'
+                PHPFPM_Initd='/etc/init.d/php-fpm8.4'
+                ;;
+            17)
+                echo "Current selection: PHP `/usr/local/php8.5/bin/php-config --version`"
+                PHP_Path='/usr/local/php8.5'
+                PHPFPM_Initd='/etc/init.d/php-fpm8.5'
+                ;;
             *)
                 echo "Default,Current selection: PHP ${Cur_PHP_Version}"
                 php_select="1"
@@ -222,22 +265,19 @@ Addons_Get_PHP_Ext_Dir()
 
 Download_PHP_Src()
 {
-     if [ -s php-${Cur_PHP_Version}.tar.bz2 ]; then
-        echo "php-${Cur_PHP_Version}.tar.bz2 [found]"
+    # 不使用 `if [ -s ]` 跳过已有文件；Download_Files 会处理
+    # "已存在则不重复下载"，而且无论是否新下载都会做 SHA256 校验。
+    # 原写法等于给缓存文件开了一条免检通道：只要 src/ 下先有一个同名文件
+    # （上次中断留下的、其他用户放置的、被替换过的），就会跳过整个 fail-closed 校验。
+
+    Download_Files https://www.php.net/distributions/php-${Cur_PHP_Version}.tar.bz2 php-${Cur_PHP_Version}.tar.bz2
+    if [ $? -eq 0 ] && [ -s php-${Cur_PHP_Version}.tar.bz2 ]; then
+        echo "php-${Cur_PHP_Version}.tar.bz2 ok"
     else
-        echo "Notice: php-${Cur_PHP_Version}.tar.bz2 not found!!!download now..."
-        Download_Files https://www.php.net/distributions/php-${Cur_PHP_Version}.tar.bz2 php-${Cur_PHP_Version}.tar.bz2
-        if [ $? -eq 0 ]; then
-            echo "Download php-${Cur_PHP_Version}.tar.bz2 successfully!"
-        else
-            Download_Files https://museum.php.net/php5/php-${Cur_PHP_Version}.tar.bz2 php-${Cur_PHP_Version}.tar.bz2
-            if [ $? -eq 0 ]; then
-                echo "Download php-${Cur_PHP_Version}.tar.bz2 successfully!"
-            else
-                Echo_Red "Error! Can't download PHP ${Cur_PHP_Version}, please check!"
-                exit 1
-            fi
-        fi
+        Echo_Red "Error! PHP ${Cur_PHP_Version} 下载或校验失败，请检查。"
+        Echo_Red "如需手工放置 php-${Cur_PHP_Version}.tar.bz2 到 src 目录，"
+        Echo_Red "请确保它的 SHA256 已登记在 src/checksums.sha256 里。"
+        exit 1
     fi
 }
 
@@ -251,70 +291,61 @@ Select_PHP
     case "${action}" in
     install)
         case "${action2}" in
-            1|e[aA]ccelerator)
-                Install_eAccelerator
-                ;;
-            2|[xX]cache)
-                Install_XCache
-                ;;
-            3|[mM]emcached)
+            1|[mM]emcached)
                 Install_Memcached
                 ;;
-            4|opcache)
+            2|opcache)
                 Install_Opcache
                 ;;
-            5|[rR]edis)
+            3|[rR]edis)
                 Install_Redis
                 ;;
-            6|apcu)
+            4|apcu)
                 Install_Apcu
                 ;;
-            7|image[mM]agick)
+            5|image[mM]agick)
                 Install_ImageMagic
                 ;;
-            8|ion[cC]ube)
-                Install_ionCube
+            6|ion[cC]ube)
+                ionCube_NotWired_Notice
+                exit 1
                 ;;
-            9|[sS][gG])
-                Install_SourceGuardian
-                ;;
-            10|[eE]xif)
+            7|[eE]xif)
                 Install_PHP_Exif
                 ;;
-            11|[fF]ileinfo)
+            8|[fF]ileinfo)
                 Install_PHP_Fileinfo
                 ;;
-            12|[lL]dap)
+            9|[lL]dap)
                 Install_PHP_Ldap
                 ;;
-            13|[bB]z2)
+            10|[bB]z2)
                 Install_PHP_Bz2
                 ;;
-            14|[sS]odium)
+            11|[sS]odium)
                 Install_PHP_Sodium
                 ;;
-            15|[iI]map)
+            12|[iI]map)
                 Install_PHP_Imap
                 ;;
-            16|[sS]woole)
+            13|[sS]woole)
                 Install_PHP_Swoole
+                ;;
+            e[aA]ccelerator|[xX]cache|[sS][gG]|[sS]ource[gG]uardian)
+                Echo_Red "'${action2}' has been removed in LNMP 2.3."
+                Echo_Red "Reason: end-of-life (PHP 5.x only), or closed-source with no official download source."
+                exit 1
                 ;;
             [eE][xX][iI][tT])
                 exit 1
                 ;;
             *)
-                echo "Usage: ./addons.sh install {eaccelerator|xcache|memcached|opcache|redis|imagemagick|ioncube|sg|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
+                echo "Usage: ./addons.sh install {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
                 ;;
         esac
         ;;
     uninstall)
         case "${action2}" in
-            e[aA]ccelerator)
-                Uninstall_eAccelerator
-                ;;
-            [xX]cache)
-                Uninstall_XCache
-                ;;
             [mM]emcached)
                 Uninstall_Memcached
                 ;;
@@ -333,9 +364,8 @@ Select_PHP
             ion[cC]ube)
                 Uninstall_ionCube
                 ;;
-            [sS][gG])
-                Uninstall_SourceGuardian
-                ;;
+            # 保留卸载入口，支持移除旧版本安装。
+            # 它只删 ini 并重启 PHP，不下载、不落地任何二进制。
             [eE]xif)
                 Uninstall_PHP_Exif
                 ;;
@@ -358,7 +388,7 @@ Select_PHP
                 Uninstall_PHP_Swoole
                 ;;
             *)
-                echo "Usage: ./addons.sh uninstall {eaccelerator|xcache|memcached|opcache|redis|apcu|imagemagick|ioncube|sg|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
+                echo "Usage: ./addons.sh uninstall {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
                 ;;
         esac
         ;;
@@ -366,7 +396,7 @@ Select_PHP
         exit 1
         ;;
     *)
-        echo "Usage: ./addons.sh {install|uninstall} {eaccelerator|xcache|memcached|opcache|redis|apcu|imagemagick|ioncube|sg|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
+        echo "Usage: ./addons.sh {install|uninstall} {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
         exit 1
         ;;
     esac

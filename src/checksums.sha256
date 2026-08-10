@@ -1,0 +1,222 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# PHP
+# ---------------------------------------------------------------------------
+98a9cb6a0e27a6950cdf4b26dcac48f2be2d936d5224a502f066cf3d4cf19b92  php-8.0.30.tar.bz2
+98e0a08a0fae37d08dfcca2f5ff6664863097dde4b1d360af2acc8c3542f2a0f  php-8.1.34.tar.bz2
+5362f2a7a0e7168ce722fea0048b1a1d28e0f7cc265c417df670c65670695018  php-8.2.33.tar.bz2
+f9c9f4d0cd7692c6e3da363cd4ca72a826a49ae18f5ed430b6fcae7bc2881e18  php-8.3.33.tar.bz2
+286890447588510df110ede9e9ce09f1eb4f9856630b47fdc40ece70e20373cf  php-8.4.24.tar.bz2
+703c082ad9d2946ac647f3596812300d2c62b360d2f31a999021692a9b39476c  php-8.5.9.tar.bz2
+
+# ---------------------------------------------------------------------------
+# nginx 与其编译依赖
+# ---------------------------------------------------------------------------
+4261dc90e9e47c1c4041276e9aaa3d48ebe2e664f728e14fa95ae6c67d57a08b  nginx-1.30.4.tar.gz
+a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8  openssl-3.5.7.tar.gz
+4dae6fdcd2bb0bb6c37b5f97c33c2be954da743985369cddac3546e3218bffb8  pcre-8.45.tar.bz2
+e05cb1388eaca3830aded4ccf20044b6e1ac1a61411dcca11b0437c4285c8bc2  nghttp2-1.70.0.tar.xz
+
+# ---------------------------------------------------------------------------
+# nginx 第三方模块
+#
+# ngx_brotli 固定在 commit a71f9312（master 的最后一次提交，2023-10-09）。
+# 不使用 archive/refs/heads/master.tar.gz；分支归档内容会随提交变化，
+# 哈希将漂移，上游一提交这里就会失效。
+# ---------------------------------------------------------------------------
+1d21be34f3b7b6d05a8142945e59b3a47665edcdfe0f3ee3d3dbef121f90c08c  ngx_brotli-a71f9312c2deb28875acc7bacfdd5695a111aa53.tar.gz
+cb7d5f22919c613f1f03341a1aeb960965269302e9eb23425ccaabd2f5dcbbec  ngx_cache_purge-2.3.tar.gz
+2846819d4f80df7c753530b2ea93484d41326f5dc5162dc453b92579203c0c32  ngx-fancyindex-0.6.0.tar.xz
+14a28063294f645d457b1eb10e3c23bbba44398f1c5f021421b58b6f8ab31662  ngx_devel_kit-0.3.4.tar.gz
+
+# ---------------------------------------------------------------------------
+# Lua / OpenResty 生态
+# ---------------------------------------------------------------------------
+38117ad7b2e2b543baf3796c7424d288b091ca95e48518cf795578053f14c8f2  luajit2-2.1-20260701.tar.gz
+123d8203e74bf66f71437c7b3fa070bf8d24e6d332981bc18dc2db43303cc741  lua-nginx-module-0.10.31.tar.gz
+d1aded44b4cfe5ec6b395e178902aba3eed1dbe7999a753c0662222de2890ec0  lua-cjson-2.1.0.19.tar.gz
+28848c6c9f8878b8cbfc398b3774fdd0cb172401ca1798441bfb1689ac0210fb  lua-resty-core-0.1.34rc3.tar.gz
+8cf1a22e0d5b8f35cb0b2e14c58fcb3aa505a8fb6e956817f0cdb1f06593f072  lua-resty-lrucache-0.15.tar.gz
+b4ddcd47db347e9adf5c1e1491a6279a6ae2a3aff3155ef77ea0a65c998a69c1  lua-resty-lock-0.09.tar.gz
+8b3e17e8796f083228b89ddd013bcc688c7d15afcc721c70059fd4a8bf2355dc  lua-resty-string-0.19.tar.gz
+d044661400811fc77d386bb0b1fd9e82bf7fbb97112bc8a2650b059883307d96  lua-resty-redis-0.33.tar.gz
+cf0fe45638c967c80e3b81bb95855bdfa5cbf9b20c1d64f89f20f66433faf607  lua-resty-mysql-0.31.tar.gz
+deb4ab1ffb9f3d962c4b4a2c4bdff692b86a209e3835ae71ebdf3b97189e40a9  lua-resty-upload-0.11.tar.gz
+273e205a6b058c0606aeb6999cfe6ac8693c5cf492df09ffce244911e6c0e1dd  lua-resty-websocket-0.14.tar.gz
+ecc80b91bfb4f795b8a80acfa69e1778288ef60649ddd87f30a9c4a57ac5da79  lua-resty-dns-0.23.tar.gz
+3567144cfa26e63453960ec347137f47403b264af071385d2f16b8434eb3736e  lua-resty-memcached-0.18.tar.gz
+547ee6942939928407781dc938723f81c2a619d492f514826e38544f5791bbca  lua-resty-limit-traffic-0.09.tar.gz
+
+# ---------------------------------------------------------------------------
+# MySQL（源码 + 通用二进制）
+#
+# 二进制包的 glibc 后缀经实测确定：8.0 只有 glibc2.28，8.4 只有 glibc2.17。
+# ---------------------------------------------------------------------------
+e0d1a98ae5188c6a4efed74c74ff28115d4b791bc9d591a78e14d20aded67344  mysql-8.0.46.tar.gz
+0fcdb2e88b5bb151118420745070a34621463dd85a50e1eacd7c3aa1b9d1f4a2  mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz
+c0bf33a94cdb908f149aea0797affb1b139262ccf0e0b9787a17246207542e69  mysql-8.4.7.tar.gz
+6386faf7301f3d84fb3fd3e11c87e1759a8868378a08c57aa4414703fa281d1f  mysql-8.4.7-linux-glibc2.17-x86_64.tar.xz
+
+# ---------------------------------------------------------------------------
+# MariaDB（源码 + 通用二进制）
+# ---------------------------------------------------------------------------
+a46852c68075be7c31c7b33fee233c5b5a00c8c28117f5204d124e4f2fd56fa8  mariadb-10.11.18.tar.gz
+6766e45500266d8fba2253fcf99da5aad0338cba4bf1f13a0ee03da5407b3d71  mariadb-10.11.18-linux-systemd-x86_64.tar.gz
+5ab7883db519bfcebfdd2aac09bc5544a12ce328f39edd46d0bf01690615ef6c  mariadb-11.4.12.tar.gz
+afb81282f977c599ecbb0390588b0005b304b4e87d64615a2649ecd2bd1dc16f  mariadb-11.4.12-linux-systemd-x86_64.tar.gz
+bd023a4959faf012db7f0ebfc0d276729e67e5443df193163f98d80fdfc524c9  mariadb-11.8.8.tar.gz
+fbd4e8d05946c974b0560c94f01ce4c687291b6528074c2e001fb8f35c0d2762  mariadb-11.8.8-linux-systemd-x86_64.tar.gz
+
+
+
+
+
+
+
+
+
+
+
+
+
+fc9f85fc030e233142908241af7a846e60630aa7388de9a5fafb1f3a26840854  boost_1_77_0.tar.bz2
+cc4b893acf645c9d4b698e9a0f08ca8846aa5d6c68275c14c3e7949c24109454  boost_1_84_0.tar.bz2
+
+# ---------------------------------------------------------------------------
+# Apache（仅 lnmpa / lamp 使用）与 phpMyAdmin
+# ---------------------------------------------------------------------------
+68c74d4df38c26bed4dfbdb8f3baf1eb532f3872357becc1bba5d136f6b63c06  httpd-2.4.68.tar.bz2
+49030d92d2575da735791b496dc322f3ce5cff9494779ba8cc28c7f46c5deb32  apr-1.7.6.tar.bz2
+3e2ae08f40efa0c3701e54a954cefa08242de22a69f91a8ae44fc1e624ba309b  apr-util-1.6.4.tar.bz2
+57881348297c4412f86c410547cf76b4d8a236574dd2c6b7d6a2beebe7fc44e3  phpMyAdmin-5.2.3-all-languages.tar.xz
+
+# ---------------------------------------------------------------------------
+# 编译期基础库
+# ---------------------------------------------------------------------------
+8f74213b56238c85a50a5329f77e06198771e70dd9a739779f4c02f65d971313  libiconv-1.17.tar.gz
+f0611136bee505811e9ca11ca7ac188ef5323a8e2ef19cffd3edb3cf08fd791e  autoconf-2.13.tar.gz
+7802c54076500be500b171fde786258579d60547a3a35b8c5a23d8c88e8f9620  curl-7.62.0.tar.bz2
+5ee23abd047636c24b2d43c6625dcafc66661d1aca64dec9e0d05df29592624c  freetype-2.13.0.tar.xz
+6277845010dbc20e281a77e637c97765c1323d67df4d456fd942f525ea86e185  libzip-1.3.2.tar.xz
+
+# ---------------------------------------------------------------------------
+# 内存分配器（可选：SelectMalloc=2 用 jemalloc，=3 用 tcmalloc）
+# ---------------------------------------------------------------------------
+3826bc80232f22ed5c4662f3034f799ca316e819103bdc7bb99018a421706f92  jemalloc-5.3.1.tar.bz2
+d18d919175f9e4d740ace6b52f0f4f91284160c454e91b36ffd6456282a02206  gperftools-2.18.1.tar.gz
+be30d910e67f58d82e753231f1357f326a1a088acf126b21ff77e60aab19b90b  libunwind-1.8.3.tar.gz
+
+# ---------------------------------------------------------------------------
+# PHP 扩展（pecl）
+#
+# igbinary 必须先于 redis 编译：phpredis 的 --enable-redis-igbinary 要它的头文件。
+# ---------------------------------------------------------------------------
+8bf25d465abc7973d9e2c9a3039a5f8eea635b23bc1477017ff3999ff95836da  igbinary-3.2.16.tgz
+0d5141f634bd1db6c1ddcda053d25ecf2c4fc1c395430d534fd3f8d51dd7f0b5  redis-6.3.0.tgz
+3a3587c0a524c17d0dad9673a160b90cd776e836838474e173b549ed864352ee  imagick-3.8.1.tgz
+ca9c1820810a168786f8048a4c3f8c9e3fd941407ad1553259fb2e30b5f057bf  apcu-5.1.28.tgz
+fb17fc898d02ee0f2b22f5e4dcb0ff96cd35fe8ef7a6d2c5af6cb365f3f9b438  swoole-6.2.2.tgz
+b3f0640eacdeb9046c6c86a1546d7fb8a4e9f219e5d9a36a287e59b2dd8208e5  memcache-8.2.tgz
+c163434eb0da97c8f45c7ad41d979d381f8b81c49402b1b90b063987fb37972e  memcached-3.4.0.tgz
+
+# ---------------------------------------------------------------------------
+# 缓存与其他服务
+# ---------------------------------------------------------------------------
+f1baa4b28befd417aa6577ebeedde9e9fc7814cfcc299b2a6d2fd99ef7420a6c  redis-8.10.0.tar.gz
+23e5507e933b15463161d4c5d3921b0c5f340b542d6edd7f6c5e17c34f11a363  memcached-1.6.39.tar.gz
+e22c0bb032fde08f53de9ffbc5a128233041d9f33b5de022c0978a2149885f82  libmemcached-1.0.18.tar.gz
+b05924ad73c6932ba62c9b32f338f0619b90b767162c8b767f3566556187a284  ImageMagick-7.1.2-29.tar.gz
+# ioncube_loaders_lin_x86-64.tar.gz：ionCube 当前未接入安装流程，因此本条禁用。
+# ionCube 官方域名发布的预编译 Loader 可作为受信来源，
+# 。要接回安装流程，需要按架构补齐条目
+# （原代码宣称支持 x86 / armv7l / aarch64，而这里只登记过 x86-64 一条）。
+# 该哈希仅覆盖 x86-64，不能用于代码声明支持的 x86、armv7l 和 aarch64。
+c2bef41f9635c3a87efd65f089c16ca5df9fd02db199d9fdcf12b206b93d41a6  pure-ftpd-1.0.54.tar.bz2
+
+# ---------------------------------------------------------------------------
+# 安全工具（tools/ 下按需安装）
+# ---------------------------------------------------------------------------
+7a6aee5934a56473ad54d373715da1e715ff2ffd19b9dceb54b0297fe8c3a965  denyhosts-3.1.tar.gz
+474fcc25afdaf929c74329d1e4d24420caabeea1ef2e041a267ce19269570bae  fail2ban-1.1.0.tar.gz
+
+# ---------------------------------------------------------------------------
+# 说明：composer 不在此清单内
+#
+# composer 的 installer 是动态生成的，每次发布内容都变，无法固定哈希。
+# 它走独立机制：下载后与官方 composer.github.io/installer.sig 公布的
+# SHA384 比对，不一致就拒绝执行。见 include/php.sh 的 Install_Composer。
+# ---------------------------------------------------------------------------

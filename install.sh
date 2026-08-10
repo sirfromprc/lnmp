@@ -15,18 +15,25 @@ else
     Stack=$1
 fi
 
-LNMP_Ver='2.1'
+LNMP_Ver='2.3'
 . lnmp.conf
 . include/main.sh
+. include/verify.sh
+. include/firewall.sh
+. include/profile.sh
+. include/dbcommon.sh
 . include/init.sh
 . include/mysql.sh
 . include/mariadb.sh
 . include/php.sh
 . include/nginx.sh
+. include/openresty.sh
 . include/apache.sh
 . include/end.sh
 . include/only.sh
 . include/multiplephp.sh
+. include/imageMagick.sh
+. include/php_default_ext.sh
 
 Get_Dist_Name
 
@@ -51,7 +58,7 @@ echo "|          LNMP V${LNMP_Ver} for ${DISTRO} Linux Server, Written by Licess
 echo "+------------------------------------------------------------------------+"
 echo "|        A tool to auto-compile & install LNMP/LNMPA/LAMP on Linux       |"
 echo "+------------------------------------------------------------------------+"
-echo "|           For more information please visit https://lnmp.org           |"
+echo "|          Upstream-official sources only, checksums enforced             |"
 echo "+------------------------------------------------------------------------+"
 
 Init_Install()
@@ -65,6 +72,9 @@ Init_Install()
     if [ "${CheckMirror}" != "n" ]; then
         Modify_Source
     fi
+    # 放在 Modify_Source 之后：本包自己改写过的源（RHEL 系）也一并被检查到，
+    # 检查的是即将真正用于装依赖的最终状态。只警告，不阻断。
+    Check_Host_Repo_Trust
     Add_Swap
     Set_Timezone
     if [ "$PM" = "yum" ]; then
@@ -80,12 +90,8 @@ Init_Install()
     Disable_Selinux
     Check_Download
     Install_Libiconv
-    Install_Libmcrypt
-    Install_Mhash
-    Install_Mcrypt
     Install_Freetype
     Install_Pcre
-    Install_Icu4c
     if [ "${SelectMalloc}" = "2" ]; then
         Install_Jemalloc
     elif [ "${SelectMalloc}" = "3" ]; then
@@ -96,28 +102,8 @@ Init_Install()
     elif [ "$PM" = "apt" ]; then
         Deb_Lib_Opt
     fi
-    if [ "${DBSelect}" = "1" ]; then
-        Install_MySQL_51
-    elif [ "${DBSelect}" = "2" ]; then
-        Install_MySQL_55
-    elif [ "${DBSelect}" = "3" ]; then
-        Install_MySQL_56
-    elif [ "${DBSelect}" = "4" ]; then
-        Install_MySQL_57
-    elif [ "${DBSelect}" = "5" ]; then
-        Install_MySQL_80
-    elif [ "${DBSelect}" = "6" ]; then
-        Install_MySQL_84
-    elif [ "${DBSelect}" = "7" ]; then
-        Install_MariaDB_5
-    elif [ "${DBSelect}" = "8" ]; then
-        Install_MariaDB_103
-    elif [ "${DBSelect}" = "9" ]; then
-        Install_MariaDB_104
-    elif [ "${DBSelect}" = "10" ]; then
-        Install_MariaDB_105
-    elif [ "${DBSelect}" = "11" ]; then
-        Install_MariaDB_106
+    if [ "${DB_Kind}" != "none" ]; then
+        Dispatch "${DB_Install}"
     fi
     TempMycnf_Clean
     Clean_DB_Src_Dir
@@ -126,36 +112,19 @@ Init_Install()
 
 Install_PHP()
 {
-    if [ "${PHPSelect}" = "1" ]; then
-        Install_PHP_52
-    elif [ "${PHPSelect}" = "2" ]; then
-        Install_PHP_53
-    elif [ "${PHPSelect}" = "3" ]; then
-        Install_PHP_54
-    elif [ "${PHPSelect}" = "4" ]; then
-        Install_PHP_55
-    elif [ "${PHPSelect}" = "5" ]; then
-        Install_PHP_56
-    elif [ "${PHPSelect}" = "6" ]; then
-        Install_PHP_7
-    elif [ "${PHPSelect}" = "7" ]; then
-        Install_PHP_71
-    elif [ "${PHPSelect}" = "8" ]; then
-        Install_PHP_72
-    elif [ "${PHPSelect}" = "9" ]; then
-        Install_PHP_73
-    elif [ "${PHPSelect}" = "10" ]; then
-        Install_PHP_74
-    elif [ "${PHPSelect}" = "11" ]; then
-        Install_PHP_80
-    elif [ "${PHPSelect}" = "12" ]; then
-        Install_PHP_81
-    elif [ "${PHPSelect}" = "13" ]; then
-        Install_PHP_82
-    elif [ "${PHPSelect}" = "14" ]; then
-        Install_PHP_83
-    fi
+    Dispatch "${PHP_Install}"
     Clean_PHP_Src_Dir
+    Install_PHP_Default_Ext
+}
+
+
+Install_WebServer()
+{
+    if [ "${WebServer}" = "openresty" ]; then
+        Install_OpenResty
+    else
+        Install_Nginx
+    fi
 }
 
 LNMP_Stack()
@@ -163,7 +132,7 @@ LNMP_Stack()
     Init_Install
     Install_PHP
     LNMP_PHP_Opt
-    Install_Nginx
+    Install_WebServer
     Creat_PHP_Tools
     Add_Iptables_Rules
     Add_LNMP_Startup
@@ -174,13 +143,9 @@ LNMPA_Stack()
 {
     Apache_Selection
     Init_Install
-    if [ "${ApacheSelect}" = "1" ]; then
-        Install_Apache_22
-    else
-        Install_Apache_24
-    fi
+    Dispatch "${Apache_Install}"
     Install_PHP
-    Install_Nginx
+    Install_WebServer
     Creat_PHP_Tools
     Add_Iptables_Rules
     Add_LNMPA_Startup
@@ -191,11 +156,7 @@ LAMP_Stack()
 {
     Apache_Selection
     Init_Install
-    if [ "${ApacheSelect}" = "1" ]; then
-        Install_Apache_22
-    else
-        Install_Apache_24
-    fi
+    Dispatch "${Apache_Install}"
     Install_PHP
     Creat_PHP_Tools
     Add_Iptables_Rules
@@ -203,32 +164,43 @@ LAMP_Stack()
     Check_LAMP_Install
 }
 
+
+Install_Rc=0
+
 case "${Stack}" in
     lnmp)
         Dispaly_Selection
         LNMP_Stack 2>&1 | tee /root/lnmp-install.log
+        Install_Rc=${PIPESTATUS[0]}
         ;;
     lnmpa)
         Dispaly_Selection
         LNMPA_Stack 2>&1 | tee /root/lnmp-install.log
+        Install_Rc=${PIPESTATUS[0]}
         ;;
     lamp)
         Dispaly_Selection
         LAMP_Stack 2>&1 | tee /root/lnmp-install.log
+        Install_Rc=${PIPESTATUS[0]}
         ;;
     nginx)
         Install_Only_Nginx 2>&1 | tee /root/nginx-install.log
+        Install_Rc=${PIPESTATUS[0]}
         ;;
     db)
         Install_Only_Database
+        Install_Rc=$?
         ;;
     mphp)
         Install_Multiplephp
+        Install_Rc=$?
         ;;
     *)
+
         Echo_Red "Usage: $0 {lnmp|lnmpa|lamp}"
         Echo_Red "Usage: $0 {nginx|db|mphp}"
+        Install_Rc=1
         ;;
 esac
 
-exit
+exit ${Install_Rc}

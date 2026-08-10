@@ -19,7 +19,17 @@
 
 IP=127.0.0.1
 PORT=11211
-USER=root
+
+
+
+
+
+
+
+
+
+
+USER=memcached
 MAXCONN=1024
 CACHESIZE=64
 OPTIONS=""
@@ -29,6 +39,19 @@ prog="memcached"
 
 start() {
     echo -n "Starting $prog: "
+    # 账号不存在时 memcached 会直接启动失败（-u 指向不存在的用户）。
+    # 老版本升级上来的机器可能没有这个账号，这里补建一次并说明原因。
+    if ! id -u "$USER" >/dev/null 2>&1; then
+        echo
+        echo "账号 $USER 不存在，正在创建（memcached 不应以 root 运行，见 SEC2-003）..."
+        useradd -r -M -s /sbin/nologin "$USER" 2>/dev/null || \
+            useradd -r -M -s /usr/sbin/nologin "$USER" 2>/dev/null
+        if ! id -u "$USER" >/dev/null 2>&1; then
+            echo " failed：无法创建账号 $USER，请手工创建后重试。"
+            exit 1
+        fi
+        echo -n "已创建。继续启动 $prog: "
+    fi
     /usr/local/memcached/bin/memcached -d -l $IP -p $PORT -u $USER -m $CACHESIZE -c $MAXCONN -P /var/run/memcached.pid $OPTIONS
     if [ "$?" != 0 ] ; then
         echo " failed"

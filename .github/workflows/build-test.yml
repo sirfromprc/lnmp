@@ -1,0 +1,152 @@
+# 真编译验证。被 upstream-check.yml 和 release.yml 调用（workflow_call），
+# 也可以手动触发。
+#
+# 为什么非要真编译：本项目最难查的一类问题是 lua-resty-core 与
+# lua-nginx-module 的版本断言。它写在 base.lua 里，由 **Lua 运行时**执行：
+#
+#     ./configure  通过
+#     make         通过
+#     nginx -t     通过
+#     nginx 启动   通过
+#     第一次访问带 Lua 的 location  → 500
+#
+# 前面每一道都会给绿灯。所以 lua 这一档最后必须真发一次请求并比对响应体。
+#
+# 容器用 debian:12，与本项目的目标发行版一致 —— 在 ubuntu-latest 上编过
+# 不代表在 Debian 12 上编得过（libpcre3-dev 在新发行版已被移除就是例子）。
+
+name: Build Test
+
+on:
+  workflow_call:
+    inputs:
+      level:
+        description: 'quick = 只验 Lua 全家桶；full = 再加 nginx 全模块与 PHP'
+        type: string
+        default: quick
+      artifact:
+        description: |
+          可选。待验证改动所在的 artifact 名称，下载后覆盖 checkout 的内容。
+          升版结果尚未提交时必须传入，否则编译的是当前提交的版本。
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      level:
+        description: '验证深度'
+        type: choice
+        options: [quick, full]
+        default: quick
+
+permissions:
+  contents: read
+
+jobs:
+  lua:
+    name: Lua 全家桶（编译 + 启动 + 真发请求）
+    runs-on: ubuntu-latest
+    container:
+      image: debian:12
+    timeout-minutes: 45
+    steps:
+      - name: 装 git（容器基础镜像没有）
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git ca-certificates
+
+      - uses: actions/checkout@v4
+
+      - name: 覆盖为待验证的改动
+        if: inputs.artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: .
+
+      - name: 确认实际参与编译的版本号
+        if: inputs.artifact != ''
+        run: grep -E "^(Nginx_Ver|PHP_Ver|Lua)" include/version.sh || true
+
+      - name: 离线一致性检查（先排掉低级错误再花时间编译）
+        run: bash t/consistency.sh
+
+      - name: 编译并验证
+        run: bash t/build_test.sh lua
+
+      - name: 失败时打包日志
+        if: failure()
+        run: |
+          mkdir -p /tmp/artifacts
+          cp -a /usr/local/nginx-luatest/logs /tmp/artifacts/ 2>/dev/null || true
+          cp -a /usr/local/nginx-luatest/conf/nginx.conf /tmp/artifacts/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: lua-build-logs
+          path: /tmp/artifacts
+          retention-days: 7
+
+  nginx-full:
+    name: nginx 全模块（含自建 OpenSSL 与 brotli）
+    if: inputs.level == 'full'
+    runs-on: ubuntu-latest
+    container:
+      image: debian:12
+    timeout-minutes: 90
+    steps:
+      - run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git ca-certificates
+      - uses: actions/checkout@v4
+      - name: 覆盖为待验证的改动
+        if: inputs.artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: .
+      - name: 编译并验证
+        run: bash t/build_test.sh nginx
+
+  php:
+    name: PHP 默认分支编译
+    if: inputs.level == 'full'
+    runs-on: ubuntu-latest
+    container:
+      image: debian:12
+    timeout-minutes: 90
+    steps:
+      - run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git ca-certificates
+      - uses: actions/checkout@v4
+      - name: 覆盖为待验证的改动
+        if: inputs.artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: .
+      - name: 编译并验证
+        run: bash t/build_test.sh php
+
+  # 汇总节点：供上游工作流用 needs 依赖单个 job，
+  # 不必关心 full 模式下多出来的两个 job 是否被跳过。
+  result:
+    name: 构建验证结论
+    if: always()
+    needs: [lua, nginx-full, php]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 判定
+        run: |
+          echo "lua        = ${{ needs.lua.result }}"
+          echo "nginx-full = ${{ needs.nginx-full.result }}"
+          echo "php        = ${{ needs.php.result }}"
+          # skipped 是 quick 模式的正常结果，只有 failure / cancelled 才算失败
+          for r in "${{ needs.lua.result }}" "${{ needs.nginx-full.result }}" "${{ needs.php.result }}"; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::构建验证未通过"; exit 1 ;;
+            esac
+          done
+          echo "构建验证通过"

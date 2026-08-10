@@ -3,9 +3,13 @@ Description=The PHP FastCGI Process Manager
 After=network.target
 
 [Service]
-Type=simple
+# 用 Type=forking + PIDFile 而不是 --nodaemonize：php-fpm.conf 里配了
+# pid = /usr/local/php/var/run/php-fpm.pid，SysV 脚本、lnmp status 和本 unit
+# 都以这个 pid 文件为准。--nodaemonize 时 php-fpm 不写 pid 文件，
+# systemd 与其余两处对「是否在跑」的判断就会分叉。
+Type=forking
 PIDFile=/usr/local/php/var/run/php-fpm.pid
-ExecStart=/usr/local/php/sbin/php-fpm --nodaemonize --fpm-config /usr/local/php/etc/php-fpm.conf
+ExecStart=/usr/local/php/sbin/php-fpm --fpm-config /usr/local/php/etc/php-fpm.conf
 ExecReload=/bin/kill -USR2 $MAINPID
 ExecStop=/bin/kill -s QUIT $MAINPID
 PrivateTmp=false

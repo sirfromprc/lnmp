@@ -9,7 +9,7 @@
     $redis=new Redis();
     try {
         $redis->connect('127.0.0.1', 6379);
-        //$redis->auth('password'); //如果设置了密码，将password更高为你的密码
+        //$redis->auth('password'); //如果设置了密码，将password更高为实际密码
         //显示版本
         echo "Redis Server version:  ". $redis->info()['redis_version'] ."<br />";
 
@@ -25,4 +25,4 @@
     }
 
 ?>
-Redis Test tools for <a href="https://lnmp.org" target="_blank">LNMP一键安装包</a> <a href="https://bbs.vpser.net/forum-25-1.html" target="_blank">LNMP支持论坛</a>
+Redis Test tools for LNMP 一键安装包

@@ -94,8 +94,12 @@ case $ARGV in
     configtest)
         echo -n "test apache configure... "
         $HTTPD -t
+        # 必须把失败传出去：conf/lnmpa 与 conf/lamp 用 `if ! ... configtest`
+        # 决定要不要回滚刚写入的 vhost 配置，只打印 failed 而返回 0，
+        # 等于那道校验从来没生效过。
         if [ "$?" != 0 ] ; then
             echo " failed"
+            exit 1
         else
             echo " done"
         fi

@@ -1,0 +1,172 @@
+# 每月 8 号自动检查上游版本，能自动升的直接开 PR。
+#
+# 流程：
+#   查上游 → 只应用 AUTO 类 → 重算受影响的 sha256 → 一致性回检
+#   → 探测新 URL 是否可达 → 真编译（Lua 全家桶）→ 开 PR
+#
+# 任何一步失败都不会开 PR，而是把失败信息写进 Actions 摘要。
+#
+# ★ 为什么默认只应用 AUTO
+#   COUPLED（Lua 全家桶）虽然脚本能算出配套版本，但它一旦出问题就是
+#   "编译全绿、线上 500"，值得人看一眼。手动触发时可以勾上。
+#   MANUAL（换 nginx stable 分支、OpenResty 大版本等）永远只报告不动手。
+
+name: 上游版本检查
+
+on:
+  schedule:
+    # UTC 19:00 = 北京时间次日 03:00，所以写 7 号 —— 对应每月 8 号凌晨。
+    - cron: '0 19 7 * *'
+  workflow_dispatch:
+    inputs:
+      kinds:
+        description: '要应用的类别'
+        type: choice
+        options: [AUTO, 'AUTO,COUPLED']
+        default: AUTO
+      dry_run:
+        description: '只看报告，不开 PR'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: 检查并生成升级分支
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      has_changes: ${{ steps.apply.outputs.has_changes }}
+      branch: ${{ steps.apply.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查上游版本
+        env:
+          # 匿名调 GitHub API 每小时只有 60 次，本步骤要几十次，必须带 token
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash t/check_upstream.sh
+
+      - name: 把报告贴到 Actions 摘要
+        run: |
+          {
+            echo "## 上游版本检查（$(date -u '+%Y-%m-%d')）"
+            echo
+            cat .upstream/report.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 应用升级并重算校验值
+        id: apply
+        env:
+          KINDS: ${{ inputs.kinds || 'AUTO' }}
+        run: |
+          set -e
+          if [ ! -s .upstream/bumps.tsv ]; then
+            echo "没有可升级的组件。"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          bash t/bump_version.sh --kinds "$KINDS"
+
+          if [ ! -s .upstream/changed.tsv ]; then
+            echo "本轮没有应用任何变更（可能全是 MANUAL）。"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 校验值必须跟着版本号一起改。漏了这一步，安装会在
+          # fail-closed 校验那里中止 —— 而且是装了半小时之后才中止。
+          bash t/refresh_checksums.sh
+
+          bash t/consistency.sh
+          bash t/probe_urls.sh
+
+          branch="auto/upstream-$(date -u '+%Y%m%d')"
+          echo "has_changes=true"      >> "$GITHUB_OUTPUT"
+          echo "branch=${branch}"      >> "$GITHUB_OUTPUT"
+
+      - name: 暂存改动供后续 job 使用
+        if: steps.apply.outputs.has_changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bumped-tree
+          path: |
+            include/version.sh
+            include/profile.sh
+            src/checksums.sha256
+            t/probe_urls.sh
+            t/gen_checksums.sh
+            t/test_profile.sh
+            .upstream/report.md
+          retention-days: 7
+          include-hidden-files: true
+
+  # 升级后必须真编译过才允许开 PR。Lua 全家桶的版本断言是运行时触发的，
+  # 静态检查一律看不出来。
+  verify:
+    name: 真编译验证
+    needs: check
+    if: needs.check.outputs.has_changes == 'true'
+    uses: ./.github/workflows/build-test.yml
+    with:
+      level: quick
+      # 升版结果尚未提交，只存在于 check job 上传的 artifact 里。
+      # 不传则编译的是升级前的版本。
+      artifact: bumped-tree
+
+  pr:
+    name: 开 PR
+    needs: [check, verify]
+    if: needs.check.outputs.has_changes == 'true' && !inputs.dry_run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bumped-tree
+          path: .
+
+      - name: 生成 PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: ${{ needs.check.outputs.branch }}
+          base: ${{ github.event.repository.default_branch }}
+          commit-message: |
+            chore(deps): 上游版本例行升级
+
+            由 .github/workflows/upstream-check.yml 自动生成。
+            已通过：校验值重算、跨文件一致性、URL 可达性、Lua 全家桶真编译。
+          title: 'chore(deps): 上游版本例行升级'
+          body-path: .upstream/report.md
+          labels: dependencies, automated
+          delete-branch: true
+          add-paths: |
+            include/version.sh
+            include/profile.sh
+            src/checksums.sha256
+            t/probe_urls.sh
+            t/gen_checksums.sh
+            t/test_profile.sh
+
+      - name: 提醒
+        run: |
+          {
+            echo "### PR 已生成"
+            echo
+            echo "合并前请确认："
+            echo "- [ ] 报告里 MANUAL 类的条目是否需要人工处理"
+            echo "- [ ] 若本次含 COUPLED（Lua 全家桶），建议再手动跑一次"
+            echo "      \`Build Test\` 的 full 模式"
+          } >> "$GITHUB_STEP_SUMMARY"

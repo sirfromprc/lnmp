@@ -24,11 +24,13 @@ Install_PHP_Imap()
         yum -y install libc-client-devel krb5-devel uw-imap-devel
         if echo "${CentOS_Version}" | grep -Eqi "^9" || echo "${Alma_Version}" | grep -Eqi "^9" || echo "${Rocky_Version}" | grep -Eqi "^9"; then
             if ! rpm -qa | grep "libc-client-2007f" || ! rpm -qa | grep "uw-imap-devel"; then
-                if [ "${CheckMirror}" = "n" ]; then
+
+
+                if [ -s "${cur_dir}/src/libc-client-2007f-24.el9.${ARCH}.rpm" ]; then
                     rpm -ivh ${cur_dir}/src/libc-client-2007f-24.el9.${ARCH}.rpm ${cur_dir}/src/uw-imap-devel-2007f-24.el9.${ARCH}.rpm
                 else
-                    rpm -ivh https://rpmfind.net/linux/remi/enterprise/9/remi/${ARCH}/libc-client-2007f-30.el9.remi.${ARCH}.rpm
-                    rpm -ivh https://rpmfind.net/linux/remi/enterprise/9/remi/${ARCH}/uw-imap-devel-2007f-30.el9.remi.${ARCH}.rpm
+                    Echo_Red "uw-imap rpm not found in src/. IMAP support may fail to build."
+                    Echo_Red "Place libc-client-2007f-24.el9.${ARCH}.rpm and uw-imap-devel-2007f-24.el9.${ARCH}.rpm into src/ manually."
                 fi
             fi
         fi

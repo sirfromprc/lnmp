@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Author:licess
-# Website:https://www.vpser.net & https://lnmp.org
+# Remove an IP from DenyHosts blocklist
 
 HOST=$1
 if [ -z "${HOST}" ]; then
@@ -19,6 +18,9 @@ echo '
 /var/lib/denyhosts/users-hosts
 ' | grep -v "^$" | xargs sed -i "/${HOST}/d"
 
-#iptables -D INPUT -s ${HOST} -p tcp -m tcp --dport 22 -j DROP
+# DenyHosts 走的是 /etc/hosts.deny（tcp_wrappers），本身不写防火墙规则。
+# 若该 IP 另外被 fail2ban 用 nftables 封过，需要单独解封，例如：
+#   fail2ban-client set sshd unbanip ${HOST}
+# 手工加过的 nft 规则可用 `nft -a list ruleset` 查 handle 后删除。
 echo " done"
 /etc/init.d/denyhosts start

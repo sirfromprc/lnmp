@@ -2,19 +2,6 @@
 
 Install_Apcu()
 {
-    echo "You will install apcu..."
-    apcu_pass=""
-    while :;do
-        read -p "Please enter admin password of apcu: " apcu_pass
-        if [ "${apcu_pass}" != "" ]; then
-            echo "================================================="
-            echo "Your admin password of apcu was: ${apcu_pass}"
-            echo "================================================="
-            break
-        else
-            Echo_Red "Password cannot be empty!"
-        fi
-    done
     echo "====== Installing apcu ======"
     Press_Start
 
@@ -27,34 +14,20 @@ Install_Apcu()
 
     cd ${cur_dir}/src
 
-    if echo "${Cur_PHP_Version}" | grep -Eqi '^7.|8.'; then
-        Download_Files https://pecl.php.net/get/${PHPNewApcu_Ver}.tgz ${PHPNewApcu_Ver}.tgz
-        Tar_Cd ${PHPNewApcu_Ver}.tgz ${PHPNewApcu_Ver}
-    else
-        Download_Files https://pecl.php.net/get/${PHPOldApcu_Ver}.tgz ${PHPOldApcu_Ver}.tgz
-        Tar_Cd ${PHPOldApcu_Ver}.tgz ${PHPOldApcu_Ver}
-    fi
+    # 保留的 PHP 全部是 8.x，统一用 PHPNewApcu_Ver，改走 pecl 官方源
+    Download_Files https://pecl.php.net/get/${PHPNewApcu_Ver}.tgz ${PHPNewApcu_Ver}.tgz
+    Require_File "${PHPNewApcu_Ver}.tgz" "pecl apcu"
+    Tar_Cd ${PHPNewApcu_Ver}.tgz ${PHPNewApcu_Ver}
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config
     make
     make install
-    \cp -a apc.php ${Default_Website_Dir}/apc.php
-    sed -i "s/^defaults('ADMIN_PASSWORD','.*/defaults('ADMIN_PASSWORD','${apcu_pass}');/g" ${Default_Website_Dir}/apc.php
+
+
     cd ..
 
-    if echo "${Cur_PHP_Version}" | grep -Eqi '^7.'; then
-        Download_Files https://pecl.php.net/get/${PHPApcu_Bc_Ver}.tgz ${PHPApcu_Bc_Ver}.tgz
-        Tar_Cd ${PHPApcu_Bc_Ver}.tgz ${PHPApcu_Bc_Ver}
-        ${PHP_Path}/bin/phpize
-        ./configure --with-php-config=${PHP_Path}/bin/php-config
-        make
-        make install
-        cd ..
-        rm -rf ${cur_dir}/src/${PHPApcu_Bc_Ver}
-        rm -rf ${cur_dir}/src/${PHPNewApcu_Ver}
-    else
-        rm -rf ${cur_dir}/src/${PHPOldApcu_Ver}
-    fi
+    # apcu_bc 仅 PHP 7 需要，随 PHP<8.0 裁剪一并移除
+    rm -rf ${cur_dir}/src/${PHPNewApcu_Ver}
 
     cat >${PHP_Path}/conf.d/009-apcu.ini<<EOF
 [apcu]
@@ -65,15 +38,8 @@ apc.enable_cli=1
 
 EOF
 
-    if echo "${Cur_PHP_Version}" | grep -Eqi '^7.'; then
-        sed -i '/apcu.so/a\extension=apc.so' ${PHP_Path}/conf.d/009-apcu.ini
-    fi
-
     if [ -s "${zend_ext}" ]; then
         Restart_PHP
-        Echo_Green "APCu Dashboard: http://yourIP/apc.php "
-        Echo_Green "Admin Username: apc"
-        Echo_Green "Admin Password: ${apcu_pass}"
         Echo_Green "======== apcu install completed ======"
         Echo_Green "apcu installed successfully, enjoy it!"
     else

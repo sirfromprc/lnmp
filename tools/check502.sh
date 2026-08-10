@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# author: licess
-# website: https://lnmp.org
+# Restart php-fpm when 502 Bad Gateway occurs (use with crontab)
 
 CheckURL="http://www.xxx.com"
 

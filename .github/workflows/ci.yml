@@ -1,0 +1,71 @@
+# 每次推送 / PR 的快速静态检查。
+#
+# 分工：
+#   ci.yml          静态检查，几十秒，每次推送都跑
+#   build-test.yml  真编译，几十分钟，只在升级 PR 和发布前跑
+#
+# 这个项目历史上的严重问题全部是"跨文件不一致"——单看每个文件都自洽，
+# 合起来对不上。所以 consistency 这一步比 shellcheck 更值钱，别删。
+
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: 静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 语法检查（bash -n）
+        run: |
+          set -e
+          fail=0
+          # 顶层脚本 + include/ + t/ + tools/ + init.d/ + 三个运维脚本
+          while IFS= read -r f; do
+            if ! bash -n "$f" 2>/tmp/err; then
+              echo "::error file=$f::$(head -1 /tmp/err)"
+              fail=1
+            fi
+          done < <(
+            find . -path ./.git -prune -o \
+                   \( -name '*.sh' -o -name 'lnmp' -o -name 'lnmpa' -o -name 'lamp' \) \
+                   -type f -print
+          )
+          exit $fail
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          # SC1090/SC1091: 动态 source，本项目大量使用，无法静态解析
+          # SC2086: 未加引号的展开，老代码里遍地都是，单独治理
+          # SC2181: $? 判断风格
+          shellcheck -S error -e SC1090,SC1091,SC2086,SC2181 \
+            install.sh uninstall.sh upgrade.sh addons.sh pureftpd.sh \
+            include/*.sh t/*.sh tools/*.sh || exit 1
+
+      - name: 不变式检查（t/lint.sh）
+        run: bash t/lint.sh
+
+      - name: 跨文件一致性（t/consistency.sh）
+        run: bash t/consistency.sh
+
+      - name: 编号映射自测（t/test_profile.sh）
+        run: bash t/test_profile.sh
+
+      - name: 派发自测（t/test_dispatch.sh）
+        run: bash t/test_dispatch.sh
+
+      # 验证自动升版脚本会同步所有需要同步的文件。
+      # 漏改的后果是升版分支在这一步之前都是绿的，直到映射表自测才报错。
+      - name: 升版跨文件同步自测（t/test_bump.sh）
+        run: bash t/test_bump.sh

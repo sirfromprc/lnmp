@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 
-Install_ImageMagic()
+# ---------------------------------------------------------------------------
+# Build_ImageMagick_Lib — 编译安装 ImageMagick 本体到 /usr/local/imagemagick
+#
+# 抽出来是因为有两条调用路径：addons.sh 的交互式安装，和 install.sh 里
+# 「PHP 默认扩展」的自动安装（include/php_default_ext.sh）。
+# 两边各写一份将随版本升级而漂移，故共用此函数。
+# 本函数不含任何交互（Press_Start）与 PHP 侧动作，只负责库本身。
+# ---------------------------------------------------------------------------
+Build_ImageMagick_Lib()
 {
-    echo "====== Installing ImageMagic ======"
-    Press_Start
-
-    rm -f ${PHP_Path}/conf.d/008-imagick.ini
-    Addons_Get_PHP_Ext_Dir
-    zend_ext="${zend_ext_dir}imagick.so"
-    if [ -s "${zend_ext}" ]; then
-        rm -f "${zend_ext}"
-    fi
-
     if [ "$PM" = "yum" ]; then
         if [ "${DISTRO}" = "Oracle" ]; then
             yum -y install oracle-epel-release
@@ -19,13 +17,6 @@ Install_ImageMagic()
             yum -y install epel-release
         fi
         Get_Dist_Version
-        if [ "${country}" = "CN" ]; then
-            sed -e 's!^metalink=!#metalink=!g' \
-                -e 's!^#baseurl=!baseurl=!g' \
-                -e 's!//download\.fedoraproject\.org/pub!//mirrors.ustc.edu.cn!g' \
-                -e 's!//download\.example/pub!//mirrors.ustc.edu.cn!g' \
-                -i /etc/yum.repos.d/epel*.repo
-        fi
         yum install -y libwebp-devel
     elif [ "$PM" = "apt" ]; then
         export DEBIAN_FRONTEND=noninteractive
@@ -38,30 +29,40 @@ Install_ImageMagic()
     if [ -s /usr/local/imagemagick/bin/convert ]; then
         echo "ImageMagick already exists."
     else
-        if echo "${Cur_PHP_Version}" | grep -Eqi '^5.2.';then
-            Download_Files https://imagemagick.org/archive/releases/ImageMagick-6.9.9-51.tar.xz ImageMagick-6.9.9-51.tar.xz
-            Tar_Cd ImageMagick-6.9.9-27.tar.gz ImageMagick-6.9.9-27
-        else
-            Download_Files https://imagemagick.org/archive/releases/${ImageMagick_Ver}.tar.xz ${ImageMagick_Ver}.tar.xz
-            Tar_Cd ${ImageMagick_Ver}.tar.xz ${ImageMagick_Ver}
-        fi
+        # imagemagick.org/archive/releases 只保留近期几个版本，旧版本会下线
+        # （7.1.1-8 实测已 404）。GitHub 的 tag 归档是稳定可回溯的来源。
+        Download_Files https://github.com/ImageMagick/ImageMagick/archive/refs/tags/${ImageMagick_Ver#ImageMagick-}.tar.gz ${ImageMagick_Ver}.tar.gz
+        Require_File "${ImageMagick_Ver}.tar.gz" "ImageMagick"
+        Tar_Cd ${ImageMagick_Ver}.tar.gz ${ImageMagick_Ver}
 
         ./configure --prefix=/usr/local/imagemagick
-        Make_Install
+        Make_Install || exit 1
         cd ../
         rm -rf ${cur_dir}/src/${ImageMagick_Ver}
     fi
+}
 
-    if echo "${Cur_PHP_Version}" | grep -Eqi '^5.2.';then
-        Download_Files https://pecl.php.net/get/imagick-3.1.2.tgz imagick-3.1.2.tgz
-        Tar_Cd imagick-3.1.2.tgz imagick-3.1.2
-    else
-        Download_Files https://pecl.php.net/get/${Imagick_Ver}.tgz ${Imagick_Ver}.tgz
-        Tar_Cd ${Imagick_Ver}.tgz ${Imagick_Ver}
+Install_ImageMagic()
+{
+    echo "====== Installing ImageMagic ======"
+    Press_Start
+
+    rm -f ${PHP_Path}/conf.d/008-imagick.ini
+    Addons_Get_PHP_Ext_Dir
+    zend_ext="${zend_ext_dir}imagick.so"
+    if [ -s "${zend_ext}" ]; then
+        rm -f "${zend_ext}"
     fi
+
+    Build_ImageMagick_Lib
+
+    cd ${cur_dir}/src
+    Download_Files https://pecl.php.net/get/${Imagick_Ver}.tgz ${Imagick_Ver}.tgz
+    Require_File "${Imagick_Ver}.tgz" "pecl imagick"
+    Tar_Cd ${Imagick_Ver}.tgz ${Imagick_Ver}
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config --with-imagick=/usr/local/imagemagick
-    Make_Install
+    Make_Install || exit 1
     cd ../
 
     cat >${PHP_Path}/conf.d/008-imagick.ini<<EOF

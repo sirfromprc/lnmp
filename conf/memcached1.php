@@ -37,14 +37,12 @@ $mem->delete('key1');
 $val = $mem->get('key1');
 echo "Get key1 value: " . $val . "<br />";
 
-//清除所有数据
-$mem->flush();
-$val2 = $mem->get('key2');
-echo "Get key2 value: ";
-print_r($val2);
-echo "<br />";
+// 演示页不得清空实例中的全部缓存数据。
+// 这个页面部署在网站根目录、无任何鉴权，任何访客一访问就会清空整个
+// memcached 实例：不只是本演示写入的两个 key，而是站点所有缓存数据。
+// 演示 flush 的价值远小于这个代价。
 
 //关闭连接
 $mem->close();
 ?>
-Memcached Test tools for <a href="https://lnmp.org" target="_blank">LNMP一键安装包</a> <a href="https://bbs.vpser.net/forum-25-1.html" target="_blank">LNMP支持论坛</a>
+Memcached Test tools for LNMP 一键安装包

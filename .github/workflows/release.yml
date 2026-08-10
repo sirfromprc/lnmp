@@ -1,0 +1,213 @@
+# 发布。**编译验证不过就不发布**。
+#
+# 关于版本号：产品版本固定为 v2.3，不随发布次数递增。
+# 但 git tag 必须唯一，否则同一个 tag 反复移动会让已下载的人
+# 校验不上（同名 tag、不同内容，是供应链上最恶心的一种情况）。
+# 所以采用：
+#   tag        v2.3-20260908       每次发布唯一
+#   release 名 LNMP v2.3 (2026-09-08)
+#   包名       lnmp-v2.3-20260908.tar.gz
+# 产品版本始终是 v2.3，日期只是"这一次发布"的标识。
+#
+# 关于签名：默认用 GitHub 原生的构建证明（attestation）——
+# 不需要管理任何密钥，验证方式：
+#   gh attestation verify lnmp-v2.3-YYYYMMDD.tar.gz --repo <owner>/<repo>
+# 如果仓库里配了 GPG_PRIVATE_KEY / GPG_PASSPHRASE 两个 secret，
+# 会额外产出一份 .asc 分离签名；没配就跳过，不影响发布。
+
+name: 发布
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: '发布前的编译验证深度（正式发布建议 full）'
+        type: choice
+        options: [full, quick]
+        default: full
+      prerelease:
+        description: '标记为预发布'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v2.3-*'
+
+permissions:
+  contents: read
+
+jobs:
+  # ---- 第一关：静态检查 ----
+  static:
+    name: 静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash t/lint.sh
+      - run: bash t/consistency.sh
+      - run: bash t/test_profile.sh
+      - run: bash t/test_dispatch.sh
+      - run: bash t/test_bump.sh
+
+  # ---- 第二关：真编译 ----
+  build:
+    name: 编译验证
+    needs: static
+    uses: ./.github/workflows/build-test.yml
+    with:
+      # tag 触发时 inputs 为空，正式发布一律走 full
+      level: ${{ inputs.level || 'full' }}
+
+  # ---- 第三关：打包并发布 ----
+  publish:
+    name: 打包发布
+    needs: [static, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # 建 release、推 tag
+      id-token: write      # 构建证明要用 OIDC
+      attestations: write  # 写构建证明
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 确定版本与发布标识
+        id: ver
+        run: |
+          set -e
+          PRODUCT_VER='v2.3'      # 产品版本固定，不随发布递增
+          if [ "${{ github.ref_type }}" = 'tag' ]; then
+            TAG="${{ github.ref_name }}"
+            STAMP="${TAG#${PRODUCT_VER}-}"
+          else
+            STAMP="$(date -u '+%Y%m%d')"
+            TAG="${PRODUCT_VER}-${STAMP}"
+          fi
+          PKG="lnmp-${PRODUCT_VER}-${STAMP}"
+          {
+            echo "product=${PRODUCT_VER}"
+            echo "tag=${TAG}"
+            echo "stamp=${STAMP}"
+            echo "pkg=${PKG}"
+          } >> "$GITHUB_OUTPUT"
+          echo "将发布 ${TAG}（产品版本 ${PRODUCT_VER}）"
+
+      - name: 打包
+        run: |
+          set -e
+          PKG='${{ steps.ver.outputs.pkg }}'
+          mkdir -p dist "/tmp/${PKG}"
+          # 排除开发期产物：用户拿到的包里不该有 CI 配置、交接文档、待办清单。
+          # t/ 保留 —— probe_urls.sh 这类脚本对使用者排查下载失败很有用。
+          tar --exclude-vcs \
+              --exclude='./.github' \
+              --exclude='./.claude' \
+              --exclude='./.upstream' \
+              --exclude='./dist' \
+              --exclude='./HANDOVER.md' \
+              --exclude='./todo*.md' \
+              --exclude='./src/*.tar.*' \
+              --exclude='./src/*.tgz' \
+              -cf - . | tar -xf - -C "/tmp/${PKG}"
+          tar -czf "dist/${PKG}.tar.gz" -C /tmp "${PKG}"
+          echo "包大小：$(du -h dist/${PKG}.tar.gz | cut -f1)"
+
+      - name: 生成校验值
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: 构建证明（GitHub 原生，无需管理密钥）
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: dist/*.tar.gz
+
+      # GPG 是可选的：配了 secret 才走，没配自动跳过。
+      # Windows + GitHub Desktop 的用户不必为了发布去折腾密钥管理 ——
+      # 上面的构建证明已经能证明"这个包确实由本仓库的这次工作流产出"。
+      - name: 检查是否配置了 GPG
+        id: gpg
+        env:
+          KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          if [ -n "${KEY}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "未配置 GPG_PRIVATE_KEY，跳过 GPG 签名（构建证明已生成，不影响发布）"
+          fi
+
+      - name: GPG 分离签名
+        if: steps.gpg.outputs.enabled == 'true'
+        env:
+          KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -e
+          printf '%s' "${KEY}" | gpg --batch --import
+          cd dist
+          for f in *.tar.gz SHA256SUMS; do
+            gpg --batch --yes --pinentry-mode loopback \
+                --passphrase "${PASSPHRASE}" \
+                --armor --detach-sign "$f"
+          done
+          ls -l
+
+      - name: 生成发布说明
+        id: notes
+        run: |
+          set -e
+          {
+            echo "本次发布的产品版本仍是 **${{ steps.ver.outputs.product }}**，"
+            echo "\`${{ steps.ver.outputs.stamp }}\` 只是这一次发布的日期标识。"
+            echo
+            echo "### 组件版本"
+            echo
+            echo '| 组件 | 版本 |'
+            echo '| --- | --- |'
+            . include/version.sh
+            echo "| nginx | ${Nginx_Ver#nginx-} |"
+            echo "| OpenSSL | ${Openssl_New_Ver#openssl-} |"
+            echo "| OpenResty（可选） | ${OpenResty_Ver#openresty-} |"
+            echo "| Redis | ${Redis_Stable_Ver#redis-} |"
+            echo "| Memcached | ${Memcached_Ver#memcached-} |"
+            echo "| pure-ftpd | ${Pureftpd_Ver#pure-ftpd-} |"
+            echo "| lua-nginx-module | ${LuaNginxModule#lua-nginx-module-} |"
+            echo "| lua-resty-core | ${LuaRestyCore#lua-resty-core-} |"
+            echo
+            echo "PHP / MySQL / MariaDB / Apache / phpMyAdmin 为菜单可选，"
+            echo "具体版本见 \`include/profile.sh\`。"
+            echo
+            echo "### 发布前已通过"
+            echo
+            echo "- 静态检查：\`t/lint.sh\`、\`t/consistency.sh\`、编号映射与派发自测"
+            echo "- 升版跨文件同步自测：\`t/test_bump.sh\`"
+            echo "- 真编译：Lua 全家桶（编译 + 启动 + 真发请求）"
+            if [ "${{ inputs.level || 'full' }}" = 'full' ]; then
+              echo "- 真编译：nginx 全模块（含自建 OpenSSL 与 brotli）、PHP 默认分支"
+            fi
+            echo
+            echo "### 校验"
+            echo
+            echo '```bash'
+            echo "sha256sum -c SHA256SUMS"
+            echo "# 构建证明（无需导入任何公钥）："
+            echo "gh attestation verify ${{ steps.ver.outputs.pkg }}.tar.gz --repo ${{ github.repository }}"
+            echo '```'
+          } > /tmp/notes.md
+          cat /tmp/notes.md
+
+      - name: 发布
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: LNMP ${{ steps.ver.outputs.product }} (${{ steps.ver.outputs.stamp }})
+          body_path: /tmp/notes.md
+          prerelease: ${{ inputs.prerelease || false }}
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            dist/*.asc
+          fail_on_unmatched_files: false

@@ -30,41 +30,18 @@ Install_PHP_Sodium()
         apt-get install -y libsodium-dev
     fi
 
-    if echo "${Cur_PHP_Version}" | grep -Eqi '^7.[234].|8.[0-3].'; then
-        Download_PHP_Src
+    # 保留的 PHP 全部 >= 8.0，sodium 一律从 PHP 源码树的 ext/sodium 编译。
+    # 原判断 '^7.[234].|8.[0-3].' 会让 PHP 8.4/8.5 落空。
+    Download_PHP_Src
 
-        Tar_Cd php-${Cur_PHP_Version}.tar.bz2 php-${Cur_PHP_Version}/ext/sodium
-        ${PHP_Path}/bin/phpize
-        ./configure --with-php-config=${PHP_Path}/bin/php-config
-        make && make install
-        cd -
-        rm -rf php-${Cur_PHP_Version}
-    elif echo "${Cur_PHP_Version}" | grep -Eqi '^7.[01].'; then
-        Download_Files https://pecl.php.net/get/${PHPSodium_Ver}.tgz ${PHPSodium_Ver}.tgz
-        Tar_Cd ${PHPSodium_Ver}.tgz ${PHPSodium_Ver}
-        ${PHP_Path}/bin/phpize
-        ./configure --with-php-config=${PHP_Path}/bin/php-config
-        make && make install
-        cd -
-        rm -rf ${PHPSodium_Ver}
-    elif echo "${Cur_PHP_Version}" | grep -Eqi '^5.[3-6].'; then
-        Download_Files https://pecl.php.net/get/libsodium-1.0.7.tgz libsodium-1.0.7.tgz
-        Tar_Cd libsodium-1.0.7.tgz libsodium-1.0.7
-        ${PHP_Path}/bin/phpize
-        ./configure --with-php-config=${PHP_Path}/bin/php-config
-        make && make install
-        cd -
-        rm -rf libsodium-1.0.7
-    elif echo "${Cur_PHP_Version}" | grep -Eqi '^5.2.'; then
-        Echo_Red "PHP Sodium does not support PHP 5.2!"
-        exit 1
-    fi
+    Tar_Cd php-${Cur_PHP_Version}.tar.bz2 php-${Cur_PHP_Version}/ext/sodium
+    ${PHP_Path}/bin/phpize
+    ./configure --with-php-config=${PHP_Path}/bin/php-config
+    make && make install
+    cd -
+    rm -rf php-${Cur_PHP_Version}
 
-    if echo "${Cur_PHP_Version}" | grep -Eqi '^5.[3-6].'; then
-        echo 'extension = "libsodium.so"' > ${PHP_Path}/conf.d/009-sodium.ini
-    else
-        echo 'extension = "sodium.so"' > ${PHP_Path}/conf.d/009-sodium.ini
-    fi
+    echo 'extension = "sodium.so"' > ${PHP_Path}/conf.d/009-sodium.ini
 
     Restart_PHP
     if [ -s "${zend_ext}" ]; then

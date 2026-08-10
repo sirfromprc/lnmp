@@ -4,22 +4,13 @@ Install_PHPMemcache()
 {
     echo "Install memcache php extension..."
     cd ${cur_dir}/src
-    if echo "${Cur_PHP_Version}" | grep -Eqi '^8.';then
-        Download_Files https://pecl.php.net/get/${PHP8Memcache_Ver}.tgz ${PHP8Memcache_Ver}.tgz
-        Tar_Cd ${PHP8Memcache_Ver}.tgz ${PHP8Memcache_Ver}
-    elif echo "${Cur_PHP_Version}" | grep -Eqi '^7.';then
-        Download_Files https://pecl.php.net/get/${PHP7Memcache_Ver}.tgz ${PHP7Memcache_Ver}.tgz
-        Tar_Cd ${PHP7Memcache_Ver}.tgz ${PHP7Memcache_Ver}
-    else
-        if ! gcc -dumpversion|grep -q "^[34]."; then
-            export CFLAGS=" -fgnu89-inline"
-        fi
-        Download_Files https://pecl.php.net/get/${PHPMemcache_Ver}.tgz ${PHPMemcache_Ver}.tgz
-        Tar_Cd ${PHPMemcache_Ver}.tgz ${PHPMemcache_Ver}
-    fi
+    # 保留的 PHP 全部是 8.x，统一用 PHP8Memcache_Ver，改走 pecl 官方源
+    Download_Files https://pecl.php.net/get/${PHP8Memcache_Ver}.tgz ${PHP8Memcache_Ver}.tgz
+    Require_File "${PHP8Memcache_Ver}.tgz" "pecl memcache"
+    Tar_Cd ${PHP8Memcache_Ver}.tgz ${PHP8Memcache_Ver}
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config
-    Make_Install
+    Make_Install || exit 1
     cd ../
 }
 
@@ -31,41 +22,29 @@ Install_PHPMemcached()
     if [ "$PM" = "yum" ]; then
         yum install cyrus-sasl-devel -y
         Get_Dist_Version
-        if echo "${CentOS_Version}" | grep -Eqi '^5'; then
-            yum install gcc44 gcc44-c++ libstdc++44-devel -y
-            export CC="gcc44"
-            export CXX="g++44"
-        fi
     elif [ "$PM" = "apt" ]; then
         export DEBIAN_FRONTEND=noninteractive
         apt-get install libsasl2-2 sasl2-bin libsasl2-2 libsasl2-dev libsasl2-modules -y
     fi
-    Download_Files https://launchpad.net/libmemcached/1.0/1.0.18/+download/${Libmemcached_Ver}.tar.gz
+    Download_Files https://launchpad.net/libmemcached/1.0/${Libmemcached_Ver#libmemcached-}/+download/${Libmemcached_Ver}.tar.gz ${Libmemcached_Ver}.tar.gz
+    Require_File "${Libmemcached_Ver}.tar.gz" "libmemcached"
     Tar_Cd ${Libmemcached_Ver}.tar.gz ${Libmemcached_Ver}
-    if gcc -dumpversion|grep -Eq "^[7-9]|1[0-5]"; then
+    # gcc 7 及以上需要此补丁；原正则 "^[7-9]|1[0-5]" 的第二段未锚定且 gcc 16+ 不匹配
+    if gcc -dumpversion | grep -Eq "^([7-9]|[1-9][0-9])"; then
         patch -p1 < ${cur_dir}/src/patch/libmemcached-1.0.18-gcc7.patch
     fi
     ./configure --prefix=/usr/local/libmemcached --with-memcached
-    Make_Install
+    Make_Install || exit 1
     cd ../
 
     cd ${cur_dir}/src
-    if echo "${Cur_PHP_Version}" | grep -Eqi '^8.';then
-        [[ -d "${PHP8Memcached_Ver}" ]] && rm -rf "${PHP8Memcached_Ver}"
-        Download_Files https://pecl.php.net/get/${PHP8Memcached_Ver}.tgz ${PHP8Memcached_Ver}.tgz
-        Tar_Cd ${PHP8Memcached_Ver}.tgz ${PHP8Memcached_Ver}
-    elif echo "${Cur_PHP_Version}" | grep -Eqi '^7.';then
-        [[ -d "${PHP7Memcached_Ver}" ]] && rm -rf "${PHP7Memcached_Ver}"
-        Download_Files https://pecl.php.net/get/${PHP7Memcached_Ver}.tgz ${PHP7Memcached_Ver}.tgz
-        Tar_Cd ${PHP7Memcached_Ver}.tgz ${PHP7Memcached_Ver}
-    else
-        [[ -d "${PHPMemcached_Ver}" ]] && rm -rf "${PHPMemcached_Ver}"
-        Download_Files https://pecl.php.net/get/${PHPMemcached_Ver}.tgz ${PHPMemcached_Ver}.tgz
-        Tar_Cd ${PHPMemcached_Ver}.tgz ${PHPMemcached_Ver}
-    fi
+    [[ -d "${PHP8Memcached_Ver}" ]] && rm -rf "${PHP8Memcached_Ver}"
+    Download_Files https://pecl.php.net/get/${PHP8Memcached_Ver}.tgz ${PHP8Memcached_Ver}.tgz
+    Require_File "${PHP8Memcached_Ver}.tgz" "pecl memcached"
+    Tar_Cd ${PHP8Memcached_Ver}.tgz ${PHP8Memcached_Ver}
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config --enable-memcached --with-libmemcached-dir=/usr/local/libmemcached
-    Make_Install
+    Make_Install || exit 1
     cd ../
 }
 
@@ -98,7 +77,6 @@ Install_Memcached()
     if [ -s "${zend_ext}" ]; then
         rm -f "${zend_ext}"
     fi
-
     cat >${PHP_Path}/conf.d/005-memcached.ini<<EOF
 extension = ${PHP_ZTS}
 EOF
@@ -108,7 +86,8 @@ EOF
     if [ -s /usr/local/memcached/bin/memcached ]; then
         echo "Memcached already exists."
     else
-        Download_Files https://www.memcached.org/files/${Memcached_Ver}.tar.gz ${Memcached_Ver}.tar.gz
+        Download_Files https://memcached.org/files/${Memcached_Ver}.tar.gz ${Memcached_Ver}.tar.gz
+        Require_File "${Memcached_Ver}.tar.gz" "memcached"
         Tar_Cd ${Memcached_Ver}.tar.gz ${Memcached_Ver}
         ./configure --prefix=/usr/local/memcached
         make &&make install
@@ -119,7 +98,11 @@ EOF
 
         \cp ${cur_dir}/init.d/init.d.memcached /etc/init.d/memcached
         chmod +x /etc/init.d/memcached
-        useradd -s /sbin/nologin nobody
+
+        if ! id -u memcached >/dev/null 2>&1; then
+            useradd -r -M -s /sbin/nologin memcached 2>/dev/null || \
+                useradd -r -M -s /usr/sbin/nologin memcached 2>/dev/null
+        fi
     fi
 
     if [ ! -d /var/lock/subsys ]; then
@@ -134,29 +117,23 @@ EOF
         Install_PHPMemcached
     fi
 
-    echo "Copy Memcached PHP Test file..."
-    \cp ${cur_dir}/conf/memcached${ver}.php ${Default_Website_Dir}/memcached.php
+    # 演示页会部署到网站根目录且没有鉴权，因此默认不部署；与 phpinfo、
+    # phpMyAdmin 同一口径。它会连上 memcached
+    # 并读写 key，等于把「本机有 memcached 且可用」这一事实公开出去。
+    if [ "${Enable_Memcached_Test_Page}" = "y" ]; then
+        echo "Copy Memcached PHP Test file..."
+        \cp ${cur_dir}/conf/memcached${ver}.php ${Default_Website_Dir}/memcached.php
+    else
+        echo "Memcached test page not deployed (Enable_Memcached_Test_Page='n')."
+        echo "如需自测：cp conf/memcached${ver}.php ${Default_Website_Dir}/memcached.php"
+    fi
 
     Restart_PHP
 
-    if command -v iptables >/dev/null 2>&1; then
-        if iptables -C INPUT -i lo -j ACCEPT; then
-            iptables -A INPUT -p tcp --dport 11211 -j DROP
-            iptables -A INPUT -p udp --dport 11211 -j DROP
-            if [ "$PM" = "yum" ]; then
-                service iptables save
-                service iptables reload
-            elif [ "$PM" = "apt" ]; then
-                if [ -s /etc/init.d/netfilter-persistent ]; then
-                    /etc/init.d/netfilter-persistent save
-                    /etc/init.d/netfilter-persistent reload
-                else
-                    /etc/init.d/iptables-persistent save
-                    /etc/init.d/iptables-persistent reload
-                fi
-            fi
-        fi
-    fi
+    # memcached 无认证，暴露到公网等于把缓存内容和 UDP 反射放大面一起开放
+    Firewall_Block tcp 11211
+    Firewall_Block udp 11211
+    Firewall_Save
 
     echo "Starting Memcached..."
     /etc/init.d/memcached start
@@ -182,21 +159,8 @@ Uninstall_Memcached()
     rm -rf /usr/local/memcached
     rm -rf /etc/init.d/memcached
     rm -rf /usr/bin/memcached
-    if command -v iptables >/dev/null 2>&1; then
-        iptables -D INPUT -p tcp --dport 11211 -j DROP
-        iptables -D INPUT -p udp --dport 11211 -j DROP
-        if [ "$PM" = "yum" ]; then
-            service iptables save
-            service iptables reload
-        elif [ "$PM" = "apt" ]; then
-            if [ -s /etc/init.d/netfilter-persistent ]; then
-                /etc/init.d/netfilter-persistent save
-                /etc/init.d/netfilter-persistent reload
-            else
-                /etc/init.d/iptables-persistent save
-                /etc/init.d/iptables-persistent reload
-            fi
-        fi
-    fi
+    Firewall_Unblock tcp 11211
+    Firewall_Unblock udp 11211
+    Firewall_Save
     Echo_Green "Uninstall Memcached completed."
 }

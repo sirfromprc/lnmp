@@ -11,6 +11,10 @@ Backup_MySQL2()
         echo "MySQL databases backup failed,Please backup databases manually!"
         exit 1
     fi
+    # 退出码为 0 不代表备份完整，另需确认结束标记；
+    # 库列表在停服前记录，供迁移完成后比对是否有数据丢失。
+    Check_DB_Backup "/root/mysql_all_backup${Upgrade_Date}.sql" || exit 1
+    Snapshot_DB_List /usr/local/mysql/bin/mysql "${DB_List_Before}" || exit 1
     lnmp stop
     echo "Remove autostart..."
     Remove_StartUp mysql
@@ -20,9 +24,7 @@ Backup_MySQL2()
     if [ "${MariaDB_Data_Dir}" != "/usr/local/mariadb/var" ]; then
         mv ${MariaDB_Data_Dir} ${MariaDB_Data_Dir}${Upgrade_Date}
     fi
-    if echo "${mariadb_version}" | grep -Eqi '^5.5.' &&  echo "${cur_mysql_version}" | grep -Eqi '^5.6.';then
-        sed -i 's/STATS_PERSISTENT=0//g' /root/mysql_all_backup${Upgrade_Date}.sql
-    fi
+
 }
 
 Upgrade_MySQL2MariaDB()
@@ -38,53 +40,43 @@ Upgrade_MySQL2MariaDB()
     mariadb_version=""
     echo "Current MySQL Version:${cur_mysql_version}"
     echo "You can get version number from https://downloads.mariadb.org/"
-    Echo_Yellow "Please enter MariaDB Version you want."
-    read -p "(example: 10.1.33 ): " mariadb_version
+    Echo_Yellow "Please enter MariaDB Version you want (10.11.x / 11.4.x / 11.8.x)."
+    read -p "(example: 11.8.8 ): " mariadb_version
     if [ "${mariadb_version}" = "" ]; then
         echo "Error: You must input MariaDB Version!!"
         exit 1
     fi
 
-    if echo "${mariadb_version}" | grep -Eqi '^10.6.';then
-        if [[ "${DB_ARCH}" = "x86_64" ]]; then
-            read -p "Using Generic Binaries [y/n]: " Bin
-            case "${Bin}" in
-            [yY][eE][sS]|[yY])
-                echo "You will install mariadb-${mariadb_version} Using Generic Binaries."
-                Bin="y"
-                ;;
-            [nN][oO]|[nN])
-                echo "You will install mariadb-${mariadb_version} from Source."
-                Bin="n"
-                ;;
-            *)
-                echo "You will install mariadb-${mariadb_version} Using Generic Binaries."
-                Bin="y"
-                ;;
-            esac
-        else
+    # 与 upgrade_mariadb.sh 同一口径：目标版本必须在动数据库之前就校验。
+    # 本脚本执行 MySQL 到 MariaDB 的跨引擎迁移，
+    # 走到后面会停库、移走 /usr/local/mysql。版本号错到下载阶段才发现的话，
+    # 现场已经被破坏了。
+    mariadb_short_version=$(echo "${mariadb_version}" | cut -d. -f1-2)
+    case "${mariadb_short_version}" in
+    10.11|11.4|11.8)
+        ;;
+    *)
+        Echo_Red "不支持迁移到 MariaDB ${mariadb_version}。"
+        Echo_Red "本包只保留 10.11 / 11.4 / 11.8 三条 LTS 线，与安装侧一致。"
+        Echo_Red "数据库未做任何改动。"
+        exit 1
+        ;;
+    esac
+
+    if [[ "${DB_ARCH}" = "x86_64" || "${DB_ARCH}" = "aarch64" ]]; then
+        read -p "Using Generic Binaries [y/n]: " Bin
+        case "${Bin}" in
+        [nN][oO]|[nN])
+            echo "You will install mariadb-${mariadb_version} from Source."
             Bin="n"
-        fi
+            ;;
+        *)
+            echo "You will install mariadb-${mariadb_version} Using Generic Binaries."
+            Bin="y"
+            ;;
+        esac
     else
-        if [[ "${DB_ARCH}" = "x86_64" || "${DB_ARCH}" = "i686" ]]; then
-            read -p "Using Generic Binaries [y/n]: " Bin
-            case "${Bin}" in
-            [yY][eE][sS]|[yY])
-                echo "You will install mariadb-${mariadb_version} Using Generic Binaries."
-                Bin="y"
-                ;;
-            [nN][oO]|[nN])
-                echo "You will install mariadb-${mariadb_version} from Source."
-                Bin="n"
-                ;;
-            *)
-                echo "You will install mariadb-${mariadb_version} Using Generic Binaries."
-                Bin="y"
-                ;;
-            esac
-        else
-            Bin="n"
-        fi
+        Bin="n"
     fi
 
     #do you want to install the InnoDB Storage Engine?
@@ -129,97 +121,51 @@ Upgrade_MySQL2MariaDB()
     else
         MariaDB_FileName="mariadb-${mariadb_version}"
     fi
-    if [ -s ${MariaDB_FileName}.tar.gz ]; then
-        echo "${MariaDB_FileName}.tar.gz [found]"
+    # 不用 `if [ -s ]` 提前放行已存在的文件：Download_Verified 自己就处理
+    # "已存在则不重复下载"，且无论是否新下载都会核对 SHA256（MariaDB 走上游
+    # REST 接口逐文件公布的 sha256sum）。提前放行等于给缓存文件开免检通道。
+
+    Download_Verified mariadb "${mariadb_version}" \
+        "https://downloads.mariadb.org/rest-api/mariadb/${mariadb_version}/${MariaDB_FileName}.tar.gz" \
+        "${MariaDB_FileName}.tar.gz"
+    if [ $? -eq 0 ]; then
+        echo "Download ${MariaDB_FileName}.tar.gz successfully!"
     else
-        echo "Notice: ${MariaDB_FileName}.tar.gz not found!!!download now......"
-        if [ "${Bin}" = "y" ]; then
-            if [ "${country}" = "CN" ]; then
-                Download_Files https://mirrors.ustc.edu.cn/mariadb/mariadb-${mariadb_version}/bintar-linux-systemd-x86_64/${MariaDB_FileName}.tar.gz ${MariaDB_FileName}.tar.gz
-                if [ $? -eq 0 ]; then
-                    echo "Download ${MariaDB_FileName}.tar.gz successfully!"
-                else
-                    Download_Files https://archive.mariadb.org/mariadb-${mariadb_version}/bintar-linux-systemd-x86_64/${MariaDB_FileName}.tar.gz ${MariaDB_FileName}.tar.gz
-                    if [ $? -ne 0 ]; then
-                        echo "You enter MariaDB Version was:"${mariadb_version}
-                        Echo_Red "Error! You entered a wrong version number or can't download from mariadb mirror, please check!"
-                        sleep 5
-                        exit 1
-                    fi
-                fi
-            else
-                Download_Files https://downloads.mariadb.org/rest-api/mariadb/${mariadb_version}/${MariaDB_FileName}.tar.gz ${MariaDB_FileName}.tar.gz
-                if [ $? -eq 0 ]; then
-                    echo "Download ${MariaDB_FileName}.tar.gz successfully!"
-                else
-                    Download_Files https://archive.mariadb.org/mariadb-${mariadb_version}/bintar-linux-systemd-x86_64/${MariaDB_FileName}.tar.gz ${MariaDB_FileName}.tar.gz
-                    if [ $? -ne 0 ]; then
-                        echo "You enter MariaDB Version was:"${mariadb_version}
-                        Echo_Red "Error! You entered a wrong version number or can't download from mariadb mirror, please check!"
-                        sleep 5
-                        exit 1
-                    fi
-                fi
-            fi
-        else
-            if [ "${country}" = "CN" ]; then
-                Download_Files https://mirrors.ustc.edu.cn/mariadb/mariadb-${mariadb_version}/source/${MariaDB_FileName}.tar.gz ${MariaDB_FileName}.tar.gz
-                if [ $? -eq 0 ]; then
-                    echo "Download ${MariaDB_FileName}.tar.gz successfully!"
-                else
-                    Download_Files https://archive.mariadb.org/mariadb-${mariadb_version}/source/${MariaDB_FileName}.tar.gz ${MariaDB_FileName}.tar.gz
-                    if [ $? -ne 0 ]; then
-                        echo "You enter MariaDB Version was:"${mariadb_version}
-                        Echo_Red "Error! You entered a wrong version number or can't download from mariadb mirror, please check!"
-                        sleep 5
-                        exit 1
-                    fi
-                fi
-            else
-                Download_Files https://downloads.mariadb.org/rest-api/mariadb/${mariadb_version}/${MariaDB_FileName}.tar.gz ${MariaDB_FileName}.tar.gz
-                if [ $? -eq 0 ]; then
-                    echo "Download ${MariaDB_FileName}.tar.gz successfully!"
-                else
-                    Download_Files https://archive.mariadb.org/mariadb-${mariadb_version}/source/${MariaDB_FileName}.tar.gz ${MariaDB_FileName}.tar.gz
-                    if [ $? -ne 0 ]; then
-                        echo "You enter MariaDB Version was:"${mariadb_version}
-                        Echo_Red "Error! You entered a wrong version number or can't download from mariadb mirror, please check!"
-                        sleep 5
-                        exit 1
-                    fi
-                fi
-            fi
-        fi
+        echo "You enter MariaDB Version was:"${mariadb_version}
+        Echo_Red "Error! You entered a wrong version number or can't download from mariadb mirror, please check!"
+        sleep 5
+        exit 1
     fi
     echo "============================check files=================================="
 
     Backup_MySQL2
 
     if [ "${Bin}" = "y" ]; then
-        Echo_Blue "[+] Starting upgrade mariadb-${mariadb_version} Using Generic Binaries..."
+        Echo_Blue "[+] Starting upgrade mariadb-${Mariadb_Ver} Using Generic Binaries..."
         Tar_Cd ${MariaDB_FileName}.tar.gz
         mkdir /usr/local/mariadb
         mv ${MariaDB_FileName}/* /usr/local/mariadb/
     else
-        Echo_Blue "[+] Starting upgrade mariadb-${mariadb_version} Using Source code..."
+        Echo_Blue "[+] Starting upgrade ${Mariadb_Ver} Using Source code..."
         Tar_Cd mariadb-${mariadb_version}.tar.gz mariadb-${mariadb_version}
         MariaDB_WITHSSL
-        if echo "${mariadb_version}" | grep -Eqi '^10.[5-9]|1[01].';then
-            cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mariadb -DMYSQL_UNIX_ADDR=/tmp/mysql.sock -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_READLINE=1 -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 -DWITHOUT_TOKUDB=1
-        elif echo "${mariadb_version}" | grep -Eqi '^10.4.';then
-            patch -p1 < ${cur_dir}/src/patch/mariadb_10.4_install_db.patch
-            cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mariadb -DMYSQL_UNIX_ADDR=/tmp/mysql.sock -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_READLINE=1 -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 -DWITHOUT_TOKUDB=1
-        elif echo "${mariadb_version}" | grep -Eqi '^10.[123].';then
-            cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mariadb -DWITH_ARIA_STORAGE_ENGINE=1 -DWITH_XTRADB_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_READLINE=1 -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 -DWITHOUT_TOKUDB=1 ${MariaDBWITHSSL}
-        else
-            cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mariadb -DWITH_ARIA_STORAGE_ENGINE=1 -DWITH_XTRADB_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_READLINE=1 -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MariaDBWITHSSL}
+
+        cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mariadb -DMYSQL_UNIX_ADDR=/tmp/mysql.sock -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_READLINE=1 -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 -DWITHOUT_TOKUDB=1
+        if ! Make_Install; then
+            # 数据库升级尚未做自动回滚，
+            # 这里至少要把恢复所需的东西指清楚，而不是丢一句 exit 1。
+            Echo_Red "编译失败，升级中止。此时旧数据库已被停止并移走。"
+            Echo_Red "人工恢复："
+            Echo_Red "  1) mv /usr/local/oldmysql${Upgrade_Date} /usr/local/mysql"
+            Echo_Red "  2) \cp /usr/local/oldmysql${Upgrade_Date}/init.d.mysql.bak.${Upgrade_Date} /etc/init.d/mysql"
+            Echo_Red "  3) /etc/init.d/mysql start"
+            Echo_Red "数据备份在 /root/mysql_all_backup${Upgrade_Date}.sql"
+            exit 1
         fi
-        Make_Install
     fi
 
     groupadd mariadb
     useradd -s /sbin/nologin -M -g mariadb mariadb
-
     cat > /etc/my.cnf<<EOF
 [client]
 #password	= your_password
@@ -229,6 +175,10 @@ socket		= /tmp/mysql.sock
 [mysqld]
 port		= 3306
 socket		= /tmp/mysql.sock
+# 仅监听回环地址，与全新安装保持同一监听基线（见 include/mariadb.sh）。
+# 升级重写 /etc/my.cnf，此处不写则原有的本地监听限制会被静默撤销。
+# 需要远程连库时改为具体地址，并同步调整防火墙放行与账号 Host 授权范围。
+bind-address = 127.0.0.1
 user    = mariadb
 basedir = /usr/local/mariadb
 datadir = ${MariaDB_Data_Dir}
@@ -310,11 +260,22 @@ EOF
     /etc/init.d/mariadb start
 
     echo "Restore backup databases..."
-    /usr/local/mariadb/bin/mysql --defaults-file=~/.my.cnf < /root/mysql_all_backup${Upgrade_Date}.sql
-    [ $? -eq 0 ] && echo "MariaDB databases import successfully." || echo "MariaDB databases import failed,Please import databases manually!"
+    # 原实现在导入失败时只打印一行提示便继续往下跑，最终仍会输出
+    # 「upgrade completed」。跨引擎迁移一旦导入不完整，后续步骤都建立在
+    # 残缺数据之上，因此改为立即中止并保留 MySQL 原实例。
+    if ! /usr/local/mariadb/bin/mysql --defaults-file=~/.my.cnf < /root/mysql_all_backup${Upgrade_Date}.sql; then
+        Echo_Red "备份导入失败，数据未完整迁移到 MariaDB。"
+        DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/mysql2mariadb${Upgrade_Date}"
+        exit 1
+    fi
+    echo "MariaDB databases import successfully."
 
     echo "Repair databases..."
-    /usr/local/mariadb/bin/mysql_upgrade -u root -p${DB_Root_Password}
+    if ! /usr/local/mariadb/bin/mysql_upgrade --defaults-file=~/.my.cnf; then
+        Echo_Red "mysql_upgrade 执行失败。"
+        DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/mysql2mariadb${Upgrade_Date}"
+        exit 1
+    fi
 
     echo "Add to autostart..."
     StartUp mariadb
@@ -323,14 +284,22 @@ EOF
     TempMycnf_Clean
     cd ${cur_dir} && rm -rf ${cur_dir}/src/mariadb-${mariadb_version}
 
+    # 管理脚本里的数据库服务名收敛成了 DB_SERVICE 一行（见 conf/lnmp 的 Svc）。
+    # 老版本 /bin/lnmp 还是逐条 /etc/init.d/mysql 的写法，两种都替换一次。
+    sed -i 's#^DB_SERVICE=mysql$#DB_SERVICE=mariadb#' /bin/lnmp
     sed -i 's#/etc/init.d/mysql#/etc/init.d/mariadb#g' /bin/lnmp
 
     lnmp start
-    if [[ -s /usr/local/mariadb/bin/mysql && -s /usr/local/mariadb/bin/mysqld_safe && -s /etc/my.cnf ]]; then
+    # 成功判定不能只看文件是否存在：还须确认服务可连接、库列表无缺失、
+    # 本地监听基线未被重写的 /etc/my.cnf 撤销。
+    if [[ -s /usr/local/mariadb/bin/mysql && -s /usr/local/mariadb/bin/mysqld_safe && -s /etc/my.cnf ]] \
+        && Verify_DB_Upgraded /usr/local/mariadb/bin/mysql "${DB_List_Before}"; then
         Echo_Green "======== upgrade MySQL to MariaDB completed ======"
+        rm -f "${DB_List_Before}"
     else
         Echo_Red "======== upgrade MySQL to MariaDB failed ======"
         Echo_Red "upgrade MariaDB log: /root/upgrade_mysql2mariadb${Upgrade_Date}.log"
-        echo "You upload upgrade_mysql2mariadb${Upgrade_Date}.log to LNMP Forum for help."
+        DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/mysql2mariadb${Upgrade_Date}"
+        exit 1
     fi
 }

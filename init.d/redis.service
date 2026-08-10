@@ -4,9 +4,26 @@ After=network.target
 
 [Service]
 Type=forking
+
+
+
+
+
+
+User=redis
+Group=redis
+# pidfile 与 unit 里的 Type=forking 配套，需与 redis.conf 里的 pidfile 一致
+PIDFile=/usr/local/redis/var/redis.pid
 ExecStart=/usr/local/redis/bin/redis-server /usr/local/redis/etc/redis.conf
 ExecStop=/usr/local/redis/bin/redis-cli shutdown
 PrivateTmp=false
+
+# 基础加固：Redis 不需要这些能力
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateDevices=true
+ReadWritePaths=/usr/local/redis/var
 
 [Install]
 WantedBy=multi-user.target

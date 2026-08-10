@@ -7,8 +7,11 @@ if [ $(id -u) != "0" ]; then
     exit 1
 fi
 
-. ../lnmp.conf
-. ../include/main.sh
+cur_dir=$(cd "$(dirname "$0")/.." && pwd)
+
+. "${cur_dir}/lnmp.conf"
+. "${cur_dir}/include/main.sh"
+. "${cur_dir}/include/verify.sh"
 Get_Dist_Name
 Get_Dist_Version
 
@@ -23,18 +26,17 @@ if [ "${PM}" = "yum" ]; then
         pip2 install ipaddr
     fi
     service rsyslog restart
-    cat /dev/null > /var/log/secure
 elif [ "${PM}" = "apt" ]; then
     apt-get update
     for packages in python rsyslog python-ipaddr;
     do apt-get install $packages -y; done
     /etc/init.d/rsyslog restart
-    cat /dev/null > /var/log/auth.log
 fi
 
 echo "Downloading..."
-cd ../src
-Download_Files https://fossies.org/linux/privat/denyhosts-3.1.tar.gz denyhosts-3.1.tar.gz
+cd "${cur_dir}/src"
+Download_Files https://github.com/denyhosts/denyhosts/archive/refs/tags/v3.1.tar.gz denyhosts-3.1.tar.gz
+Require_File "denyhosts-3.1.tar.gz" "DenyHosts"
 Tar_Cd denyhosts-3.1.tar.gz denyhosts-3.1
 echo "Installing..."
 python setup.py install
@@ -58,7 +60,6 @@ elif [ "${PM}" = "apt" ]; then
     \cp /usr/local/bin/daemon-control /etc/init.d/denyhosts
 
     ln -sf /usr/local/bin/denyhosts.py /usr/sbin/denyhosts
-
     cat >lsb.ini<<EOF
 ### BEGIN INIT INFO
 # Provides:          denyhosts

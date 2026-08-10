@@ -49,7 +49,7 @@ CentOS_RemoveAMP()
     Echo_Blue "[-] Yum remove packages..."
     rpm -qa|grep httpd
     rpm -e httpd httpd-tools --nodeps
-    if [[ "${DBSelect}" != "0" ]]; then
+    if [ "${DB_Kind}" != "none" ]; then
         yum -y remove mysql-server mysql mysql-libs mariadb-server mariadb mariadb-libs
         rpm -qa|grep mysql
         if [ $? -ne 0 ]; then
@@ -67,43 +67,96 @@ CentOS_RemoveAMP()
     yum clean all
 }
 
+# ---------------------------------------------------------------------------
+# Deb_Purge_Installed <包名...> — 只 purge 确实装着的包
+#
+# 原实现无条件对一长串包名执行 apt-get purge 与 dpkg -P，其中 apache2.2-*、
+# php5*、mysql-*-5.5、libmysqlclient15* 在 Debian 10+ / Ubuntu 18.04+ 上
+# 根本不存在（系统下限见 Check_Supported_Distro）。全新系统的清理阶段因此
+# 刷出十几条"包未安装/无此包"的报错，真出问题的那条反而看不出来。
+# ---------------------------------------------------------------------------
+Deb_Purge_Installed()
+{
+    local p installed=''
+
+    for p in "$@"; do
+        if dpkg-query -W -f='${Status}' "${p}" 2>/dev/null | grep -q 'ok installed'; then
+            installed="${installed} ${p}"
+        fi
+    done
+
+    if [ -z "${installed}" ]; then
+        echo "无需卸载：${*} 均未安装。"
+        return 0
+    fi
+    echo "卸载已安装的旧包：${installed}"
+    apt-get purge -y ${installed}
+}
+
 Deb_RemoveAMP()
 {
     Echo_Blue "[-] apt-get remove packages..."
     apt-get update -y
     [[ $? -ne 0 ]] && apt-get update --allow-releaseinfo-change -y
-    for removepackages in apache2 apache2-doc apache2-utils apache2.2-common apache2.2-bin apache2-mpm-prefork apache2-doc apache2-mpm-worker php5 php5-common php5-cgi php5-cli php5-mysql php5-curl php5-gd;
-    do apt-get purge -y $removepackages; done
-    if [[ "${DBSelect}" != "0" ]]; then
-        if echo "${Ubuntu_Version}" | grep -Eqi "^2[0-7]\."; then
-            dpkg -l |grep mysql
-            dpkg --force-all -P mysql-server
-            dpkg --force-all -P mariadb-client mariadb-server mariadb-common libmariadbd-dev
-            [[ -d "/etc/mysql" ]] && rm -rf /etc/mysql
-            for removepackages in mysql-server mariadb-server;
-            do apt-get purge -y $removepackages; done
-        else
-            dpkg -l |grep mysql
-            dpkg --force-all -P mysql-server mysql-common libmysqlclient15off libmysqlclient15-dev libmysqlclient18 libmysqlclient18-dev libmysqlclient20 libmysqlclient-dev libmysqlclient21
-            dpkg --force-all -P mariadb-client mariadb-server mariadb-common libmariadbd-dev
-            for removepackages in mysql-client mysql-server mysql-common mysql-server-core-5.5 mysql-client-5.5 mariadb-client mariadb-server mariadb-common;
-            do apt-get purge -y $removepackages; done
-        fi
+
+    # 只列受支持发行版里可能真实存在的包名。Apache 2.2（2017 EOL）与 PHP 5
+    # 的包名已从这些发行版消失，不再尝试。
+    pkill -x apache2 >/dev/null 2>&1
+    Deb_Purge_Installed apache2 apache2-bin apache2-data apache2-utils apache2-doc \
+                        libapache2-mod-php
+
+    if [ "${DB_Kind}" != "none" ]; then
+        Deb_Purge_Installed mysql-server mysql-client mysql-common \
+                            mariadb-server mariadb-client mariadb-common libmariadbd-dev
+        # 发行版包的配置目录留着会被源码版 MySQL 的 my.cnf 搜索路径命中。
+        # mysql.sh / mariadb.sh 会把它改名备份，这里不删。
+        [ -d /etc/mysql ] && echo "注意：/etc/mysql 仍存在，安装数据库时会自动改名备份。"
     fi
-    killall apache2
-    dpkg -l |grep apache
-    dpkg -P apache2 apache2-doc apache2-mpm-prefork apache2-utils apache2.2-common
-    dpkg -l |grep php
-    dpkg -P php5 php5-common php5-cli php5-cgi php5-mysql php5-curl php5-gd
+
     apt-get autoremove -y && apt-get clean
 }
 
+# ---------------------------------------------------------------------------
+# Setup_Selinux
+# 默认保留 SELinux 状态，并为安装目录设置必要的安全上下文。
+# 仅当 Disable_Selinux='y' 时关闭 SELinux。
+# 源码安装路径可能缺少发行版预置策略；相关拒绝记录位于 /var/log/audit/audit.log。
+# ---------------------------------------------------------------------------
+Setup_Selinux()
+{
+    [ -s /etc/selinux/config ] || return 0
+
+    if [ "${Disable_Selinux}" = "y" ]; then
+        Echo_Yellow "Disable_Selinux='y'：按配置关闭 SELinux。"
+        setenforce 0 2>/dev/null
+        sed -i 's/^SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
+        return 0
+    fi
+
+    command -v getenforce >/dev/null 2>&1 || return 0
+    [ "$(getenforce 2>/dev/null)" = "Disabled" ] && return 0
+
+    echo "保留 SELinux（Disable_Selinux='n'），标注本包目录的上下文..."
+    if command -v semanage >/dev/null 2>&1; then
+        semanage fcontext -a -t httpd_sys_rw_content_t "${Default_Website_Dir}(/.*)?" 2>/dev/null
+        semanage fcontext -a -t httpd_log_t '/home/wwwlogs(/.*)?' 2>/dev/null
+    fi
+    if command -v restorecon >/dev/null 2>&1; then
+        restorecon -R "${Default_Website_Dir}" /home/wwwlogs 2>/dev/null
+    fi
+    if command -v setsebool >/dev/null 2>&1; then
+        # Web 进程要连本机数据库、要发邮件
+        setsebool -P httpd_can_network_connect_db 1 2>/dev/null
+        setsebool -P httpd_can_network_connect 1 2>/dev/null
+    fi
+    Echo_Yellow "若安装/启动出现权限问题，请查 /var/log/audit/audit.log 确认是否 SELinux 拒绝，"
+    Echo_Yellow "必要时在 lnmp.conf 设 Disable_Selinux='y' 后重试。"
+}
+
+# 兼容旧调用点（install.sh / only.sh）
 Disable_Selinux()
 {
-    if [ -s /etc/selinux/config ]; then
-        setenforce 0
-        sed -i 's/^SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
-    fi
+    Setup_Selinux
 }
 
 Xen_Hwcap_Setting()
@@ -121,20 +174,57 @@ Check_Hosts()
         echo "127.0.0.1 localhost.localdomain localhost" >> /etc/hosts
     fi
     if [ "${CheckMirror}" != "n" ]; then
-        pingresult=`ping -c1 cloudflare.com 2>&1`
-        echo "${pingresult}"
-        if echo "${pingresult}" | grep -q "unknown host"; then
-            echo "DNS...fail"
-            echo "Writing nameserver to /etc/resolv.conf ..."
-            if [ "${country}" = "CN" ]; then
-                echo -e "nameserver 208.67.220.220\nnameserver 114.114.114.114" > /etc/resolv.conf
-            else
-                echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8" > /etc/resolv.conf
-            fi
-        else
+        # 仅检测实际下载域名；探测失败时保留系统 DNS 配置。
+        if ping -c1 -W3 www.php.net >/dev/null 2>&1; then
             echo "DNS...ok"
+        else
+            echo "DNS...fail"
+            Echo_Red "Cannot resolve www.php.net."
+            Echo_Red "Please check /etc/resolv.conf and network connectivity before continuing."
+            Echo_Red "(This script no longer overwrites /etc/resolv.conf automatically.)"
         fi
     fi
+}
+
+# CentOS 官方签名公钥指纹。EL8/9/10 仓库使用随包公钥，并在安装前核对指纹。
+#
+# 值来自 https://www.centos.org/keys/ 公布的 CentOS Official Signing Key
+# （rsa4096，2019-05-03 创建，security@centos.org）。
+CentOS_GPG_Key_FP='99DB70FAE1D7CE227FB6488205B555B38483C65D'
+
+# ---------------------------------------------------------------------------
+# Install_CentOS_GPG_Key：安装并核验随包分发的 CentOS 官方公钥。
+# 公钥与软件包必须来自独立的信任路径，避免仓库内容和验证密钥同时被替换。
+# ---------------------------------------------------------------------------
+Install_CentOS_GPG_Key()
+{
+    local src="${cur_dir}/conf/RPM-GPG-KEY-CentOS-Official"
+    local dst='/etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-Official'
+    local fp
+
+    if [ ! -s "${src}" ]; then
+        Echo_Red "FATAL: 缺少 ${src}，无法配置带签名校验的软件源。"
+        exit 1
+    fi
+
+    # gpg 不一定装了（最小化安装的 EL 可能没有），有就核指纹，没有就明确降级提示。
+    if command -v gpg >/dev/null 2>&1; then
+        fp=$(gpg --show-keys --with-colons "${src}" 2>/dev/null | awk -F: '$1=="fpr"{print $10; exit}')
+        if [ "${fp}" != "${CentOS_GPG_Key_FP}" ]; then
+            Echo_Red "FATAL: conf/RPM-GPG-KEY-CentOS-Official 指纹不符，拒绝导入。"
+            Echo_Red "  expected: ${CentOS_GPG_Key_FP}"
+            Echo_Red "  actual:   ${fp:-<无法解析>}"
+            exit 1
+        fi
+        echo "CentOS GPG key fingerprint ok: ${fp}"
+    else
+        Echo_Yellow "未找到 gpg 命令，跳过公钥指纹核对（公钥仍取自本包，不联网获取）。"
+    fi
+
+    mkdir -p /etc/pki/rpm-gpg
+    \cp "${src}" "${dst}"
+    chmod 644 "${dst}"
+    rpm --import "${dst}"
 }
 
 RHEL_Modify_Source()
@@ -142,39 +232,44 @@ RHEL_Modify_Source()
     Get_RHEL_Version
     if [ "${RHELRepo}" = "local" ]; then
         echo "DO NOT change RHEL repository, use the repository you set."
-    else
-        echo "RHEL ${RHEL_Ver} will use aliyun centos repository..."
-        if [ ! -s "/etc/yum.repos.d/Centos-${RHEL_Ver}.repo" ]; then
-            if command -v curl >/dev/null 2>&1; then
-                curl http://mirrors.aliyun.com/repo/Centos-${RHEL_Ver}.repo -o /etc/yum.repos.d/Centos-${RHEL_Ver}.repo
-            else
-                wget --prefer-family=IPv4 http://mirrors.aliyun.com/repo/Centos-${RHEL_Ver}.repo -O /etc/yum.repos.d/Centos-${RHEL_Ver}.repo
-            fi
-        fi
-        if echo "${RHEL_Version}" | grep -Eqi "^6"; then
-            sed -i "s#centos/\$releasever#centos-vault/\$releasever#g" /etc/yum.repos.d/Centos-${RHEL_Ver}.repo
-            sed -i "s/\$releasever/${RHEL_Version}/g" /etc/yum.repos.d/Centos-${RHEL_Ver}.repo
-        elif echo "${RHEL_Version}" | grep -Eqi "^7"; then
-            sed -i "s/\$releasever/7/g" /etc/yum.repos.d/Centos-${RHEL_Ver}.repo
-        elif echo "${RHEL_Version}" | grep -Eqi "^8"; then
-            sed -i "s#centos/\$releasever#centos-vault/8.5.2111#g" /etc/yum.repos.d/Centos-${RHEL_Ver}.repo
-        elif echo "${RHEL_Version}" | grep -Eqi "^9"; then
-            [[ -s /etc/yum.repos.d/Centos-9.repo ]] && rm -f /etc/yum.repos.d/Centos-9.repo
-            \cp ${cur_dir}/conf/rhel-9.repo /etc/yum.repos.d/Centos-9.repo
-        fi
-        yum clean all
-        yum makecache
+        sed -i "s/^enabled[ ]*=[ ]*1/enabled=0/" /etc/yum/pluginconf.d/subscription-manager.conf 2>/dev/null
+        return 0
     fi
-    sed -i "s/^enabled[ ]*=[ ]*1/enabled=0/" /etc/yum/pluginconf.d/subscription-manager.conf
+
+    # 使用随包仓库配置、官方 HTTPS 源、gpgcheck 和本地固定公钥。
+    # 未提供模板的发行版版本不自动生成仓库配置。
+    Install_CentOS_GPG_Key
+
+    case "${RHEL_Version}" in
+    8*)
+        echo "RHEL/CentOS 8 已 EOL，使用官方归档源 vault.centos.org。"
+        \cp ${cur_dir}/conf/CentOS8-vault.repo /etc/yum.repos.d/CentOS8-vault.repo
+        ;;
+    9*)
+        [ -s /etc/yum.repos.d/Centos-9.repo ] && rm -f /etc/yum.repos.d/Centos-9.repo
+        \cp ${cur_dir}/conf/rhel-9.repo /etc/yum.repos.d/Centos-9.repo
+        ;;
+    10*)
+        [ -s /etc/yum.repos.d/Centos-10.repo ] && rm -f /etc/yum.repos.d/Centos-10.repo
+        \cp ${cur_dir}/conf/rhel-10.repo /etc/yum.repos.d/Centos-10.repo
+        ;;
+    *)
+        Echo_Red "不支持在 RHEL ${RHEL_Version} 上自动配置软件源。"
+        Echo_Red "本包只保留 EL8 / EL9 / EL10 的官方源配置（见 conf/*.repo）。"
+        Echo_Red "如果这台机器已有可用的软件源，请设 RHELRepo='local' 后重试。"
+        exit 1
+        ;;
+    esac
+
+    yum clean all
+    yum makecache
+    sed -i "s/^enabled[ ]*=[ ]*1/enabled=0/" /etc/yum/pluginconf.d/subscription-manager.conf 2>/dev/null
 }
 
 Ubuntu_Modify_Source()
 {
-    if [ "${country}" = "CN" ]; then
-        OldReleasesURL='http://mirrors.ustc.edu.cn/ubuntu-old-releases/'
-    else
-        OldReleasesURL='http://old-releases.ubuntu.com/ubuntu/'
-    fi
+
+    OldReleasesURL='https://old-releases.ubuntu.com/ubuntu/'
     CodeName=''
     if grep -Eqi "10.10" /etc/*-release || echo "${Ubuntu_Version}" | grep -Eqi '^10.10'; then
         CodeName='maverick'
@@ -230,6 +325,10 @@ Ubuntu_Modify_Source()
         CodeName='lunar'
     elif grep -Eqi "23.10" /etc/*-release || echo "${Ubuntu_Version}" | grep -Eqi '^23.10'; then
         Ubuntu_Deadline mantic
+    elif grep -Eqi "24.10" /etc/*-release || echo "${Ubuntu_Version}" | grep -Eqi '^24.10'; then
+        Ubuntu_Deadline oracular
+    elif grep -Eqi "25.04" /etc/*-release || echo "${Ubuntu_Version}" | grep -Eqi '^25.04'; then
+        Ubuntu_Deadline plucky
     fi
     if [ "${CodeName}" != "" ]; then
         \cp /etc/apt/sources.list /etc/apt/sources.list.$(date +"%Y%m%d")
@@ -263,6 +362,8 @@ Ubuntu_Deadline()
     xenial_deadline=`date -d "2026-4-30 00:00:00" +%s`
     bionic_deadline=`date -d "2028-7-30 00:00:00" +%s`
     mantic_deadline=`date -d "2024-7-30 00:00:00" +%s`
+    oracular_deadline=`date -d "2025-7-10 00:00:00" +%s`
+    plucky_deadline=`date -d "2026-1-15 00:00:00" +%s`
     cur_time=`date  +%s`
     case "$1" in
         trusty)
@@ -289,26 +390,29 @@ Ubuntu_Deadline()
                 Check_Old_Releases_URL mantic
             fi
             ;;
+        oracular)
+            if [ ${cur_time} -gt ${oracular_deadline} ]; then
+                echo "${cur_time} > ${oracular_deadline}"
+                Check_Old_Releases_URL oracular
+            fi
+            ;;
+        plucky)
+            if [ ${cur_time} -gt ${plucky_deadline} ]; then
+                echo "${cur_time} > ${plucky_deadline}"
+                Check_Old_Releases_URL plucky
+            fi
+            ;;
     esac
-}
-
-CentOS6_Modify_Source()
-{
-    if echo "${CentOS_Version}" | grep -Eqi "^6"; then
-        Echo_Yellow "CentOS 6 is now end of life, use vault repository."
-        mkdir /etc/yum.repos.d/backup
-        mv /etc/yum.repos.d/*.repo /etc/yum.repos.d/backup/
-        \cp ${cur_dir}/conf/CentOS6-Base-Vault.repo /etc/yum.repos.d/CentOS-Base.repo
-    fi
 }
 
 CentOS8_Modify_Source()
 {
     if echo "${CentOS_Version}" | grep -Eqi "^8" && [ "${isCentosStream}" != "y" ]; then
-        Echo_Yellow "CentOS 8 is now end of life, use vault repository."
+        Echo_Yellow "CentOS 8 is now end of life, use official vault repository."
         if [ ! -s /etc/yum.repos.d/CentOS8-vault.repo ]; then
-            mkdir /etc/yum.repos.d/backup
-            mv /etc/yum.repos.d/*.repo /etc/yum.repos.d/backup/
+            Install_CentOS_GPG_Key
+            mkdir -p /etc/yum.repos.d/backup
+            mv /etc/yum.repos.d/*.repo /etc/yum.repos.d/backup/ 2>/dev/null
             \cp ${cur_dir}/conf/CentOS8-vault.repo /etc/yum.repos.d/CentOS8-vault.repo
         fi
     fi
@@ -320,8 +424,8 @@ Modify_Source()
         if subscription-manager status; then
             Echo_Blue "RHEL subscription exists on the system, skip setting up third-party sources."
             Get_RHEL_Version
-            if echo "${RHEL_Version}" | grep -Eqi "^[89]"; then
-                subscription-manager repos --enable codeready-builder-for-rhel-${RHEL_Version}-${DB_ARCH}-rpms
+            if echo "${RHEL_Version}" | grep -Eqi "^(8|9|10)"; then
+                subscription-manager repos --enable codeready-builder-for-rhel-${RHEL_Ver}-${DB_ARCH}-rpms
             fi
         else
             RHEL_Modify_Source
@@ -329,9 +433,166 @@ Modify_Source()
     elif [ "${DISTRO}" = "Ubuntu" ]; then
         Ubuntu_Modify_Source
     elif [ "${DISTRO}" = "CentOS" ]; then
-        CentOS6_Modify_Source
         CentOS8_Modify_Source
     fi
+}
+
+# ---------------------------------------------------------------------------
+# Check_Host_Repo_Trust：只读检查宿主机软件源配置。
+# 编译依赖由宿主机软件源提供，不受 src/checksums.sha256 覆盖。
+# 检查只输出警告，不修改配置或阻断安装，以兼容内网镜像和离线源。
+# 关闭签名校验或 TLS 记为问题；启用签名校验的 HTTP 源仅作提示。
+# ---------------------------------------------------------------------------
+Check_Host_Repo_Trust()
+{
+    local problems=0 notes=0 f line _repo_tmp _sec _key _ln _raw
+
+    Echo_Blue "[+] 检查宿主机软件源的信任配置（只读，不会修改任何东西）..."
+
+    # 使用临时文件读入结果，避免管道子 shell 丢失外层计数器更新。
+    _repo_tmp=$(mktemp) || return 0
+    trap 'rm -f "${_repo_tmp}"' RETURN 2>/dev/null
+
+    if [ "${PM}" = "apt" ]; then
+        # 输出格式为“文件:行号:原文”；grep 模式同时排除注释行。
+
+        # 1) 安全问题：trusted=yes、allow-insecure 和 Trusted: yes 会关闭签名校验
+        for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list \
+                 /etc/apt/sources.list.d/*.sources; do
+            [ -f "${f}" ] && [ -s "${f}" ] || continue
+            grep -nEi '^[[:space:]]*(deb|deb-src|URIs:|Trusted:)' "${f}" 2>/dev/null |
+            grep -Ei 'trusted[[:space:]]*=[[:space:]]*yes|allow-insecure[[:space:]]*=[[:space:]]*yes|Trusted:[[:space:]]*yes' > "${_repo_tmp}"
+            while IFS= read -r line; do
+                [ -n "${line}" ] || continue
+                [ ${problems} -eq 0 ] && Echo_Red "!! 关闭了签名校验的 APT 源（能改中间路径的人就能往里塞包）："
+                Echo_Red "   ${f}:${line}"
+                problems=$((problems+1))
+            done < "${_repo_tmp}"
+        done
+
+        # 2) 真问题：apt.conf 里全局允许未签名
+        for f in /etc/apt/apt.conf /etc/apt/apt.conf.d/*; do
+            [ -f "${f}" ] && [ -s "${f}" ] || continue
+            grep -nEi 'AllowUnauthenticated[^;]*"?true|AllowInsecureRepositories[^;]*"?true' "${f}" 2>/dev/null > "${_repo_tmp}"
+            while IFS= read -r line; do
+                [ -n "${line}" ] || continue
+                Echo_Red "!! APT 全局允许未签名包："
+                Echo_Red "   ${f}:${line}"
+                problems=$((problems+1))
+            done < "${_repo_tmp}"
+        done
+
+        # 3) 仅提示：启用签名校验的 HTTP 源不计入问题数。
+        # 包签名仍可验证完整性，但传输内容不具备保密性。
+        for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list \
+                 /etc/apt/sources.list.d/*.sources; do
+            [ -f "${f}" ] && [ -s "${f}" ] || continue
+            grep -nEi '^[[:space:]]*(deb|deb-src)[[:space:]].*http://|^[[:space:]]*URIs:.*http://' "${f}" 2>/dev/null > "${_repo_tmp}"
+            while IFS= read -r line; do
+                [ -n "${line}" ] || continue
+                if [ ${notes} -eq 0 ]; then
+                    Echo_Yellow "   提示：以下 APT 源走明文 http://"
+                    Echo_Yellow "   （APT 的 Release 有 GPG 签名，这不等于能被塞包，"
+                    Echo_Yellow "     但会泄露你在装什么，也更晚才发现被动手脚）："
+                fi
+                Echo_Yellow "     ${f}:${line}"
+                notes=$((notes+1))
+            done < "${_repo_tmp}"
+        done
+
+        # 4) 仅提示：第三方源目录里的文件（事实陈述，不是指控）
+        for f in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            [ -f "${f}" ] && [ -s "${f}" ] || continue
+            Echo_Yellow "   提示：第三方源 ${f} 也会用于安装编译依赖"
+        done
+
+    elif [ "${PM}" = "yum" ]; then
+        # 1) 检查已启用 repo 的 gpgcheck 和 sslverify。
+        # 按 section 解析，避免未启用的备用仓库产生误报。
+        for f in /etc/yum.repos.d/*.repo; do
+            [ -s "${f}" ] || continue
+            for line in $(awk -F= '
+                function flush(){
+                    if(sec!="" && en==1){
+                        if(gc=="0") print sec"|gpgcheck|"gcn"|"gcl
+                        if(sv=="0") print sec"|sslverify|"svn"|"svl
+                    }
+                }
+                /^[[:space:]]*[#;]/ {next}
+                /^[[:space:]]*\[/ {flush(); sec=$0; gsub(/[][[:space:]]/,"",sec)
+                                   en=1; gc=""; sv=""; gcn=""; svn=""; gcl=""; svl=""; next}
+                {k=$1; v=$2; gsub(/[[:space:]]/,"",k); gsub(/[[:space:]]/,"",v)
+                 if(k=="enabled")   en=(v=="0"?0:1)
+                 if(k=="gpgcheck")  {gc=v; gcn=NR; gcl=$0; gsub(/ /,"\002",gcl)}
+                 if(k=="sslverify") {sv=v; svn=NR; svl=$0; gsub(/ /,"\002",svl)}}
+                END{flush()}
+            ' "${f}"); do
+                # 字段：section|键|行号|原文（原文里的空格在 awk 里换成了 \002，
+                # 否则 for-in-$() 的分词会把一行拆散）
+                _sec=$(echo "${line}" | cut -d'|' -f1)
+                _key=$(echo "${line}" | cut -d'|' -f2)
+                _ln=$(echo  "${line}" | cut -d'|' -f3)
+                _raw=$(echo "${line}" | cut -d'|' -f4 | tr '\002' ' ')
+                case "${_key}" in
+                gpgcheck)
+                    Echo_Red "!! [${_sec}] 已启用但关闭了包签名校验："
+                    Echo_Red "   ${f}:${_ln}:${_raw}"
+                    problems=$((problems+1)) ;;
+                sslverify)
+                    Echo_Red "!! [${_sec}] 已启用但关闭了 TLS 证书校验："
+                    Echo_Red "   ${f}:${_ln}:${_raw}"
+                    problems=$((problems+1)) ;;
+                esac
+            done
+        done
+
+        # 2) 真问题：全局配置里关掉 gpgcheck
+        for f in /etc/yum.conf /etc/dnf/dnf.conf; do
+            [ -f "${f}" ] && [ -s "${f}" ] || continue
+            grep -nE '^[[:space:]]*gpgcheck[[:space:]]*=[[:space:]]*0' "${f}" 2>/dev/null > "${_repo_tmp}"
+            while IFS= read -r line; do
+                [ -n "${line}" ] || continue
+                Echo_Red "!! 全局关闭了 GPG 校验："
+                Echo_Red "   ${f}:${line}"
+                problems=$((problems+1))
+            done < "${_repo_tmp}"
+        done
+
+        # 3) 仅提示：明文 http:// 的 baseurl / mirrorlist
+        # 同 APT：yum 在 gpgcheck=1 时包签名仍然有效，http 不等于能被塞包。
+        for f in /etc/yum.repos.d/*.repo; do
+            [ -f "${f}" ] && [ -s "${f}" ] || continue
+            grep -nEi '^[[:space:]]*(baseurl|mirrorlist|metalink)[[:space:]]*=[[:space:]]*http://' "${f}" 2>/dev/null > "${_repo_tmp}"
+            while IFS= read -r line; do
+                [ -n "${line}" ] || continue
+                if [ ${notes} -eq 0 ]; then
+                    Echo_Yellow "   提示：以下 yum/dnf 源走明文 http://"
+                    Echo_Yellow "   （gpgcheck=1 时包签名仍有效，这不等于能被塞包）："
+                fi
+                Echo_Yellow "     ${f}:${line}"
+                notes=$((notes+1))
+            done < "${_repo_tmp}"
+        done
+    fi
+
+    if [ ${problems} -gt 0 ]; then
+        echo
+        Echo_Red "########################################################################"
+        Echo_Red "!! 上面 ${problems} 处配置意味着：本机安装编译依赖时**不验证包的来源**。"
+        Echo_Red "!! 本包对自己下载的组件做了强制 SHA256/PGP 校验，但编译依赖走的是"
+        Echo_Red "!! 宿主机的源 —— 那一段的可信度完全取决于上面这些配置。"
+        Echo_Red "!!"
+        Echo_Red "!! 如果这些是你自己的内网镜像/私有源，属正常配置，可以忽略本提示。"
+        Echo_Red "!! 如果不是你配的，请先查清楚再继续安装。"
+        Echo_Red "########################################################################"
+        Echo_Yellow "（这是提示，不是阻断。10 秒后继续。）"
+        sleep 10
+    else
+        Echo_Green "   未发现关闭签名或 TLS 校验的软件源配置。"
+    fi
+    # trap ... RETURN 在部分 sh 下不生效，这里显式再删一次
+    rm -f "${_repo_tmp}"
+    return 0
 }
 
 Check_PowerTools()
@@ -356,7 +617,7 @@ CentOS_Dependent()
     fi
 
     Echo_Blue "[+] Yum installing dependent packages..."
-    for packages in make cmake gcc gcc-c++ gcc-g77 kernel-headers glibc-headers flex bison file libtool libtool-libs autoconf patch wget crontabs libjpeg libjpeg-devel libjpeg-turbo-devel libpng libpng-devel libpng10 libpng10-devel gd gd-devel libxml2 libxml2-devel zlib zlib-devel glib2 glib2-devel unzip tar bzip2 bzip2-devel libzip-devel libevent libevent-devel ncurses ncurses-devel curl curl-devel libcurl libcurl-devel e2fsprogs e2fsprogs-devel krb5 krb5-devel libidn libidn-devel openssl openssl-devel pcre-devel gettext gettext-devel ncurses-devel gmp-devel pspell-devel unzip libcap diffutils ca-certificates net-tools libc-client-devel psmisc libXpm-devel git-core c-ares-devel libicu-devel libxslt libxslt-devel xz expat-devel libaio-devel rpcgen libtirpc-devel perl cyrus-sasl-devel sqlite-devel oniguruma-devel lsof re2c pkg-config libarchive hostname ncurses-libs numactl-devel libxcrypt libwebp-devel gnutls-devel initscripts iproute libxcrypt-compat git;
+    for packages in make cmake gcc gcc-c++ gcc-g77 kernel-headers glibc-headers flex bison file libtool libtool-libs autoconf patch wget crontabs libjpeg libjpeg-devel libjpeg-turbo-devel libpng libpng-devel libpng10 libpng10-devel gd gd-devel libxml2 libxml2-devel zlib zlib-devel glib2 glib2-devel unzip tar bzip2 bzip2-devel libzip-devel libevent libevent-devel ncurses ncurses-devel curl curl-devel libcurl libcurl-devel e2fsprogs e2fsprogs-devel krb5 krb5-devel libidn libidn-devel openssl openssl-devel pcre-devel gettext gettext-devel ncurses-devel gmp-devel pspell-devel unzip libcap diffutils ca-certificates net-tools libc-client-devel psmisc libXpm-devel git-core c-ares-devel libicu-devel libxslt libxslt-devel xz expat-devel libaio-devel rpcgen libtirpc-devel perl cyrus-sasl-devel sqlite-devel oniguruma-devel lsof re2c pkg-config libarchive hostname ncurses-libs numactl-devel libxcrypt libwebp-devel gnutls-devel brotli-devel initscripts iproute libxcrypt-compat nftables gnupg2;
     do yum -y install $packages; done
 
     yum -y update nss
@@ -373,27 +634,29 @@ CentOS_Dependent()
         dnf install gcc-toolset-10 -y
     fi
 
-    if echo "${CentOS_Version}" | grep -Eqi "^9"; then
+    if echo "${CentOS_Version}" | grep -Eqi "^(9|10)"; then
         crb_source_check=$(yum repolist all | grep -E '^crb' | awk '{print $1}')
 
         if [[ ! -n "$crb_source_check" ]]; then
-            echo "Add crb source..."
+            # 使用官方 mirror.stream.centos.org 和本地固定公钥。
+            echo "Add CRB source (official mirror.stream.centos.org)..."
+            Install_CentOS_GPG_Key
+            local crb_stream
+            crb_stream=$(echo "${CentOS_Version}" | cut -d. -f1)
             cat > /etc/yum.repos.d/centos-crb.repo << EOF
-[CRB]
-name=CentOS-\$releasever - CRB - mirrors.ustc.edu.cn
-#failovermethod=priority
-baseurl=https://mirrors.ustc.edu.cn/centos-stream/\$stream/CRB/\$basearch/os/
+[crb]
+name=CentOS Stream ${crb_stream} - CRB
+baseurl=https://mirror.stream.centos.org/${crb_stream}-stream/CRB/\$basearch/os/
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-Official
 gpgcheck=1
-gpgkey=https://mirrors.ustc.edu.cn/centos-stream/RPM-GPG-KEY-CentOS-Official
+enabled=1
 EOF
         fi
     fi
-    if echo "${CentOS_Version}" | grep -Eqi "^9" || echo "${Alma_Version}" | grep -Eqi "^9" || echo "${Rocky_Version}" | grep -Eqi "^9"; then
+    if echo "${CentOS_Version}" | grep -Eqi "^(9|10)" || echo "${RHEL_Version}" | grep -Eqi "^10" || echo "${Alma_Version}" | grep -Eqi "^(9|10)" || echo "${Rocky_Version}" | grep -Eqi "^(9|10)"; then
         for cs9packages in oniguruma-devel libzip-devel libtirpc-devel libxcrypt-compat;
         do dnf --enablerepo=crb install ${cs9packages} -y; done
-        if [[ "${Bin}" != "y" && "${DBSelect}" = "5" ]]; then
-            dnf install gcc-toolset-12-gcc gcc-toolset-12-gcc-c++ gcc-toolset-12-binutils gcc-toolset-12-annobin-annocheck gcc-toolset-12-annobin-plugin-gcc -y
-        fi
+        DB_Toolchain_EL9
     fi
 
     if [ "${DISTRO}" = "Oracle" ] && echo "${Oracle_Version}" | grep -Eqi "^8"; then
@@ -406,9 +669,7 @@ EOF
     if [ "${DISTRO}" = "Oracle" ] && echo "${Oracle_Version}" | grep -Eqi "^9"; then
         Check_Codeready
         dnf --enablerepo=${repo_id} install libtirpc-devel -y
-        if [[ "${Bin}" != "y" && "${DBSelect}" = "5" ]]; then
-            dnf install gcc-toolset-12-gcc gcc-toolset-12-gcc-c++ gcc-toolset-12-binutils gcc-toolset-12-annobin-annocheck gcc-toolset-12-annobin-plugin-gcc -y
-        fi
+        DB_Toolchain_EL9
     fi
 
     if echo "${CentOS_Version}" | grep -Eqi "^7" || echo "${RHEL_Version}" | grep -Eqi "^7"  || echo "${Aliyun_Version}" | grep -Eqi "^2" || echo "${Alibaba_Version}" | grep -Eqi "^2" || echo "${Oracle_Version}" | grep -Eqi "^7" || echo "${Anolis_Version}" | grep -Eqi "^7"; then
@@ -417,21 +678,12 @@ EOF
             yum -y --enablerepo=*EPEL* install oniguruma-devel
         else
             yum -y install epel-release
-            if [ "${country}" = "CN" ]; then
-                sed -e 's!^metalink=!#metalink=!g' \
-                    -e 's!^#baseurl=!baseurl=!g' \
-                    -e 's!//download\.fedoraproject\.org/pub!//mirrors.ustc.edu.cn!g' \
-                    -e 's!//download\.example/pub!//mirrors.ustc.edu.cn!g' \
-                    -i /etc/yum.repos.d/epel*.repo
-            fi
+            # EPEL 统一使用官方 metalink。
         fi
         yum -y install oniguruma oniguruma-devel
-        if [ "${CheckMirror}" = "n" ]; then
-            rpm -ivh ${cur_dir}/src/oniguruma-6.8.2-2.el7.x86_64.rpm ${cur_dir}/src/oniguruma-devel-6.8.2-2.el7.x86_64.rpm
-        fi
     fi
 
-    if [ "${DISTRO}" = "Fedora" ] || echo "${CentOS_Version}" | grep -Eqi "^9" || echo "${Alma_Version}" | grep -Eqi "^9" || echo "${Rocky_Version}" | grep -Eqi "^9" || echo "${Amazon_Version}" | grep -Eqi "^202[3-9]" || echo "${OpenCloudOS_Version}" | grep -Eqi "^9"; then
+    if [ "${DISTRO}" = "Fedora" ] || echo "${CentOS_Version}" | grep -Eqi "^(9|10)" || echo "${RHEL_Version}" | grep -Eqi "^10" || echo "${Alma_Version}" | grep -Eqi "^(9|10)" || echo "${Rocky_Version}" | grep -Eqi "^(9|10)" || echo "${Amazon_Version}" | grep -Eqi "^202[3-9]" || echo "${OpenCloudOS_Version}" | grep -Eqi "^(9|10)"; then
         dnf install chkconfig -y
     fi
 
@@ -449,6 +701,39 @@ EOF
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Deb_Ncurses5_Compat — 补齐 MySQL/MariaDB 官方通用二进制所需的 ncurses 5
+#
+# MySQL 8.4 的官方通用二进制里，mysql 客户端链接的是 libncurses.so.5 与
+# libtinfo.so.5。原依赖清单只装了 libncurses-dev / libncurses5-dev /
+# libtinfo-dev（都是头文件包，运行库是 .so.6），于是客户端在动态链接阶段就退出：
+#
+#   error while loading shared libraries: libncurses.so.5
+#
+# 后果不止是命令行不好用：数据库初始化 SQL（清匿名账号、删 test 库、刷权限）
+# 和装完之后的 lnmp database add/list/del 全都走这个客户端。
+#
+# Debian 12 仓库里还有 libncurses5 / libtinfo5，优先装它们；
+# Debian 13 已移除这两个包，此时退回把系统自带的 .so.6 软链成 .so.5
+# （ncurses 5 与 6 在客户端用到的这部分接口上兼容，MySQL 官方文档也是这么建议的）。
+# ---------------------------------------------------------------------------
+Deb_Ncurses5_Compat()
+{
+    local so path
+
+    apt-get --no-install-recommends install -y libncurses5 libtinfo5 2>/dev/null
+
+    for so in libtinfo libncurses; do
+        ldconfig -p 2>/dev/null | grep -q "${so}\.so\.5" && continue
+        path=$(ldconfig -p 2>/dev/null | awk -v s="${so}.so.6" '$1 == s {print $NF; exit}')
+        if [ -n "${path}" ] && [ -e "${path}" ]; then
+            ln -sf "${path}" "${path%.6}.5"
+            echo "已建立兼容软链：${path%.6}.5 -> ${path}"
+        fi
+    done
+    ldconfig
+}
+
 Deb_Dependent()
 {
     Echo_Blue "[+] Apt-get installing dependent packages..."
@@ -458,107 +743,119 @@ Deb_Dependent()
     apt-get -fy install
     export DEBIAN_FRONTEND=noninteractive
     apt-get --no-install-recommends install -y build-essential gcc g++ make
-    for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make cmake autoconf automake re2c wget cron bzip2 libzip-dev libc6-dev bison file rcconf flex bison m4 gawk less cpp binutils diffutils unzip tar bzip2 libbz2-dev libncurses5 libncurses5-dev libtool libevent-dev openssl libssl-dev zlibc libsasl2-dev libltdl3-dev libltdl-dev zlib1g zlib1g-dev libbz2-1.0 libbz2-dev libglib2.0-0 libglib2.0-dev libpng3 libjpeg-dev libpng-dev libpng12-0 libpng12-dev libkrb5-dev curl libcurl3-gnutls libcurl4-gnutls-dev libcurl4-openssl-dev libpcre3-dev libpq-dev libpq5 gettext libpng12-dev libxml2-dev libcap-dev ca-certificates libc-client2007e-dev psmisc patch git libc-ares-dev libicu-dev e2fsprogs libxslt1.1 libxslt1-dev libc-client-dev xz-utils libexpat1-dev libaio-dev libtirpc-dev libsqlite3-dev libonig-dev lsof pkg-config libtinfo-dev libnuma-dev libwebp-dev gnutls-dev iproute2 xz-utils gzip;
+
+    for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make cmake autoconf automake re2c wget cron bzip2 libzip-dev libc6-dev bison file flex m4 gawk less cpp binutils diffutils unzip tar libbz2-dev libncurses-dev libncurses5-dev libtool libevent-dev openssl libssl-dev libsasl2-dev libltdl-dev zlib1g-dev libglib2.0-dev libjpeg-dev libpng-dev libkrb5-dev curl libcurl4-gnutls-dev libcurl4-openssl-dev libpcre2-dev libpcre3-dev libpq-dev gettext libxml2-dev libcap-dev ca-certificates psmisc patch git libc-ares-dev libicu-dev e2fsprogs libxslt1-dev xz-utils libexpat1-dev libaio-dev libtirpc-dev libsqlite3-dev libonig-dev lsof pkg-config libtinfo-dev libnuma-dev libwebp-dev gnutls-dev libbrotli-dev iproute2 gzip nftables gnupg gpgv;
     do apt-get --no-install-recommends install -y $packages; done
+
+    Deb_Ncurses5_Compat
+
+    # PHP imap 扩展（Enable_PHP_Imap='y' 时用）依赖 uw-imap 的 libc-client。
+    # 该库已从 Debian 13 移除（上游 2011 年后停更），在更早的发行版上还有。
+    # 单独一轮安装并给出明确提示，不混进主清单里静默失败。
+    if [ "${Enable_PHP_Imap}" = 'y' ]; then
+        apt-get --no-install-recommends install -y libc-client-dev libc-client2007e-dev 2>/dev/null
+        if ! ls /usr/include/c-client >/dev/null 2>&1 && ! ls /usr/include/imap >/dev/null 2>&1; then
+            Echo_Yellow "未能安装 libc-client（uw-imap）开发包 —— Debian 13 已移除该库。"
+            Echo_Yellow "PHP imap 扩展将无法编译。若不需要它，请设 Enable_PHP_Imap='n'。"
+        fi
+    fi
 }
 
 Check_Download()
 {
     Echo_Blue "[+] Downloading files..."
     cd ${cur_dir}/src
+
+    # 组件下载统一使用上游官方源。
     Download_Files https://ftp.gnu.org/gnu/libiconv/${Libiconv_Ver}.tar.gz ${Libiconv_Ver}.tar.gz
-    Download_Files https://sourceforge.net/projects/mcrypt/files/Libmcrypt/2.5.8/${LibMcrypt_Ver}.tar.gz ${LibMcrypt_Ver}.tar.gz
-    Download_Files https://sourceforge.net/projects/mcrypt/files/MCrypt/2.6.8/${Mcypt_Ver}.tar.gz ${Mcypt_Ver}.tar.gz
-    Download_Files https://sourceforge.net/projects/mhash/files/mhash/0.9.9.9/${Mhash_Ver}.tar.bz2 ${Mhash_Ver}.tar.bz2
+    Require_File "${Libiconv_Ver}.tar.gz" "libiconv"
+
+    if [ "${SelectMalloc}" = "2" ]; then
+        Download_Files https://github.com/jemalloc/jemalloc/releases/download/${Jemalloc_Ver#jemalloc-}/${Jemalloc_Ver}.tar.bz2 ${Jemalloc_Ver}.tar.bz2
+        Require_File "${Jemalloc_Ver}.tar.bz2" "jemalloc"
+    elif [ "${SelectMalloc}" = "3" ]; then
+        Download_Files https://github.com/gperftools/gperftools/releases/download/${TCMalloc_Ver}/${TCMalloc_Ver}.tar.gz ${TCMalloc_Ver}.tar.gz
+        Require_File "${TCMalloc_Ver}.tar.gz" "gperftools"
+        Download_Files https://github.com/libunwind/libunwind/releases/download/v${Libunwind_Ver#libunwind-}/${Libunwind_Ver}.tar.gz ${Libunwind_Ver}.tar.gz
+        Require_File "${Libunwind_Ver}.tar.gz" "libunwind"
+    fi
+
     if [ "${Stack}" != "lamp" ]; then
         Download_Files https://nginx.org/download/${Nginx_Ver}.tar.gz ${Nginx_Ver}.tar.gz
+        Require_File "${Nginx_Ver}.tar.gz" "nginx"
     fi
-    if [[ "${DBSelect}" =~ ^[123456]$ ]]; then
-        if [[ "${Bin}" = "y" && "${DBSelect}" =~ ^[2-4]$ ]]; then
-            Mysql_Ver_Short=$(echo ${Mysql_Ver} | sed 's/mysql-//' | cut -d. -f1-2)
-            Download_Files https://cdn.mysql.com/Downloads/MySQL-${Mysql_Ver_Short}/${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz
-            if [ $? -ne 0 ]; then
-                Download_Files https://cdn.mysql.com/archives/mysql-${Mysql_Ver_Short}/${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz
-            fi
-        elif [[ "${Bin}" = "y" && "${DBSelect}" = "5" ]]; then
-            [[ "${DB_ARCH}" = "aarch64" ]] && mysql8_glibc_ver="2.17" || mysql8_glibc_ver="2.12"
-            Download_Files https://cdn.mysql.com/Downloads/MySQL-8.0/${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz
-            if [ $? -ne 0 ]; then
-                Download_Files https://cdn.mysql.com/archives/mysql-8.0/${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz
-            fi
-        elif [[ "${Bin}" = "y" && "${DBSelect}" = "6" ]]; then
-            Download_Files https://cdn.mysql.com/Downloads/MySQL-8.4/${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz
-            if [ $? -ne 0 ]; then
-                Download_Files https://cdn.mysql.com/archives/mysql-8.4/${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz
-            fi
-        else
-            Mysql_Ver_Short=$(echo ${Mysql_Ver} | sed 's/mysql-//' | cut -d. -f1-2)
-            Download_Files https://cdn.mysql.com/Downloads/MySQL-${Mysql_Ver_Short}/${Mysql_Ver}.tar.gz ${Mysql_Ver}.tar.gz
-            if [ $? -ne 0 ]; then
-                Download_Files https://cdn.mysql.com/archives/mysql-${Mysql_Ver_Short}/${Mysql_Ver}.tar.gz ${Mysql_Ver}.tar.gz
-            fi
-        fi
-    elif [[ "${DBSelect}" =~ ^[789]|1[0-1]$ ]]; then
-        Mariadb_Version_Short=$(echo ${Mariadb_Ver} | cut -d- -f2)
-        if [ "${Bin}" = "y" ]; then
-            MariaDB_FileName="${Mariadb_Ver}-linux-systemd-${DB_ARCH}"
-            if [ "${country}" = "CN" ]; then
-                Download_Files https://mirrors.ustc.edu.cn/mariadb/${Mariadb_Ver}/bintar-linux-systemd-x86_64/${Mariadb_Ver}-linux-systemd-x86_64.tar.gz ${Mariadb_Ver}-linux-systemd-x86_64.tar.gz
-                if [ $? -ne 0 ]; then
-                    Download_Files https://archive.mariadb.org/${Mariadb_Ver}/bintar-linux-systemd-x86_64/${Mariadb_Ver}-linux-systemd-x86_64.tar.gz ${Mariadb_Ver}-linux-systemd-x86_64.tar.gz
-                fi
-            else
-                Download_Files https://downloads.mariadb.org/rest-api/mariadb/${Mariadb_Version_Short}/${Mariadb_Ver}-linux-systemd-x86_64.tar.gz ${Mariadb_Ver}-linux-systemd-x86_64.tar.gz
-                if [ $? -ne 0 ]; then
-                    Download_Files https://archive.mariadb.org/${Mariadb_Ver}/bintar-linux-systemd-x86_64/${Mariadb_Ver}-linux-systemd-x86_64.tar.gz ${Mariadb_Ver}-linux-systemd-x86_64.tar.gz
-                fi
-            fi
-        else
-            if [ "${country}" = "CN" ]; then
-                Download_Files https://mirrors.ustc.edu.cn/mariadb/${Mariadb_Ver}/source/${Mariadb_Ver}.tar.gz ${Mariadb_Ver}.tar.gz
-                if [ $? -ne 0 ]; then
-            	    Download_Files https://archive.mariadb.org/${Mariadb_Ver}/source/${Mariadb_Ver}.tar.gz ${Mariadb_Ver}.tar.gz
-                fi
-            else
-                Download_Files https://downloads.mariadb.org/rest-api/mariadb/${Mariadb_Version_Short}/${Mariadb_Ver}.tar.gz ${Mariadb_Ver}.tar.gz
-                if [ $? -ne 0 ]; then
-            	    Download_Files https://archive.mariadb.org/${Mariadb_Ver}/source/${Mariadb_Ver}.tar.gz ${Mariadb_Ver}.tar.gz
-                fi
-            fi
-        fi
-    fi
+
+    DB_Download_Files
+
     Download_Files https://www.php.net/distributions/${Php_Ver}.tar.bz2 ${Php_Ver}.tar.bz2
-    if [ $? -ne 0 ]; then
-        Download_Files https://museum.php.net/php5/${Php_Ver}.tar.bz2 ${Php_Ver}.tar.bz2
+    Require_File "${Php_Ver}.tar.bz2" "PHP ${PHP_Branch}"
+
+    if [ "${Enable_PhpMyAdmin}" = "y" ]; then
+
+        local pma_ver="${PhpMyAdmin_Ver#phpMyAdmin-}"
+        pma_ver="${pma_ver%-all-languages}"
+        Download_Files https://files.phpmyadmin.net/phpMyAdmin/${pma_ver}/${PhpMyAdmin_Ver}.tar.xz ${PhpMyAdmin_Ver}.tar.xz
+        Require_File "${PhpMyAdmin_Ver}.tar.xz" "phpMyAdmin"
     fi
-    if [ ${PHPSelect} = "1" ]; then
-        Download_Files https://php-fpm.org/downloads/${Php_Ver}-fpm-0.5.14.diff.gz ${Php_Ver}-fpm-0.5.14.diff.gz
-    fi
-    PhpMyAdmin_Ver_Short=$(echo ${PhpMyAdmin_Ver} | cut -d- -f2)
-    Download_Files https://files.phpmyadmin.net/phpMyAdmin/${PhpMyAdmin_Ver_Short}/${PhpMyAdmin_Ver}.tar.xz ${PhpMyAdmin_Ver}.tar.xz
+    # 不分发缺少可验证上游来源的 PHP 探针。
+
     if [ "${Stack}" != "lnmp" ]; then
         Download_Files https://archive.apache.org/dist/httpd/${Apache_Ver}.tar.bz2 ${Apache_Ver}.tar.bz2
+        Require_File "${Apache_Ver}.tar.bz2" "Apache httpd"
         Download_Files https://archive.apache.org/dist/apr/${APR_Ver}.tar.bz2 ${APR_Ver}.tar.bz2
+        Require_File "${APR_Ver}.tar.bz2" "APR"
         Download_Files https://archive.apache.org/dist/apr/${APR_Util_Ver}.tar.bz2 ${APR_Util_Ver}.tar.bz2
+        Require_File "${APR_Util_Ver}.tar.bz2" "APR-util"
     fi
+}
+
+# Make_Install / PHP_Make_Install
+# 并行编译失败后串行重试一次；任一步失败均返回非零。
+# configure 或 cmake 成功后必须生成 Makefile，否则终止编译。
+Check_Makefile_Ready()
+{
+    if [ ! -s Makefile ] && [ ! -s makefile ] && [ ! -s GNUmakefile ]; then
+        Echo_Red "Error: $(pwd) 下没有 Makefile —— configure / cmake 应该是失败了。"
+        Echo_Red "请往上翻日志找 configure 的报错（通常是缺某个 -devel 依赖）。"
+        return 1
+    fi
+    return 0
 }
 
 Make_Install()
 {
+    Check_Makefile_Ready || return 1
     make -j `grep 'processor' /proc/cpuinfo | wc -l`
     if [ $? -ne 0 ]; then
-        make
+        Echo_Yellow "并行编译失败，退回串行重试..."
+        if ! make; then
+            Echo_Red "Error: make failed in $(pwd)"
+            return 1
+        fi
     fi
-    make install
+    if ! make install; then
+        Echo_Red "Error: make install failed in $(pwd)"
+        return 1
+    fi
+    return 0
 }
 
 PHP_Make_Install()
 {
+    Check_Makefile_Ready || return 1
     make ZEND_EXTRA_LIBS='-liconv' -j `grep 'processor' /proc/cpuinfo | wc -l`
     if [ $? -ne 0 ]; then
-        make ZEND_EXTRA_LIBS='-liconv'
+        Echo_Yellow "并行编译失败，退回串行重试..."
+        if ! make ZEND_EXTRA_LIBS='-liconv'; then
+            Echo_Red "Error: make failed in $(pwd)"
+            return 1
+        fi
     fi
-    make install
+    if ! make install; then
+        Echo_Red "Error: make install failed in $(pwd)"
+        return 1
+    fi
+    return 0
 }
 
 Install_Autoconf()
@@ -566,9 +863,10 @@ Install_Autoconf()
     Echo_Blue "[+] Installing ${Autoconf_Ver}"
     cd ${cur_dir}/src
     Download_Files https://ftp.gnu.org/gnu/autoconf/${Autoconf_Ver}.tar.gz ${Autoconf_Ver}.tar.gz
+    Require_File "${Autoconf_Ver}.tar.gz" "autoconf 2.13"
     Tar_Cd ${Autoconf_Ver}.tar.gz ${Autoconf_Ver}
     ./configure --prefix=/usr/local/autoconf-2.13
-    Make_Install
+    Make_Install || exit 1
     cd ${cur_dir}/src/
     rm -rf ${cur_dir}/src/${Autoconf_Ver}
 }
@@ -578,72 +876,28 @@ Install_Libiconv()
     Echo_Blue "[+] Installing ${Libiconv_Ver}"
     Tar_Cd ${Libiconv_Ver}.tar.gz ${Libiconv_Ver}
     ./configure --enable-static
-    Make_Install
+    Make_Install || exit 1
     cd ${cur_dir}/src/
     rm -rf ${cur_dir}/src/${Libiconv_Ver}
 }
 
-Install_Libmcrypt()
-{
-    Echo_Blue "[+] Installing ${LibMcrypt_Ver}"
-    Tar_Cd ${LibMcrypt_Ver}.tar.gz ${LibMcrypt_Ver}
-    patch -p1 < ${cur_dir}/src/patch/libmcrypt.patch
-    ./configure
-    Make_Install
-    /sbin/ldconfig
-    cd libltdl/
-    ./configure --enable-ltdl-install
-    Make_Install
-    ln -sf /usr/local/lib/libmcrypt.la /usr/lib/libmcrypt.la
-    ln -sf /usr/local/lib/libmcrypt.so /usr/lib/libmcrypt.so
-    ln -sf /usr/local/lib/libmcrypt.so.4 /usr/lib/libmcrypt.so.4
-    ln -sf /usr/local/lib/libmcrypt.so.4.4.8 /usr/lib/libmcrypt.so.4.4.8
-    ldconfig
-    cd ${cur_dir}/src/
-    rm -rf ${cur_dir}/src/${LibMcrypt_Ver}
-}
-
-Install_Mcrypt()
-{
-    Echo_Blue "[+] Installing ${Mcypt_Ver}"
-    Tar_Cd ${Mcypt_Ver}.tar.gz ${Mcypt_Ver}
-    ./configure
-    Make_Install
-    cd ${cur_dir}/src/
-    rm -rf ${cur_dir}/src/${Mcypt_Ver}
-}
-
-Install_Mhash()
-{
-    Echo_Blue "[+] Installing ${Mhash_Ver}"
-    Tar_Cd ${Mhash_Ver}.tar.bz2 ${Mhash_Ver}
-    patch -p1 < ${cur_dir}/src/patch/mhash.patch
-    ./configure
-    Make_Install
-    ln -sf /usr/local/lib/libmhash.a /usr/lib/libmhash.a
-    ln -sf /usr/local/lib/libmhash.la /usr/lib/libmhash.la
-    ln -sf /usr/local/lib/libmhash.so /usr/lib/libmhash.so
-    ln -sf /usr/local/lib/libmhash.so.2 /usr/lib/libmhash.so.2
-    ln -sf /usr/local/lib/libmhash.so.2.0.1 /usr/lib/libmhash.so.2.0.1
-    ldconfig
-    cd ${cur_dir}/src/
-    rm -rf ${cur_dir}/src/${Mhash_Ver}
-}
+# PHP 8 使用内置的 mhash 兼容 API，不依赖外部 libmhash 或 mcrypt。
 
 Install_Freetype()
 {
-    if echo "${Ubuntu_Version}" | grep -Eqi "^1[89]\.|2[0-9]\." || echo "${Mint_Version}" | grep -Eqi "^19|2[0-9]" || echo "${Deepin_Version}" | grep -Eqi "^15\.[7-9]|15.1[0-9]|1[6-9]|2[0-9]" || echo "${Debian_Version}" | grep -Eqi "^9|1[0-9]" || echo "${Raspbian_Version}" | grep -Eqi "^9|1[0-9]" || echo "${Kali_Version}" | grep -Eqi "^202[0-9]" || echo "${UOS_Version}" | grep -Eqi "^2[0-9]" || echo "${CentOS_Version}" | grep -Eqi "^8|9" || echo "${RHEL_Version}" | grep -Eqi "^8|9" || echo "${Oracle_Version}" | grep -Eqi "^8|9" || echo "${Fedora_Version}" | grep -Eqi "^3[0-9]|29" || echo "${Rocky_Version}" | grep -Eqi "^8|9" || echo "${Alma_Version}" | grep -Eqi "^8|9" || echo "${openEuler_Version}" | grep -Eqi "^2[0-9]" || echo "${Anolis_Version}" | grep -Eqi "^8|9" || echo "${Kylin_Version}" | grep -Eqi "^V1[0-9]" || echo "${Amazon_Version}" | grep -Eqi "^202[3-9]" || echo "${OpenCloudOS_Version}" | grep -Eqi "^8|9|23" || echo "${HCE_Version}" | grep -Eqi "^2\.[0-9]"; then
-        Download_Files https://download.savannah.gnu.org/releases/freetype/${Freetype_New_Ver}.tar.xz ${Freetype_New_Ver}.tar.xz
+    if echo "${Ubuntu_Version}" | grep -Eqi "^1[89]\.|2[0-9]\." || echo "${Mint_Version}" | grep -Eqi "^19|2[0-9]" || echo "${Deepin_Version}" | grep -Eqi "^15\.[7-9]|15.1[0-9]|1[6-9]|2[0-9]" || echo "${Debian_Version}" | grep -Eqi "^9|1[0-9]" || echo "${Raspbian_Version}" | grep -Eqi "^9|1[0-9]" || echo "${Kali_Version}" | grep -Eqi "^202[0-9]" || echo "${UOS_Version}" | grep -Eqi "^2[0-9]" || echo "${CentOS_Version}" | grep -Eqi "^(8|9|10)" || echo "${RHEL_Version}" | grep -Eqi "^(8|9|10)" || echo "${Oracle_Version}" | grep -Eqi "^(8|9|10)" || echo "${Fedora_Version}" | grep -Eqi "^3[0-9]|29" || echo "${Rocky_Version}" | grep -Eqi "^(8|9|10)" || echo "${Alma_Version}" | grep -Eqi "^(8|9|10)" || echo "${openEuler_Version}" | grep -Eqi "^2[0-9]" || echo "${Anolis_Version}" | grep -Eqi "^(8|9|10)" || echo "${Kylin_Version}" | grep -Eqi "^V1[0-9]" || echo "${Amazon_Version}" | grep -Eqi "^202[3-9]" || echo "${OpenCloudOS_Version}" | grep -Eqi "^(8|9|10|23)" || echo "${HCE_Version}" | grep -Eqi "^2\.[0-9]"; then
+        Download_Files https://downloads.sourceforge.net/freetype/${Freetype_New_Ver}.tar.xz ${Freetype_New_Ver}.tar.xz
+        Require_File "${Freetype_New_Ver}.tar.xz" "freetype"
         Echo_Blue "[+] Installing ${Freetype_New_Ver}"
         Tar_Cd ${Freetype_New_Ver}.tar.xz ${Freetype_New_Ver}
         ./configure --prefix=/usr/local/freetype --enable-freetype-config
     else
-        Download_Files https://download.savannah.gnu.org/releases/freetype/${Freetype_Ver}.tar.bz2 ${Freetype_Ver}.tar.bz2
-        Echo_Blue "[+] Installing ${Freetype_Ver}"
-        Tar_Cd ${Freetype_Ver}.tar.bz2 ${Freetype_Ver}
-        ./configure --prefix=/usr/local/freetype
+        # 发行版低于支持下限时明确终止，避免进入缺少校验文件的兼容路径。
+        Echo_Red "当前发行版不在支持范围内，无法安装 freetype。"
+        Echo_Red "支持范围见 Check_Supported_Distro（EL8+ / Debian 10+ / Ubuntu 18.04+ 等）。"
+        exit 1
     fi
-    Make_Install
+    Make_Install || exit 1
 
     [[ -d /usr/lib/pkgconfig ]] && \cp /usr/local/freetype/lib/pkgconfig/freetype2.pc /usr/lib/pkgconfig/
     cat > /etc/ld.so.conf.d/freetype.conf<<EOF
@@ -652,7 +906,7 @@ EOF
     ldconfig
     ln -sf /usr/local/freetype/include/freetype2/* /usr/include/
     cd ${cur_dir}/src/
-    rm -rf ${cur_dir}/src/${Freetype_Ver}
+    rm -rf ${cur_dir}/src/${Freetype_New_Ver}
 }
 
 Install_Curl()
@@ -661,13 +915,14 @@ Install_Curl()
         Echo_Blue "[+] Installing ${Curl_Ver}"
         cd ${cur_dir}/src
         Download_Files https://curl.se/download/${Curl_Ver}.tar.bz2 ${Curl_Ver}.tar.bz2
+        Require_File "${Curl_Ver}.tar.bz2" "curl"
         Tar_Cd ${Curl_Ver}.tar.bz2 ${Curl_Ver}
         if [ -s /usr/local/openssl/bin/openssl ] || /usr/local/openssl/bin/openssl version | grep -Eqi 'OpenSSL 1.0.2'; then
             ./configure --prefix=/usr/local/curl --enable-ares --without-nss --with-zlib --with-ssl=/usr/local/openssl
         else
             ./configure --prefix=/usr/local/curl --enable-ares --without-nss --with-zlib --with-ssl
         fi
-        Make_Install
+        Make_Install || exit 1
         cd ${cur_dir}/src/
         rm -rf ${cur_dir}/src/${Curl_Ver}
         ldconfig
@@ -680,7 +935,8 @@ Install_Pcre()
     if ! command -v pcre-config >/dev/null 2>&1 || pcre-config --version | grep -vEqi '^8.'; then
         Echo_Blue "[+] Installing ${Pcre_Ver}"
         cd ${cur_dir}/src
-        Download_Files https://sourceforge.net/projects/pcre/files/pcre/8.45/${Pcre_Ver}.tar.bz2 ${Pcre_Ver}.tar.bz2
+        Download_Files https://downloads.sourceforge.net/pcre/${Pcre_Ver}.tar.bz2 ${Pcre_Ver}.tar.bz2
+        Require_File "${Pcre_Ver}.tar.bz2" "PCRE"
         Tar_Cd ${Pcre_Ver}.tar.bz2
         Nginx_With_Pcre="--with-pcre=${cur_dir}/src/${Pcre_Ver} --with-pcre-jit"
     fi
@@ -692,7 +948,7 @@ Install_Jemalloc()
     cd ${cur_dir}/src
     Tar_Cd ${Jemalloc_Ver}.tar.bz2 ${Jemalloc_Ver}
     ./configure
-    Make_Install
+    Make_Install || exit 1
     ldconfig
     cd ${cur_dir}/src/
     rm -rf ${cur_dir}/src/${Jemalloc_Ver}
@@ -715,128 +971,119 @@ Install_TCMalloc()
     else
         ./configure --enable-frame-pointers
     fi
-    Make_Install
+    Make_Install || exit 1
     ldconfig
     cd ${cur_dir}/src/
     rm -rf ${cur_dir}/src/${TCMalloc_Ver}
     ln -sf /usr/local/lib/libtcmalloc* /usr/lib/
 }
 
-Install_Icu4c()
-{
-    if command -v icu-config >/dev/null 2>&1 && icu-config --version | grep -Eq "^3."; then
-        Echo_Blue "[+] Installing ${Libicu4c_Ver}"
-        cd ${cur_dir}/src
-        Download_Files https://fra.de.distfiles.macports.org/icu/${Libicu4c_Ver}-src.tgz ${Libicu4c_Ver}-src.tgz
-        Tar_Cd ${Libicu4c_Ver}-src.tgz icu/source
-        ./configure --prefix=/usr
-        if [ ! -s /usr/include/xlocale.h ]; then
-            ln -s /usr/include/locale.h /usr/include/xlocale.h
-        fi
-        Make_Install
-        cd ${cur_dir}/src/
-        rm -rf ${cur_dir}/src/icu
-    fi
-}
+# ---------------------------------------------------------------------------
+# Boost 处理
+# 安装路径使用 DB_Boost_Mode；升级路径根据 mysql_version 推导。
+# Boost 必须通过统一下载校验，不允许 cmake 自行联网下载。
+# ---------------------------------------------------------------------------
 
-Install_Icu60()
+# Boost_Mode：返回 auto 或 none。
+Boost_Mode()
 {
-    if [ ! -s /usr/local/icu/bin/icu-config ]; then
-        Echo_Blue "[+] Installing icu4c-60_3..."
-        cd ${cur_dir}/src
-        Download_Files https://fra.de.distfiles.macports.org/icu/icu4c-60_3-src.tgz icu4c-60_3-src.tgz
-        Tar_Cd icu4c-60_3-src.tgz icu/source
-        ./configure --prefix=/usr/local/icu
-        Make_Install
-        cd ${cur_dir}/src/
-
-        echo "/usr/local/icu/lib" > /etc/ld.so.conf.d/icu.conf
-        ldconfig
+    if [ -n "${DB_Boost_Mode}" ]; then
+        echo "${DB_Boost_Mode}"
+    elif echo "${mysql_version}" | grep -Eqi '^8\.'; then
+        echo "auto"
+    else
+        echo "none"
     fi
 }
 
 Download_Boost()
 {
+    local mode boost_dot
+    mode=$(Boost_Mode)
     Echo_Blue "[+] Download or use exist boost..."
-    if [ "${DBSelect}" = "4" ] || echo "${mysql_version}" | grep -Eqi '^5.7.'; then
-        if [ -s "${cur_dir}/src/${Boost_Ver}.tar.bz2" ]; then
-            [[ -d "${cur_dir}/src/${Boost_Ver}" ]] && rm -rf "${cur_dir}/src/${Boost_Ver}"
-            tar jxf ${cur_dir}/src/${Boost_Ver}.tar.bz2 -C ${cur_dir}/src
-            MySQL_WITH_BOOST="-DWITH_BOOST=${cur_dir}/src/${Boost_Ver}"
-        else
-            cd ${cur_dir}/src/
-            Download_Files https://sourceforge.net/projects/boost/files/boost/1.59.0/${Boost_Ver}.tar.bz2 ${Boost_Ver}.tar.bz2
-            tar jxf ${cur_dir}/src/${Boost_Ver}.tar.bz2
-            cd -
-            MySQL_WITH_BOOST="-DWITH_BOOST=${cur_dir}/src/${Boost_Ver}"
+
+    case "${mode}" in
+    auto)
+        # MySQL 8.x 所需的 boost 版本记录在源码树的 cmake/boost.cmake 里。
+        # 这是一处"下载内容驱动后续下载"的拼接，故对解析结果做严格校验。
+        Get_Boost_Ver=$(grep 'SET(BOOST_PACKAGE_NAME' cmake/boost.cmake | grep -oE '[0-9]+(_[0-9]+){2}' | head -n1)
+        if ! echo "${Get_Boost_Ver}" | grep -Eq '^[0-9]+_[0-9]+_[0-9]+$'; then
+            Echo_Red "Error! Cannot determine the Boost version required by ${DB_Ver:-mysql-${mysql_version}}."
+            Echo_Red "Expected SET(BOOST_PACKAGE_NAME ...) in cmake/boost.cmake"
+            exit 1
         fi
-    elif [ "${DBSelect}" = "5" ] || echo "${mysql_version}" | grep -Eqi '^8.'; then
-        Get_Boost_Ver=$(grep 'SET(BOOST_PACKAGE_NAME' cmake/boost.cmake |grep -oP '\d+(\_\d+){2}')
-        if [ -s "${cur_dir}/src/boost_${Get_Boost_Ver}.tar.bz2" ]; then
-            [[ -d "${cur_dir}/src/boost_${Get_Boost_Ver}" ]] && rm -rf "${cur_dir}/src/boost_${Get_Boost_Ver}"
-            tar jxf ${cur_dir}/src/boost_${Get_Boost_Ver}.tar.bz2 -C ${cur_dir}/src
-            MySQL_WITH_BOOST="-DWITH_BOOST=${cur_dir}/src/boost_${Get_Boost_Ver}"
-        else
-            MySQL_WITH_BOOST="-DDOWNLOAD_BOOST=1 -DWITH_BOOST=${cur_dir}/src"
-        fi
-    fi
+        cd ${cur_dir}/src/
+        boost_dot=$(echo "${Get_Boost_Ver}" | tr '_' '.')
+        # 这里的版本号是从 MySQL 源码解析出来的，静态清单不可能预先穷举
+        # （8.0.46 要 1.77.0、8.4.7 要 1.84.0，换个点版本就可能再变）。
+        # 走 Download_Verified：archives.boost.io 在每个包旁边放 <file>.json，
+        # 里面有官方 sha256，解析出哪个版本都能核对。
+        #
+        # Download_Verified 同时处理本地缓存和完整性校验，调用前不得按文件存在性跳过。
+        Download_Verified boost "${boost_dot}" \
+            "https://archives.boost.io/release/${boost_dot}/source/boost_${Get_Boost_Ver}.tar.bz2" \
+            "boost_${Get_Boost_Ver}.tar.bz2"
+        Require_File "boost_${Get_Boost_Ver}.tar.bz2" "Boost ${boost_dot}"
+        [ -d "${cur_dir}/src/boost_${Get_Boost_Ver}" ] && rm -rf "${cur_dir}/src/boost_${Get_Boost_Ver}"
+        tar jxf ${cur_dir}/src/boost_${Get_Boost_Ver}.tar.bz2 -C ${cur_dir}/src
+        MySQL_WITH_BOOST="-DWITH_BOOST=${cur_dir}/src/boost_${Get_Boost_Ver}"
+        ;;
+    esac
 }
 
 Install_Boost()
 {
-    Echo_Blue "[+] Download or use exist boost..."
-    if [ "${DBSelect}" = "4" ] || [ "${DBSelect}" = "5" ]; then
-        if [ -d "${cur_dir}/src/${Mysql_Ver}/boost" ]; then
-            MySQL_WITH_BOOST="-DWITH_BOOST=${cur_dir}/src/${Mysql_Ver}/boost"
-        else
-            Download_Boost
-        fi
-    elif echo "${mysql_version}" | grep -Eqi '^5.7.' || echo "${mysql_version}" | grep -Eqi '^8.'; then
-        if [ -d "${cur_dir}/src/mysql-${mysql_version}/boost" ]; then
-            MySQL_WITH_BOOST="-DWITH_BOOST=${cur_dir}/src/mysql-${mysql_version}/boost"
-        else
-            Download_Boost
-        fi
-    fi
-}
+    local srcdir
+    [ "$(Boost_Mode)" = "none" ] && return 0
 
-Install_Openssl()
-{
-    if [ ! -s /usr/local/openssl/bin/openssl ] || /usr/local/openssl/bin/openssl version | grep -v 'OpenSSL 1.0.2'; then
-        Echo_Blue "[+] Installing ${Openssl_Ver}"
-        cd ${cur_dir}/src
-        Download_Files https://www.openssl.org/source/${Openssl_Ver}.tar.gz ${Openssl_Ver}.tar.gz
-        [[ -d "${Openssl_Ver}" ]] && rm -rf ${Openssl_Ver}
-        Tar_Cd ${Openssl_Ver}.tar.gz ${Openssl_Ver}
-        ./config -fPIC --prefix=/usr/local/openssl --openssldir=/usr/local/openssl
-        make depend
-        Make_Install
-        cd ${cur_dir}/src/
-        rm -rf ${cur_dir}/src/${Openssl_Ver}
+    # 源码包自带 boost 的话直接用（mysql-boost-*.tar.gz 这种）
+    if [ -n "${Mysql_Ver}" ]; then
+        srcdir="${cur_dir}/src/${Mysql_Ver}/boost"
+    else
+        srcdir="${cur_dir}/src/mysql-${mysql_version}/boost"
+    fi
+    if [ -d "${srcdir}" ]; then
+        Echo_Blue "[+] Use bundled boost..."
+        MySQL_WITH_BOOST="-DWITH_BOOST=${srcdir}"
+        return 0
+    fi
+
+    Download_Boost
+
+    if [ -z "${MySQL_WITH_BOOST}" ]; then
+        Echo_Red "Error! Boost is required to build MySQL from source but was not prepared."
+        exit 1
     fi
 }
 
 Install_Openssl_New()
 {
-    if openssl version | grep -vEqi "OpenSSL 1.1.1*"; then
-        if [ ! -s /usr/local/openssl1.1.1/bin/openssl ] || /usr/local/openssl1.1.1/bin/openssl version | grep -v 'OpenSSL 1.1.1'; then
+    if openssl version | grep -Eqi "OpenSSL 3."; then
+        apache_with_ssl='--with-ssl'
+    else
+        if [ ! -s /usr/local/openssl3/bin/openssl ] || /usr/local/openssl3/bin/openssl version | grep -v 'OpenSSL 3'; then
             Echo_Blue "[+] Installing ${Openssl_New_Ver}"
             cd ${cur_dir}/src
-            Download_Files https://www.openssl.org/source/${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}.tar.gz
+            Download_Files https://github.com/openssl/openssl/releases/download/${Openssl_New_Ver}/${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}.tar.gz
+            [ $? -ne 0 ] && Download_Files https://www.openssl.org/source/${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}.tar.gz
+            Require_File "${Openssl_New_Ver}.tar.gz" "OpenSSL 3"
+            if [ $? -ne 0 ]; then
+                Download_Files https://www.openssl.org/source/${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}.tar.gz
+                if [ $? -ne 0 ]; then
+                    Echo_Red "Error! Unable to download ${Openssl_New_Ver}."
+                    exit 1
+                fi
+            fi
             [[ -d "${Openssl_New_Ver}" ]] && rm -rf ${Openssl_New_Ver}
             Tar_Cd ${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}
-            ./config enable-weak-ssl-ciphers -fPIC --prefix=/usr/local/openssl1.1.1 --openssldir=/usr/local/openssl1.1.1
+            ./config -fPIC --prefix=/usr/local/openssl3 --openssldir=/usr/local/openssl3
             make depend
-            Make_Install
-            ln -sf /usr/local/openssl1.1.1/lib/libcrypto.so.1.1 /usr/lib/
-            ln -sf /usr/local/openssl1.1.1/lib/libssl.so.1.1 /usr/lib/
+            Make_Install || exit 1
             cd ${cur_dir}/src/
             rm -rf ${cur_dir}/src/${Openssl_New_Ver}
         fi
         ldconfig
-        apache_with_ssl='--with-ssl=/usr/local/openssl1.1.1'
-    else
-        apache_with_ssl='--with-ssl'
+        apache_with_ssl='--with-ssl=/usr/local/openssl3'
     fi
 }
 
@@ -845,11 +1092,12 @@ Install_Nghttp2()
     if [[ ! -s /usr/local/nghttp2/lib/libnghttp2.so || ! -s /usr/local/nghttp2/include/nghttp2/nghttp2.h ]]; then
         Echo_Blue "[+] Installing ${Nghttp2_Ver}"
         cd ${cur_dir}/src
-        Download_Files https://ftp.osuosl.org/pub/blfs/conglomeration/nghttp2/${Nghttp2_Ver}.tar.xz ${Nghttp2_Ver}.tar.xz
+        Download_Files https://github.com/nghttp2/nghttp2/releases/download/v${Nghttp2_Ver#nghttp2-}/${Nghttp2_Ver}.tar.xz ${Nghttp2_Ver}.tar.xz
+        Require_File "${Nghttp2_Ver}.tar.xz" "nghttp2"
         [[ -d "${Nghttp2_Ver}" ]] && rm -rf ${Nghttp2_Ver}
         Tar_Cd ${Nghttp2_Ver}.tar.xz ${Nghttp2_Ver}
         ./configure --prefix=/usr/local/nghttp2
-        Make_Install
+        Make_Install || exit 1
         cd ${cur_dir}/src/
         rm -rf ${cur_dir}/src/${Nghttp2_Ver}
     fi
@@ -862,9 +1110,10 @@ Install_Libzip()
             Echo_Blue "[+] Installing ${Libzip_Ver}"
             cd ${cur_dir}/src
             Download_Files https://libzip.org/download/${Libzip_Ver}.tar.xz ${Libzip_Ver}.tar.xz
+            Require_File "${Libzip_Ver}.tar.xz" "libzip"
             Tar_Cd ${Libzip_Ver}.tar.xz ${Libzip_Ver}
             ./configure
-            Make_Install
+            Make_Install || exit 1
             cd ${cur_dir}/src/
             rm -rf ${cur_dir}/src/${Libzip_Ver}
         fi

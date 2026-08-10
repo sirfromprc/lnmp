@@ -1,0 +1,92 @@
+# 下载 URL 存活探测。
+#
+# 与 upstream-check 是两件事：
+#   upstream-check  上游出新版本了吗？（每月一次就够）
+#   url-health      我们现在钉着的版本还下得到吗？（必须更勤）
+#
+# 后者是**紧急问题**：nginx.org 只保留每个分支最新的几个点版本，
+# cdn.mysql.com 也会下线旧点版本。一旦当前钉着的版本被下线，
+# 所有新安装立刻在下载那一步失败 —— 而这跟我们改没改代码毫无关系，
+# 是上游单方面动作。所以每周查一次，出问题直接开 issue。
+
+name: 下载源存活探测
+
+on:
+  schedule:
+    # 每周一 UTC 19:00 = 北京时间周二 03:00
+    - cron: '0 19 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    name: 探测全部下载 URL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 探测
+        id: probe
+        run: |
+          set +e
+          bash t/probe_urls.sh 2>&1 | tee /tmp/probe.log
+          echo "rc=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: 写摘要
+        run: |
+          {
+            echo "## 下载源探测结果"
+            echo
+            echo '```'
+            tail -40 /tmp/probe.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 有失效链接就开 issue
+        if: steps.probe.outputs.rc != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const log = fs.readFileSync('/tmp/probe.log', 'utf8');
+            const failed = log.split('\n')
+                              .filter(l => /FAIL|404/.test(l))
+                              .slice(0, 40).join('\n');
+            const title = '下载源失效：部分组件已无法下载';
+
+            // 同名 issue 已存在就追加评论，避免每周刷一个新 issue
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'url-health'
+            });
+
+            const body = [
+              `探测时间：${new Date().toISOString()}`,
+              '',
+              '失效条目：',
+              '```',
+              failed || '(见 Actions 日志)',
+              '```',
+              '',
+              '**影响**：所有新安装会在下载这一步中止。',
+              '',
+              '**通常原因**：上游只保留最新的几个点版本，我们钉着的版本被下线了。',
+              '**处理**：手动触发 `上游版本检查` 工作流，把版本推到上游还提供的那个，',
+              '并确认 `src/checksums.sha256` 一并更新。',
+            ].join('\n');
+
+            if (issues.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issues[0].number, body
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['url-health', 'bug']
+              });
+            }
