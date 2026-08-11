@@ -814,7 +814,22 @@ lnmp database add    # 新建库 + 同名用户
 lnmp database list   # 列出所有库
 lnmp database edit   # 改库用户密码
 lnmp database del    # 删除库
+
+lnmp database export <库名> <文件.sql.gz>   # 导出单个库，gzip 压缩
+lnmp database import <库名> <文件.sql.gz>   # 导入到已存在的库
 ```
+
+导出导入的具体行为：
+
+- 两条命令都会先要求输入数据库 root 密码，凭据写在 `~/.my.cnf`，命令结束即删除。
+- 导出内容不含 `CREATE DATABASE` / `USE`，目标库由命令行参数决定，
+  因此同一份备份可以恢复到另一个库名。
+- 导出先写同目录临时文件再改名，中途失败不会留下半截备份；
+  目标文件已存在时直接报错退出，不覆盖。
+- 导入按文件内容判断是否压缩，未压缩的 `.sql` 也能直接导入；
+  目标库必须已存在（先 `database add` 建库建用户），
+  导入会覆盖库中的同名表，执行前有 10 秒倒计时可以 Ctrl+C 取消。
+- 全部 `database` 子命令成功返回 0、失败返回非 0，可直接用于脚本判断。
 
 ### 8.4 备份
 

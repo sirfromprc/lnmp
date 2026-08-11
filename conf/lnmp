@@ -25,6 +25,9 @@ DB_SERVICE=mysql
 
 arg1=$1
 arg2=$2
+# database export/import 需要库名和文件名两个附加参数
+arg3=$3
+arg4=$4
 
 # ---------------------------------------------------------------------------
 # Svc <服务名> <动作> — lnmp 命令与 systemd 共用同一条启停路径
@@ -180,8 +183,7 @@ Function_Database()
 {
     case "$1" in
         [aA][dD][dD])
-            Add_Database_Menu
-            Add_Database
+            Add_Database_Menu && Add_Database
             ;;
         [lL][iI][sS][tT])
             List_Database
@@ -192,12 +194,20 @@ Function_Database()
         [eE][dD][iI][tT])
             Edit_Database
             ;;
+        [eE][xX][pP][oO][rR][tT])
+            Export_Database "$2" "$3"
+            ;;
+        [iI][mM][pP][oO][rR][tT])
+            Import_Database "$2" "$3"
+            ;;
         [eE][xX][iI][tT])
-            exit 1
+            return 1
             ;;
         *)
-            echo "Usage: lnmp database {add|list|del}"
-            exit 1
+            echo "Usage: lnmp database {add|list|edit|del}"
+            echo "Usage: lnmp database export <数据库名> <文件.sql.gz>"
+            echo "Usage: lnmp database import <数据库名> <文件.sql.gz>"
+            return 1
             ;;
     esac
 }
@@ -674,8 +684,8 @@ Add_VHost()
         read create_database
 
         if [ "${create_database}" == "y" ]; then
-            Verify_DB_Password
-            Add_Database_Menu
+            Verify_DB_Password || exit 1
+            Add_Database_Menu || exit 1
         fi
     fi
 
@@ -726,6 +736,10 @@ EOF
 
     if [ "${create_database}" == "y" ]; then
         Add_Database
+        database_add_rc=$?
+        # 建库是 vhost 流程里最后一次用到数据库 root 凭据，用完立刻清掉，
+        # 不等到脚本退出
+        TempMycnf_Clean
     fi
 
     if [ "${create_ftp}" == "y" ]; then
@@ -748,9 +762,14 @@ EOF
     fi
 
     if [ "${create_database}" == "y" ]; then
-        echo "Database username: ${database_name}"
-        echo "Database Name: ${database_name}"
-        echo "Database userpassword: (你刚输入的那个，不回显)"
+        if [ "${database_add_rc:-1}" -eq 0 ]; then
+            echo "Database username: ${database_name}"
+            echo "Database Name: ${database_name}"
+            echo "Database userpassword: (你刚输入的那个，不回显)"
+        else
+            Echo_Red "Database: 创建失败，站点本身已建好。"
+            Echo_Red "可稍后执行 lnmp database add 单独重试建库。"
+        fi
     else
         echo "Create database: no"
     fi
@@ -867,6 +886,11 @@ Check_DB()
 
 Make_TempMycnf()
 {
+    local pw
+    # option file 在引号包裹的值里把反斜杠当转义符（\n、\t、\s 等），
+    # 原样写入会让含反斜杠的密码被解析成别的字符，表现为“密码是对的却认证失败”。
+    # 单引号不用另外处理：解析时只按首尾配对剥引号，值中间的单引号原样保留。
+    pw="${1//\\/\\\\}"
     # 先备份管理员原有的 ~/.my.cnf，TempMycnf_Clean 会还原
     if [ -s ~/.my.cnf ] && [ ! -e ~/.my.cnf.lnmp-bak ]; then
         cp -p ~/.my.cnf ~/.my.cnf.lnmp-bak
@@ -875,24 +899,35 @@ Make_TempMycnf()
     cat >~/.my.cnf<<EOF
 [client]
 user=root
-password='$1'
+password='${pw}'
 EOF
     chmod 600 ~/.my.cnf
+    # 标记这份凭据由本次执行写入，退出时无论走哪条分支都要清掉
+    LNMP_Mycnf_Owned=1
+    LNMP_Set_Trap
 }
 
+# 密码校验最多重试 3 次。原实现是 `while [ $status -eq 1 ]` 的无上限循环：
+# 交互下输错密码只能 Ctrl+C 退出，非交互下输入耗尽后 read 立刻返回，
+# 循环就变成空转刷屏。失败时返回非 0，由调用方决定是否继续。
 Verify_DB_Password()
 {
+    local attempt=0 max_attempt=3
     Check_DB
-    status=1
-    while [ $status -eq 1 ]; do
+    while [ ${attempt} -lt ${max_attempt} ]; do
+        attempt=$((attempt + 1))
         Echo_Yellow "Enter current root password of Database (Password will not shown): "
         Read_Secret DB_Root_Password "数据库 root 密码"
         echo
         Make_TempMycnf "${DB_Root_Password}"
-        Do_Query ""
-        status=$?
+        if Do_Query ""; then
+            echo "OK, MySQL root password correct."
+            return 0
+        fi
+        Echo_Red "数据库 root 密码校验失败（第 ${attempt}/${max_attempt} 次）。"
     done
-    echo "OK, MySQL root password correct."
+    Echo_Red "连续 ${max_attempt} 次校验失败，已放弃。"
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -904,13 +939,52 @@ Verify_DB_Password()
 
 # root 专属临时目录，退出时统一清理。
 LNMP_Tmp_Dir=""
+# 本次执行是否写过 ~/.my.cnf（里面是数据库 root 明文密码）。
+LNMP_Mycnf_Owned=0
+
+# 退出清理：临时目录和临时凭据挂在同一个 EXIT trap 上。
+# 参数非法、系统库、EOF 等中途 exit 的分支也会经过这里，
+# 不再依赖调用方在末尾补一次 TempMycnf_Clean —— 例如 vhost add 建库那条路径
+# 原先就没有清理，root 密码会一直留在 ~/.my.cnf 里。
+LNMP_Cleanup()
+{
+    if [ -n "${LNMP_Tmp_Dir}" ]; then
+        rm -rf "${LNMP_Tmp_Dir}"
+        LNMP_Tmp_Dir=""
+    fi
+    TempMycnf_Clean
+}
+
+# INT/TERM 必须单独退出：只挂 EXIT 的话，trap 执行完脚本会接着往下跑，
+# Del_Database 里 "Press ctrl+c to cancel" 的倒计时就取消不掉了。
+#
+# 约束：注册 trap 的两个入口（Make_TempMycnf、LNMP_Tmp_Init）都只能在主 shell
+# 调用，不要放进 $(...) 或管道右侧。子 shell 继承 LNMP_Tmp_Dir 的值，却会在自己
+# 退出时执行这里注册的 EXIT trap，把主 shell 还在用的临时目录和凭据一起删掉。
+LNMP_Set_Trap()
+{
+    trap 'LNMP_Cleanup' EXIT
+    trap 'echo; exit 130' INT TERM
+}
+
+# 临时目录的初始化必须在当前 shell 完成，不能塞进 LNMP_Mktemp。
+# LNMP_Mktemp 的返回值要靠命令替换取回，而命令替换是子 shell：在子 shell 里
+# 给 LNMP_Tmp_Dir 赋值，父 shell 拿不到；在子 shell 里注册 EXIT trap，子 shell
+# 一退出就把刚建好的文件连目录一起删掉，随后写 SQL 或密码文件必然失败，
+# 退出时的清理也只是对着空变量执行 rm -rf ""。
+LNMP_Tmp_Init()
+{
+    [ -n "${LNMP_Tmp_Dir}" ] && return 0
+    LNMP_Tmp_Dir=$(mktemp -d /tmp/.lnmp-adm.XXXXXXXX) || return 1
+    chmod 700 "${LNMP_Tmp_Dir}"
+    LNMP_Set_Trap
+    return 0
+}
+
+# 调用前必须已执行 LNMP_Tmp_Init。
 LNMP_Mktemp()
 {
-    if [ -z "${LNMP_Tmp_Dir}" ]; then
-        LNMP_Tmp_Dir=$(mktemp -d /tmp/.lnmp-adm.XXXXXXXX) || exit 1
-        chmod 700 "${LNMP_Tmp_Dir}"
-        trap 'rm -rf "${LNMP_Tmp_Dir}"' EXIT INT TERM
-    fi
+    [ -n "${LNMP_Tmp_Dir}" ] || return 1
     mktemp "${LNMP_Tmp_Dir}/$1.XXXXXXXX"
 }
 
@@ -1117,7 +1191,10 @@ Check_Vhost_Dir()
 Do_Query()
 {
     local sql_file rc
-    sql_file=$(LNMP_Mktemp query) || return 1
+    # 这里失败是环境问题（建不出临时目录），不能只返回非 0：
+    # Verify_DB_Password 会把非 0 当成密码错误，一直重试下去。
+    LNMP_Tmp_Init || exit 1
+    sql_file=$(LNMP_Mktemp query) || exit 1
     chmod 600 "${sql_file}"
     printf '%s\n' "$1" > "${sql_file}"
     Check_DB
@@ -1127,8 +1204,12 @@ Do_Query()
     return ${rc}
 }
 
+# 只清理本次执行自己写进去的凭据，避免误删管理员原有的 ~/.my.cnf。
+# 可重复调用：正常路径末尾调一次，EXIT trap 再调一次也不会重复还原备份。
 TempMycnf_Clean()
 {
+    [ "${LNMP_Mycnf_Owned}" -eq 1 ] || return 0
+    LNMP_Mycnf_Owned=0
     rm -f ~/.my.cnf
     # 恢复安装前备份的客户端配置。
     if [ -e ~/.my.cnf.lnmp-bak ]; then
@@ -1155,20 +1236,22 @@ Add_Database_Menu()
     Enter_Database_Name
     echo "Your will create a database and MySQL user with same name: ${database_name}"
     Echo_Yellow "Please enter password for mysql user ${database_name} (输入不回显): "
-    read -r -s mysql_password
+    Read_Secret mysql_password "数据库用户密码"
     echo
     if [ -z "${mysql_password}" ]; then
         Echo_Red "密码不能为空。"
-        exit 1
+        return 1
     fi
+    return 0
 }
 
 Add_Database()
 {
-    local sql_file mysql_password_q
-    Check_DB_Identifier "${database_name}" || exit 1
+    local sql_file mysql_password_q rc
+    Check_DB_Identifier "${database_name}" || return 1
     mysql_password_q=$(Sql_Quote "${mysql_password}")
-    sql_file=$(LNMP_Mktemp add_db) || exit 1
+    LNMP_Tmp_Init || return 1
+    sql_file=$(LNMP_Mktemp add_db) || return 1
     chmod 600 "${sql_file}"
     cat >"${sql_file}"<<EOF
 CREATE USER IF NOT EXISTS '${database_name}'@'localhost' IDENTIFIED BY '${mysql_password_q}';
@@ -1184,14 +1267,27 @@ FLUSH PRIVILEGES;
 EOF
 
     ${MySQL_Bin} --defaults-file=~/.my.cnf < "${sql_file}"
-    [ $? -eq 0 ] && echo "Add database Sucessfully." || echo "Add database failed!"
+    rc=$?
     rm -f "${sql_file}"
+    if [ ${rc} -ne 0 ]; then
+        Echo_Red "Add database failed!"
+        return ${rc}
+    fi
+    echo "Add database Sucessfully."
+    return 0
 }
 
 List_Database()
 {
+    local rc
     ${MySQL_Bin} --defaults-file=~/.my.cnf -e "SHOW DATABASES;"
-    [ $? -eq 0 ] && echo "List all databases Sucessfully." || echo "List all databases failed!"
+    rc=$?
+    if [ ${rc} -ne 0 ]; then
+        Echo_Red "List all databases failed!"
+        return ${rc}
+    fi
+    echo "List all databases Sucessfully."
+    return 0
 }
 
 Edit_Database()
@@ -1199,13 +1295,13 @@ Edit_Database()
     local pass_q
     while :;do
         Echo_Yellow "Enter database username (只允许字母/数字/下划线): "
-        read database_username
+        Read_Input database_username "数据库用户名"
         Check_DB_Identifier "${database_username}" || continue
         break
     done
     while :;do
         Echo_Yellow "Enter NEW Password (输入不回显): "
-        read -r -s database_username_passwd
+        Read_Secret database_username_passwd "新密码"
         echo
         if [ "${database_username_passwd}" == "" ]; then
             Echo_Red "Database Password can't be empty!"
@@ -1215,35 +1311,221 @@ Edit_Database()
     done
     pass_q=$(Sql_Quote "${database_username_passwd}")
 
-    Do_Query "ALTER USER '${database_username}'@'localhost' IDENTIFIED BY '${pass_q}';"
-    Do_Query "ALTER USER '${database_username}'@'127.0.0.1' IDENTIFIED BY '${pass_q}';"
-    [ $? -eq 0 ] && echo "Edit user password Sucessfully." || echo "Edit user password databases failed!"
-    Do_Query "FLUSH PRIVILEGES;"
+    # 三条语句合成一次执行：mysql 客户端默认遇错即停，
+    # 分三次调用只检查中间那次的返回码，前后两次失败都会被当成成功。
+    if ! Do_Query "ALTER USER '${database_username}'@'localhost' IDENTIFIED BY '${pass_q}';
+ALTER USER '${database_username}'@'127.0.0.1' IDENTIFIED BY '${pass_q}';
+FLUSH PRIVILEGES;"; then
+        Echo_Red "Edit user password failed!"
+        return 1
+    fi
+    echo "Edit user password Sucessfully."
+    return 0
 }
 
 Del_Database()
 {
-    List_Database
+    local del_sql_file rc
+    List_Database || return 1
     Enter_Database_Name
     if [[ "${database_name}" == "information_schema" || "${database_name}" == "mysql" || "${database_name}" == "performance_schema" ]]; then
-        echo "MySQL System Database can't be delete!"
-        exit 1
+        Echo_Red "MySQL System Database can't be delete!"
+        return 1
+    fi
+    Check_DB_Identifier "${database_name}" || return 1
+    # 先确认库确实存在：既把“库名敲错”和“删除失败”区分开，
+    # 也不用等完 10 秒倒计时才发现名字打错了。
+    if ! Database_Exists "${database_name}"; then
+        Echo_Red "数据库不存在：${database_name}"
+        return 1
     fi
     echo "Your will delete database and MySQL user with same name: ${database_name}"
     echo "Sleep 10s, Press ctrl+c to cancel..."
     Sleep_Sec 10
-    Check_DB_Identifier "${database_name}" || exit 1
-    del_sql_file=$(LNMP_Mktemp del_db) || exit 1
+    LNMP_Tmp_Init || return 1
+    del_sql_file=$(LNMP_Mktemp del_db) || return 1
     chmod 600 "${del_sql_file}"
     cat >"${del_sql_file}"<<EOF
-DROP USER '${database_name}'@'127.0.0.1';
-DROP USER '${database_name}'@'localhost';
+DROP USER IF EXISTS '${database_name}'@'127.0.0.1';
+DROP USER IF EXISTS '${database_name}'@'localhost';
 DROP DATABASE \`${database_name}\`;
 FLUSH PRIVILEGES;
 EOF
     ${MySQL_Bin} --defaults-file=~/.my.cnf < "${del_sql_file}"
-    [ $? -eq 0 ] && echo "Delete database: ${database_name} Sucessfully." || echo "Delete database: ${database_name} failed!"
+    rc=$?
     rm -f "${del_sql_file}"
+    if [ ${rc} -ne 0 ]; then
+        Echo_Red "Delete database: ${database_name} failed!"
+        return ${rc}
+    fi
+    echo "Delete database: ${database_name} Sucessfully."
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# 备份与恢复
+#
+#   lnmp database export <数据库名> <文件.sql.gz>
+#   lnmp database import <数据库名> <文件.sql.gz>
+#
+# 导出的是单库内容，不带 CREATE DATABASE / USE 语句：目标库完全由命令行参数
+# 决定，备份文件里记录的库名不会反过来盖掉用户指定的库，因此同一份备份可以
+# 恢复到另一个库名，也不会误写到别的库上。
+# ---------------------------------------------------------------------------
+
+# 与 mysql 客户端同目录的 mysqldump。
+MySQL_Dump_Bin=""
+Check_Dump_Bin()
+{
+    if [ "${MySQL_Bin}" == "None" ]; then
+        Echo_Red "未检测到已安装的 MySQL/MariaDB。"
+        return 1
+    fi
+    MySQL_Dump_Bin="$(dirname "${MySQL_Bin}")/mysqldump"
+    if [ ! -x "${MySQL_Dump_Bin}" ]; then
+        Echo_Red "找不到可执行的 mysqldump：${MySQL_Dump_Bin}"
+        return 1
+    fi
+    return 0
+}
+
+# 库是否存在。用 information_schema 精确比较，不用 SHOW DATABASES LIKE ——
+# LIKE 会把库名里的下划线当成单字符通配符，wp_a 能匹配到 wpxa。
+Database_Exists()
+{
+    local name_q out
+    name_q=$(Sql_Quote "$1")
+    out=$(${MySQL_Bin} --defaults-file=~/.my.cnf -N -B -e \
+        "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${name_q}';") || return 1
+    [ -n "${out}" ]
+}
+
+# 备份文件路径：父目录必须已存在，目标不能是目录或其它非普通文件。
+Check_Backup_Path()
+{
+    local f="$1" dir
+    if [ -z "${f}" ]; then
+        Echo_Red "备份文件路径不能为空。"
+        return 1
+    fi
+    case "${f}" in
+        */)
+            Echo_Red "备份文件路径不能以 / 结尾：${f}"
+            return 1
+            ;;
+    esac
+    dir=$(dirname -- "${f}")
+    if [ ! -d "${dir}" ]; then
+        Echo_Red "目录不存在：${dir}"
+        return 1
+    fi
+    if [ -e "${f}" ] && [ ! -f "${f}" ]; then
+        Echo_Red "目标已存在且不是普通文件：${f}"
+        return 1
+    fi
+    return 0
+}
+
+Export_Database()
+{
+    local database_name="$1" out_file="$2" tmp_file dump_rc gzip_rc
+
+    if [ -z "$1" ] || [ -z "$2" ]; then
+        echo "Usage: lnmp database export <数据库名> <文件.sql.gz>"
+        return 1
+    fi
+    Check_DB_Identifier "${database_name}" || return 1
+    Check_Backup_Path "${out_file}" || return 1
+    if [ -e "${out_file}" ]; then
+        Echo_Red "文件已存在，不覆盖：${out_file}"
+        Echo_Red "请换一个文件名，或自行删除旧文件后重试。"
+        return 1
+    fi
+    Check_Dump_Bin || return 1
+    if ! Database_Exists "${database_name}"; then
+        Echo_Red "数据库不存在：${database_name}"
+        return 1
+    fi
+
+    # 先写同目录临时文件再改名：中途失败不会留下一个看着像备份的半截文件，
+    # 同目录也保证 mv 是原子改名而不是跨文件系统复制。
+    tmp_file=$(mktemp "${out_file}.lnmp-part.XXXXXXXX") || {
+        Echo_Red "无法在目标目录创建临时文件：${out_file}"
+        return 1
+    }
+    echo "Exporting database ${database_name} ..."
+    ${MySQL_Dump_Bin} --defaults-file=~/.my.cnf \
+        --single-transaction --quick --routines --triggers --events \
+        --default-character-set=utf8mb4 \
+        "${database_name}" | gzip -c > "${tmp_file}"
+    dump_rc=${PIPESTATUS[0]}
+    gzip_rc=${PIPESTATUS[1]}
+    if [ "${dump_rc}" -ne 0 ] || [ "${gzip_rc}" -ne 0 ]; then
+        rm -f "${tmp_file}"
+        Echo_Red "Export database: ${database_name} failed! (mysqldump=${dump_rc} gzip=${gzip_rc})"
+        return 1
+    fi
+    if ! mv -f "${tmp_file}" "${out_file}"; then
+        rm -f "${tmp_file}"
+        Echo_Red "写入备份文件失败：${out_file}"
+        return 1
+    fi
+    chmod 600 "${out_file}"
+    echo "Export database: ${database_name} Sucessfully."
+    echo "Backup file: ${out_file}"
+    return 0
+}
+
+Import_Database()
+{
+    local database_name="$1" in_file="$2" rc gz_rc mysql_rc
+
+    if [ -z "$1" ] || [ -z "$2" ]; then
+        echo "Usage: lnmp database import <数据库名> <文件.sql.gz>"
+        return 1
+    fi
+    Check_DB_Identifier "${database_name}" || return 1
+    if [ ! -f "${in_file}" ]; then
+        Echo_Red "备份文件不存在或不是普通文件：${in_file}"
+        return 1
+    fi
+    if [ ! -r "${in_file}" ] || [ ! -s "${in_file}" ]; then
+        Echo_Red "备份文件不可读或为空：${in_file}"
+        return 1
+    fi
+    # 不自动建库：建库同时还要建用户和授权，那是 database add 的职责，
+    # 这里凭空 CREATE DATABASE 会留下一个没有对应用户的库。
+    if ! Database_Exists "${database_name}"; then
+        Echo_Red "数据库不存在：${database_name}"
+        Echo_Red "请先执行 lnmp database add 建库建用户，再导入。"
+        return 1
+    fi
+
+    Echo_Yellow "导入会覆盖数据库 ${database_name} 中的同名表，且无法撤销。"
+    echo "Sleep 10s, Press ctrl+c to cancel..."
+    Sleep_Sec 10
+
+    echo "Importing into database ${database_name} ..."
+    # 按文件内容判断是否压缩，不按扩展名：直接给未压缩的 .sql 也能导入。
+    if gzip -t "${in_file}" 2>/dev/null; then
+        gzip -dc "${in_file}" | ${MySQL_Bin} --defaults-file=~/.my.cnf \
+            --default-character-set=utf8mb4 "${database_name}"
+        gz_rc=${PIPESTATUS[0]}
+        mysql_rc=${PIPESTATUS[1]}
+        rc=0
+        [ "${gz_rc}" -ne 0 ] && rc=1
+        [ "${mysql_rc}" -ne 0 ] && rc=1
+    else
+        ${MySQL_Bin} --defaults-file=~/.my.cnf \
+            --default-character-set=utf8mb4 "${database_name}" < "${in_file}"
+        rc=$?
+    fi
+    if [ "${rc}" -ne 0 ]; then
+        Echo_Red "Import database: ${database_name} failed!"
+        return 1
+    fi
+    echo "Import database: ${database_name} Sucessfully."
+    return 0
 }
 
 Enter_Ftp_Name()
@@ -1306,6 +1588,7 @@ Add_Ftp()
         chown www:www -R "${vhostdir}"
     fi
 
+    LNMP_Tmp_Init || exit 1
     ftp_pass_file=$(LNMP_Mktemp ftppass) || exit 1
     chmod 600 "${ftp_pass_file}"
     cat >"${ftp_pass_file}"<<EOF
@@ -1331,6 +1614,7 @@ Edit_Ftp()
     read -r -s ftp_account_password
     echo
     if [ "${ftp_account_password}" != "" ]; then
+        LNMP_Tmp_Init || exit 1
         ftp_pass_file=$(LNMP_Mktemp ftppass) || exit 1
         chmod 600 "${ftp_pass_file}"
         cat >"${ftp_pass_file}"<<EOF
@@ -2233,9 +2517,11 @@ case "${arg1}" in
         Function_Vhost ${arg2}
         ;;
     database)
-        Verify_DB_Password
-        Function_Database ${arg2}
+        Verify_DB_Password || exit 1
+        Function_Database "${arg2}" "${arg3}" "${arg4}"
+        db_rc=$?
         TempMycnf_Clean
+        exit ${db_rc}
         ;;
     ftp)
         Check_Pureftpd
@@ -2257,6 +2543,8 @@ case "${arg1}" in
         echo "Usage: lnmp {nginx|mysql|mariadb|php-fpm|pureftpd} {start|stop|reload|restart|kill|status}"
         echo "Usage: lnmp vhost {add|list|del}"
         echo "Usage: lnmp database {add|list|edit|del}"
+        echo "Usage: lnmp database export <数据库名> <文件.sql.gz>"
+        echo "Usage: lnmp database import <数据库名> <文件.sql.gz>"
         echo "Usage: lnmp ftp {add|list|edit|del|show}"
         echo "Usage: lnmp ssl add"
         echo "Usage: lnmp {dnsssl|dns} {cx|ali|cf|dp|he|gd|aws}"

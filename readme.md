@@ -75,11 +75,11 @@
 ```bash
 # 方式一：clone（方便后续 git pull 更新）
 yum install -y git || apt-get install -y git
-git clone https://github.com/sirfromprc/lnmp.git lnmp
+git clone https://github.com/<你的用户名>/lnmp.git lnmp
 cd lnmp
 
 # 方式二：下载 release 压缩包
-wget https://github.com/sirfromprc/lnmp/archive/refs/tags/v2.3.tar.gz
+wget https://github.com/<你的用户名>/lnmp/archive/refs/tags/v2.3.tar.gz
 tar zxf v2.3.tar.gz
 cd <仓库名>-2.3
 ```
@@ -233,7 +233,14 @@ lnmp database add    # 新建数据库和对应用户
 lnmp database list   # 列出数据库
 lnmp database edit   # 修改数据库用户密码
 lnmp database del    # 删除数据库
+
+lnmp database export <库名> <文件.sql.gz>   # 导出单个库，gzip 压缩
+lnmp database import <库名> <文件.sql.gz>   # 导入到已存在的库
 ```
+
+导出不会覆盖已存在的文件；导入前目标库必须已经存在（先 `database add`），
+导入会覆盖库中的同名表，执行前有 10 秒倒计时可以 Ctrl+C 取消。
+所有 `database` 子命令成功返回 0、失败返回非 0，可以直接用在脚本里。
 
 **重置 root 密码**
 
