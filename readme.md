@@ -272,6 +272,37 @@ lnmp backup restore web <域名> [批次]
 备份账号、chroot、专用密钥、主机指纹核对和排查表都写在
 `HowtoGuides.md` 的「8.5 异地备份（SFTP）」，照着做即可。
 
+### 3.3.1 Telegram 通知
+
+```bash
+lnmp tgnotice --init      # 交互写入 /etc/lnmp/notify.conf（600）
+lnmp tgnotice --test      # 发一条测试消息
+lnmp tgnotice --status    # 看当前配置（token 只显示前段）
+```
+
+配好之后，`tgnotice` 是一个**全局可用的 shell 函数**，在任何脚本或交互
+shell 里都能直接写：
+
+```bash
+tgnotice "备份失败：wpdemo"          # 默认 HTML 格式
+tgnotice "*备份完成*" md             # MarkdownV2 格式
+tgnotice "原样文本 < & >" text       # 不做格式解析
+```
+
+函数由 `/etc/profile.d/lnmp-tgnotice.sh` 自动加载。非交互脚本里如果取不到，
+显式加载一次：`. /bin/lnmp-tgnotice`。
+
+几个行为要点：
+
+- bot token 和消息正文都不进命令行参数（走 curl 的 600 配置文件），
+  同机其他用户 `ps` 看不到。
+- 文本原样发送，不替你转义 —— HTML 模式下 `<b>粗体</b>` 是有效的。
+  代价是纯文本里的 `<` `&` 会让 Telegram 报 400，此时会**自动降级成纯文本
+  重发一次**并打印告警，通知不会因为格式问题丢掉。
+- 未配置或 `TG_Enable=0` 时静默跳过并返回 0，所以在脚本里随手加调用是安全的。
+- 发送失败返回非 0。通知失败通常不该中断主流程，需要时写
+  `tgnotice "..." || true`。
+
 ### 3.4 PHP
 
 **目录与配置**
@@ -380,6 +411,7 @@ lnmp ftp {add|list|edit|del|show}
 | 脚本 | 用途 |
 |---|---|
 | `lnmp-backup.sh` | `lnmp backup` 的实现，安装为 /bin/lnmp-backup |
+| `lnmp-tgnotice.sh` | Telegram 通知，安装为 /bin/lnmp-tgnotice，并提供全局 `tgnotice` 函数 |
 | `backup.sh` | 已废弃，转发到 `lnmp backup run all` |
 | `cut_nginx_logs.sh` | Nginx 日志切割 |
 | `check502.sh` | 检测 502 并自动重启 PHP-FPM |

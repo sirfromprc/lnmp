@@ -31,6 +31,25 @@ Install_LNMP_Command()
     chmod +x /bin/lnmp
     \cp ${cur_dir}/tools/lnmp-backup.sh /bin/lnmp-backup
     chmod +x /bin/lnmp-backup
+    \cp ${cur_dir}/tools/lnmp-tgnotice.sh /bin/lnmp-tgnotice
+    chmod +x /bin/lnmp-tgnotice
+    Install_Tgnotice_Profile
+}
+
+# 让 tgnotice 函数在登录 shell 里直接可用，脚本里写 tgnotice "..." 即可。
+# 只在 bash 下加载：函数用到了 bash 的数组与字符串操作，dash 跑不了。
+Install_Tgnotice_Profile()
+{
+    mkdir -p /etc/profile.d 2>/dev/null || return 0
+    cat > /etc/profile.d/lnmp-tgnotice.sh <<'PROFILE_EOF'
+# 由 LNMP 安装流程生成：加载 tgnotice 函数。
+# 用法：tgnotice "文本"        默认 HTML
+#       tgnotice "文本" md     MarkdownV2
+if [ -n "${BASH_VERSION:-}" ] && [ -r /bin/lnmp-tgnotice ]; then
+    . /bin/lnmp-tgnotice
+fi
+PROFILE_EOF
+    chmod 644 /etc/profile.d/lnmp-tgnotice.sh
 }
 
 Add_LNMP_Startup()

@@ -189,6 +189,8 @@ Uninstall_LNMP()
     rm -f /etc/init.d/php-fpm
     rm -f /bin/lnmp
     rm -f /bin/lnmp-backup
+    rm -f /bin/lnmp-tgnotice
+    rm -f /etc/profile.d/lnmp-tgnotice.sh
     echo "LNMP Uninstall completed."
 }
 
@@ -219,6 +221,8 @@ Uninstall_LNMPA()
     rm -f /etc/init.d/httpd
     rm -f /bin/lnmp
     rm -f /bin/lnmp-backup
+    rm -f /bin/lnmp-tgnotice
+    rm -f /etc/profile.d/lnmp-tgnotice.sh
     echo "LNMPA Uninstall completed."
 }
 
@@ -247,6 +251,8 @@ Uninstall_LAMP()
     rm -f /etc/init.d/httpd
     rm -f /bin/lnmp
     rm -f /bin/lnmp-backup
+    rm -f /bin/lnmp-tgnotice
+    rm -f /etc/profile.d/lnmp-tgnotice.sh
     echo "LAMP Uninstall completed."
 }
 
@@ -279,6 +285,7 @@ ${MySQL_Dir}
 /etc/my.cnf
 /bin/lnmp
 /bin/lnmp-backup
+/bin/lnmp-tgnotice
 EOF
         Sleep_Sec 3
         Press_Start
@@ -300,6 +307,7 @@ ${MySQL_Dir}
 /etc/my.cnf
 /bin/lnmp
 /bin/lnmp-backup
+/bin/lnmp-tgnotice
 EOF
         Sleep_Sec 3
         Press_Start
@@ -319,6 +327,7 @@ ${MySQL_Dir}
 /etc/my.cnf
 /bin/lnmp
 /bin/lnmp-backup
+/bin/lnmp-tgnotice
 EOF
         Sleep_Sec 3
         Press_Start

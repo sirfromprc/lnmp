@@ -27,6 +27,9 @@ LNMP_Ver='2.3'
 . include/mariadb.sh
 . include/php.sh
 . include/nginx.sh
+# 通知函数：让安装/升级流程里可以直接写 tgnotice "..."
+. tools/lnmp-tgnotice.sh
+. include/openresty_modules.sh
 . include/openresty.sh
 . include/apache.sh
 . include/end.sh

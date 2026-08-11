@@ -135,6 +135,16 @@ Upgrade_OpenResty_Source()
     cp -a /usr/local/openresty/nginx/conf "${bak}" && \
         echo "已备份配置到 ${bak}"
 
+    # 初装时配的模块要一并带过来，否则升级会编译出一个不含模块的版本
+    if ! OR_Modules_Load_Persisted; then
+        Echo_Red "读取已记录的模块配置失败，升级中止。"
+        return 1
+    fi
+    if ! OR_Modules_Prepare; then
+        Echo_Red "自定义模块准备失败，升级中止。现有安装未被替换。"
+        return 1
+    fi
+
     Tar_Cd "${tarball}" "openresty-${ver}"
     ./configure -j"$(nproc 2>/dev/null || echo 2)" \
         --prefix=/usr/local/openresty \
@@ -145,7 +155,8 @@ Upgrade_OpenResty_Source()
         --with-http_realip_module \
         --with-http_stub_status_module \
         --with-http_gzip_static_module \
-        ${OpenResty_Modules_Options}
+        ${OpenResty_Modules_Options} \
+        ${OR_Modules_Add_Options}
     if ! Check_Makefile_Ready; then
         Echo_Red "configure 失败，升级中止。现有安装未被替换。"
         return 1
@@ -162,5 +173,13 @@ Upgrade_OpenResty_Source()
 
     cd "${cur_dir}/src/"
     rm -rf "${cur_dir}/src/openresty-${ver}"
+
+    # 动态模块的 .so 换了新版本，load_module 列表要重写；
+    # 这一步在 nginx -t 之前完成，否则重载会因缺文件失败。
+    if ! OR_Modules_Post_Build; then
+        Echo_Red "生成模块与 Lua 路径配置失败。"
+        return 1
+    fi
+    OR_Modules_Persist
     return 0
 }

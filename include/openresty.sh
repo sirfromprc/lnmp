@@ -220,6 +220,12 @@ Install_OpenResty_Source()
         return 1
     fi
 
+    # 自定义模块的下载、校验、解压要在 configure 之前完成
+    if ! OR_Modules_Prepare; then
+        Echo_Red "自定义模块准备失败，中止安装。"
+        return 1
+    fi
+
     Tar_Cd "${tarball}" "${OpenResty_Ver}"
 
     # 编译参数与本包 nginx 的口径保持一致：PCRE JIT、IPv6、SSL。
@@ -234,7 +240,8 @@ Install_OpenResty_Source()
         --with-http_realip_module \
         --with-http_stub_status_module \
         --with-http_gzip_static_module \
-        ${OpenResty_Modules_Options}
+        ${OpenResty_Modules_Options} \
+        ${OR_Modules_Add_Options}
     if ! Check_Makefile_Ready; then
         Echo_Red "OpenResty configure 失败。常见原因是缺少 libpcre2-dev / libssl-dev。"
         return 1
@@ -260,6 +267,11 @@ Install_OpenResty()
     Echo_Blue "[+] Installing OpenResty (${OpenResty_Install_Mode}) ..."
 
     Check_WebServer_Conflict openresty || exit 1
+
+    # 包安装方式加不了编译期模块，配了就直接停下来说清楚
+    if [ "${OpenResty_Install_Mode}" = "pkg" ]; then
+        OR_Check_Pkg_Mode_Conflict || exit 1
+    fi
 
     case "${OpenResty_Install_Mode}" in
         pkg)    Install_OpenResty_Pkg    || exit 1 ;;
@@ -326,12 +338,21 @@ OpenResty_Post_Install()
     chown -R www:www "${Default_Website_Dir}" 2>/dev/null
     chmod 755 /home/wwwlogs
 
+    # 动态模块的 load_module 与 Lua 搜索路径由 lnmp 生成，nginx.conf 会 include 它们。
+    # 必须在 nginx -t 之前完成，否则 include 的文件不存在会直接检查失败。
+    if ! OR_Modules_Post_Build; then
+        Echo_Red "生成模块与 Lua 路径配置失败。"
+        exit 1
+    fi
+
     if ! /usr/local/nginx/sbin/nginx -t; then
         Echo_Red "OpenResty 配置检查未通过，请查看上面的报错。"
         exit 1
     fi
 
     StartUp nginx
+    # 记录本次的编译期配置，升级时沿用
+    OR_Modules_Persist
     Echo_Green "OpenResty 安装完成：$(/usr/local/openresty/nginx/sbin/nginx -v 2>&1)"
 }
 

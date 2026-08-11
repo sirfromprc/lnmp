@@ -5797,3 +5797,95 @@ lnmp backup test                 试恢复：导入临时库校验后删除
   待收尾验证：真实 `mysqldump`/`tar` 产物、真实 SFTP 服务器上的上传与改名、
   systemd timer 的实际触发、`init` 的交互流程、age/gpg 加密路径。
 - `todo.md` 的 `TODO-FTP-001` 已关闭并删除；本阶段新增的待验证项记入 `todo.md`。
+
+# 阶段 20 — OpenResty 自定义模块配置化与 Telegram 通知（2026-08-10）
+
+## FEAT-OR-001 OpenResty 自定义编译模块与 Lua 库管理
+
+**位置**：新增 `include/openresty_modules.sh`；`lnmp.conf` 新增配置块；
+`include/openresty.sh`、`include/upgrade_openresty.sh`、`conf/openresty.conf`、
+`install.sh`、`upgrade.sh` 同步
+
+原先只有 `include/version.sh` 里一个 `OpenResty_Modules_Options` 变量，
+是个裸的 `./configure` 参数入口。六个缺口逐条补齐：
+
+| 原状况 | 现在 |
+| --- | --- |
+| 变量只在 `include/version.sh` 定义，`lnmp.conf` 里没有配置项和说明 | `lnmp.conf` 新增配置块，含格式说明与 GeoIP2 示例 |
+| 官方软件包安装方式（`ORMode=1`）加不了编译模块，且静默忽略 | 配了模块却选包安装时直接报错，并给出「改 ORMode=2」或「清空配置」两条出路 |
+| 不负责下载、校验或保存插件源码 | 按 `名称\|下载地址\|SHA256\|类型` 配置，自动下载、**强制 SHA256 校验**、解压到 `src/or-modules/<名称>/` 并保留源码包 |
+| 初装临时传入的参数不持久化，升级忘记再传就会编译出不含模块的版本 | 初装成功后写入 `/etc/lnmp/openresty-build.conf`，`./upgrade.sh openresty` 自动沿用；当前显式配置优先 |
+| 动态模块的 `load_module` 配置没有自动生成 | 编译后扫描 `nginx/modules/*.so` 生成 `conf/load_modules.conf`，`nginx.conf` 顶部 include |
+| Lua 库没有 LuaRocks 或自定义 lualib 管理入口 | `OpenResty_Custom_Lualib` 进 `lua_package_path`（生成 `conf/lua_paths.conf`）；`OpenResty_Opm_Packages` 走 opm，`OpenResty_Luarocks_Packages` 走 luarocks |
+
+实现细节：
+
+- 模块名走白名单（字母数字点下划线连字符），拒绝 `..`、点开头和路径分隔符 ——
+  这个值会用作源码目录名。
+- 下载地址必须是 https；SHA256 必填且不可跳过：这些代码会被编译进对外服务的
+  进程，比普通依赖更需要确认来源。校验失败即删除下载的文件。
+- 解压用 `--strip-components=1` 到固定目录名：上游归档包的顶层目录名通常带
+  版本号，不固定下来就没法把 configure 参数写死。
+- 解压后检查是否存在 `config` 文件，不是 nginx 模块源码时直接报错，
+  而不是等到 configure 阶段报一堆看不懂的错。
+- `load_modules.conf` 直接扫描 `.so` 而不是照配置推断文件名：`.so` 的名字由
+  模块自己的 `config` 决定，未必等于配置里写的名称。生成动作可重复执行。
+- opm / luarocks 装包失败只告警不中止：Web 服务本身是好的，缺库可以事后补。
+
+**行为变化**：`ORMode=1` + 配置了自定义模块的组合由静默忽略改为报错退出；
+动态模块现在会真正被加载（此前编译出 `.so` 但无人写 `load_module`，等于没装）。
+
+## FEAT-NOTIFY-001 Telegram 通知与全局 tgnotice 函数
+
+**位置**：新增 `tools/lnmp-tgnotice.sh`（安装为 `/bin/lnmp-tgnotice`）；
+`include/end.sh` 新增 `Install_Tgnotice_Profile`；三个管理脚本加载函数并新增
+`tgnotice` 子命令；`install.sh`、`upgrade.sh`、`pureftpd.sh`、`uninstall.sh` 同步
+
+```bash
+tgnotice "备份失败：wpdemo"      # 默认 HTML
+tgnotice "*备份完成*" md         # MarkdownV2
+tgnotice "原样文本 < & >" text   # 不做格式解析
+```
+
+函数通过 `/etc/profile.d/lnmp-tgnotice.sh` 自动加载，交互 shell、管理脚本、
+安装与升级流程里都能直接调用。同一份文件既可被 source 取得函数，
+也可直接当命令执行（`BASH_SOURCE` 与 `$0` 比较决定是否跑命令行入口）。
+
+配置 `/etc/lnmp/notify.conf`（600），由 `lnmp tgnotice --init` 交互生成。
+
+实现要点：
+
+- **凭据不进命令行参数**：bot token 等同于 bot 的完整控制权，进程参数对同机
+  所有用户可见。URL 与消息体都写进权限 600 的 curl 配置文件，`argv` 里只有
+  `--config`。消息正文同样处理（可能含内网信息）。
+- **文本原样发送，不替用户转义**：HTML 模式下 `<b>粗体</b>` 是用户想要的效果，
+  代替转义就用不了了。代价是纯文本里的 `<` `&` 会让 Telegram 返回 400，
+  因此**解析失败时自动降级为纯文本重发一次**并打印告警 ——
+  通知的首要目标是送达，格式是次要的。
+- 未配置或 `TG_Enable=0` 时静默跳过并返回 0：这个函数会散落在各处被调用，
+  未启用时每次都刷提示反而干扰正常输出。启用了却缺 token / chat_id 则报错，
+  那是配置错误，应该被发现。
+- 超过 4000 字符截断并加说明（Telegram 单条上限 4096）。
+- 失败重试 `TG_Retry` 次；返回码如实反映结果，调用方按需 `|| true`。
+- `--status` 只显示 token 前段，不回显完整值。
+
+## 本阶段验证结果
+
+- `bash -n`：新增与改动的全部文件通过；`t/lint.sh` 全部通过；
+  `t/consistency.sh` 通过 7 项，失败 0 项。
+- OpenResty 模块定向测试 54 项全部通过：模块名白名单（含 `..`、路径分隔符、
+  命令分隔符）、包安装方式冲突检测与提示内容、缺 SHA256 / 非 https / 类型非法 /
+  缺地址 / 校验不匹配（并删除下载文件）/ 解压后非模块源码 六种拒绝路径、
+  静态与动态模块的 configure 参数、`--strip-components` 后的目录结构、
+  注释条目跳过、`load_modules.conf` 的生成与重复执行不累加、
+  `lua_paths.conf` 的自定义目录与相对路径拒绝、持久化与沿用的往返一致性
+  （含带空格和引号的参数）、显式配置优先于持久化文件。
+- Telegram 通知定向测试 39 项全部通过：未配置 / 未启用时静默跳过且不发请求、
+  缺 token 报错、token 与正文都不出现在命令行参数、curl 配置文件权限 600、
+  三种格式映射与默认格式跟随配置、引号 / 反斜杠 / 换行的转义、超长截断、
+  解析失败后降级重发且去掉 `parse_mode`、非格式类错误与网络失败返回非 0、
+  重试次数、临时文件不残留、被 source 时不执行命令行入口。
+- 数据库、FTP、备份测试回归：各 66 / 24 / 54 项全部通过。
+- **验证状态**：已验证（静态与 stub 环境）。以下未在真机执行，待收尾验证：
+  真实 OpenResty 源码编译加载自定义模块、`opm` / `luarocks` 装包、
+  向真实 Telegram API 发送消息。已记入 `todo.md`。

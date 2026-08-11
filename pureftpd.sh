@@ -99,6 +99,8 @@ Install_Pureftpd()
         chmod +x /bin/lnmp
         \cp ${cur_dir}/tools/lnmp-backup.sh /bin/lnmp-backup
         chmod +x /bin/lnmp-backup
+        \cp ${cur_dir}/tools/lnmp-tgnotice.sh /bin/lnmp-tgnotice
+        chmod +x /bin/lnmp-tgnotice
     fi
     id -u www
     if [ $? -ne 0 ]; then
