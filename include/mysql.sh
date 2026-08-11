@@ -244,11 +244,11 @@ Install_MySQL_80()
     cat > /etc/my.cnf<<EOF
 [client]
 #password   = your_password
-port        = 3306
+port        = ${DB_Port}
 socket      = /tmp/mysql.sock
 
 [mysqld]
-port        = 3306
+port        = ${DB_Port}
 socket      = /tmp/mysql.sock
 # 默认仅监听回环地址，避免数据库在安装完成后直接暴露到公网。
 #
@@ -367,11 +367,11 @@ Install_MySQL_84()
     cat > /etc/my.cnf<<EOF
 [client]
 #password   = your_password
-port        = 3306
+port        = ${DB_Port}
 socket      = /tmp/mysql.sock
 
 [mysqld]
-port        = 3306
+port        = ${DB_Port}
 socket      = /tmp/mysql.sock
 # 默认仅监听回环地址，避免数据库在安装完成后直接暴露到公网。
 #

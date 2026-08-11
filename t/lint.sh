@@ -150,6 +150,14 @@ expect_empty C14 "无 iptables 调用与持久化包" \
     fi
 }
 
+# C15 端口不得再硬编码
+#
+# 端口现在由 lnmp.conf 统一给默认值，服务配置与 nftables 规则都跟随同一个变量。
+# 一旦有人又在 Firewall_Allow/Block 后面写字面数字，服务端口和防火墙规则就会
+# 各说各话：改了服务端口，防火墙还按老端口放行或阻断，且不会有任何报错。
+# 80/443 例外 —— 那两个端口散落在 nginx 配置与 SSL 流程里，本包不提供开关。
+expect_empty C15 "防火墙端口未硬编码（80/443 除外）" 'Firewall_(Allow|Block|Unblock)[[:space:]]+(tcp|udp)[[:space:]]+(?!(80|443)$)[0-9]'
+
 # T1 语法检查
 [ -z "${only}" ] || [ "${only}" = "T1" ] && {
     syntax_fail=0

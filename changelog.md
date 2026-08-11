@@ -5889,3 +5889,90 @@ tgnotice "原样文本 < & >" text   # 不做格式解析
 - **验证状态**：已验证（静态与 stub 环境）。以下未在真机执行，待收尾验证：
   真实 OpenResty 源码编译加载自定义模块、`opm` / `luarocks` 装包、
   向真实 Telegram API 发送消息。已记入 `todo.md`。
+
+# 阶段 21 — 端口配置化与备份的 FTP 通道（2026-08-10）
+
+## FEAT-PORT-001 服务端口统一到 lnmp.conf，配置与防火墙规则联动
+
+**位置**：`lnmp.conf` 新增端口配置块；`include/end.sh`、`include/firewall.sh`、
+`include/redis.sh`、`include/memcached.sh`、`include/mysql.sh`、`include/mariadb.sh`、
+`pureftpd.sh`；`include/main.sh` 新增 `Check_Conf_Applied`；
+`t/lint.sh` 新增 C15，`t/consistency.sh` 新增 V8、V9
+
+端口原先写死在各个脚本里：`Firewall_Allow tcp 21`、`port = 3306`、
+`PORT=11211`、`REDISPORT=6379`。想换端口就得同时改服务配置和防火墙规则两处，
+漏掉任何一处都不会有报错 —— 服务监听一个端口，防火墙按另一个端口放行或阻断。
+
+**改动**：九个端口变量集中到 `lnmp.conf`，都带默认值、可用环境变量覆盖：
+`SSH_Port`、`DB_Port`、`DB_X_Port`、`Redis_Port`、`Memcached_Port`、
+`Pureftpd_Port`、`Pureftpd_Data_Port`、`Pureftpd_Passive_Min/Max`。
+
+安装时同时作用于两侧：
+
+| 端口 | 写进服务配置 | 防火墙 |
+| --- | --- | --- |
+| `DB_Port` | `/etc/my.cnf` 的 `port`（mysql 4 处、mariadb 2 处） | 阻断 |
+| `DB_X_Port` | —（X Protocol 由 mysqlx 选项控制） | 阻断 |
+| `Redis_Port` | `redis.conf` 的 `port`、`init.d/redis` 的 `REDISPORT`、自测页 | 阻断 |
+| `Memcached_Port` | `init.d/memcached` 的 `PORT` | 阻断 tcp+udp |
+| `Pureftpd_Port` | `pure-ftpd.conf` 的 `Bind` | 放行 |
+| `Pureftpd_Passive_*` | `pure-ftpd.conf` 的 `PassivePortRange` | 放行整段 |
+| `SSH_Port` | —（本包不改 sshd_config） | 放行 |
+
+模板文件本身保持默认值不变（`conf/pure-ftpd.conf`、`init.d/*` 仍可独立使用），
+覆写发生在部署后的目标文件上。新增 `Check_Conf_Applied` 在每次覆写后回读确认：
+上游模板换了写法时 `sed` 会一条都匹配不上却仍返回 0，服务就会用模板里的默认
+端口起来，与防火墙规则对不上且全程没有报错。现在这种情况直接报错停下。
+
+nginx 的 80/443 不纳入：那两个端口散落在 nginx.conf、每个站点配置和 SSL 签发
+流程里，不是一个变量能覆盖的，C15 检查里把它们列为例外。
+
+**防回归**：`t/lint.sh` 的 C15 禁止再往 `Firewall_Allow/Block/Unblock` 后面写
+字面端口号；`t/consistency.sh` 的 V8 检查九个变量在 `lnmp.conf` 都有默认值，
+V9 检查每个服务的配置覆写动作还在。三项都做过注入式验证（故意写回硬编码、
+故意删掉覆写语句，检查都能报出来）。
+
+## FEAT-BACKUP-002 异地备份支持 ftp / ftps
+
+**位置**：`tools/lnmp-backup.sh`
+
+原先只能走 SFTP。有些机房只提供一台老 FTP 服务器，没有 SSH，
+这条路径原本完全不可用。
+
+**改动**：新增 `Remote_Protocol`，取值 `sftp`（默认）、`ftps`、`ftp`。
+ftp/ftps 走 `curl` 实现，上传顺序与语义和 sftp 完全一致：
+先传到远端 `.incoming/<批次>-<类型>/`，逐个核对文件大小，全部对上之后用
+`RNFR`/`RNTO` 把整个目录改名到正式位置，最后才清理远端过期批次。
+
+- 口令写进权限 600 的 curl 配置文件，不进命令行参数（与 token 同样处理）。
+- 远端文件大小用 `curl --head` 取 `Content-Length`，比解析 `LIST` 稳 ——
+  LIST 的格式随服务器实现而变。
+- `ftps` 用 `ssl-reqd`（显式 FTPS，ftp:// + AUTH TLS），默认校验对端证书；
+  自签证书走 `Remote_Ftp_CA`，`Remote_Ftp_Verify=0` 会打印无法防中间人的告警。
+- 选 `ftp` 时每次运行都在日志里留明文告警：账号口令与整包备份数据全程不加密。
+
+**顺带修正**：`Cleanup_Remote_Ftp` 与 `Cleanup_Remote_Sftp` 原先用
+`... | while read` 遍历批次，管道右侧是子 shell，在里面再调用需要开子进程和
+临时文件的上传函数会拿不到正确结果 —— 测试里表现为远端过期批次没被清掉。
+改为先把列表取回变量再用 `for` 遍历。
+
+## DOC-501 端口与 FTP 上传写入文档
+
+`README.md` 新增「自定义服务端口」小节（含改 `SSH_Port` 的风险提示）；
+`HowtoGuides.md` 8.5 新增「只有 FTP 服务器可用时」，用表格说明三种方式在
+凭据与传输上的差别，原 8.5.6 顺延为 8.5.7。
+
+## 本阶段验证结果
+
+- `bash -n` 全部通过；`t/lint.sh` 全部通过（含新增 C15）；
+  `t/consistency.sh` 通过 9 项（含新增 V8、V9），失败 0 项。
+- FTP/FTPS 上传定向测试 26 项全部通过：协议非法与缺口令的拒绝、
+  ftp 上传成功后远端出现批次且 `.incoming` 清空、口令不出现在命令行参数、
+  curl 临时配置文件不残留、上传失败与远端截断都不污染正式目录、
+  上传失败时不清理旧批次、ftps 强制 TLS 且默认校验证书、
+  关闭校验时传 `insecure` 并告警、远端过期批次清理、list 与 status 显示协议。
+- 回归：备份 sftp 54 项、数据库 66×3、FTP 子命令 24×3、
+  Telegram 39 项、OpenResty 模块 54 项，全部通过。
+- **验证状态**：已验证（静态与 stub 环境）。未在真机执行、待收尾验证：
+  改过端口的实际安装（服务能否在新端口起来、nftables 规则是否匹配）、
+  对真实 FTP/FTPS 服务器的上传与 `RNFR/RNTO` 目录改名。已记入 `todo.md`。

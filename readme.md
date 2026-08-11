@@ -303,6 +303,39 @@ tgnotice "原样文本 < & >" text       # 不做格式解析
 - 发送失败返回非 0。通知失败通常不该中断主流程，需要时写
   `tgnotice "..." || true`。
 
+### 3.3.2 自定义服务端口
+
+端口统一在 `lnmp.conf` 里配置，安装时会**同时**写进服务自己的配置文件和
+nftables 规则，两边不会各说各话：
+
+```bash
+SSH_Port=22                  # 仅用于放行；本包不改 sshd_config
+DB_Port=3306                 # 写进 /etc/my.cnf，并按此端口阻断
+DB_X_Port=33060              # MySQL X Protocol，仅阻断
+Redis_Port=6379              # 写进 redis.conf、init 脚本与自测页
+Memcached_Port=11211         # 写进 init 脚本
+Pureftpd_Port=21             # 写进 pure-ftpd.conf 的 Bind
+Pureftpd_Data_Port=20
+Pureftpd_Passive_Min=20000   # 写进 PassivePortRange
+Pureftpd_Passive_Max=30000
+```
+
+安装时用环境变量覆盖也可以：
+
+```bash
+Pureftpd_Port=2121 Redis_Port=6380 ./install.sh lnmp
+```
+
+覆写之后脚本会回读确认写进去了；模板结构变化导致没写成会直接报错停下，
+不会出现"服务监听老端口、防火墙放行新端口"这种两边对不上又没有报错的情况。
+
+> **改 `SSH_Port` 要格外小心**：本包只用它生成放行规则，不会去改
+> `sshd_config`。如果你已经把 SSH 换到别的端口，这里必须跟着改，
+> 否则装完防火墙只放行 22，你会被关在门外。
+>
+> nginx 的 80/443 不在其中 —— 那两个端口散落在 nginx.conf、每个站点配置和
+> SSL 签发流程里，不是一个变量能覆盖的。
+
 ### 3.4 PHP
 
 **目录与配置**

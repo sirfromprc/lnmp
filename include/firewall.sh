@@ -53,7 +53,7 @@ Firewall_Init()
         ;;
     none)
         Echo_Red "未找到 nft / firewall-cmd，跳过防火墙配置。"
-        Echo_Red "请手动确认 3306 / 6379 / 11211 等端口没有暴露在公网。"
+        Echo_Red "请手动确认 ${DB_Port:-3306} / ${Redis_Port:-6379} / ${Memcached_Port:-11211} 等端口没有暴露在公网。"
         FW_Failed='y'
         return 1
         ;;

@@ -203,6 +203,49 @@ check_v7()
     fi
 }
 
+# ---------------------------------------------------------------------------
+# V8 端口变量：脚本里引用的每个 *_Port 都必须在 lnmp.conf 里有默认值
+#
+# 端口是"lnmp.conf 定义 → 服务配置与 nftables 规则各自跟随"的模式。
+# 少了默认值，未设该变量时展开成空串：nft 规则写不成、sed 覆写把端口写没，
+# 而且两处都不会报错。
+# ---------------------------------------------------------------------------
+check_v8()
+{
+    local v missing=""
+    for v in SSH_Port DB_Port DB_X_Port Redis_Port Memcached_Port              Pureftpd_Port Pureftpd_Data_Port Pureftpd_Passive_Min Pureftpd_Passive_Max; do
+        grep -q "^${v}=" lnmp.conf || missing="${missing} ${v}"
+    done
+    if [ -z "${missing}" ]; then
+        ok V8 "端口变量在 lnmp.conf 均有默认值"
+    else
+        bad V8 "lnmp.conf 缺少端口变量：${missing}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# V9 端口覆写：改了服务端口就必须同时写进该服务自己的配置
+#
+# 只改 nftables 规则不改服务配置，服务仍监听老端口，防火墙却按新端口放行，
+# 结果是服务连不上而且没有任何报错。这里确认覆写动作还在。
+# ---------------------------------------------------------------------------
+check_v9()
+{
+    local missing=""
+    grep -q 'sed -i "s/\^port .\*/port \${Redis_Port}/"' include/redis.sh         || missing="${missing} redis.conf"
+    grep -q 'REDISPORT=\${Redis_Port}' include/redis.sh || missing="${missing} init.d.redis"
+    grep -q 'PORT=\${Memcached_Port}' include/memcached.sh || missing="${missing} init.d.memcached"
+    grep -q 'port        = \${DB_Port}' include/mysql.sh || missing="${missing} mysql-my.cnf"
+    grep -q 'port        = \${DB_Port}' include/mariadb.sh || missing="${missing} mariadb-my.cnf"
+    grep -q 'PassivePortRange .*\${Pureftpd_Passive_Min}' pureftpd.sh || missing="${missing} pure-ftpd.conf"
+    grep -q 'Bind .*\${Pureftpd_Port}' pureftpd.sh || missing="${missing} pure-ftpd-Bind"
+    if [ -z "${missing}" ]; then
+        ok V9 "端口已覆写到各服务自己的配置"
+    else
+        bad V9 "以下服务配置没有跟随端口变量：${missing}"
+    fi
+}
+
 echo "=== 跨文件一致性检查 ==="
 check_v1
 check_v2
@@ -211,6 +254,8 @@ check_v4
 check_v5
 check_v6
 check_v7
+check_v8
+check_v9
 
 echo
 echo "通过 ${pass} 项，失败 ${fail} 项。"

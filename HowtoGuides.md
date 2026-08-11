@@ -1075,7 +1075,39 @@ tail -f /var/log/lnmp/backup.log           # 备份自己的日志
 | `另一个备份任务正在运行` | 上一次还没跑完，或异常退出留下了锁 | 用 `lnmp backup status` 看上次执行时间；确认没有在跑的任务后删除 `/var/lock/lnmp-backup.lock*` |
 | 备份成功但没有自动执行 | timer 没启用 | `systemctl enable --now lnmp-backup.timer` |
 
-#### 8.5.6 关于远端校验的边界
+#### 8.5.6 只有 FTP 服务器可用时
+
+有些机房只提供一台老 FTP 服务器，没有 SSH。备份支持这种情况，但**它不是
+推荐做法**，两种方式的差别要先看清楚：
+
+| | 凭据 | 传输 | 说明 |
+|---|---|---|---|
+| `sftp` | SSH 密钥 | 加密 | 默认，推荐 |
+| `ftps` | 账号口令 | TLS 加密 | 需要对端支持 AUTH TLS，并校验证书 |
+| `ftp` | 账号口令 | **全程明文** | 口令和整包备份数据在链路上任何一跳都可读 |
+
+改 `/etc/lnmp/backup.conf`：
+
+```bash
+Enable_Remote_Backup=1
+Remote_Protocol="ftps"        # 或 "ftp"
+Remote_Host="ftp.example.com"
+Remote_Port=21                # 注意从 22 改成 21
+Remote_User="bkuser"
+Remote_Password="口令"        # sftp 不用这项，ftp/ftps 必填
+Remote_Dir="backup"
+Remote_Ftp_Verify=1           # ftps 校验对端证书，默认开
+Remote_Ftp_CA=""              # 自签证书填 CA 路径，不要直接关校验
+```
+
+上传流程与 sftp 完全一致：先传到远端 `.incoming/<批次>-<类型>/`，逐个核对
+文件大小，全部对上之后整个目录改名到正式位置，最后才清理远端旧批次。
+用的是 `curl`，口令写在权限 600 的 curl 配置文件里，不进命令行参数。
+
+选 `ftp` 时每次运行都会在日志里留下明文告警。条件允许就换 `ftps`，
+再不济也可以先建 SSH 隧道再让 FTP 跑在隧道里。
+
+#### 8.5.7 关于远端校验的边界
 
 远端只做**逐个文件的大小核对**，不是内容校验。
 

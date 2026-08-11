@@ -83,12 +83,18 @@ Set_Conf_Defaults()
     Keep_Days_Web=60
     Web_Interval_Days=7
     Enable_Remote_Backup=0
+    # sftp（默认，SSH 密钥）| ftps（FTP over TLS）| ftp（明文，不推荐）
+    Remote_Protocol="sftp"
     Remote_Host=""
     Remote_Port=22
     Remote_User=""
     Remote_Dir="backup"
     Remote_SSH_Key="/root/.ssh/lnmp_backup"
     Remote_Known_Hosts="/root/.ssh/lnmp_backup_known_hosts"
+    # 仅 ftp / ftps 使用；sftp 走密钥，不读这一项
+    Remote_Password=""
+    Remote_Ftp_Verify=1
+    Remote_Ftp_CA=""
     Enable_Encrypt=0
     Encrypt_Tool="age"
     Encrypt_Recipient=""
@@ -114,6 +120,10 @@ Load_Conf()
     Is_Number "${Web_Interval_Days}" || Die "Web_Interval_Days 必须是数字。"
     [ "${Keep_Days_Db}" -ge 1 ]  || Die "Keep_Days_Db 至少为 1。"
     [ "${Keep_Days_Web}" -ge 1 ] || Die "Keep_Days_Web 至少为 1。"
+    case "${Remote_Protocol}" in
+        sftp|ftps|ftp) : ;;
+        *) Die "Remote_Protocol 只能是 sftp、ftps 或 ftp，当前是 '${Remote_Protocol}'" ;;
+    esac
     return 0
 }
 
@@ -408,8 +418,17 @@ Sftp_Run()
 
 Check_Remote_Conf()
 {
-    command -v sftp >/dev/null 2>&1 || { Log ERROR "找不到 sftp 命令"; return 1; }
     [ -n "${Remote_Host}" ] && [ -n "${Remote_User}" ] || { Log ERROR "远端主机或账号未配置"; return 1; }
+    case "${Remote_Protocol}" in
+        sftp) Check_Remote_Conf_Sftp ;;
+        ftps|ftp) Check_Remote_Conf_Ftp ;;
+        *) Log ERROR "未知的 Remote_Protocol：${Remote_Protocol}"; return 1 ;;
+    esac
+}
+
+Check_Remote_Conf_Sftp()
+{
+    command -v sftp >/dev/null 2>&1 || { Log ERROR "找不到 sftp 命令"; return 1; }
     [ -f "${Remote_SSH_Key}" ] || { Log ERROR "缺少 SSH 私钥：${Remote_SSH_Key}"; return 1; }
     Check_Perm "${Remote_SSH_Key}" || return 1
     if [ ! -s "${Remote_Known_Hosts}" ]; then
@@ -421,14 +440,169 @@ Check_Remote_Conf()
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# FTP / FTPS
+#
+# 有些场合只有一台老 FTP 服务器可用，没有 SSH。这条路径是给那种情况准备的，
+# 不是推荐做法：
+#
+#   ftp   账号口令和整包备份数据全程明文，链路上任意一跳都能拿到；
+#   ftps  加了 TLS，口令与数据不再明文，但要校验对端证书才有意义。
+#
+# 上传顺序与 sftp 完全一致：先传 .incoming，核对大小，再改名，最后清理旧的。
+# ---------------------------------------------------------------------------
+Check_Remote_Conf_Ftp()
+{
+    command -v curl >/dev/null 2>&1 || { Log ERROR "找不到 curl 命令，ftp/ftps 上传依赖它。"; return 1; }
+    [ -n "${Remote_Password}" ] || { Log ERROR "ftp/ftps 需要配置 Remote_Password。"; return 1; }
+    if [ "${Remote_Protocol}" = "ftp" ]; then
+        Log WARN "正在使用明文 FTP：账号口令与备份数据全程不加密。"
+        Log WARN "条件允许时请改用 Remote_Protocol=sftp 或 ftps。"
+    elif [ "${Remote_Ftp_Verify}" != "1" ]; then
+        Log WARN "FTPS 已关闭证书校验，无法防中间人。仅在自签证书且已配 Remote_Ftp_CA 时才应关闭。"
+    fi
+    return 0
+}
+
+# 凭据不进命令行参数：URL 与 user 都写进权限 600 的 curl 配置文件，
+# argv 里只留 --config。用法：Curl_Ftp <远端路径> [额外配置行...]
+Curl_Ftp()
+{
+    local path="$1"; shift
+    local cfg out rc
+    cfg=$(mktemp "${TMPDIR:-/tmp}/.lnmp-ftp.XXXXXXXX") || return 1
+    chmod 600 "${cfg}"
+    {
+        # 显式 FTPS 用的仍是 ftp:// 加 AUTH TLS（ssl-reqd），不是 ftps://（隐式）
+        printf 'url = "ftp://%s:%s/%s"\n' "${Remote_Host}" "${Remote_Port}" "${path}"
+        printf 'user = "%s:%s"\n' "${Remote_User}" "${Remote_Password}"
+        if [ "${Remote_Protocol}" = "ftps" ]; then
+            printf 'ssl-reqd\n'
+            if [ "${Remote_Ftp_Verify}" = "1" ]; then
+                [ -n "${Remote_Ftp_CA}" ] && printf 'cacert = "%s"\n' "${Remote_Ftp_CA}"
+            else
+                printf 'insecure\n'
+            fi
+        fi
+        printf 'silent\nshow-error\n'
+        printf 'connect-timeout = 30\n'
+        while [ "$#" -gt 0 ]; do printf '%s\n' "$1"; shift; done
+    } > "${cfg}"
+    out=$(curl --config "${cfg}" 2>&1)
+    rc=$?
+    rm -f "${cfg}"
+    printf '%s' "${out}"
+    return "${rc}"
+}
+
+# 单个远端文件的大小：FTP 下 curl 的 head 会发 SIZE，输出 Content-Length。
+# 比解析 LIST 稳，LIST 的格式随服务器实现而变。
+Ftp_Remote_Size()
+{
+    Curl_Ftp "$1" 'head' 'output = "/dev/null"' 2>/dev/null \
+        | awk -F': ' 'tolower($1) == "content-length" { gsub(/\r/, "", $2); print $2; exit }'
+}
+
+Upload_Batch_Ftp()
+{
+    local type="$1" batch="$2" dir="${Backup_Home}/$1/$2"
+    local staging="${Remote_Dir}/.incoming/${batch}-${type}"
+    local f base rc out local_size remote_size ok=1
+
+    Log INFO "上传 ${type}/${batch} 到 ${Remote_Protocol}://${Remote_Host}:${Remote_Port}/${Remote_Dir}"
+
+    for f in "${dir}"/*; do
+        [ -f "${f}" ] || continue
+        base="${f##*/}"
+        # ftp-create-dirs 会把 URL 路径里缺失的目录一并建出来
+        if ! out=$(Curl_Ftp "${staging}/${base}" "upload-file = \"${f}\"" 'ftp-create-dirs'); then
+            Log ERROR "上传失败：${base}
+${out}"
+            return 1
+        fi
+    done
+
+    # 逐个核对远端大小。与 sftp 一样，这能发现截断和缺失，
+    # 发现不了内容被改写 —— 内容级校验在本地 SHA256SUMS 上做。
+    for f in "${dir}"/*; do
+        [ -f "${f}" ] || continue
+        base="${f##*/}"
+        local_size=$(stat -c '%s' "${f}" 2>/dev/null || stat -f '%z' "${f}" 2>/dev/null)
+        remote_size=$(Ftp_Remote_Size "${staging}/${base}")
+        if [ -z "${remote_size}" ]; then
+            Log ERROR "远端缺少文件或取不到大小：${base}"; ok=0; continue
+        fi
+        if [ "${remote_size}" != "${local_size}" ]; then
+            Log ERROR "远端文件大小不符：${base} 本地 ${local_size} 远端 ${remote_size}"; ok=0
+        fi
+    done
+    if [ "${ok}" -ne 1 ]; then
+        Log ERROR "远端核对未通过，保留 .incoming 供排查，不改名。"
+        return 1
+    fi
+
+    # RNTO 的父目录要先存在；同批次重跑时先把旧的挪开。
+    # quote 前缀 * 表示这条命令允许失败（curl 的语法）。
+    out=$(Curl_Ftp "" \
+        "quote = \"*MKD ${Remote_Dir}\"" \
+        "quote = \"*MKD ${Remote_Dir}/${type}\"" \
+        "quote = \"*RMD ${Remote_Dir}/${type}/${batch}\"" \
+        "quote = \"RNFR ${staging}\"" \
+        "quote = \"RNTO ${Remote_Dir}/${type}/${batch}\"" \
+        'list-only' 'output = "/dev/null"')
+    rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        Log ERROR "远端改名失败（curl 退出码 ${rc}）：
+${out}"
+        return 1
+    fi
+    Log INFO "远端已提交：${type}/${batch}"
+    return 0
+}
+
+Cleanup_Remote_Ftp()
+{
+    local type="$1" days="$2" b f out batches files
+    out=$(Curl_Ftp "${Remote_Dir}/${type}/" 'list-only') || {
+        Log WARN "无法列出远端 ${type} 目录，跳过远端清理。"; return 0; }
+    # 先把列表取回来再遍历，不用 `... | while read`：管道右侧是子 shell，
+    # 在里面再调用 Curl_Ftp（它自己要开子进程、建临时文件）会拿不到正确结果，
+    # 循环里的状态也传不回来。批次名和文件名都是脚本自己生成的，不含空格。
+    batches=$(printf '%s\n' "${out}" | tr -d '\r')
+    for b in ${batches}; do
+        b="${b##*/}"
+        Batch_Older_Than "${b}" "${days}" || continue
+        Log INFO "清理远端过期批次：${type}/${b}"
+        # FTP 删不掉非空目录，先逐个删文件再删目录
+        files=$(Curl_Ftp "${Remote_Dir}/${type}/${b}/" 'list-only' 2>/dev/null | tr -d '\r')
+        for f in ${files}; do
+            [ -n "${f}" ] || continue
+            Curl_Ftp "" "quote = \"*DELE ${Remote_Dir}/${type}/${b}/${f##*/}\"" \
+                'output = "/dev/null"' >/dev/null 2>&1
+        done
+        Curl_Ftp "" "quote = \"*RMD ${Remote_Dir}/${type}/${b}\"" \
+            'output = "/dev/null"' >/dev/null 2>&1
+    done
+    return 0
+}
+
 # 上传 → 核对 → 改名。中途任何一步失败都不动正式目录里的既有备份。
+# 两种通道的顺序与语义完全一致，只是传输方式不同。
 Upload_Batch()
+{
+    Check_Remote_Conf || return 1
+    case "${Remote_Protocol}" in
+        sftp)     Upload_Batch_Sftp "$@" ;;
+        ftps|ftp) Upload_Batch_Ftp  "$@" ;;
+    esac
+}
+
+Upload_Batch_Sftp()
 {
     local type="$1" batch="$2" dir="${Backup_Home}/$1/$2"
     local staging="${Remote_Dir}/.incoming/${batch}-${type}"
     local f base out rc local_size remote_size ok=1
 
-    Check_Remote_Conf || return 1
     Log INFO "上传 ${type}/${batch} 到 ${Remote_User}@${Remote_Host}:${Remote_Dir}"
 
     {
@@ -488,11 +662,22 @@ ${out}"
 # 远端清理放在上传成功之后，先有新的可恢复点再删旧的
 Cleanup_Remote()
 {
-    local type="$1" days="$2" out rc b
     Check_Remote_Conf || return 1
+    case "${Remote_Protocol}" in
+        sftp)     Cleanup_Remote_Sftp "$@" ;;
+        ftps|ftp) Cleanup_Remote_Ftp  "$@" ;;
+    esac
+}
+
+Cleanup_Remote_Sftp()
+{
+    local type="$1" days="$2" out rc b batches
     out=$(printf 'ls -1 %s/%s\nbye\n' "${Remote_Dir}" "${type}" | Sftp_Run 2>/dev/null); rc=$?
     [ "${rc}" -eq 0 ] || { Log WARN "无法列出远端 ${type} 目录，跳过远端清理。"; return 0; }
-    printf '%s\n' "${out}" | tr -d '\r' | while read -r b; do
+    # 同 Cleanup_Remote_Ftp：先取回列表再遍历，不在管道右侧的子 shell 里
+    # 反复开新的 sftp 会话。
+    batches=$(printf '%s\n' "${out}" | tr -d '\r')
+    for b in ${batches}; do
         b="${b##*/}"
         Batch_Older_Than "${b}" "${days}" || continue
         Log INFO "清理远端过期批次：${type}/${b}"
@@ -681,7 +866,7 @@ Cmd_Status()
     Say "备份目录：${Backup_Home}"
     Say "保留天数：数据库 ${Keep_Days_Db} 天，网站 ${Keep_Days_Web} 天"
     Say "网站周期：每 ${Web_Interval_Days} 天"
-    Say "异地上传：$([ "${Enable_Remote_Backup}" = "1" ] && echo "启用 → ${Remote_User}@${Remote_Host}:${Remote_Dir}" || echo "未启用")"
+    Say "异地上传：$([ "${Enable_Remote_Backup}" = "1" ] && echo "启用（${Remote_Protocol}） → ${Remote_User}@${Remote_Host}:${Remote_Dir}" || echo "未启用")"
     Say "加密    ：$([ "${Enable_Encrypt}" = "1" ] && echo "${Encrypt_Tool}" || echo "未启用")"
     Say ""
     last=$(State_Get Last_Run_Time); rc=$(State_Get Last_Run_Rc); err=$(State_Get Last_Error)
@@ -1026,12 +1211,26 @@ Keep_Days_Web=60
 # 网站文件多久备份一次（天）。1 表示每天；库总是每次都备份。
 Web_Interval_Days=7
 
-# ---- 异地上传（SFTP）----
+# ---- 异地上传 ----
 Enable_Remote_Backup=0
+
+# 上传方式：
+#   sftp  走 SSH 密钥，推荐。端口通常 22。
+#   ftps  FTP over TLS，需要 Remote_Password。端口通常 21。
+#   ftp   明文 FTP，账号口令与备份数据全程不加密，只在别无选择时用。
+# 改成 ftp/ftps 时记得把 Remote_Port 一并改成 21。
+Remote_Protocol="sftp"
+
 Remote_Host=""
 Remote_Port=22
 Remote_User=""
 Remote_Dir="backup"
+
+# 仅 ftp / ftps 使用；sftp 走密钥，不读这一项。
+Remote_Password=""
+# ftps 是否校验对端证书。自签证书请把 CA 填到 Remote_Ftp_CA，不要直接关校验。
+Remote_Ftp_Verify=1
+Remote_Ftp_CA=""
 # 专用密钥，不要复用日常登录密钥
 Remote_SSH_Key="/root/.ssh/lnmp_backup"
 # 必须预先固定并带外核对，脚本不会自动接受未知主机：

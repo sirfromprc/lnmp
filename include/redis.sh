@@ -59,6 +59,10 @@ Install_Redis()
         fi
 
         sed -i 's/daemonize no/daemonize yes/g' /usr/local/redis/etc/redis.conf
+        # 端口跟随 lnmp.conf。init 脚本与防火墙规则用的是同一个变量，
+        # 三者必须一致，否则服务起在一个端口、脚本探测另一个端口。
+        sed -i "s/^port .*/port ${Redis_Port}/" /usr/local/redis/etc/redis.conf
+        Check_Conf_Applied /usr/local/redis/etc/redis.conf             "^port[[:space:]]+${Redis_Port}\$" "Redis 端口 ${Redis_Port}" || return 1
 
         if ! id -u redis >/dev/null 2>&1; then
             useradd -r -M -s /sbin/nologin redis 2>/dev/null || \
@@ -90,7 +94,7 @@ Install_Redis()
         rm -rf ${cur_dir}/src/${Redis_Stable_Ver}
 
         # redis 默认无密码，暴露到公网可被直接写入任意 key（历史上被大量用于植入 SSH 公钥）
-        Firewall_Block tcp 6379
+        Firewall_Block tcp "${Redis_Port}"
         Firewall_Save
     fi
 
@@ -120,6 +124,8 @@ extension = "redis.so"
 EOF
 
     \cp ${cur_dir}/init.d/init.d.redis /etc/init.d/redis
+    sed -i "s/^REDISPORT=.*/REDISPORT=${Redis_Port}/" /etc/init.d/redis
+    Check_Conf_Applied /etc/init.d/redis "^REDISPORT=${Redis_Port}\$"         "Redis init 脚本端口 ${Redis_Port}" || return 1
     \cp ${cur_dir}/init.d/redis.service /etc/systemd/system/redis.service
     chmod +x /etc/init.d/redis
     echo "Add to auto startup..."
@@ -134,6 +140,7 @@ EOF
     if [ "${Enable_Redis_Test_Page}" = "y" ]; then
         echo "Copy Redis PHP Test file..."
         \cp ${cur_dir}/conf/redis.php ${Default_Website_Dir}/redis.php
+        sed -i "s/', 6379)/', ${Redis_Port})/" ${Default_Website_Dir}/redis.php
     else
         echo "Redis test page not deployed (Enable_Redis_Test_Page='n')."
         echo "如需自测：cp conf/redis.php ${Default_Website_Dir}/redis.php"
@@ -154,7 +161,7 @@ EOF
     Echo_Red "====== Redis 装好了，但服务没能启动 ======"
     Echo_Red "PHP 扩展与服务端二进制都已就位，问题出在启动阶段。"
     Echo_Red "常见原因："
-    Echo_Red "  - 6379 端口已被占用（旧的 redis-server 进程还在？ pgrep -a redis-server）"
+    Echo_Red "  - ${Redis_Port} 端口已被占用（旧的 redis-server 进程还在？ pgrep -a redis-server）"
     Echo_Red "  - 数据目录 /usr/local/redis/var 不存在或不可写"
     Echo_Red "  - 配置里有指向不存在文件的 loadmodule"
     Echo_Red "排查：tail -20 /usr/local/redis/var/redis.log"
@@ -173,7 +180,7 @@ Uninstall_Redis()
     echo "Delete Redis files..."
     rm -rf /usr/local/redis
     rm -rf /etc/init.d/redis
-    Firewall_Unblock tcp 6379
+    Firewall_Unblock tcp "${Redis_Port}"
     Firewall_Save
     Echo_Green "Uninstall Redis completed."
 }

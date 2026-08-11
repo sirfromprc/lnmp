@@ -60,6 +60,25 @@ Install_Pureftpd()
     Echo_Blue "Copy configure files..."
     mkdir /usr/local/pureftpd/etc
     \cp ${cur_dir}/conf/pure-ftpd.conf /usr/local/pureftpd/etc/pure-ftpd.conf
+    # 端口跟随 lnmp.conf：控制端口写 Bind，被动范围写 PassivePortRange。
+    # 这三个值同时决定下面的放行规则，改一处即可。
+    sed -i "s|^PassivePortRange .*|PassivePortRange             ${Pureftpd_Passive_Min} ${Pureftpd_Passive_Max}|" \
+        /usr/local/pureftpd/etc/pure-ftpd.conf
+    if grep -q '^Bind ' /usr/local/pureftpd/etc/pure-ftpd.conf; then
+        sed -i "s|^Bind .*|Bind                         0.0.0.0,${Pureftpd_Port}|" \
+            /usr/local/pureftpd/etc/pure-ftpd.conf
+    else
+        printf '\n# 监听地址与端口，由 lnmp.conf 的 Pureftpd_Port 决定\nBind                         0.0.0.0,%s\n' \
+            "${Pureftpd_Port}" >> /usr/local/pureftpd/etc/pure-ftpd.conf
+    fi
+    # 覆写之后确认真的写进去了：上游模板改了写法时 sed 会一条都匹配不上，
+    # 服务就会用模板里的默认端口起来，与下面的放行规则对不上。
+    Check_Conf_Applied /usr/local/pureftpd/etc/pure-ftpd.conf \
+        "^Bind[[:space:]]+0\.0\.0\.0,${Pureftpd_Port}\$" \
+        "FTP 控制端口 ${Pureftpd_Port}" || exit 1
+    Check_Conf_Applied /usr/local/pureftpd/etc/pure-ftpd.conf \
+        "^PassivePortRange[[:space:]]+${Pureftpd_Passive_Min}[[:space:]]+${Pureftpd_Passive_Max}\$" \
+        "FTP 被动端口范围 ${Pureftpd_Passive_Min}-${Pureftpd_Passive_Max}" || exit 1
     if [ -L /etc/init.d/pureftpd ]; then
         rm -f /etc/init.d/pureftpd
     fi
@@ -89,9 +108,9 @@ Install_Pureftpd()
     cd ..
     rm -rf ${cur_dir}/src/${Pureftpd_Ver}
 
-    Firewall_Allow tcp 20
-    Firewall_Allow tcp 21
-    Firewall_Allow tcp 20000-30000
+    Firewall_Allow tcp "${Pureftpd_Data_Port}"
+    Firewall_Allow tcp "${Pureftpd_Port}"
+    Firewall_Allow tcp "${Pureftpd_Passive_Min}-${Pureftpd_Passive_Max}"
     Firewall_Save
 
     if [ ! -s /bin/lnmp ]; then

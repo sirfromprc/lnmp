@@ -5,20 +5,20 @@ Add_Iptables_Rules()
     echo "Configuring firewall..."
 
     if ! Firewall_Init; then
-        Echo_Red "防火墙未配置成功，请自行确认 3306 等端口没有暴露在公网。"
+        Echo_Red "防火墙未配置成功，请自行确认 ${DB_Port} 等端口没有暴露在公网。"
         return 1
     fi
 
-    Firewall_Allow tcp 22
+    Firewall_Allow tcp "${SSH_Port}"
     Firewall_Allow tcp 80
     Firewall_Allow tcp 443
     Firewall_Allow_ICMP
     # 数据库端口只挡外部新建连接，本机经 lo 访问不受影响
-    Firewall_Block tcp 3306
+    Firewall_Block tcp "${DB_Port}"
     # 33060 是 MySQL X Protocol，功能上等价于 3306（一样能跑 SQL）。
     # 它不受 my.cnf 的 bind-address 约束，只挡 3306 会留下一个等价入口。
     # MariaDB 没有这个端口，多这条规则也无副作用。
-    Firewall_Block tcp 33060
+    Firewall_Block tcp "${DB_X_Port}"
 
     Firewall_Save
 }
@@ -315,11 +315,11 @@ Check_Firewall_Result()
     echo
     Echo_Red "════════════════ 防火墙未配置成功 ════════════════"
     Echo_Red "组件已经装好，但**防火墙规则没有成功写入**。"
-    Echo_Red "这意味着 3306（数据库）等端口可能正暴露在公网上。"
+    Echo_Red "这意味着 ${DB_Port}（数据库）等端口可能正暴露在公网上。"
     echo
     Echo_Yellow "请立即自行确认并处置："
     echo "  nft list table inet lnmp        # 看本包的规则表在不在"
-    echo "  ss -lntp | grep -E ':3306|:6379' # 看数据库/缓存监听在哪个地址"
+    echo "  ss -lntp | grep -E ':${DB_Port}|:${Redis_Port}' # 看数据库/缓存监听在哪个地址"
     echo
     Echo_Yellow "数据库默认已配置 bind-address = 127.0.0.1（只监听回环），"
     Echo_Yellow "但若你改过 /etc/my.cnf，或使用了其他服务，请逐一核对。"

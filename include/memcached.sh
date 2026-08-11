@@ -97,6 +97,9 @@ EOF
         ln -sf /usr/local/memcached/bin/memcached /usr/bin/memcached
 
         \cp ${cur_dir}/init.d/init.d.memcached /etc/init.d/memcached
+        # 端口跟随 lnmp.conf，与防火墙阻断规则用同一个变量
+        sed -i "s/^PORT=.*/PORT=${Memcached_Port}/" /etc/init.d/memcached
+        Check_Conf_Applied /etc/init.d/memcached "^PORT=${Memcached_Port}\$"             "Memcached 端口 ${Memcached_Port}" || return 1
         chmod +x /etc/init.d/memcached
 
         if ! id -u memcached >/dev/null 2>&1; then
@@ -131,8 +134,8 @@ EOF
     Restart_PHP
 
     # memcached 无认证，暴露到公网等于把缓存内容和 UDP 反射放大面一起开放
-    Firewall_Block tcp 11211
-    Firewall_Block udp 11211
+    Firewall_Block tcp "${Memcached_Port}"
+    Firewall_Block udp "${Memcached_Port}"
     Firewall_Save
 
     echo "Starting Memcached..."
@@ -159,8 +162,8 @@ Uninstall_Memcached()
     rm -rf /usr/local/memcached
     rm -rf /etc/init.d/memcached
     rm -rf /usr/bin/memcached
-    Firewall_Unblock tcp 11211
-    Firewall_Unblock udp 11211
+    Firewall_Unblock tcp "${Memcached_Port}"
+    Firewall_Unblock udp "${Memcached_Port}"
     Firewall_Save
     Echo_Green "Uninstall Memcached completed."
 }
