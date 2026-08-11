@@ -285,7 +285,7 @@ List_Batches()
 Dump_Db()
 {
     local db="$1" out="$2" part="$2.part" rc_dump rc_gzip pipe_st
-    "${MySQL_Dump}" --defaults-extra-file="${MySQL_Option_File}" \
+    "${MySQL_Dump}" --defaults-file="${MySQL_Option_File}" \
         --single-transaction --quick --routines --triggers --events \
         --default-character-set=utf8mb4 "${db}" 2>>"${Log_File}" \
         | gzip -c > "${part}"
@@ -321,8 +321,8 @@ Tar_Dir()
 {
     local path="$1" out="$2" part="$2.part" name parent rc_tar rc_gzip pipe_st
     if [ ! -d "${path}" ]; then
-        Log WARN "网站目录不存在，跳过：${path}"
-        return 2
+        Log ERROR "网站目录不存在：${path}"
+        return 1
     fi
     name="${path##*/}"; parent="${path%/*}"
     tar cf - -C "${parent}" "${name}" 2>>"${Log_File}" | gzip -c > "${part}"
@@ -688,6 +688,26 @@ Cleanup_Remote_Sftp()
     return 0
 }
 
+List_Remote_Batches()
+{
+    local type="$1" out rc
+    case "${Remote_Protocol}" in
+        sftp)
+            out=$(printf 'ls -1 %s/%s\nbye\n' "${Remote_Dir}" "${type}" \
+                | Sftp_Run 2>/dev/null); rc=$?
+            ;;
+        ftps|ftp)
+            out=$(Curl_Ftp "${Remote_Dir}/${type}/" 'list-only' 2>/dev/null); rc=$?
+            ;;
+        *)
+            Log ERROR "未知的 Remote_Protocol：${Remote_Protocol}"
+            return 1
+            ;;
+    esac
+    [ "${rc}" -eq 0 ] || return "${rc}"
+    printf '%s\n' "${out}" | tr -d '\r' | sed 's#.*/##; /^$/d'
+}
+
 Cleanup_Local()
 {
     local type="$1" days="$2" b
@@ -750,7 +770,6 @@ Run_Web()
         n=$((n + 1))
         Log INFO "打包网站 ${domain} (${path})"
         Tar_Dir "${path}" "${dir}/www-${domain}.tar.gz"; rc=$?
-        [ "${rc}" -eq 2 ] && continue
         [ "${rc}" -eq 0 ] || { failed=1; continue; }
         out=$(Encrypt_File "${dir}/www-${domain}.tar.gz") || { failed=1; continue; }
     done
@@ -894,7 +913,7 @@ Cmd_Status()
 
 Cmd_List()
 {
-    local what="${1:-all}" type b dir size
+    local what="${1:-all}" type b dir size remote
     Load_Conf || return 1
     for type in db www; do
         case "${what}" in db) [ "${type}" = "db" ] || continue ;; web) [ "${type}" = "www" ] || continue ;; esac
@@ -909,7 +928,11 @@ Cmd_List()
         for type in db www; do
             case "${what}" in db) [ "${type}" = "db" ] || continue ;; web) [ "${type}" = "www" ] || continue ;; esac
             Say "=== 远端 ${type} 批次 ==="
-            printf 'ls -1 %s/%s\nbye\n' "${Remote_Dir}" "${type}" | Sftp_Run 2>/dev/null | tr -d '\r' | sed 's#.*/##; /^$/d; s/^/  /'
+            if ! remote=$(List_Remote_Batches "${type}"); then
+                Err "无法列出远端 ${type} 批次。"
+                return 1
+            fi
+            printf '%s\n' "${remote}" | sed '/^$/d; s/^/  /'
         done
     fi
     return 0
@@ -937,6 +960,7 @@ Prepare_Payload()
 Cmd_Restore()
 {
     local kind="${1:-}" name="${2:-}" batch="${3:-}" dir file work payload mysql_bin rc
+    local gz_rc mysql_rc pipe_st
     Load_Conf || return 1
     case "${kind}" in
         db|web) : ;;
@@ -972,10 +996,14 @@ Cmd_Restore()
         Warn "即将把备份导入数据库 ${name}，库中同名表会被覆盖，且无法撤销。"
         Say "5 秒后开始，Ctrl+C 取消..."
         sleep 5
-        gzip -dc "${payload}" | "${mysql_bin}" --defaults-extra-file="${MySQL_Option_File}" \
+        gzip -dc "${payload}" | "${mysql_bin}" --defaults-file="${MySQL_Option_File}" \
             --default-character-set=utf8mb4 "${name}"
-        rc=${PIPESTATUS[1]}
-        [ "${rc}" -eq 0 ] || { Err "导入失败（mysql 返回 ${rc}）。"; return 1; }
+        pipe_st=("${PIPESTATUS[@]}")
+        gz_rc=${pipe_st[0]}; mysql_rc=${pipe_st[1]}
+        if [ "${gz_rc}" -ne 0 ] || [ "${mysql_rc}" -ne 0 ]; then
+            Err "导入失败（gzip=${gz_rc} mysql=${mysql_rc}）。"
+            return 1
+        fi
         Ok "数据库 ${name} 已从批次 ${batch} 恢复。"
     else
         local target
@@ -999,6 +1027,7 @@ Cmd_Restore()
 Cmd_Test()
 {
     local batch dir file work payload mysql_bin tmpdb rc tables
+    local gz_rc mysql_rc pipe_st
     Load_Conf || return 1
     mysql_bin=$(Find_Mysql_Client) || { Err "找不到 mysql 客户端。"; return 1; }
     Check_Perm "${MySQL_Option_File}" || return 1
@@ -1018,21 +1047,25 @@ Cmd_Test()
     payload=$(Prepare_Payload "${file}" "${work}") || { Err "解密失败。"; return 1; }
 
     tmpdb="lnmp_bktest_$(date '+%s')"
-    "${mysql_bin}" --defaults-extra-file="${MySQL_Option_File}" \
+    "${mysql_bin}" --defaults-file="${MySQL_Option_File}" \
         -e "CREATE DATABASE \`${tmpdb}\`;" || { Err "无法创建临时库 ${tmpdb}。"; return 1; }
 
-    gzip -dc "${payload}" | "${mysql_bin}" --defaults-extra-file="${MySQL_Option_File}" \
+    gzip -dc "${payload}" | "${mysql_bin}" --defaults-file="${MySQL_Option_File}" \
         --default-character-set=utf8mb4 "${tmpdb}"
-    rc=${PIPESTATUS[1]}
+    pipe_st=("${PIPESTATUS[@]}")
+    gz_rc=${pipe_st[0]}; mysql_rc=${pipe_st[1]}
+    rc=0
+    [ "${gz_rc}" -ne 0 ] && rc=1
+    [ "${mysql_rc}" -ne 0 ] && rc=1
 
-    tables=$("${mysql_bin}" --defaults-extra-file="${MySQL_Option_File}" -N -B \
+    tables=$("${mysql_bin}" --defaults-file="${MySQL_Option_File}" -N -B \
         -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='${tmpdb}';" 2>/dev/null)
 
-    "${mysql_bin}" --defaults-extra-file="${MySQL_Option_File}" \
+    "${mysql_bin}" --defaults-file="${MySQL_Option_File}" \
         -e "DROP DATABASE \`${tmpdb}\`;" >/dev/null 2>&1
 
     if [ "${rc}" -ne 0 ]; then
-        Log ERROR "试恢复失败：导入返回 ${rc}（批次 ${batch}）"
+        Log ERROR "试恢复失败：gzip=${gz_rc} mysql=${mysql_rc}（批次 ${batch}）"
         return 1
     fi
     if [ -z "${tables}" ] || [ "${tables}" -eq 0 ]; then
@@ -1129,7 +1162,7 @@ EOF
 
 Cmd_Init()
 {
-    local sites site_lines ans hour db_pass mysql_bin
+    local sites site_lines ans hour db_pass mysql_bin my_cnf_tmp
 
     [ "$(id -u)" = "0" ] || { Err "init 需要 root 权限。"; return 1; }
     mkdir -p "${Conf_Dir}" && chmod 700 "${Conf_Dir}" || { Err "无法创建 ${Conf_Dir}"; return 1; }
@@ -1158,11 +1191,17 @@ Cmd_Init()
     # 数据库 option file：口令只写进 0600 文件，不进命令行、不进配置
     if [ ! -f "${My_Cnf}" ]; then
         printf '输入数据库 root 密码（用于导出，留空则跳过，不回显）: '
-        read -r -s db_pass; echo
+        if ! read -r -s db_pass; then
+            echo
+            Err "读取数据库 root 密码时遇到 EOF。"
+            return 1
+        fi
+        echo
         if [ -n "${db_pass}" ]; then
             # option file 在引号内把反斜杠当转义符，写入前先加倍
             db_pass="${db_pass//\\/\\\\}"
-            ( umask 077; cat > "${My_Cnf}" <<EOF
+            my_cnf_tmp=$(mktemp "${My_Cnf}.XXXXXXXX") || return 1
+            ( umask 077; cat > "${my_cnf_tmp}" <<EOF
 [mysqldump]
 user=root
 password='${db_pass}'
@@ -1172,18 +1211,32 @@ user=root
 password='${db_pass}'
 EOF
             )
-            chmod 600 "${My_Cnf}"
-            if mysql_bin=$(Find_Mysql_Client); then
-                if "${mysql_bin}" --defaults-extra-file="${My_Cnf}" -e "SELECT 1;" >/dev/null 2>&1; then
-                    Ok "数据库凭据校验通过，已写入 ${My_Cnf}（600）。"
-                else
-                    Err "数据库凭据校验失败，${My_Cnf} 仍已写入，请核对密码后重试。"
-                fi
+            chmod 600 "${my_cnf_tmp}"
+            if ! mysql_bin=$(Find_Mysql_Client); then
+                rm -f "${my_cnf_tmp}"
+                Err "找不到 mysql 客户端，无法校验数据库凭据。"
+                return 1
             fi
+            if ! "${mysql_bin}" --defaults-file="${my_cnf_tmp}" -e "SELECT 1;" >/dev/null 2>&1; then
+                rm -f "${my_cnf_tmp}"
+                Err "数据库凭据校验失败，未写入配置，也未启用定时任务。"
+                return 1
+            fi
+            mv -f "${my_cnf_tmp}" "${My_Cnf}" || { rm -f "${my_cnf_tmp}"; return 1; }
+            Ok "数据库凭据校验通过，已写入 ${My_Cnf}（600）。"
         else
             Warn "跳过数据库凭据，库备份会因此失败。稍后可重跑 init 补上。"
         fi
     else
+        Check_Perm "${My_Cnf}" || return 1
+        if ! mysql_bin=$(Find_Mysql_Client); then
+            Err "找不到 mysql 客户端，无法校验已有数据库凭据。"
+            return 1
+        fi
+        if ! "${mysql_bin}" --defaults-file="${My_Cnf}" -e "SELECT 1;" >/dev/null 2>&1; then
+            Err "已有数据库凭据校验失败，未改写配置或定时任务。"
+            return 1
+        fi
         Say "沿用已有的数据库凭据文件：${My_Cnf}"
     fi
 

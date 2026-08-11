@@ -161,8 +161,12 @@ Upgrade_OpenResty_Source()
         Echo_Red "configure 失败，升级中止。现有安装未被替换。"
         return 1
     fi
-    if ! make -j"$(nproc 2>/dev/null || echo 2)"; then
+    if ! make -j"$(Build_Jobs)"; then
         Echo_Red "编译失败，升级中止。现有安装未被替换。"
+        return 1
+    fi
+    if ! OR_Modules_Capture_Built; then
+        Echo_Red "无法记录本次动态模块产物，升级中止。"
         return 1
     fi
     if ! make install; then
@@ -180,6 +184,9 @@ Upgrade_OpenResty_Source()
         Echo_Red "生成模块与 Lua 路径配置失败。"
         return 1
     fi
-    OR_Modules_Persist
+    if ! OR_Modules_Persist; then
+        Echo_Red "OpenResty 已升级，但编译期配置持久化失败。"
+        return 1
+    fi
     return 0
 }

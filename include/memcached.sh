@@ -10,7 +10,7 @@ Install_PHPMemcache()
     Tar_Cd ${PHP8Memcache_Ver}.tgz ${PHP8Memcache_Ver}
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config
-    Make_Install || exit 1
+    Make_Install || return 1
     cd ../
 }
 
@@ -34,7 +34,7 @@ Install_PHPMemcached()
         patch -p1 < ${cur_dir}/src/patch/libmemcached-1.0.18-gcc7.patch
     fi
     ./configure --prefix=/usr/local/libmemcached --with-memcached
-    Make_Install || exit 1
+    Make_Install || return 1
     cd ../
 
     cd ${cur_dir}/src
@@ -44,7 +44,7 @@ Install_PHPMemcached()
     Tar_Cd ${PHP8Memcached_Ver}.tgz ${PHP8Memcached_Ver}
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config --enable-memcached --with-libmemcached-dir=/usr/local/libmemcached
-    Make_Install || exit 1
+    Make_Install || return 1
     cd ../
 }
 
@@ -112,12 +112,18 @@ EOF
       mkdir -p /var/lock/subsys
     fi
 
+    # unit 的部署放在 if/else 外面：memcached 已经装过时上面的分支不会重跑，
+    # 但那台机器同样需要这个 unit，否则启动还是绕开 systemd。
+    \cp ${cur_dir}/init.d/memcached.service /etc/systemd/system/memcached.service
     StartUp memcached
 
+    # 扩展装不上不再中断流程：memcached 服务端已经装好了，后面的启动、防火墙
+    # 和验收该走完，最终由下面的检查如实给出结论，而不是把机器丢在半装状态。
+    local ext_rc=0
     if [ "${ver}" = "1" ]; then
-        Install_PHPMemcache
+        Install_PHPMemcache || ext_rc=1
     elif [ "${ver}" = "2" ]; then
-        Install_PHPMemcached
+        Install_PHPMemcached || ext_rc=1
     fi
 
     # 演示页会部署到网站根目录且没有鉴权，因此默认不部署；与 phpinfo、
@@ -139,15 +145,29 @@ EOF
     Firewall_Save
 
     echo "Starting Memcached..."
-    /etc/init.d/memcached start
+    # 与 nginx、php-fpm、数据库、Redis 一致走 StartOrStop：有 systemd 就用
+    # systemctl，WSL/容器等没有 systemd 的环境才退回 SysV 脚本。
+    StartOrStop start memcached
 
-    if [ -s "${zend_ext}" ] && [ -s /usr/local/memcached/bin/memcached ]; then
+    # 分开报，不然用户只看到一句 failed，不知道差的是扩展还是服务。
+    local svc_ok=0 ext_ok=0
+    [ -s /usr/local/memcached/bin/memcached ] \
+        && /etc/init.d/memcached status >/dev/null 2>&1 && svc_ok=1
+    [ -s "${zend_ext}" ] && [ "${ext_rc}" -eq 0 ] && ext_ok=1
+
+    if [ "${svc_ok}" -eq 1 ] && [ "${ext_ok}" -eq 1 ]; then
         Echo_Green "====== Memcached install completed ======"
         Echo_Green "Memcached installed successfully, enjoy it!"
-    else
-        rm -f ${PHP_Path}/conf.d/005-memcached.ini
-        Echo_Red "Memcached install failed!"
+        return 0
     fi
+    [ "${svc_ok}" -eq 1 ] && Echo_Green "memcached 服务端已安装并在运行。"
+    [ "${svc_ok}" -eq 0 ] && Echo_Red "memcached 服务端没有装成或没能启动。"
+    if [ "${ext_ok}" -eq 0 ]; then
+        rm -f ${PHP_Path}/conf.d/005-memcached.ini
+        Echo_Red "PHP 扩展 ${PHP_ZTS} 没有装成，已移除对应的 ini，避免 PHP 启动报警告。"
+    fi
+    Echo_Red "Memcached install failed!"
+    return 1
 }
 
 Uninstall_Memcached()

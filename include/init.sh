@@ -822,10 +822,34 @@ Check_Makefile_Ready()
     return 0
 }
 
+# Build_Jobs — 并行编译的任务数
+#
+# 原先五处各写各的 `-j 核数`，只看 CPU 不看内存。C++ 单个编译进程峰值能吃掉
+# 1GB 以上：Debian 12 / 8 核 / 6GB 实测，MySQL 8.4 的 sql_gis 编译到一半
+# `make -j8` 被 OOM 杀掉（cc1plus anon-rss 787MB），白跑一整轮才退到串行重来。
+# 这里按每个任务 1GB 折算内存能支撑的并发，再和核数取小。内存宽裕的机器
+# 结果仍是核数，行为不变。
+Build_Jobs()
+{
+    local cpus mem_mb jobs
+    cpus=$(nproc 2>/dev/null)
+    [ -n "${cpus}" ] || cpus=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)
+    case "${cpus}" in ''|*[!0-9]*) cpus=2 ;; esac
+    [ "${cpus}" -lt 1 ] && cpus=1
+
+    mem_mb=$(awk '/MemTotal/ {printf "%d", $2 / 1024; exit}' /proc/meminfo 2>/dev/null)
+    case "${mem_mb}" in ''|*[!0-9]*) mem_mb=1024 ;; esac
+
+    jobs=$((mem_mb / 1024))
+    [ "${jobs}" -lt 1 ] && jobs=1
+    [ "${jobs}" -gt "${cpus}" ] && jobs="${cpus}"
+    printf '%s' "${jobs}"
+}
+
 Make_Install()
 {
     Check_Makefile_Ready || return 1
-    make -j `grep 'processor' /proc/cpuinfo | wc -l`
+    make -j"$(Build_Jobs)"
     if [ $? -ne 0 ]; then
         Echo_Yellow "并行编译失败，退回串行重试..."
         if ! make; then
@@ -843,7 +867,7 @@ Make_Install()
 PHP_Make_Install()
 {
     Check_Makefile_Ready || return 1
-    make ZEND_EXTRA_LIBS='-liconv' -j `grep 'processor' /proc/cpuinfo | wc -l`
+    make ZEND_EXTRA_LIBS='-liconv' -j"$(Build_Jobs)"
     if [ $? -ne 0 ]; then
         Echo_Yellow "并行编译失败，退回串行重试..."
         if ! make ZEND_EXTRA_LIBS='-liconv'; then

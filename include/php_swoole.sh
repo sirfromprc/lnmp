@@ -12,7 +12,7 @@ Install_PHP_Swoole()
     ${PHP_Path}/bin/php -m|grep swoole
     if [ $? -eq 0 ]; then
         Echo_Red "PHP Module 'swoole' already loaded!"
-        exit 1
+        return 1
     fi
 
     # 保留的 PHP 全部是 8.x，统一用 PHPSwoole_Ver，改走 pecl 官方源。
@@ -35,11 +35,11 @@ EOF
     if [ -s "${zend_ext}" ]; then
         Echo_Green "====== PHP Swoole install completed ======"
         Echo_Green "PHP Swoole installed successfully, enjoy it!"
-        exit 0
+        return 0
     else
         rm -f ${PHP_Path}/conf.d/009-swoole.ini
         Echo_Red "PHP Swoole install failed!"
-        exit 1
+        return 1
     fi
 }
 

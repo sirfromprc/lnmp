@@ -267,6 +267,12 @@ Select_DB_Bin()
     fi
 
     if [ -z "${Bin}" ]; then
+        # 这里问的是「用上游预编译好的二进制，还是自己编译源码」。
+        # 不说清楚代价，小内存 VPS 的用户很容易随手选源码，然后编译几小时或
+        # 直接因内存不足失败。可行性由 Check_DB_Source_Build 再把一道关。
+        echo "y = 使用官方通用二进制：上游构建，校验值强制核对，几分钟装完（推荐）"
+        echo "n = 自行编译源码：需要 4GB 以上内存和 15GB 以上磁盘，通常要跑数小时，"
+        echo "    只有确实需要定制编译参数时才选它"
         read -p "Using Generic Binaries [y/n]: " Bin
     fi
 

@@ -19,15 +19,85 @@
 
 NGINX_BIN='/usr/local/nginx/sbin/nginx'
 CONFIG='/usr/local/nginx/conf/nginx.conf'
+# conf/nginx.conf、nginx_a.conf、openresty.conf 三份配置里都是这个路径；
+# OpenResty 通过 /usr/local/nginx 软链落到自己的前缀，同样成立。
+NGINX_PID='/usr/local/nginx/logs/nginx.pid'
+
+# Nginx_Is_Nginx <pid> — 这个 pid 是否真的是 nginx 进程
+#
+# 判据是 /proc/<pid>/exe 指向的可执行文件，不是进程名。两个原因：
+#
+#   1. pid 会被系统回收再分配。只做 kill -0 只能证明"这个号码上有进程"，
+#      不能证明它还是 nginx，而 stop 和 force-quit 是要 kill 它的。
+#   2. 只比对 comm 同样不行：shebang 脚本的 comm 是脚本名，而本脚本自己就叫
+#      nginx。实测 `pgrep -x nginx` 会把这个 init 脚本自身匹配进来，于是
+#      status 报"nginx 在跑"（其实只有脚本自己），stop 和 force-quit 则直接
+#      kill 掉自己 —— 实测退出码 143（SIGTERM）。
+Nginx_Is_Nginx()
+{
+    _exe=$(readlink -f "/proc/$1/exe" 2>/dev/null)
+    _want=$(readlink -f "$NGINX_BIN" 2>/dev/null)
+    # /proc 不可用时退回进程名，并显式排除本脚本自己
+    if [ -z "$_exe" ] || [ -z "$_want" ]; then
+        [ "$1" = "$$" ] && return 1
+        _comm=$(ps -p "$1" -o comm= 2>/dev/null)
+        [ "$_comm" = "nginx" ] && return 0
+        return 1
+    fi
+    [ "$_exe" = "$_want" ]
+}
+
+# Nginx_Pid — 在跑返回 0 并把 master 的 pid 放进 PID，否则返回 1
+#
+# 原来各分支都用 `ps -ef | grep "$NGINX_BIN"` 找进程：命令行里出现过这个
+# 路径的进程全都算数 —— 编辑器、tail、甚至一条带路径的 ssh 命令都会被当成
+# nginx 在跑，status 凭空报成功，start 则拒绝启动。
+# 改为以 pid 文件为准并逐个核对可执行文件；pid 文件不可用时按进程名找候选，
+# 但仍要过 Nginx_Is_Nginx 这一关才算数。
+Nginx_Pid()
+{
+    _p=''
+    PID=''
+    if [ -s "$NGINX_PID" ]; then
+        _p=$(cat "$NGINX_PID" 2>/dev/null)
+        case "$_p" in
+            ''|*[!0-9]*) _p='' ;;
+        esac
+        if [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null && Nginx_Is_Nginx "$_p"; then
+            PID="$_p"
+            return 0
+        fi
+    fi
+
+    # pid 文件缺失、为空或已经失效（包安装遗留、被删、进程没了）时，
+    # 按进程名找候选，逐个核对
+    for _p in $(pgrep -x nginx 2>/dev/null); do
+        case "$_p" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        kill -0 "$_p" 2>/dev/null || continue
+        Nginx_Is_Nginx "$_p" || continue
+        # 只认 master：worker 的父进程也是 nginx，kill 掉 worker 只会被 master
+        # 立刻拉起来，stop 看着成功其实没停。
+        _pp=$(ps -p "$_p" -o ppid= 2>/dev/null | tr -d ' ')
+        if [ -n "$_pp" ] && Nginx_Is_Nginx "$_pp"; then
+            continue
+        fi
+        PID="$_p"
+        return 0
+    done
+    return 1
+}
 
 case "$1" in
     start)
         echo -n "Starting nginx... "
 
-        PID=$(ps -ef | grep "$NGINX_BIN" | grep -v grep | awk '{print $2}')
-        if [ "$PID" != "" ]; then
+        if Nginx_Pid; then
+            # 已经在跑就是"已达成目标"，返回 0 保持幂等，与 redis、pureftpd 一致。
+            # 返回 1 会让重复执行的安装流程把正常情况当成失败。
             echo "nginx (pid $PID) already running."
-            exit 1
+            exit 0
         fi
 
         $NGINX_BIN -c $CONFIG
@@ -43,8 +113,7 @@ case "$1" in
     stop)
         echo -n "Stoping nginx... "
 
-        PID=$(ps -ef | grep "$NGINX_BIN" | grep -v grep | awk '{print $2}')
-        if [ "$PID" = "" ]; then
+        if ! Nginx_Pid; then
             echo "nginx is not running."
             exit 1
         fi
@@ -60,21 +129,23 @@ case "$1" in
         ;;
 
     status)
-        PID=$(ps -ef | grep "$NGINX_BIN" | grep -v grep | awk '{print $2}')
-        if [ "$PID" != "" ]; then
+        # 原来两个分支的返回码是反的：服务停止时 exit 0，在跑时靠 echo 的
+        # 退出码碰巧也是 0，等于无论如何都报成功，调用方判断不了状态。
+        # LSB 约定：0 表示在跑，3 表示没在跑。
+        if Nginx_Pid; then
             echo "nginx (pid $PID) is running..."
+            exit 0
         else
             echo "nginx is stopped."
-            exit 0
+            exit 3
         fi
         ;;
 
     force-quit|kill)
         echo -n "Terminating nginx... "
 
-        PID=$(ps -ef | grep "$NGINX_BIN" | grep -v grep | awk '{print $2}')
-        if [ "$PID" = "" ]; then
-            echo "nginx is is stopped."
+        if ! Nginx_Pid; then
+            echo "nginx is stopped."
             exit 1
         fi
 
@@ -97,9 +168,13 @@ case "$1" in
     reload)
         echo -n "Reload nginx... "
 
-        PID=$(ps -ef | grep "$NGINX_BIN" | grep -v grep | awk '{print $2}')
-        if [ "$PID" != "" ]; then
-            $NGINX_BIN -s reload
+        if Nginx_Pid; then
+            # reload 失败必须传出去：conf/lnmp 的 vhost 删除靠这一步让站点真正
+            # 下线，只打印 done 而返回 0，等于删完站点还在线也没人知道。
+            if ! $NGINX_BIN -s reload; then
+                echo " failed"
+                exit 1
+            fi
             echo " done"
         else
             echo "nginx is not running, can't reload."

@@ -158,6 +158,13 @@ expect_empty C14 "无 iptables 调用与持久化包" \
 # 80/443 例外 —— 那两个端口散落在 nginx 配置与 SSL 流程里，本包不提供开关。
 expect_empty C15 "防火墙端口未硬编码（80/443 除外）" 'Firewall_(Allow|Block|Unblock)[[:space:]]+(tcp|udp)[[:space:]]+(?!(80|443)$)[0-9]'
 
+# C16 并行编译的任务数必须由 Build_Jobs 决定
+#
+# 只按核数并行、不看内存，小内存机器会被 OOM 杀掉编译进程：Debian 12 / 8 核
+# 6GB 上 MySQL 8.4 的 sql_gis 就是这么被杀的，白跑一整轮才退到串行。
+# 原先五处各写各的，改一处不改其它等于没改。
+expect_empty C16 "并行编译任务数统一由 Build_Jobs 决定" 'make[^|;#]*-j(?!"\$\(Build_Jobs\)")' -g '*.sh'
+
 # T1 语法检查
 [ -z "${only}" ] || [ "${only}" = "T1" ] && {
     syntax_fail=0

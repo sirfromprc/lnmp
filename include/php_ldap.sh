@@ -12,7 +12,7 @@ Install_PHP_Ldap()
     ${PHP_Path}/bin/php -m|grep ldap
     if [ $? -eq 0 ]; then
         Echo_Red "PHP Module 'ldap' already loaded!"
-        exit 1
+        return 1
     fi
 
     if [ "$PM" = "yum" ]; then
@@ -46,11 +46,11 @@ EOF
     if [ -s "${zend_ext}" ]; then
         Echo_Green "====== PHP Ldap install completed ======"
         Echo_Green "PHP Ldap installed successfully, enjoy it!"
-        exit 0
+        return 0
     else
         rm -f ${PHP_Path}/conf.d/009-ldap.ini
         Echo_Red "PHP Ldap install failed!"
-        exit 1
+        return 1
     fi
 }
 

@@ -202,17 +202,31 @@ Snapshot_DB_List()
 }
 
 # Verify_DB_Upgraded — 升级后验收
-# $1 mysql 客户端路径  $2 升级前的库列表文件  $3 数据库端口（默认 3306）
+# $1 mysql 客户端路径  $2 升级前的库列表文件
+# $3 经典协议端口（默认 3306）  $4 MySQL X Protocol 端口（MariaDB 留空）
 #
 # 依次确认服务可连接、库列表无缺失、本地监听基线未被重写的配置撤销。
 Verify_DB_Upgraded()
 {
-    local bin="$1" before="$2" port="${3:-3306}"
-    local after missing rc=0
+    local bin="$1" before="$2" port="${3:-3306}" xport="${4:-}"
+    local after missing actual_port actual_xport rc=0
 
     if ! "${bin}" --defaults-file=~/.my.cnf -e "SELECT 1;" >/dev/null 2>&1; then
         Echo_Red "升级后无法连接数据库。"
         return 1
+    fi
+
+    actual_port=$("${bin}" --defaults-file=~/.my.cnf -N -B -e "SELECT @@port;" 2>/dev/null)
+    if [ "${actual_port}" != "${port}" ]; then
+        Echo_Red "升级后数据库实际端口为 ${actual_port:-未知}，期望 ${port}。"
+        rc=1
+    fi
+    if [ -n "${xport}" ]; then
+        actual_xport=$("${bin}" --defaults-file=~/.my.cnf -N -B -e "SELECT @@mysqlx_port;" 2>/dev/null)
+        if [ "${actual_xport}" != "${xport}" ]; then
+            Echo_Red "升级后 MySQL X Protocol 实际端口为 ${actual_xport:-未知}，期望 ${xport}。"
+            rc=1
+        fi
     fi
 
     after=$(mktemp) || return 1

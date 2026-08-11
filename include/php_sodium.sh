@@ -16,7 +16,7 @@ Install_PHP_Sodium()
     ${PHP_Path}/bin/php -m|grep sodium
     if [ $? -eq 0 ]; then
         Echo_Red "PHP Module 'sodium' already loaded!"
-        exit 1
+        return 1
     fi
 
     if [ "$PM" = "yum" ]; then
@@ -47,11 +47,11 @@ Install_PHP_Sodium()
     if [ -s "${zend_ext}" ]; then
         Echo_Green "====== PHP Sodium install completed ======"
         Echo_Green "PHP Sodium installed successfully, enjoy it!"
-        exit 0
+        return 0
     else
         rm -f ${PHP_Path}/conf.d/009-sodium.ini
         Echo_Red "PHP Sodium install failed!"
-        exit 1
+        return 1
     fi
 }
 

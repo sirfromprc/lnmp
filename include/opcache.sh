@@ -31,7 +31,7 @@ EOF
         echo "Error: can't get php version!"
         echo "Maybe php was didn't install or php configuration file has errors.Please check."
         sleep 3
-        exit 1
+        return 1
     fi
 
     # ocp.php（opcache 控制面板）不再部署到网站根目录：
@@ -41,11 +41,11 @@ EOF
     if [ -s "${zend_ext}" ]; then
         Echo_Green "====== Opcache install completed ======"
         Echo_Green "Opcache installed successfully, enjoy it!"
-        exit 0
+        return 0
     else
         rm -f ${PHP_Path}/conf.d/004-opcache.ini
         Echo_Red "OPcache install failed!"
-        exit 1
+        return 1
     fi
 }
 

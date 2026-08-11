@@ -130,7 +130,7 @@ Upgrade_MPHP8x()
     rm -rf "${MPHP_Stage}"
     mkdir -p "${MPHP_Stage}" || exit 1
 
-    make ZEND_EXTRA_LIBS='-liconv' -j `grep 'processor' /proc/cpuinfo | wc -l`
+    make ZEND_EXTRA_LIBS='-liconv' -j"$(Build_Jobs)"
     if [ $? -ne 0 ]; then
         Echo_Yellow "并行编译失败，退回串行重试..."
         if ! make ZEND_EXTRA_LIBS='-liconv'; then

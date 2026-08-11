@@ -237,12 +237,146 @@ check_v9()
     grep -q 'PORT=\${Memcached_Port}' include/memcached.sh || missing="${missing} init.d.memcached"
     grep -q 'port        = \${DB_Port}' include/mysql.sh || missing="${missing} mysql-my.cnf"
     grep -q 'port        = \${DB_Port}' include/mariadb.sh || missing="${missing} mariadb-my.cnf"
+    grep -q 'loose-mysqlx-port = \${DB_X_Port}' include/mysql.sh || missing="${missing} mysqlx-port"
+    grep -q 'port        = \${DB_Port}' include/upgrade_mysql.sh || missing="${missing} upgrade-mysql-port"
+    grep -q 'port.*= \${DB_Port}' include/upgrade_mariadb.sh || missing="${missing} upgrade-mariadb-port"
+    grep -q 'port.*= \${DB_Port}' include/upgrade_mysql2mariadb.sh || missing="${missing} mysql2mariadb-port"
     grep -q 'PassivePortRange .*\${Pureftpd_Passive_Min}' pureftpd.sh || missing="${missing} pure-ftpd.conf"
     grep -q 'Bind .*\${Pureftpd_Port}' pureftpd.sh || missing="${missing} pure-ftpd-Bind"
     if [ -z "${missing}" ]; then
         ok V9 "端口已覆写到各服务自己的配置"
     else
         bad V9 "以下服务配置没有跟随端口变量：${missing}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# V10 端口校验必须在安装/升级入口执行，并拒绝格式、范围和关系错误
+# ---------------------------------------------------------------------------
+check_v10()
+{
+    local missing="" failed=""
+    grep -q '^Validate_Service_Ports || exit 1' install.sh || missing="${missing} install.sh"
+    grep -q '^Validate_Service_Ports || exit 1' upgrade.sh || missing="${missing} upgrade.sh"
+    grep -q '^Validate_Service_Ports || exit 1' pureftpd.sh || missing="${missing} pureftpd.sh"
+    grep -q '^Validate_Service_Ports || exit 1' addons.sh || missing="${missing} addons.sh"
+    if [ -n "${missing}" ]; then
+        bad V10 "以下入口未执行端口校验：${missing}"
+        return
+    fi
+
+    port_case()
+    {
+        bash -c '
+            . include/main.sh
+            SSH_Port=22 DB_Port=3306 DB_X_Port=33060 Redis_Port=6379
+            Memcached_Port=11211 Pureftpd_Port=21 Pureftpd_Data_Port=20
+            Pureftpd_Passive_Min=20000 Pureftpd_Passive_Max=30000
+            eval "$1"
+            Validate_Service_Ports
+        ' _ "$1" >/dev/null 2>&1
+    }
+
+    port_case ':' || failed="${failed} valid"
+    port_case 'DB_Port=abc' && failed="${failed} nonnumeric"
+    port_case 'DB_Port=0' && failed="${failed} zero"
+    port_case 'DB_Port=65536' && failed="${failed} overflow"
+    port_case 'DB_Port=6379' && failed="${failed} duplicate"
+    port_case 'Pureftpd_Passive_Min=30001; Pureftpd_Passive_Max=30000' && failed="${failed} reversed-range"
+    port_case 'Redis_Port=25000' && failed="${failed} passive-overlap"
+
+    if [ -z "${failed}" ]; then
+        ok V10 "端口格式、范围、冲突和被动区间校验有效"
+    else
+        bad V10 "端口校验用例失败：${failed}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# V11 安装收尾必须通过 systemd 启动服务，不能绕开
+#
+# 直接调 /etc/init.d/<服务> start，进程确实起来了，systemd 却不知道，
+# systemctl is-active 报 inactive，后续运维命令判断不了服务状态。
+# 前提是该服务得有自己的 unit，否则 StartOrStop 只能退回 SysV 脚本。
+# ---------------------------------------------------------------------------
+check_v11()
+{
+    local missing=""
+    [ -s init.d/memcached.service ] || missing="${missing} memcached.service"
+    grep -q 'init.d/memcached.service /etc/systemd/system/' include/memcached.sh \
+        || missing="${missing} memcached-unit-未部署"
+    grep -q '^[[:space:]]*/etc/init.d/memcached start' include/memcached.sh \
+        && missing="${missing} memcached-仍直调SysV"
+    grep -q 'StartOrStop start memcached' include/memcached.sh \
+        || missing="${missing} memcached-未走StartOrStop"
+    grep -q 'StartOrStop start pureftpd' pureftpd.sh \
+        || missing="${missing} pureftpd-未走StartOrStop"
+    # 自造 systemctl 判断会漏掉 WSL/容器，必须复用 Use_Systemd_Unit
+    grep -q 'Use_Systemd_Unit pureftpd' pureftpd.sh \
+        || missing="${missing} pureftpd-未复用Use_Systemd_Unit"
+    if [ -z "${missing}" ]; then
+        ok V11 "服务启动统一走 systemd 判断"
+    else
+        bad V11 "以下启动路径绕开了 systemd：${missing}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# V12 init 脚本的 status 必须有真实返回码，addons 安装前必须先确认有 PHP
+#
+# status 只打印文字、把最后一条 echo 的退出码当返回值，调用方（lnmp 管理命令、
+# service ... status）判断服务状态必然被误导。
+# addons 装的都是 PHP 扩展，没有 PHP 时若不提前拦住，会先把服务端装好一半
+# 再在扩展编译处 exit 1。
+# ---------------------------------------------------------------------------
+check_v12()
+{
+    local missing=""
+    grep -q 'return 3' init.d/init.d.pureftpd || missing="${missing} pureftpd-status返回码"
+    grep -q '^exit \$?' init.d/init.d.pureftpd || missing="${missing} pureftpd-返回码未传出"
+    grep -q 'return 3' init.d/init.d.memcached || missing="${missing} memcached-status返回码"
+    # nginx、httpd、redis 的 status 用 exit 而不是 return（分支直接写在 case 里）
+    grep -q 'exit 3' init.d/init.d.nginx || missing="${missing} nginx-status返回码"
+    grep -q 'exit 3' init.d/init.d.httpd || missing="${missing} httpd-status返回码"
+    grep -q 'exit 3' init.d/init.d.redis || missing="${missing} redis-status返回码"
+    grep -q 'Check_PHP_Installed || exit 1' addons.sh || missing="${missing} addons-PHP前置检查"
+    # 未知子命令什么都没装，不能返回 0
+    [ "$(grep -c 'Usage: ./addons.sh' addons.sh)" -eq \
+      "$(grep -A1 'Usage: ./addons.sh' addons.sh | grep -c 'exit 1')" ] \
+        || missing="${missing} addons-未知子命令返回0"
+    if [ -z "${missing}" ]; then
+        ok V12 "init 脚本返回码真实，addons 先检查 PHP"
+    else
+        bad V12 "以下返回码/前置检查缺失：${missing}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# V13 addons 的扩展安装函数只能 return，不能 exit
+#
+# 用 exit 会让整个 addons.sh 当场退出：服务端已经装好、自启也加了，
+# 启动、防火墙和安装验收却全被跳过，机器停在半装状态，命令还只报一句失败。
+# 这些文件里的函数全部只被 addons.sh 调用，返回码由 addons.sh 末尾统一交出去。
+# ---------------------------------------------------------------------------
+check_v13()
+{
+    local f bad_files=""
+    for f in include/opcache.sh include/apcu.sh include/imageMagick.sh \
+             include/memcached.sh include/redis.sh include/php_exif.sh \
+             include/php_fileinfo.sh include/php_ldap.sh include/php_bz2.sh \
+             include/php_sodium.sh include/php_imap.sh include/php_swoole.sh; do
+        [ -f "${f}" ] || { bad_files="${bad_files} ${f}(缺失)"; continue; }
+        # 去掉整行注释再找独立的 exit 词：既要抓 `    exit 1`，
+        # 也要抓 `Make_Install || exit 1` 和 `f() { exit 1; }`
+        grep -vE '^[[:space:]]*#' "${f}" \
+            | grep -qE '(^|[[:space:]{(;&|])exit([[:space:]]|$)' \
+            && bad_files="${bad_files} ${f}"
+    done
+    grep -q '^exit \${Addons_Rc}$' addons.sh || bad_files="${bad_files} addons.sh(未传出返回码)"
+    if [ -z "${bad_files}" ]; then
+        ok V13 "addons 扩展安装函数只用 return，退出码由入口传出"
+    else
+        bad V13 "以下文件仍用 exit 终止或未传出返回码：${bad_files}"
     fi
 }
 
@@ -256,6 +390,10 @@ check_v6
 check_v7
 check_v8
 check_v9
+check_v10
+check_v11
+check_v12
+check_v13
 
 echo
 echo "通过 ${pass} 项，失败 ${fail} 项。"

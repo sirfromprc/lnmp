@@ -25,6 +25,7 @@ action=$1
 . include/firewall.sh
 . include/init.sh
 
+Validate_Service_Ports || exit 1
 Get_Dist_Name
 
 Install_Pureftpd()
@@ -129,13 +130,31 @@ Install_Pureftpd()
 
     if [[ -s /usr/local/pureftpd/sbin/pure-ftpd && -s /usr/local/pureftpd/etc/pure-ftpd.conf && -s /etc/init.d/pureftpd ]]; then
         Echo_Blue "Starting pureftpd..."
-        /etc/init.d/pureftpd start
-        Echo_Green "+----------------------------------------------------------------------+"
-        Echo_Green "| Install Pure-FTPd completed,enjoy it!"
-        Echo_Green "| =>use command: lnmp ftp {add|list|del|show} to manage FTP users."
-        Echo_Green "+----------------------------------------------------------------------+"
-        Echo_Green "| Pure-FTPd installed from download.pureftpd.org (official)"
-        Echo_Green "+----------------------------------------------------------------------+"
+        # 走 StartOrStop 而不是自己判断：WSL 和容器里 systemctl 可能存在却不可用，
+        # 那种环境必须退回 SysV 脚本，否则本来能装完的机器会卡在这一步。
+        StartOrStop start pureftpd
+        Pureftpd_Start_Rc=$?
+        if [ "${Pureftpd_Start_Rc}" -eq 0 ]; then
+            # init 脚本的 status 只打印文字、恒返回 0，不能当判据。
+            # 走 systemd 就问 systemctl，否则看 pid 文件对应的进程还在不在。
+            if Use_Systemd_Unit pureftpd; then
+                systemctl is-active --quiet pureftpd.service || Pureftpd_Start_Rc=1
+            elif ! { [ -s /var/run/pure-ftpd.pid ] \
+                     && kill -0 "$(cat /var/run/pure-ftpd.pid)" 2>/dev/null; }; then
+                Pureftpd_Start_Rc=1
+            fi
+        fi
+        if [ "${Pureftpd_Start_Rc}" -eq 0 ]; then
+            Echo_Green "+----------------------------------------------------------------------+"
+            Echo_Green "| Install Pure-FTPd completed,enjoy it!"
+            Echo_Green "| =>use command: lnmp ftp {add|list|del|show} to manage FTP users."
+            Echo_Green "+----------------------------------------------------------------------+"
+            Echo_Green "| Pure-FTPd installed from download.pureftpd.org (official)"
+            Echo_Green "+----------------------------------------------------------------------+"
+        else
+            Echo_Red "Pureftpd start failed!"
+            exit 1
+        fi
     else
         Echo_Red "Pureftpd install failed!"
     fi

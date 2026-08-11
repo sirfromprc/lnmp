@@ -33,6 +33,10 @@ action2=$2
 . include/php_imap.sh
 . include/php_swoole.sh
 
+# Redis 与 Memcached 的独立安装入口也在这里，端口同样会进 sed 和防火墙命令，
+# 校验必须和 install.sh / upgrade.sh / pureftpd.sh 一样放在任何系统动作之前。
+Validate_Service_Ports || exit 1
+
 ionCube_NotWired_Notice()
 {
     Echo_Yellow "ionCube Loader 当前未接入本包的安装流程。"
@@ -257,6 +261,24 @@ Select_PHP()
     fi
 }
 
+# 本脚本装的都是要编进当前 PHP 的扩展，没有 PHP 就一件也装不成。
+#
+# 原先不做这个检查：机器上没有 PHP 时，memcached 的服务端、init 脚本、
+# systemd unit 和开机自启都已经装好，直到编译 PHP 扩展才失败，
+# 而那里是 `Make_Install || exit 1`，整个脚本当场退出 ——
+# 启动、防火墙和安装验收全部没执行，用户只看到一句失败，不知道装了一半。
+Check_PHP_Installed()
+{
+    [ -x "${PHP_Path}/bin/php-config" ] && return 0
+
+    Echo_Red "没有找到 PHP：${PHP_Path}/bin/php-config 不存在。"
+    Echo_Red "addons.sh 安装的都是 PHP 扩展，必须先装好 PHP 再来装它们："
+    Echo_Red "  完整安装：      ./install.sh lnmp"
+    Echo_Red "  只加 PHP 版本： ./install.sh mphp"
+    Echo_Red "装好 PHP 后重新执行本命令。"
+    return 1
+}
+
 Addons_Get_PHP_Ext_Dir()
 {
     Cur_PHP_Version="`${PHP_Path}/bin/php-config --version`"
@@ -290,6 +312,8 @@ Select_PHP
 
     case "${action}" in
     install)
+        # 只拦安装：卸载要能在 PHP 已经被删掉的机器上照常清理残留。
+        Check_PHP_Installed || exit 1
         case "${action2}" in
             1|[mM]emcached)
                 Install_Memcached
@@ -340,7 +364,10 @@ Select_PHP
                 exit 1
                 ;;
             *)
+                # 子命令拼错什么都没装，不能报成功：外部自动化只看退出码，
+                # 返回 0 等于告诉它"装好了"。
                 echo "Usage: ./addons.sh install {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
+                exit 1
                 ;;
         esac
         ;;
@@ -389,6 +416,7 @@ Select_PHP
                 ;;
             *)
                 echo "Usage: ./addons.sh uninstall {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
+                exit 1
                 ;;
         esac
         ;;
@@ -400,3 +428,9 @@ Select_PHP
         exit 1
         ;;
     esac
+
+# 各安装函数改用 return 之后，脚本的退出码就得在这里明确交出去。
+# 靠"最后一条命令恰好是那个函数"是碰运气：以后在 esac 后面加任何一行，
+# 退出码就变成那一行的了，外部自动化再也发现不了安装失败。
+Addons_Rc=$?
+exit ${Addons_Rc}

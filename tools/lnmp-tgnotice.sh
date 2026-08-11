@@ -52,6 +52,7 @@ _tg_escape()
 
 _tg_load_conf()
 {
+    local perm
     TG_Enable="${TG_Enable:-0}"
     TG_Bot_Token="${TG_Bot_Token:-}"
     TG_Chat_Id="${TG_Chat_Id:-}"
@@ -60,6 +61,11 @@ _tg_load_conf()
     TG_Retry="${TG_Retry:-2}"
     TG_Disable_Preview="${TG_Disable_Preview:-1}"
     if [ -r "${TG_Conf_File}" ]; then
+        perm=$(stat -c '%a' "${TG_Conf_File}" 2>/dev/null || stat -f '%Lp' "${TG_Conf_File}" 2>/dev/null)
+        case "${perm}" in
+            600|400) : ;;
+            *) _tg_err "${TG_Conf_File} 权限是 ${perm:-未知}，必须是 600 或 400，拒绝加载。"; return 1 ;;
+        esac
         # shellcheck disable=SC1090
         . "${TG_Conf_File}" || { _tg_err "读取 ${TG_Conf_File} 失败。"; return 1; }
     fi
@@ -193,7 +199,11 @@ _tgnotice_init()
     if [ -f "${TG_Conf_File}" ]; then
         _tg_warn "配置已存在：${TG_Conf_File}"
         printf '覆盖？(y/N) '
-        read -r ans
+        if ! read -r ans; then
+            echo
+            _tg_err "读取覆盖确认时遇到 EOF。"
+            return 1
+        fi
         [ "${ans}" = "y" ] || { echo "保留现有配置。"; return 0; }
     fi
 
@@ -203,11 +213,24 @@ _tgnotice_init()
     echo "就能看到 chat id（群是负数）。"
     echo ""
     printf 'Bot Token: '
-    read -r token
+    if ! read -r -s token; then
+        echo
+        _tg_err "读取 Bot Token 时遇到 EOF。"
+        return 1
+    fi
+    echo
     printf 'Chat ID: '
-    read -r chat
+    if ! read -r chat; then
+        echo
+        _tg_err "读取 Chat ID 时遇到 EOF。"
+        return 1
+    fi
     printf '默认格式 [HTML/MarkdownV2]（回车用 HTML）: '
-    read -r mode
+    if ! read -r mode; then
+        echo
+        _tg_err "读取默认格式时遇到 EOF。"
+        return 1
+    fi
     case "${mode}" in
         MarkdownV2|markdownv2|md) mode="MarkdownV2" ;;
         *) mode="HTML" ;;

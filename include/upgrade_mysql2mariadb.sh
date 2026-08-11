@@ -169,11 +169,11 @@ Upgrade_MySQL2MariaDB()
     cat > /etc/my.cnf<<EOF
 [client]
 #password	= your_password
-port		= 3306
+port		= ${DB_Port}
 socket		= /tmp/mysql.sock
 
 [mysqld]
-port		= 3306
+port		= ${DB_Port}
 socket		= /tmp/mysql.sock
 # 仅监听回环地址，与全新安装保持同一监听基线（见 include/mariadb.sh）。
 # 升级重写 /etc/my.cnf，此处不写则原有的本地监听限制会被静默撤销。
@@ -293,7 +293,7 @@ EOF
     # 成功判定不能只看文件是否存在：还须确认服务可连接、库列表无缺失、
     # 本地监听基线未被重写的 /etc/my.cnf 撤销。
     if [[ -s /usr/local/mariadb/bin/mysql && -s /usr/local/mariadb/bin/mysqld_safe && -s /etc/my.cnf ]] \
-        && Verify_DB_Upgraded /usr/local/mariadb/bin/mysql "${DB_List_Before}"; then
+        && Verify_DB_Upgraded /usr/local/mariadb/bin/mysql "${DB_List_Before}" "${DB_Port}"; then
         Echo_Green "======== upgrade MySQL to MariaDB completed ======"
         rm -f "${DB_List_Before}"
     else

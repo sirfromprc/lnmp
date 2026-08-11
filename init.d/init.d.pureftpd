@@ -24,43 +24,83 @@ PURE_PID="/var/run/pure-ftpd.pid"
 RETVAL=0
 prog="Pure-FTPd"
 
+# pid 文件存在不等于进程还在：崩溃或被 kill -9 之后文件会留下来。
+# 判断一律以 pid 对应的进程是否存活为准。
+is_running() {
+    [ -s "$PURE_PID" ] || return 1
+    kill -0 "$(cat "$PURE_PID" 2>/dev/null)" 2>/dev/null
+}
+
 start() {
     echo -n $"Starting $prog... "
-    $PURE_FTPD $PURE_CONF
-    if [ "$?" = 0 ] ; then
-        echo " done"
-    else
-        echo " failed"
+    if is_running; then
+        echo " already running"
+        return 0
     fi
+    # 陈旧的 pid 文件会让下面的就绪判断立刻"成功"，先清掉
+    rm -f "$PURE_PID"
+    $PURE_FTPD $PURE_CONF
+    start_rc=$?
+    # Daemonize yes：命令会立刻返回，pid 文件由 pure-ftpd 自己写，
+    # 等它落地再下结论，否则刚起来就查会误判成失败。
+    ready=1
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if is_running; then
+            ready=0
+            break
+        fi
+        sleep 0.2
+    done
+    if [ "$start_rc" != 0 ] || [ "$ready" != 0 ]; then
+        echo " failed"
+        return 1
+    fi
+    echo " done"
+    return 0
 }
 
 stop() {
     echo -n $"Stopping $prog...  "
-    if [ ! -f "$PURE_PID" ]; then
-        echo -n $"$prog is not running."
-        exit 1
+    if ! is_running; then
+        echo $"$prog is not running."
+        return 1
     fi
-    kill `cat $PURE_PID`
-    if [ "$?" = 0 ] ; then
-        echo " done"
-    else
+    if ! kill "$(cat "$PURE_PID")" 2>/dev/null; then
         echo " failed"
+        return 1
     fi
+    for _ in 1 2 3 4 5; do
+        is_running || break
+        sleep 1
+    done
+    if is_running; then
+        echo " failed"
+        return 1
+    fi
+    rm -f "$PURE_PID"
+    echo " done"
+    return 0
 }
 
 restart(){
     echo $"Restarting $prog..."
+    # 本来就没在跑时 stop 会返回 1，这属于正常情况，不影响重启结果，
+    # 所以 restart 的返回码只看 start。
     $0 stop
     sleep 2
     $0 start
 }
 
+# LSB 约定：0 表示在跑，3 表示没在跑。
+# 原实现两个分支都不设返回码，最终返回的是最后一条 echo 的退出码，恒为 0，
+# 调用方（lnmp pureftpd status、service pureftpd status）据此判断必然被误导。
 status(){
-    if [ -f "$PURE_PID" ]; then
+    if is_running; then
         echo $"$prog is running."
-    else
-        echo $"$prog is not running."
+        return 0
     fi
+    echo $"$prog is not running."
+    return 3
 }
 
 case "$1" in
@@ -77,5 +117,8 @@ case "$1" in
         status
         ;;
   *)
-        echo $"Usage: $0 {start|stop|restart}"
+        echo $"Usage: $0 {start|stop|restart|status}"
+        exit 2
 esac
+# 返回码必须传出去，否则上面几个函数认真算出来的结果到调用方又变成 0。
+exit $?

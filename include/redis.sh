@@ -117,7 +117,7 @@ Install_Redis()
         echo "检测到 igbinary，启用 phpredis 的 igbinary 序列化支持。"
     fi
     ./configure --with-php-config=${PHP_Path}/bin/php-config ${Redis_Igbinary_Opt}
-    Make_Install || exit 1
+    Make_Install || return 1
     cd ../
     cat >${PHP_Path}/conf.d/021-redis.ini<<EOF
 extension = "redis.so"

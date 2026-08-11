@@ -42,10 +42,11 @@ EOF
         Restart_PHP
         Echo_Green "======== apcu install completed ======"
         Echo_Green "apcu installed successfully, enjoy it!"
-    else
-        rm -f ${PHP_Path}/conf.d/009-apcu.ini
-        Echo_Red "apcu install failed!"
+        return 0
     fi
+    rm -f ${PHP_Path}/conf.d/009-apcu.ini
+    Echo_Red "apcu install failed!"
+    return 1
 }
 
 Uninstall_Apcu()

@@ -62,7 +62,7 @@ Upgrade_Nginx()
     local nginx_bak="/usr/local/nginx/sbin/nginx.${Upgrade_Date}"
     local build_dir="${cur_dir}/src/nginx-${Nginx_Version}"
 
-    make -j `grep 'processor' /proc/cpuinfo | wc -l`
+    make -j"$(Build_Jobs)"
     if [ $? -ne 0 ]; then
         Echo_Yellow "并行编译失败，退回串行重试..."
         if ! make; then

@@ -37,6 +37,7 @@ Upgrade_Date=$(date +"%Y%m%d%H%M%S")
 . include/upgrade_phpmyadmin.sh
 . include/upgrade_mphp.sh
 
+Validate_Service_Ports || exit 1
 Get_Dist_Name
 Get_Dist_Version
 MemTotal=$(awk '/MemTotal/ {printf( "%d\n", $2 / 1024 )}' /proc/meminfo)

@@ -38,6 +38,7 @@ LNMP_Ver='2.3'
 . include/imageMagick.sh
 . include/php_default_ext.sh
 
+Validate_Service_Ports || exit 1
 Get_Dist_Name
 
 if [ "${DISTRO}" = "unknow" ]; then

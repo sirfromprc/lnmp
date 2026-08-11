@@ -33,6 +33,7 @@ USER=memcached
 MAXCONN=1024
 CACHESIZE=64
 OPTIONS=""
+PIDFILE=/run/memcached/memcached.pid
 
 RETVAL=0
 prog="memcached"
@@ -52,8 +53,26 @@ start() {
         fi
         echo -n "已创建。继续启动 $prog: "
     fi
-    /usr/local/memcached/bin/memcached -d -l $IP -p $PORT -u $USER -m $CACHESIZE -c $MAXCONN -P /var/run/memcached.pid $OPTIONS
-    if [ "$?" != 0 ] ; then
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+        echo " already running"
+        return 0
+    fi
+    rm -f "$PIDFILE"
+    if ! install -d -o "$USER" -g "$USER" -m 0755 "$(dirname "$PIDFILE")"; then
+        echo " failed"
+        exit 1
+    fi
+    /usr/local/memcached/bin/memcached -d -l "$IP" -p "$PORT" -u "$USER" -m "$CACHESIZE" -c "$MAXCONN" -P "$PIDFILE" $OPTIONS
+    start_rc=$?
+    ready=1
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+            ready=0
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "$start_rc" != 0 ] || [ "$ready" != 0 ]; then
         echo " failed"
         exit 1
     else
@@ -63,17 +82,21 @@ start() {
 }
 stop() {
     echo -n "Stopping $prog: "
-    if [ ! -f "/var/run/$prog.pid" ]; then
+    if [ ! -s "$PIDFILE" ]; then
         echo "$prog is not running."
         exit 1
     fi
-    kill `cat /var/run/memcached.pid`
+    kill "$(cat "$PIDFILE")"
     if [ "$?" != 0 ] ; then
         echo " failed"
         exit 1
     else
+        for _ in 1 2 3 4 5; do
+            kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null || break
+            sleep 1
+        done
         rm -f /var/lock/subsys/memcached
-        rm -f /var/run/memcached.pid
+        rm -f "$PIDFILE"
         echo " done"
     fi
 }
@@ -85,10 +108,12 @@ restart() {
 }
 
 status() {
-    if [ -f "/var/run/$prog.pid" ]; then
+    if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
         echo "$prog is running."
+        return 0
     else
         echo "$prog is stopped."
+        return 3
     fi
 }
 

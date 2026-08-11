@@ -234,6 +234,8 @@ Install_MySQL_80()
         Echo_Blue "[+] Installing ${Mysql_Ver} Using Source code..."
         Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
         Install_Boost
+        # Install_Boost 下载外部 Boost 时会回到 src/，这里显式回到 MySQL 源码树。
+        cd "${cur_dir}/src/${Mysql_Ver}" || exit 1
         mkdir build && cd build
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
         Make_Install || exit 1
@@ -269,6 +271,7 @@ bind-address = 127.0.0.1
 # loose- 前缀：X Plugin 被显式关闭（mysqlx=OFF）时这个选项就不存在，
 # 不加前缀 mysqld 会因「未知选项」拒绝启动。加了则降级为一条警告。
 loose-mysqlx-bind-address = 127.0.0.1
+loose-mysqlx-port = ${DB_X_Port}
 datadir = ${MySQL_Data_Dir}
 skip-external-locking
 key_buffer_size = 16M
@@ -357,6 +360,8 @@ Install_MySQL_84()
         Echo_Blue "[+] Installing ${Mysql_Ver} Using Source code..."
         Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
         Install_Boost
+        # Install_Boost 下载外部 Boost 时会回到 src/，这里显式回到 MySQL 源码树。
+        cd "${cur_dir}/src/${Mysql_Ver}" || exit 1
         mkdir build && cd build
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
         Make_Install || exit 1
@@ -392,6 +397,7 @@ bind-address = 127.0.0.1
 # loose- 前缀：X Plugin 被显式关闭（mysqlx=OFF）时这个选项就不存在，
 # 不加前缀 mysqld 会因「未知选项」拒绝启动。加了则降级为一条警告。
 loose-mysqlx-bind-address = 127.0.0.1
+loose-mysqlx-port = ${DB_X_Port}
 datadir = ${MySQL_Data_Dir}
 skip-external-locking
 key_buffer_size = 16M

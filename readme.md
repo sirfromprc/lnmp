@@ -18,8 +18,10 @@
   5.x / 7.x 系列的 PHP、MySQL 5.1~5.7、MariaDB 10.0~10.6 以及 Apache 2.2 已移除，
   它们都已停止安全维护。
 - 组件升级到当前稳定版：Nginx 1.30、OpenSSL 3.5 LTS、Apache 2.4.68、phpMyAdmin 5.2.3。
+- Web 服务器可以选 **Nginx** 或 **OpenResty 1.31**（二选一，见 3.2.1）。
 - Nginx 默认编译进 **brotli、cache_purge、fancyindex、Lua（LuaJIT + lua-nginx-module
-  + resty core/lrucache/cjson）**；PHP 默认带上常用扩展。
+  + resty core/lrucache/cjson）**，并启用 HTTP/2、HTTP/3 与 stream 模块；
+  PHP 默认带上常用扩展。
 - 防火墙由 iptables 改为 **nftables**，规则只落在独立的 `inet lnmp` 表里，
   不动系统已有的防火墙配置；检测到 firewalld 在运行时改用 `firewall-cmd` 与之共存。
 
@@ -60,9 +62,30 @@
   数据库升级暂未提供自动回滚，失败时会打印人工恢复步骤；升级前必须完成备份。
 - 不再强杀包管理进程、不再删除 yum/dpkg 锁文件，改为等待锁释放。
 
-> **注意**：完整的 `./install.sh` 尚未完成端到端生产环境验证。
-> 部署到生产环境前必须先在测试机验证。
-> 详见 `changelog.md` 的「阻断性提醒」一节。
+> **验证情况**：
+>
+> - **已在 Debian 12 实测**：`install.sh lnmp` 完整安装（Nginx + MySQL 8.4 + PHP 8.3）、
+>   WordPress 主线、`install.sh db`、`pureftpd.sh`、`addons.sh` 的 Redis/Memcached、
+>   OpenResty 官方包安装、自定义端口、数据库升级、phpMyAdmin 升级、备份与恢复。
+> - **未实测**：LNMPA / LAMP（Apache 系）、CentOS/RHEL 系、非 x86_64 架构。
+>
+> 无论哪种情况，部署到生产环境前都请先在测试机走一遍。
+
+### 已知不支持或不完善
+
+| 项目 | 状态 |
+|---|---|
+| LNMPA / LAMP（Apache 系） | 代码保留，但**未做真机验证**，请自行充分测试 |
+| CentOS / RHEL 系 | 代码保留，无额外验证轮次 |
+| 非 x86_64 架构 | 数据库官方通用二进制只有 x86_64，其余架构会回退到源码编译 |
+| Nginx 的 80 / 443 端口 | **不可配置**，散落在主配置、每个站点配置和证书签发流程里 |
+| SSH 端口 | 只用于生成放行规则，**不会改 `sshd_config`** |
+| 数据库升级 | 无自动回滚 |
+| IP 证书 | 仅 IPv4 公网地址，有效期 7 天，依赖自动续期 |
+| ionCube Loader | 未接入安装流程，需要请自行从官方获取 |
+| 容器 / WSL | 有无 systemd 环境的降级路径，但未做验证 |
+| 数据库主从、读写分离 | 不支持 |
+| 站点级别的资源隔离（每站独立 PHP-FPM 池） | 不提供，需要自行配置 |
 
 ---
 
@@ -75,13 +98,13 @@
 ```bash
 # 方式一：clone（方便后续 git pull 更新）
 yum install -y git || apt-get install -y git
-git clone https://github.com/<你的用户名>/lnmp.git lnmp
+git clone https://github.com/sirfromprc/lnmp.git lnmp
 cd lnmp
 
 # 方式二：下载 release 压缩包
-wget https://github.com/<你的用户名>/lnmp/archive/refs/tags/v2.3.tar.gz
+wget https://github.com/sirfromprc/lnmp/archive/refs/tags/v2.3.tar.gz
 tar zxf v2.3.tar.gz
-cd <仓库名>-2.3
+cd lnmp-2.3
 ```
 
 > 建议使用固定的 **tag / release**。`main` 分支可能持续变化，无法保证不同时间安装的内容一致。
@@ -101,8 +124,27 @@ cd <仓库名>-2.3
 - `lnmpa`：Nginx 做前端、Apache 跑 PHP
 - `lamp`：Apache + MySQL/MariaDB + PHP
 
-安装过程会交互询问数据库版本、数据库 root 密码、PHP 版本、内存分配方式等。
-全程需要 **root 权限**，编译耗时从十几分钟到一小时以上不等（取决于机器性能）。
+安装过程会交互询问 Web 服务器（Nginx 还是 OpenResty）、数据库版本、数据库 root 密码、
+PHP 版本、内存分配方式等。全程需要 **root 权限**，编译耗时从十几分钟到一小时以上不等
+（取决于机器性能，以及数据库选二进制还是源码）。
+
+全部选项都能用环境变量提前给定，跳过交互：
+
+```bash
+# 装 LNMP：OpenResty 官方包 + MySQL 8.4 通用二进制 + PHP 8.3
+WebSelect=2 ORMode=1 DBSelect=2 Bin=y PHPSelect=4 InstallInnodb=y \
+DB_Root_Password='改成你的密码' ./install.sh lnmp
+```
+
+| 变量 | 取值 |
+|---|---|
+| `WebSelect` | `1` = Nginx（默认），`2` = OpenResty |
+| `ORMode` | 选 OpenResty 时：`1` = 官方软件包（不编译，快），`2` = 源码编译 |
+| `DBSelect` | `1`=MySQL 8.0 `2`=MySQL 8.4（默认） `3`=MariaDB 10.11 `4`=MariaDB 11.4 `5`=MariaDB 11.8 `0`=不装 |
+| `Bin` | 数据库 `y` = 官方通用二进制（推荐），`n` = 源码编译 |
+| `PHPSelect` | `1`~`6` 对应 PHP 8.0 / 8.1 / 8.2 / 8.3（默认） / 8.4 / 8.5 |
+| `InstallInnodb` | `y` / `n` |
+| `DB_Root_Password` | 留空则随机生成并写入 `/root/.lnmp_db_root_password` |
 
 > **注意：必须在无现有业务的干净系统上安装。** 安装脚本会卸载系统自带的 nginx / php /
 > apache / mysql 相关包，并接管防火墙配置。
@@ -138,6 +180,30 @@ Default_Website_Dir=/data/wwwroot Enable_PhpMyAdmin=y ./install.sh lnmp
 - 数据库的官方通用二进制包**只有 x86_64**。其他架构（如 aarch64）会自动回退到
   源码编译，耗时和内存占用都显著更高。
 
+#### 数据库：通用二进制还是源码编译
+
+安装数据库时会问一次 `Using Generic Binaries [y/n]`，**没有特殊需求就选 `y`**：
+通用二进制由上游构建，SHA256 同样强制核对，几分钟装完，功能与源码编译一致。
+
+选 `n`（源码编译）前先看硬件条件。以 MySQL 8.4 在 Debian 12 实测为例：
+
+| 项目 | 实测值 |
+| --- | --- |
+| 编译目录峰值 | 约 7.8GB |
+| 安装目录 | 约 1.5GB |
+| 单个编译进程内存峰值 | 约 800MB |
+| 8 核并行编译 | 6GB 内存的机器会被 OOM 杀掉 |
+
+安装脚本会在开始下载和改动系统之前检查：内存低于 2GB 或项目所在分区可用空间
+低于 15GB 直接拒绝并提示改用 `Bin=y`；内存低于 4GB 会说明代价并要求确认。
+并行任务数按「每个任务 1GB 内存」和 CPU 核数取小值，不再只看核数。
+
+非交互安装可以直接指定，例如：
+
+```bash
+DBSelect=2 Bin=y CheckMirror=n InstallInnodb=y ./install.sh db
+```
+
 ---
 
 ## 三、常用功能说明
@@ -158,11 +224,26 @@ lnmp php-fpm  {start|stop|restart|reload|status}
 lnmp pureftpd {start|stop|restart|reload|status}
 ```
 
-也可以直接用 init 脚本：`/etc/init.d/nginx`、`/etc/init.d/mysql`、
-`/etc/init.d/php-fpm`、`/etc/init.d/redis`、`/etc/init.d/memcached`。
+其余管理子命令：
+
+```bash
+lnmp vhost    {add|list|del}                      # 虚拟主机，见 3.2
+lnmp database {add|list|edit|del|export|import}   # 数据库，见 3.3
+lnmp backup   {init|run|status|list|restore|test} # 备份，见 3.3
+lnmp ftp      {add|list|edit|del|show}            # FTP 账号，见 3.8
+lnmp ssl add                                      # 签发证书，见 3.7
+lnmp dnsssl   {cx|ali|cf|dp|he|gd|aws}            # DNS 验证签发（支持泛域名）
+lnmp onlyssl  {cx|ali|cf|dp|he|gd|aws}            # 只签证书，不改 Nginx 配置
+lnmp tgnotice {--init|--test|--status}            # Telegram 通知，见 3.3.1
+```
 
 > `reload` 是平滑重载配置，不中断连接；`restart` 会真正重启进程。
 > 改完 Nginx 配置优先用 `reload`。`kill` 是强制杀进程，只在卡死时用。
+
+**优先用 `lnmp`，不要直接调 `/etc/init.d/`**。有 systemd 的机器上，`lnmp` 会走
+`systemctl`；绕过它直接跑 init 脚本，进程确实起来了，`systemctl is-active` 却报
+inactive，后续运维命令判断不了服务状态。init 脚本仍然保留，供没有 systemd 的
+环境（容器、WSL）使用。
 
 ### 3.2 Nginx
 
@@ -205,16 +286,45 @@ lnmp vhost del     # 删除站点（只删配置，不删网站文件）
 
 **日志切割**：`tools/cut_nginx_logs.sh`，可加进 crontab 每天执行。
 
+### 3.2.1 OpenResty（Nginx 的可选替代）
+
+OpenResty 是带 LuaJIT 和一整套 Lua 库的 Nginx 发行版。安装时二选一：
+
+```bash
+WebSelect=2 ORMode=1 ./install.sh lnmp    # 官方软件包，不编译，一分钟左右装完
+WebSelect=2 ORMode=2 ./install.sh lnmp    # 源码编译，可加自定义模块
+```
+
+装完之后 **3.2 里的路径和命令完全照用**，`lnmp` 的 vhost 管理、日志切割也一样，
+不需要记两套。
+
+选源码编译（`ORMode=2`）时，可以在 `lnmp.conf` 里加自定义编译模块、额外的
+configure 参数、自己的 Lua 库目录，以及 opm / luarocks 包。模块必须给出下载地址
+和 SHA256。升级时这些配置会自动沿用，不会升出一个不含模块的版本。
+配置项的格式和示例见 `lnmp.conf` 里对应的注释。
+
+选官方软件包（`ORMode=1`）时加不了编译期模块，配了会直接报错而不是静默忽略。
+
+> 两种装法的取舍、发行版限制、自定义模块的完整配置方式见
+> `HowtoGuides.md` 的 2.3 与 2.3.1。
+
 ### 3.3 MySQL / MariaDB
 
 **目录与配置**
 
-| 路径 | 用途 |
-|---|---|
-| `/usr/local/mysql/` 或 `/usr/local/mariadb/` | 程序目录 |
-| `/usr/local/mysql/var/` | 默认数据目录（可在 `lnmp.conf` 改） |
-| `/etc/my.cnf` | 配置文件 |
-| `/usr/local/mysql/var/<主机名>.err` | 错误日志，起不来先看这个 |
+两者的配置文件都是 `/etc/my.cnf`（由安装流程生成），程序目录和数据目录按所选数据库不同：
+
+| 内容 | MySQL | MariaDB |
+|---|---|---|
+| 程序目录 | `/usr/local/mysql/` | `/usr/local/mariadb/` |
+| 数据目录（默认） | `/usr/local/mysql/var/` | `/usr/local/mariadb/var/` |
+| 配置文件 | `/etc/my.cnf` | `/etc/my.cnf` |
+| 错误日志 | `/usr/local/mysql/var/<主机名>.err` | `/usr/local/mariadb/var/<主机名>.err` |
+| 服务名 | `lnmp mysql ...` | `lnmp mariadb ...` |
+
+数据目录可在 `lnmp.conf` 里用 `MySQL_Data_Dir` / `MariaDB_Data_Dir` 改；
+装完之后再改要按 5.x「如何更改网站目录和数据库数据目录」的步骤搬。
+下文命令一律以 MySQL 为例，MariaDB 把路径里的 `mysql` 换成 `mariadb` 即可。
 
 **日常命令**
 
@@ -305,13 +415,12 @@ tgnotice "原样文本 < & >" text       # 不做格式解析
 
 ### 3.3.2 自定义服务端口
 
-端口统一在 `lnmp.conf` 里配置，安装时会**同时**写进服务自己的配置文件和
-nftables 规则，两边不会各说各话：
+端口统一在 `lnmp.conf` 里配置，安装时会**同时**写进服务自己的配置文件和nftables 规则：
 
 ```bash
 SSH_Port=22                  # 仅用于放行；本包不改 sshd_config
 DB_Port=3306                 # 写进 /etc/my.cnf，并按此端口阻断
-DB_X_Port=33060              # MySQL X Protocol，仅阻断
+DB_X_Port=33060              # MySQL X Protocol，同样写进配置并阻断
 Redis_Port=6379              # 写进 redis.conf、init 脚本与自测页
 Memcached_Port=11211         # 写进 init 脚本
 Pureftpd_Port=21             # 写进 pure-ftpd.conf 的 Bind
@@ -406,7 +515,7 @@ lnmp php-fpm restart                    # 重启（改 php.ini / php-fpm.conf �
 /usr/local/php/bin/php -m | grep redis       # 确认 PHP 扩展已加载
 ```
 
-**默认只监听 127.0.0.1，且防火墙阻止外部访问 6379 端口**。
+**默认只监听 127.0.0.1，且防火墙阻止外部访问**（端口跟随 `lnmp.conf` 的 `Redis_Port`）。
 Redis 默认无密码，暴露到公网等同于把服务器交出去。
 确需远程访问，请先在 `redis.conf` 里设 `requirepass`，再考虑放行端口。
 
@@ -419,7 +528,7 @@ echo stats | nc 127.0.0.1 11211              # 确认在跑
 /usr/local/php/bin/php -m | grep -i memcache
 ```
 
-同样默认只本机可用，11211 端口在防火墙里挡掉。
+同样默认只本机可用，端口（`Memcached_Port`）在防火墙里挡掉 TCP 和 UDP。
 
 ### 3.7 SSL 证书
 
@@ -431,6 +540,16 @@ lnmp onlyssl {cx|ali|cf|dp|he|gd|aws}         # 只签证书，不改 Nginx 配�
 
 底层用 acme.sh，证书放在 `/usr/local/nginx/conf/ssl/`，会自动加续期任务。
 密钥类型使用 acme.sh 默认的 **EC-256**。
+
+**没有域名时的 IP 证书**：对默认站点执行 `lnmp ssl add` 会自动转入 IP 证书流程，
+为服务器公网 IPv4 签发证书。这条路有硬性限制，脚本会先把它们列出来再问你是否继续：
+
+- 只有 Let's Encrypt 提供 IP 证书，且必须用 shortlived profile；
+- **有效期只有 7 天**，必须依赖自动续期，续期一断证书立刻过期；
+- 仅支持 IPv4，且必须是公网可达的地址，私有地址签不了。
+
+有域名就用域名，IP 证书只适合临时用。完整限制清单、NAT 环境的注意事项和
+私有 IP 的替代方案见 `HowtoGuides.md` 的 7.2。
 
 ### 3.8 FTP
 
@@ -463,7 +582,8 @@ nft list table inet lnmp        # 查看本包加的规则
 nft list ruleset                # 查看全部规则
 ```
 
-默认放行 22/80/443 和 ping，挡掉 3306/6379/11211 的外部访问。
+默认放行 `SSH_Port`（默认 22）、80、443 和 ping，挡掉数据库、Redis、Memcached
+端口的外部访问；具体端口跟随 `lnmp.conf` 里的变量（见 3.3.2），不是写死的。
 链的默认策略为 `accept`，避免安装过程阻断现有管理连接。
 持久化文件：Debian 系 `/etc/nftables.d/lnmp.nft`，由 `nftables.service` 加载。
 
@@ -621,13 +741,17 @@ lnmp php-fpm reload
 | 默认网站目录 | `/home/wwwroot/default`（可在 `lnmp.conf` 改） |
 | 网站日志 | `/home/wwwlogs/` |
 | Nginx | `/usr/local/nginx/`，配置 `conf/nginx.conf`，站点 `conf/vhost/` |
+| OpenResty | 同上（`/usr/local/nginx` 指向它，路径通用） |
 | Apache | `/usr/local/apache/` |
-| MySQL | `/usr/local/mysql/`，数据 `var/`，配置 `/etc/my.cnf` |
-| MariaDB | `/usr/local/mariadb/` |
+| MySQL | 程序 `/usr/local/mysql/`，数据 `/usr/local/mysql/var/`，配置 `/etc/my.cnf` |
+| MariaDB | 程序 `/usr/local/mariadb/`，数据 `/usr/local/mariadb/var/`，配置 `/etc/my.cnf` |
 | PHP | `/usr/local/php/`，配置 `etc/php.ini`、`etc/php-fpm.conf` |
 | 多版本 PHP | `/usr/local/php8.4/` 之类 |
-| Redis | `/usr/local/redis/` |
+| Redis / Memcached | `/usr/local/redis/`、`/usr/local/memcached/` |
+| Pure-FTPd | `/usr/local/pureftpd/` |
+| 本包自己的配置 | `/etc/lnmp/`（备份、通知等，权限 600） |
 | 数据库密码 | `/root/.lnmp_db_root_password` |
+| SSL 证书 | `/usr/local/nginx/conf/ssl/` |
 
 ### 如何给 PHP 安装需要的扩展？
 
@@ -653,12 +777,12 @@ ldap、bz2、sodium、imap、swoole。装完自动写 ini 并重启 FPM。
 1. **授权**：`GRANT ALL ON 库名.* TO '用户'@'你的IP' IDENTIFIED BY '密码';` 然后 `FLUSH PRIVILEGES;`
    （禁止使用 `'%'`，应限定到具体 IP）
 2. **监听**：检查 `/etc/my.cnf` 里有没有 `bind-address = 127.0.0.1`，有则注释掉或改为具体 IP，重启数据库
-3. **放行端口**：本包用 nftables 把 3306 挡掉了，需要放行：
+3. **放行端口**：本包用 nftables 把数据库端口挡掉了，需要放行：
    ```bash
-   nft delete rule inet lnmp input handle <挡 3306 那条的 handle>
+   nft -a list table inet lnmp                          # 查 handle
+   nft delete rule inet lnmp input handle <对应的 handle>
    ```
-   用 `nft -a list table inet lnmp` 查 handle。**强烈建议只对固定来源 IP 放行**，
-   而不是对整个公网开放 3306。
+   **强烈建议只对固定来源 IP 放行**，而不是对整个公网开放数据库端口。
 
 云服务器还要检查安全组。
 
@@ -865,6 +989,40 @@ lnmp ftp list      # 查看已有用户
 lnmp ftp show      # 查看用户详情
 ```
 
+### 装到一半失败了，能重跑吗？
+
+可以，脚本设计成可重复执行。但**先看清楚失败在哪一步**：安装日志在
+`/root/lnmp-install.log`（单独装数据库是 `/root/install_database.log`）。
+失败会返回非零退出码并就地停止，不会带着半成品继续往下装。
+
+数据库源码编译中途失败最常见的两个原因是内存不足和磁盘不足，见 2.x 那张表。
+
+### 想换 Web 服务器（Nginx ↔ OpenResty）怎么办？
+
+没有平滑切换的路径。两者会抢同一套目录和端口，安装脚本检测到冲突会直接拒绝。
+要换就先卸载再装，站点配置（`conf/vhost/`）和网站文件请提前自行备份。
+
+### `systemctl status` 显示服务没跑，但网站是通的？
+
+多半是绕过 `lnmp` 直接用 `/etc/init.d/xxx start` 启的。用 `lnmp xxx restart`
+重启一次即可让 systemd 重新接管。日常运维请统一用 `lnmp`。
+
+### 备份能只备数据库不备网站吗？
+
+可以。`/etc/lnmp/backup.conf` 里站点条目的数据库名留空就只备文件，
+反过来不配网站目录就只备库；两者的备份周期和保留天数也是分开配的。
+改完用 `lnmp backup run` 手工跑一次确认退出码为 0。
+
+### 装完之后还需要自己做什么？
+
+至少这几件：
+
+1. `cat /root/.lnmp_db_root_password` 记下数据库密码后删掉该文件；
+2. 确认云服务器安全组放行了 80/443；
+3. `lnmp backup init` 把备份配起来，并验证一次 `lnmp backup test`；
+4. 有域名就 `lnmp vhost add` 建站并签证书，别长期用默认站点；
+5. 如果 SSH 不在 22 端口，**装之前**就要在 `lnmp.conf` 里改 `SSH_Port`。
+
 ### 性能优化从哪里入手？
 
 按收益排序：
@@ -884,5 +1042,12 @@ lnmp ftp show      # 查看用户详情
 
 ## 六、相关文档
 
-- `changelog.md`：全部改动的逐条记录，含每处改动的原因和取舍
-- `lnmp.conf`：全部可配置项，每项都有说明
+本文档只讲「装完之后怎么用」，具体步骤和实现细节在下面几处：
+
+- **`HowtoGuides.md`**：手把手的操作手册 —— 从安装、建站、部署 WordPress、
+  配 HTTPS（含无域名的 IP 证书）、OpenResty 自定义模块、异地备份，到故障排查。
+  遇到「具体该敲哪几条命令」的问题先看它。
+- **`lnmp.conf`**：全部可配置项，每一项的用途、取值和影响都写在注释里。
+- **`changelog.md`**：全部改动的逐条记录，含每处改动的原因、取舍和验证范围。
+  想知道某个行为「为什么是这样」，答案在这里。
+- **`todo.md`**：已确认但尚未处理的问题。

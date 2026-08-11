@@ -11,6 +11,66 @@ PhpMyAdmin_Dir='/usr/local/phpmyadmin'
 # 记录随机访问路径，供安装结束提示与 lnmp status 读取。
 PhpMyAdmin_Url_File="${PhpMyAdmin_Dir}/.access_url"
 
+# Check_DB_Source_Build — 源码编译数据库前的可行性把关
+#
+# 本包的典型用户是 1-2GB 内存的小 VPS，而 MySQL 8.x 源码编译对内存和磁盘都不
+# 便宜：Debian 12 / 8 核 6GB 实测，编译目录涨到约 7.8GB，`make -j8` 还在
+# sql_gis 处被 OOM 杀掉过（cc1plus 单进程 anon-rss 787MB）。这种机器上选源码
+# 编译，结果不是跑几个小时就是中途失败，而官方通用二进制几分钟装完、功能一样。
+#
+# 分三档处理：
+#   低于硬下限（profile 的 DB_Min_Mem_MB 与 2048MB 取大者，或磁盘不足）
+#       直接拒绝，并指明改用通用二进制；
+#   够用但低于推荐值，说明代价，交互式必须显式确认；
+#   非交互（无终端或 LNMP_Auto=y）打印警告后继续，不破坏已有自动化。
+Check_DB_Source_Build()
+{
+    local mem_mb disk_mb min_mem rec_mem=4096 min_disk=15360 ans jobs
+
+    [ "${DB_Kind}" = "none" ] && return 0
+    [ "${Bin}" = "y" ] && return 0
+
+    mem_mb=$(awk '/MemTotal/ {printf "%d", $2 / 1024; exit}' /proc/meminfo 2>/dev/null)
+    case "${mem_mb}" in ''|*[!0-9]*) mem_mb=0 ;; esac
+    disk_mb=$(df -Pm "${cur_dir}" 2>/dev/null | awk 'NR==2 {print $4}')
+    case "${disk_mb}" in ''|*[!0-9]*) disk_mb=0 ;; esac
+
+    min_mem="${DB_Min_Mem_MB:-0}"
+    case "${min_mem}" in ''|*[!0-9]*) min_mem=0 ;; esac
+    [ "${min_mem}" -lt 2048 ] && min_mem=2048
+
+    if [ "${mem_mb}" -lt "${min_mem}" ]; then
+        Echo_Red "内存 ${mem_mb}MB，低于源码编译 ${DB_Ver} 所需的 ${min_mem}MB。"
+        Echo_Red "请改用官方通用二进制：Bin=y 重新执行，几分钟装完，功能一致。"
+        return 1
+    fi
+    if [ "${disk_mb}" -lt "${min_disk}" ]; then
+        Echo_Red "${cur_dir} 所在分区剩余 ${disk_mb}MB，低于源码编译所需的 ${min_disk}MB。"
+        Echo_Red "实测编译目录会涨到 7GB 以上，装完还要再占用 /usr/local。"
+        Echo_Red "请清理磁盘，或改用官方通用二进制：Bin=y。"
+        return 1
+    fi
+    [ "${mem_mb}" -ge "${rec_mem}" ] && return 0
+
+    jobs=$(Build_Jobs)
+    Echo_Yellow "======================================================================"
+    Echo_Yellow "注意：你选择了源码编译 ${DB_Ver}，当前内存 ${mem_mb}MB。"
+    Echo_Yellow "  - 低于建议的 ${rec_mem}MB，编译只能开 ${jobs} 个并行任务，"
+    Echo_Yellow "    这类机器上通常要跑数小时，链接阶段仍可能因内存不足失败。"
+    Echo_Yellow "  - 官方通用二进制由上游构建，校验值同样强制核对，几分钟装完。"
+    Echo_Yellow "  - 除非确实需要定制编译参数，否则建议改用 Bin=y。"
+    Echo_Yellow "======================================================================"
+    if [ ! -t 0 ] || [ "${LNMP_Auto}" = "y" ]; then
+        Echo_Yellow "当前为非交互执行，按原选择继续源码编译。"
+        return 0
+    fi
+    read -r -p "确认继续源码编译请输入 y，其它输入一律中止： " ans
+    case "${ans}" in
+        [yY]) return 0 ;;
+        *) Echo_Red "已中止。改用官方通用二进制：Bin=y ./install.sh ..."; return 1 ;;
+    esac
+}
+
 Database_Selection()
 {
 #which MySQL Version do you want to install?
@@ -33,10 +93,7 @@ Database_Selection()
         Select_DB_Bin
     fi
 
-    if [ "${Bin}" != "y" ] && [ "${DB_Min_Mem_MB}" -gt 0 ] && [ $(awk '/MemTotal/ {printf( "%d\n", $2 / 1024 )}' /proc/meminfo) -le "${DB_Min_Mem_MB}" ]; then
-        echo "Memory less than ${DB_Min_Mem_MB}MB, can't build ${DB_Ver} from source!"
-        exit 1
-    fi
+    Check_DB_Source_Build || exit 1
 
     if [[ "${DBSelect}" != "0" ]]; then
         #set mysql root password
@@ -670,6 +727,65 @@ Check_Conf_Applied()
     return 0
 }
 
+# 在任何安装动作前统一校验端口。变量会进入配置、sed 和防火墙命令，
+# 非数字、越界或互相冲突都应在下载、停服务或改系统之前直接拒绝。
+Validate_Service_Ports()
+{
+    local names=(SSH_Port DB_Port DB_X_Port Redis_Port Memcached_Port
+                 Pureftpd_Port Pureftpd_Data_Port)
+    local values=("${SSH_Port}" "${DB_Port}" "${DB_X_Port}" "${Redis_Port}"
+                  "${Memcached_Port}" "${Pureftpd_Port}" "${Pureftpd_Data_Port}")
+    local i j name value
+
+    for i in "${!names[@]}"; do
+        name="${names[$i]}"
+        value="${values[$i]}"
+        case "${value}" in
+            ''|*[!0-9]*)
+                Echo_Red "${name} 必须是 1-65535 的整数，当前值：'${value}'"
+                return 1
+                ;;
+        esac
+        if [ "${value}" -lt 1 ] || [ "${value}" -gt 65535 ]; then
+            Echo_Red "${name} 超出端口范围 1-65535：${value}"
+            return 1
+        fi
+    done
+
+    for name in Pureftpd_Passive_Min Pureftpd_Passive_Max; do
+        value="${!name}"
+        case "${value}" in
+            ''|*[!0-9]*)
+                Echo_Red "${name} 必须是 1-65535 的整数，当前值：'${value}'"
+                return 1
+                ;;
+        esac
+        if [ "${value}" -lt 1 ] || [ "${value}" -gt 65535 ]; then
+            Echo_Red "${name} 超出端口范围 1-65535：${value}"
+            return 1
+        fi
+    done
+    if [ "${Pureftpd_Passive_Min}" -gt "${Pureftpd_Passive_Max}" ]; then
+        Echo_Red "Pureftpd_Passive_Min 不能大于 Pureftpd_Passive_Max。"
+        return 1
+    fi
+
+    for i in "${!names[@]}"; do
+        for ((j=i+1; j<${#names[@]}; j++)); do
+            if [ "${values[$i]}" -eq "${values[$j]}" ]; then
+                Echo_Red "端口冲突：${names[$i]} 与 ${names[$j]} 都是 ${values[$i]}。"
+                return 1
+            fi
+        done
+        if [ "${values[$i]}" -ge "${Pureftpd_Passive_Min}" ] \
+           && [ "${values[$i]}" -le "${Pureftpd_Passive_Max}" ]; then
+            Echo_Red "端口冲突：${names[$i]}=${values[$i]} 落在 Pure-FTPd 被动端口范围内。"
+            return 1
+        fi
+    done
+    return 0
+}
+
 Tar_Cd()
 {
     local FileName=$1
@@ -1040,13 +1156,24 @@ TempMycnf_Clean()
     rm -f /tmp/.mysql.tmp
 }
 
+# 这次启动到底走不走 systemd，判断只留一份。
+# 安装收尾要在启动后核对服务状态，核对方式取决于走了哪条分支：
+# 各自再写一遍条件，迟早出现「用 systemctl 启动、用 pid 文件判断」这类错配。
+Use_Systemd_Unit()
+{
+    local service=$1
+    [[ "${isWSL}" = "" ]] && Check_WSL
+    [[ "${isDocker}" = "" ]] && Check_Docker
+    [ "${isWSL}" = "n" ] && [ "${isDocker}" = "n" ] \
+        && command -v systemctl >/dev/null 2>&1 \
+        && [ -s "/etc/systemd/system/${service}.service" ]
+}
+
 StartOrStop()
 {
     local action=$1
     local service=$2
-    [[ "${isWSL}" = "" ]] && Check_WSL
-    [[ "${isDocker}" = "" ]] && Check_Docker
-    if [ "${isWSL}" = "n" ] && [ "${isDocker}" = "n" ] && command -v systemctl >/dev/null 2>&1 && [[ -s /etc/systemd/system/${service}.service ]]; then
+    if Use_Systemd_Unit "${service}"; then
         systemctl ${action} ${service}.service
     else
         /etc/init.d/${service} ${action}

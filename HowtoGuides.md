@@ -129,7 +129,7 @@ WebSelect=2 ORMode=2 ... ./install.sh lnmp    # 源码编译
 | 完整性校验 | apt/yum 的 GPG 签名 | PGP 验签（随包公钥 + 指纹白名单） |
 | 发行版要求 | **上游必须提供当前发行版的包** | 不挑发行版 |
 | 版本 | 仓库里的当前版本 | `version.sh` 里的 `OpenResty_Ver` |
-| 自定义模块 | 不能 | 能（`OpenResty_Modules_Options`） |
+| 自定义模块 | 不能（配了会直接报错） | 能，见 2.3.1 |
 
 > 注意：**Debian 13 (trixie) 目前只能用源码编译。**
 > 2026-08 实测，OpenResty 官方 Debian 仓库只有到 bookworm(12) 为止，
@@ -163,6 +163,71 @@ lua_package_cpath "/usr/local/openresty/lualib/?.so;;";
 
 会**按当初的安装方式自动分流**（包装的走 apt 升级、源码装的走重新编译），
 无需记录初始安装方式。升级后先执行 `nginx -t`，配置检查通过后才重载服务。
+
+### 2.3.1 OpenResty 自定义编译模块与 Lua 库
+
+只在 `ORMode=2`（源码编译）下有效。全部配置项在 `lnmp.conf` 的 OpenResty 段：
+
+```bash
+## 每条：名称|下载地址|SHA256|类型
+OpenResty_Custom_Modules=(
+    "ngx_http_geoip2|https://github.com/leev/ngx_http_geoip2_module/archive/refs/tags/3.4.tar.gz|<64位SHA256>|dynamic"
+)
+
+## 不需要下载源码的 configure 参数
+OpenResty_Modules_Options="--with-http_dav_module"
+
+## 自己的 Lua 库目录（绝对路径），会加进 lua_package_path
+OpenResty_Custom_Lualib="/opt/mylua"
+
+## opm 包（OpenResty 自带的包管理器）
+OpenResty_Opm_Packages=("ledgetech/lua-resty-http")
+
+## luarocks 包，需要系统里已经装了 luarocks
+OpenResty_Luarocks_Packages=("luafilesystem")
+```
+
+**四个字段**
+
+| 字段 | 要求 |
+|---|---|
+| 名称 | 只允许字母数字点下划线连字符，会用作源码目录名 |
+| 下载地址 | 必须 https，指向模块仓库的归档包（`.tar.gz`） |
+| SHA256 | **必填**。先手工下载再 `sha256sum <文件>` 取值 |
+| 类型 | `static` 编进二进制；`dynamic` 编成 `.so` |
+
+SHA256 强制校验不是形式：这些代码会被编译进对外服务的进程，
+比普通依赖更需要确认来源。校验不过直接中止，没有跳过的开关。
+
+**dynamic 模块的加载**
+
+`--add-dynamic-module` 只负责把 `.so` 编出来放进 `nginx/modules/`，
+nginx 不会自动加载它 —— 少了 `load_module` 指令等于没装，而且不报错。
+安装流程会扫描本次真实编译出来的 `.so`，生成
+`/usr/local/openresty/nginx/conf/load_modules.conf` 并由主配置 include。
+
+从配置里删掉某个动态模块后重新编译，上一版由该文件加载、本次不再产出的 `.so`
+会被清掉，不会出现"配置里删了但旧 so 还在加载"的情况；
+目录里手工放的其它 `.so` 不归本包管，既不加载也不删。
+
+**升级时的沿用**
+
+初装成功后，这组配置会写进 `/etc/lnmp/openresty-build.conf`（600）。
+`./upgrade.sh openresty` 会读它，用同一组模块重新编译，
+不必升级时再手工传一遍参数，也就不会出现"升完发现某个 location 不工作"。
+
+优先级：当前 `lnmp.conf` 里**显式配了**就以 `lnmp.conf` 为准（表示你想改），
+什么都没配才回落到记录的那一份（表示你只是忘了传）。
+
+**Lua 库**
+
+`OpenResty_Custom_Lualib` 指定的目录会写进 `lua_package_path` 和
+`lua_package_cpath`，单独生成 `conf/lua_paths.conf` 由主配置 include，
+不用每次改模板。目录不存在会自动创建。放进去的 `.lua` 直接 `require` 即可。
+
+opm 与 luarocks 的装包失败**只告警不中止安装** —— Web 服务本身是好的，
+缺库属于可以事后补的问题，装完记得看一眼输出。
+luarocks 需要系统里先装好（`apt-get install luarocks`），本包不负责装它。
 
 ### 2.4 验证安装结果
 

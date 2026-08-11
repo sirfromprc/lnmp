@@ -147,6 +147,12 @@ Install_Database()
         StartOrStop start "${DB_Service}"
     fi
 
+    # 单装数据库同样要配防火墙。原先只有完整安装和单装 nginx 走这一步，
+    # 结果最该挡的场景反而没挡：只装数据库的机器上，DB_Port 和 DB_X_Port
+    # 一条 drop 规则都没有（Debian 12 实测 nft 表里确实是空的）。
+    # 失败要如实反映到安装结果，不能只打印一行红字就当装好了。
+    Add_Iptables_Rules || return 1
+
     Clean_DB_Src_Dir
     Check_DB_Files
     if [ "${isDB}" != "ok" ]; then

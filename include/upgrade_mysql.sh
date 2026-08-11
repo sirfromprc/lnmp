@@ -57,11 +57,11 @@ Upgrade_MySQL80()
 cat > /etc/my.cnf<<EOF
 [client]
 #password   = your_password
-port        = 3306
+port        = ${DB_Port}
 socket      = /tmp/mysql.sock
 
 [mysqld]
-port        = 3306
+port        = ${DB_Port}
 socket      = /tmp/mysql.sock
 # 仅监听回环地址，与全新安装保持同一监听基线（见 include/mysql.sh）。
 # 升级重写 /etc/my.cnf，此处不写则原有的本地监听限制会被静默撤销。
@@ -70,6 +70,7 @@ bind-address = 127.0.0.1
 # X Protocol（33060 端口）由独立选项控制，bind-address 对其无效。
 # loose- 前缀用于在 mysqlx 插件被关闭时避免 mysqld 因未知选项拒绝启动。
 loose-mysqlx-bind-address = 127.0.0.1
+loose-mysqlx-port = ${DB_X_Port}
 datadir = ${MySQL_Data_Dir}
 skip-external-locking
 key_buffer_size = 16M
@@ -178,11 +179,11 @@ Upgrade_MySQL84()
 cat > /etc/my.cnf<<EOF
 [client]
 #password   = your_password
-port        = 3306
+port        = ${DB_Port}
 socket      = /tmp/mysql.sock
 
 [mysqld]
-port        = 3306
+port        = ${DB_Port}
 socket      = /tmp/mysql.sock
 # 仅监听回环地址，与全新安装保持同一监听基线（见 include/mysql.sh）。
 # 升级重写 /etc/my.cnf，此处不写则原有的本地监听限制会被静默撤销。
@@ -191,6 +192,7 @@ bind-address = 127.0.0.1
 # X Protocol（33060 端口）由独立选项控制，bind-address 对其无效。
 # loose- 前缀用于在 mysqlx 插件被关闭时避免 mysqld 因未知选项拒绝启动。
 loose-mysqlx-bind-address = 127.0.0.1
+loose-mysqlx-port = ${DB_X_Port}
 datadir = ${MySQL_Data_Dir}
 skip-external-locking
 key_buffer_size = 16M
@@ -329,7 +331,7 @@ Restore_Start_MySQL()
     # 成功判定不能只看文件是否存在：还须确认服务可连接、库列表无缺失、
     # 本地监听基线未被重写的 /etc/my.cnf 撤销。
     if [[ -s /usr/local/mysql/bin/mysql && -s /usr/local/mysql/bin/mysqld_safe && -s /etc/my.cnf ]] \
-        && Verify_DB_Upgraded /usr/local/mysql/bin/mysql "${DB_List_Before}"; then
+        && Verify_DB_Upgraded /usr/local/mysql/bin/mysql "${DB_List_Before}" "${DB_Port}" "${DB_X_Port}"; then
         Echo_Green "======== upgrade MySQL completed ======"
         rm -f "${DB_List_Before}"
     else

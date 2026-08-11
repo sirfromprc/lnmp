@@ -46,6 +46,7 @@ jobs:
       - run: bash t/lint.sh
       - run: bash t/consistency.sh
       - run: bash t/test_profile.sh
+      - run: bash t/test_audit_fixes.sh
       - run: bash t/test_dispatch.sh
       - run: bash t/test_bump.sh
 

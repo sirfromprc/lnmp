@@ -77,7 +77,9 @@ fi
 
 if [ -s /etc/init.d/httpd ] && [ -s /usr/local/apache ]; then
 echo "Restarting Apache......"
-/etc/init.d/httpd -k restart
+# init 脚本自己会把动作转成 `httpd -k <动作>`，这里再传一个 -k，
+# case 就匹配不到任何分支，只打印一行用法 —— Apache 实际从未被重启。
+/etc/init.d/httpd restart
 else
 echo "Restarting php-fpm......"
 /etc/init.d/php-fpm restart

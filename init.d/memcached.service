@@ -1,0 +1,18 @@
+[Unit]
+Description=Memcached
+After=network.target
+
+[Service]
+Type=forking
+# ExecStart 走 SysV 脚本而不是直接拉二进制：监听地址、端口、账号、容量和
+# 连接数都定义在 /etc/init.d/memcached 里，端口还要由安装流程按 lnmp.conf 的
+# Memcached_Port 改写。在 unit 里再抄一份参数，迟早和脚本对不上。
+#
+# 有了这个 unit，StartOrStop 才会走 systemctl；否则安装收尾直接调 SysV 脚本，
+# 进程是起来了，systemctl is-active 却报 inactive，运维命令判断不了服务状态。
+PIDFile=/run/memcached/memcached.pid
+ExecStart=/etc/init.d/memcached start
+ExecStop=/etc/init.d/memcached stop
+
+[Install]
+WantedBy=multi-user.target

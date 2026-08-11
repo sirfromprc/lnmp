@@ -12,7 +12,7 @@ Install_PHP_Exif()
     ${PHP_Path}/bin/php -m|grep exif
     if [ $? -eq 0 ]; then
         Echo_Red "PHP Module 'exif' already loaded!"
-        exit 1
+        return 1
     fi
 
     Download_PHP_Src
@@ -35,11 +35,11 @@ EOF
     if [ -s "${zend_ext}" ]; then
         Echo_Green "====== PHP Exif install completed ======"
         Echo_Green "PHP Exif installed successfully, enjoy it!"
-        exit 0
+        return 0
     else
         rm -f ${PHP_Path}/conf.d/009-exif.ini
         Echo_Red "PHP Exif install failed!"
-        exit 1
+        return 1
     fi
 }
 

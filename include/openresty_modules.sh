@@ -20,6 +20,7 @@
 # 编译期配置的持久化位置。这里不含凭据，但与其它 lnmp 配置同处 /etc/lnmp。
 OR_Build_Conf="/etc/lnmp/openresty-build.conf"
 OR_Prefix="/usr/local/openresty"
+OR_Built_Modules_File="${cur_dir}/src/or-modules/.built-modules"
 
 # 由 OR_Modules_Prepare 产出，追加给 ./configure
 OR_Modules_Add_Options=""
@@ -47,6 +48,9 @@ OR_Modules_Configured()
 {
     [ "${#OpenResty_Custom_Modules[@]}" -gt 0 ] && return 0
     [ -n "${OpenResty_Modules_Options}" ] && return 0
+    [ -n "${OpenResty_Custom_Lualib}" ] && return 0
+    [ "${#OpenResty_Opm_Packages[@]}" -gt 0 ] && return 0
+    [ "${#OpenResty_Luarocks_Packages[@]}" -gt 0 ] && return 0
     return 1
 }
 
@@ -76,6 +80,7 @@ OR_Modules_Prepare()
 {
     local entry name url sha kind dir tarball
     OR_Modules_Add_Options=""
+    rm -f "${OR_Built_Modules_File}"
 
     [ "${#OpenResty_Custom_Modules[@]}" -gt 0 ] || return 0
 
@@ -157,6 +162,25 @@ OR_Modules_Prepare()
 }
 
 # ---------------------------------------------------------------------------
+# OR_Modules_Capture_Built — make 成功后记录本次真实生成的动态模块
+#
+# 模块配置名与 .so 文件名没有可靠映射，只能从 nginx 的 objs 目录取实际产物。
+# 记录必须发生在源码目录被删除之前，Post_Build 再用这份清单生成 load_module。
+# ---------------------------------------------------------------------------
+OR_Modules_Capture_Built()
+{
+    local tmp so
+    mkdir -p "${OR_Built_Modules_File%/*}" || return 1
+    tmp=$(mktemp "${OR_Built_Modules_File}.XXXXXXXX") || return 1
+    for so in build/nginx-*/objs/*.so; do
+        [ -f "${so}" ] || continue
+        printf '%s\n' "${so##*/}"
+    done | LC_ALL=C sort -u > "${tmp}"
+    mv -f "${tmp}" "${OR_Built_Modules_File}" || { rm -f "${tmp}"; return 1; }
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # OR_Write_Load_Modules_Conf — 生成动态模块的 load_module 指令
 #
 # --add-dynamic-module 只是把 .so 编译出来放进 modules/，nginx 不会自动加载。
@@ -167,19 +191,36 @@ OR_Modules_Prepare()
 OR_Write_Load_Modules_Conf()
 {
     local conf="${OR_Prefix}/nginx/conf/load_modules.conf"
-    local moddir="${OR_Prefix}/nginx/modules" so n=0 tmp
+    local moddir="${OR_Prefix}/nginx/modules" so name old n=0 tmp
 
     mkdir -p "${conf%/*}" || return 1
     tmp=$(mktemp "${conf}.XXXXXXXX") || return 1
+
+    # 只删除上一版由本文件加载、而本次构建已不再产出的模块。目录中其它手工
+    # 放置的 .so 不归 LNMP 管，既不加载也不删除。
+    if [ -f "${OR_Built_Modules_File}" ] && [ -f "${conf}" ]; then
+        old=$(sed -n 's#^[[:space:]]*load_module[[:space:]]\+modules/\([^;]*\.so\);#\1#p' "${conf}")
+        for name in ${old}; do
+            if ! grep -Fxq -- "${name}" "${OR_Built_Modules_File}"; then
+                rm -f -- "${moddir}/${name}" || { rm -f "${tmp}"; return 1; }
+            fi
+        done
+    fi
     {
         echo "# 由 lnmp 自动生成：OpenResty 动态模块的加载指令。"
         echo "# 重新编译（安装或 ./upgrade.sh openresty）时会重写本文件，手工修改会丢失。"
-        if [ -d "${moddir}" ]; then
-            for so in "${moddir}"/*.so; do
-                [ -f "${so}" ] || continue
-                printf 'load_module modules/%s;\n' "${so##*/}"
+        if [ -f "${OR_Built_Modules_File}" ]; then
+            while IFS= read -r name; do
+                [ -n "${name}" ] || continue
+                so="${moddir}/${name}"
+                if [ ! -f "${so}" ]; then
+                    Echo_Red "本次构建记录了 ${name}，但 make install 后未找到 ${so}。"
+                    rm -f "${tmp}"
+                    return 1
+                fi
+                printf 'load_module modules/%s;\n' "${name}"
                 n=$((n + 1))
-            done
+            done < "${OR_Built_Modules_File}"
         fi
         [ "${n}" -eq 0 ] && echo "# （当前没有动态模块）"
     } > "${tmp}"
@@ -343,6 +384,7 @@ OR_Modules_Load_Persisted()
 OR_Modules_Post_Build()
 {
     OR_Write_Load_Modules_Conf || return 1
+    rm -f "${OR_Built_Modules_File}"
     OR_Write_Lua_Paths_Conf || return 1
     OR_Install_Lua_Packages
     return 0

@@ -173,7 +173,13 @@ Tmp_Mysqld_Pid=$(cat "${Tmp_Pid}")
 
 # --- 关掉临时实例，恢复正常服务 ---------------------------------------------
 echo "Shutting down temporary instance..."
-${DB_Dir}/bin/mysqladmin --socket="${Tmp_Sock}" shutdown >/dev/null 2>&1
+# init-file 中的 ALTER USER 已经让新密码立即生效，不能再用无凭据的
+# mysqladmin shutdown。前面已通过专用 pid 文件确认实例身份，向该 pid 发送
+# SIGTERM 会让 mysqld 走正常关闭流程，也不需要把新密码再写进命令行或配置文件。
+if ! kill -TERM "${Tmp_Mysqld_Pid}" 2>/dev/null; then
+    echo "Error: 无法向临时实例发送关闭信号（pid ${Tmp_Mysqld_Pid}）。"
+    exit 1
+fi
 Waited=0
 while kill -0 "${Tmp_Mysqld_Pid}" 2>/dev/null; do
     if [ ${Waited} -ge 60 ]; then

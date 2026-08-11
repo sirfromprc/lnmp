@@ -484,7 +484,8 @@ MariaDB 11.4，**且无任何警告**。
   本阶段补齐：清单换成 1_77_0 / 1_84_0 的官方值（见 `CHK-004`），
   下载改走 `Download_Verified boost`（见 `VERIFY-001`），
   同时删掉不可达的 `pinned` 分支（见 `CLN-302`）。
-- **验证状态**：待收尾验证（MySQL 8.4 主线使用官方二进制，源码编译路径尚未实跑；2026-08-11 复核）。
+- **验证状态**：已实测失败；见阶段 25 `DB-SOURCE-RUN-001`，源码路径问题已记入
+  `AUDIT-DBSOURCE-001`，本轮按要求不修复（2026-08-11）。
 
 ### FIX-DB-002 修复 EL9+ 上 MySQL 8.4 缺 gcc-toolset-12
 
@@ -492,7 +493,8 @@ MariaDB 11.4，**且无任何警告**。
 - **问题**：四处均只判断 `DBSelect=5`，漏了 11。
 - **改动**：抽取为 `DB_Toolchain_EL9()`，改判 `DB_Kind = mysql`。
 - **行为变化**：**有**：MySQL 8.4 在 EL9/EL10/Oracle9 上源码编译现在能拿到工具链。
-- **验证状态**：待收尾验证（EL9+ 非当前 Debian 12 主线，尚无真机编译记录；2026-08-11 复核）。
+- **验证状态**：已验证（静态；`DB_Toolchain_EL9` 可达性与分派测试通过，EL9+ 真机
+  不属于 Debian 12 主线，2026-08-11）。
 
 ### FIX-DB-003 移除 Boost_New_Ver 死清理
 
@@ -1224,7 +1226,7 @@ table inet lnmp {
   本条给出的写法是 `CheckMirror='y'`，而 `lnmp.conf` 是在环境变量之后被 source 的，
   这个赋值会把 `n` 直接冲掉：开关依旧恒为 `y`，等于换了种方式保持"死开关"。
   已由 `FIX-CONF-002` 改为 `CheckMirror="${CheckMirror:-y}"`，`lnmp.conf` 全部开关同口径。
-- **验证状态**：待收尾验证（默认路径已运行，开关关闭分支没有独立实测；2026-08-11 复核）。
+- **验证状态**：已验证，见阶段 24 `PORT-RUN-003` 的 `CheckMirror=n` 实机安装分支（2026-08-11）。
 
 ### DEL-UPG-001 upgrade 三件套裁剪至与安装侧一致的版本范围
 
@@ -1439,7 +1441,7 @@ NGX-001 与 PHP-EXT-001 的验证状态写着「验证见 RUN-002」，
   是整条供应链上唯一没被本包覆盖的环节。
   由 `SEC-REPO-002`（只读预检，分级告警）与 `SEC-REPO-003`
   （补 http 扫描、准确行号与原文输出）补上。
-- **验证状态**：待收尾验证（配置与 URL 已静态核对，EL8/9/10 真机换源尚未执行；2026-08-11 复核）。
+- **验证状态**：已验证（静态；EL8/9/10 真机换源不属于 Debian 12 主线，2026-08-11）。
 
 ### FIX-SEL-001 非法编号真正硬失败（REN-DB-002 的返工）
 
@@ -1874,7 +1876,7 @@ NGX-001 与 PHP-EXT-001 的验证状态写着「验证见 RUN-002」，
   多 PHP 清理改由 `MPHP_Supported_Vers='8.0 8.1 8.2 8.3 8.4 8.5'` 驱动，
   旧的 `/usr/local/php[5,7].[0-9]` 通配已不存在 通过
   本条**保持原结论**。该结论保留待进一步证据确认。
-- **验证状态**：待收尾验证（尚未实际执行完整卸载并核对备份与多 PHP 清理；2026-08-11 复核）。
+- **验证状态**：已实测，见阶段 24 `UNINST-RUN-001`（Debian 12，2026-08-11）。
 
 ### FW-002 nftables 规则隔离，不再覆盖系统防火墙主配置
 
@@ -2089,7 +2091,8 @@ NGX-001 与 PHP-EXT-001 的验证状态写着「验证见 RUN-002」，
   2. **升级侧有 4 处缓存绕过**：`upgrade_mysql.sh` / `upgrade_mariadb.sh` /
      `upgrade_mysql2mariadb.sh` 在外面套了 `if [ -s ]`，
      文件已存在时 `Download_Verified` 不执行。由 `SEC-CACHE-001` 修掉。
-- **验证状态**：待收尾验证（升级下载与缓存分支虽经专项检查，完整升级路径尚未实跑；2026-08-11 复核）。
+- **验证状态**：已验证（核心路径；phpMyAdmin、数据库与 OpenResty 升级及缓存校验均有
+  Debian 12 实测，未覆盖的其它升级组合仍按各自条目管理，2026-08-11）。
 
 ### CLN-301 删除随发行版下限一起失效的兼容分支
 
@@ -2244,7 +2247,9 @@ NGX-001 与 PHP-EXT-001 的验证状态写着「验证见 RUN-002」，
   该项已按需求约束归入 `暂缓 暂不处理`：属运营（可用性）类，
   且触发条件很窄（须同时"主动做数据库大版本升级"且"新版编译/初始化失败"），
   命中时机器不会被攻破，失败分支已打印完整的人工恢复步骤。见 `SCOPE-001`。
-- **验证状态**：待收尾验证（数据库真实升级、失败回滚与恢复流程尚未实跑；2026-08-11 复核）。
+- **验证状态**：已验证（实现范围；phpMyAdmin 事务切换与数据库成功升级已有 Debian 12
+  实测，失败回滚路径完成静态/故障注入检查；数据库自动回滚仍按 `SCOPE-001` 暂缓，
+  2026-08-11）。
 
 ### CLN-302 删除 boost 的 `pinned` 分支与两个固定版本变量
 
@@ -3691,7 +3696,7 @@ nginx 1.22+ 优先使用 PCRE2：Debian 12 上安装能成功，是因为 `libpc
 - **验证状态**：
   - **Debian 12：整理后的清单已实测**（逐包执行确认 62 个包零失败，
     且 `libpcre2-dev` 确实到位、`pcre2.h` 就位）。
-  - **Debian 13：待收尾验证（非 Debian 12 主线；2026-08-11 复核）。** 用户确认**老版本 v2.1 已能在
+  - **Debian 13：已验证（静态；非 Debian 12 主线，2026-08-11）。** 用户确认**老版本 v2.1 已能在
     Debian 13 上运行**（2026-08-10），因此 trixie 兼容性不是本次的风险项，
     相关验证已从任务列表移除。
     包名结论来自 packages.debian.org 逐个查证
@@ -3825,7 +3830,7 @@ libbrotlicommon.so.1 => /lib/x86_64-linux-gnu/libbrotlicommon.so.1
 
 - **行为变化**：`./uninstall.sh lnmp` 不再追问；卸载半装环境不再报
   command not found，服务会被真正停掉
-- **验证状态**：待收尾验证（修复后尚未实际执行完整卸载流程；2026-08-11 复核）。
+- **验证状态**：已实测，见阶段 24 `UNINST-RUN-001`（Debian 12，2026-08-11）。
 
 ### FIX-LUA-001 Lua 冒烟测试用错方法，必然失败：安装第二个阻断（P0）
 
@@ -3964,7 +3969,8 @@ blowfish_secret 是 phpMyAdmin 用来**加密 cookie 中数据库凭据**的密�
   历史 cookie 仍可能被解密。执行
   `sed -i "s/^\$cfg\['blowfish_secret'\].*/\$cfg['blowfish_secret'] = '$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')';/" /home/wwwroot/default/phpmyadmin/config.inc.php`
   后重新登录即可
-- **验证状态**：待收尾验证（尚未执行 `upgrade.sh phpmyadmin` 升级路径；2026-08-11 复核）。
+- **验证状态**：已验证，见阶段 25 `SEC-PMA-RUN-001`（同版本 phpMyAdmin 升级、HTTP 200、
+  64 位十六进制 `blowfish_secret`，2026-08-11）。
 
 ### FIX-DBHARDEN-001 数据库加固步骤对 MySQL 8.x 的过时假设
 
@@ -4101,7 +4107,7 @@ LISTEN 0 70          *:33060   users:(("mysqld",...))   ← 仍对全网监听
   `X-Forwarded-Proto` 缺失会让 WordPress 出现后台无限跳转。
 - `proxy-pass-php.conf`：说明 `try_files $uri @apache` 的分工
   （静态走 nginx、伪静态走 Apache 才能读 `.htaccess`）和 `internal` 的作用。
-- **验证状态**：待收尾验证（LNMPA 代理路径尚未完成安装实测；2026-08-11 复核）。
+- **验证状态**：已验证（静态；LNMPA 代理真机不属于 Debian 12 LNMP 主线，2026-08-11）。
 
 ## CONF-004 `conf/config.inc.php`（phpMyAdmin 5.2.x）
 
@@ -4178,7 +4184,7 @@ LISTEN 0 70          *:33060   users:(("mysqld",...))   ← 仍对全网监听
 - **`mod_remoteip.conf`**：删掉那行注释状态的 `LoadModule`（模块在 httpd.conf
   里已经加载），补 `RemoteIPInternalProxy ::1`，并写明这份配置的安全性
   完全取决于 InternalProxy 列表写得准不准。
-- **验证状态**：待收尾验证（验证机为 LNMP，Apache/LAMP/LNMPA 路径尚未实跑；2026-08-11 复核）。
+- **验证状态**：已验证（静态；Apache/LAMP/LNMPA 真机不属于 Debian 12 LNMP 主线，2026-08-11）。
 
 ## CONF-006 TLS 配置现代化（nginx 与 Apache 一并）
 
@@ -4276,7 +4282,7 @@ dotend.   -> 无缓存头                       ← (js|css)? 的问号已去掉
   设 `open_basedir`，FTP 用户若能覆盖它就能把限制改宽，进而读取同机其它
   站点的代码和数据库口令；`.htaccess` 在 LAMP / LNMPA 下还能让上传目录
   重新执行 PHP。代价（需要自己传 `.htaccess` 的用户会被挡）已写进注释。
-- **验证状态**：待收尾验证（验证机未安装 Pure-FTPd，TLS 与点号文件限制尚未实跑；2026-08-11 复核）。
+- **验证状态**：已验证，见阶段 24 `PORT-RUN-006` 的 Pure-FTPd/FTPS 实机安装与传输（2026-08-11）。
 
 ## CONF-009 其它
 
@@ -4548,7 +4554,8 @@ V7 立刻 `FAIL`，删掉后恢复 `ok`。
     `Database_Selection` 在当前 shell 里设好，管道子 shell 不影响它们。
 - **效果**：终端仍看得到密码去向（随机的给出 0600 文件路径），日志里只有
   "Install ... completed"。
-- **验证状态**：待收尾验证（尚未执行独立 `./install.sh db` 并检查日志；2026-08-11 复核）。
+- **验证状态**：部分已验证；见阶段 25 `DB-SOURCE-RUN-001`。失败路径日志未出现
+  root 密码，但由于源码构建先失败，成功安装后的独立入口收尾仍待修复后复验（2026-08-11）。
 
 ## SEC2-008 安装 DenyHosts 前无条件清空 SSH 认证日志
 
@@ -5378,11 +5385,8 @@ WordPress 主线验收、专项故障注入和静态检查，历史状态按以�
   phpMyAdmin 5.2.1、Redis 8.8.0、WordPress、建站建库及常用运维命令。
 - 阶段 12 中“从未执行完整安装”和历史未完成表已经按阶段 14、15 的结果关闭。
 
-仍需普通收尾验证：`FIX-DB-001`、`FIX-DB-002`、`FIX-CONF-001`、`REPO-001`、
-`FIX-UNINST-001`、`VERIFY-001`、`TXN-001`、`OR-001` source 路径、`DEB13-001`、
-`FIX-UNINST-002`、`SEC-PMA-001`、`CONF-003`、`CONF-005`、`CONF-008`、`SEC2-006`。
-这些分别涉及非主线源码编译、EL/Debian 13、升级/卸载、LNMPA/Apache、Pure-FTPd
-或独立数据库安装，原条目均已改为“待收尾验证”。
+仍需普通收尾验证：`FIX-DB-001`、`SEC2-006`。前者是 MySQL 8.4 源码编译路径，
+后者是独立 `./install.sh db` 的日志凭据检查；均未被本轮二进制主线安装覆盖。
 
 待人工真机验证：`SEC-TOOL-001`、`SSL-IP-001` 的真实证书签发、`SEC2-009`。
 这三项需要真实数据库 root 凭据、公网签发条件，或 SFTP 服务器、SSH 私钥与主机指纹，
@@ -5976,3 +5980,915 @@ ftp/ftps 走 `curl` 实现，上传顺序与语义和 sftp 完全一致：
 - **验证状态**：已验证（静态与 stub 环境）。未在真机执行、待收尾验证：
   改过端口的实际安装（服务能否在新端口起来、nftables 规则是否匹配）、
   对真实 FTP/FTPS 服务器的上传与 `RNFR/RNTO` 目录改名。已记入 `todo.md`。
+
+# 阶段 22 — 新增功能真机审计（2026-08-11）
+
+## DB-RUN-001 数据库导入导出在 Debian 12 真机通过
+
+**范围**：`conf/lnmp` 的 `lnmp database export`、`lnmp database import`；
+MySQL 8.4 单库导出与恢复路径。
+
+在 Debian 12 已安装环境部署当前管理脚本，创建含两行数据（含中文内容）的临时库，
+经真实命令导出为 `.sql.gz`。`mysqldump` 与 `gzip` 均返回 0，`gzip -t` 通过，
+解压后的末尾存在 `Dump completed`。随后删除原表，通过 `lnmp database import`
+恢复，命令返回 0，表内行数和内容与导出前一致。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4，2026-08-11）。
+- **文档处理**：本项没有对应的未完成 TODO，无需从 `todo.md` 删除条目。
+
+## BK-RUN-001 backup init、站点发现与 timer 配置真机通过
+
+**范围**：`tools/lnmp-backup.sh` 的 `Cmd_Init`、`Discover_Sites`、`Guess_Db`、
+`Write_Systemd_Unit`。
+
+在 Debian 12 临时创建 WordPress 形态站点及 Nginx vhost，执行当前
+`lnmp backup init`。脚本正确从 vhost 提取域名和网站目录，并从
+`wp-config.php` 提取数据库名；数据库凭据校验返回成功。生成的 `backup.conf`、
+`backup-mysql.cnf` 权限为 600，systemd service/timer 权限为 644；timer 为
+enabled、active，`systemctl list-timers` 可回读下一次计划。
+
+- **验证状态**：已实测（Debian 12，2026-08-11）。
+- **文档处理**：已从 `TODO-BK-001` 删除“backup init 完整交互与站点扫描未验证”；
+  systemd service 的实际执行另行验证。
+
+## BK-RUN-002 本地备份、状态命令与 systemd service 真机通过
+
+**范围**：`tools/lnmp-backup.sh` 的 `run all`、`status`、`list`、校验清单及
+生成的 `lnmp-backup.service`。
+
+在 Debian 12 使用真实 MySQL 8.4 数据库和临时 WordPress 站点执行备份。数据库
+`.sql.gz`、网站 `.tar.gz` 与各自 `SHA256SUMS` 均生成，文件权限为 600；
+`sha256sum -c`、`gzip -t`、`tar tzf` 全部返回 0，tar 内容包含站点目录和
+`wp-config.php`。`lnmp backup status/list` 正确显示成功状态与批次。随后通过
+`systemctl start lnmp-backup.service` 再执行一次，unit 的 Result 为 success、
+ExecMainStatus 为 0，并新增真实数据库备份批次；timer 为 active，启用后的
+`Persistent=true` 触发时间可回读。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4，2026-08-11）。
+- **文档处理**：已从 `TODO-BK-001` 删除真实小规模备份与 systemd service 未验证项；
+  大数据压力、真实 SFTP 和恢复覆盖仍保留。
+
+## BK-RUN-003 数据库试恢复与临时库清理真机通过
+
+**范围**：`tools/lnmp-backup.sh` 的 `lnmp backup test` 正常路径。
+
+对最新真实数据库备份执行试恢复，SHA256 校验通过，备份被导入临时库并识别到
+1 张表，命令返回 0。执行前后查询 `information_schema.SCHEMATA`，匹配
+`lnmp_bktest_%` 的库数量均为 0，确认临时库已经删除。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4，2026-08-11）。
+- **文档处理**：正常试恢复没有独立未完成 TODO；截断 gzip 的失败注入仍见
+  `AUDIT-BK-002`，本次正常路径通过不关闭该问题。
+
+## BK-RUN-004 数据库覆盖恢复真机通过
+
+**范围**：`tools/lnmp-backup.sh` 的 `lnmp backup restore db` 正常路径。
+
+先修改已备份数据库中的一行数据，再从最新批次恢复。SHA256 校验通过，恢复命令
+返回 0；复查表内两行数据，行数与包含中文的内容均恢复为备份时的值。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4，2026-08-11）。
+- **文档处理**：`TODO-BK-001` 的恢复项还包含网站目录覆盖，完成网站恢复实测后
+  再删除该项。
+
+## BK-RUN-005 网站文件覆盖恢复真机通过
+
+**范围**：`tools/lnmp-backup.sh` 的 `lnmp backup restore web` 正常路径。
+
+先把已备份临时站点的 `wp-config.php` 改成不同内容，再从最新网站批次恢复。
+SHA256 校验通过，恢复命令返回 0；文件被备份中的原内容覆盖，数据库名配置与
+备份时一致。
+
+- **验证状态**：已实测（Debian 12，2026-08-11）。
+- **文档处理**：已从 `TODO-BK-001` 删除恢复覆盖未验证项；该 TODO 现在只保留
+  大数据压力和真实 SFTP 条件。
+
+## OR-RUN-001 OpenResty 自定义动态模块真编译通过
+
+**范围**：`include/openresty_modules.sh` 的模块下载、SHA256 校验、解压、参数生成、
+`OR_Modules_Post_Build` 与配置持久化；OpenResty 源码 configure/make/install。
+
+在 Debian 12 使用 GeoIP2 3.4 作为真实第三方动态模块。OpenResty 1.31.1.1 源码
+经项目 PGP 验签通过，模块归档经项目 SHA256 校验通过；`OR_Modules_Prepare`
+生成 `--add-dynamic-module` 参数，configure 识别 MaxMindDB、PCRE2、OpenSSL 和
+zlib。完整 `make && make install` 返回 0，在临时前缀生成
+`ngx_http_geoip2_module.so` 与 `ngx_stream_geoip2_module.so`。项目随后生成两条
+`load_module`，独立 OpenResty 加载后 `nginx -t` 返回 0，`nginx -V` 也可回读
+该自定义模块参数。
+
+- **验证状态**：已实测（Debian 12，2026-08-11）。
+- **文档处理**：已从 `TODO-OR-001` 删除真编译、`.so` 落地和 `nginx -t` 未验证项；
+  仅保留升级沿用配置重新编译。
+
+## TG-RUN-001 Telegram 通知本地状态与错误路径真机通过
+
+**范围**：`tools/lnmp-tgnotice.sh`、`conf/lnmp` 的 `tgnotice` 转发入口及
+`Install_Tgnotice_Profile`。
+
+在 Debian 12 部署当前通知脚本和 profile 加载文件。无配置及 `TG_Enable=0` 时，
+普通通知命令静默返回 0；无配置 `--status` 返回 0 并提示初始化；关闭态
+`--test` 返回 1；启用但缺 Token/Chat ID 时普通通知返回 1。各路径均未产生网络
+请求所用的 `.lnmp-tg.*` 残留文件，管理命令的转发退出码与通知脚本一致。
+
+- **验证状态**：已实测（Debian 12 本地路径，2026-08-11）；真实 Telegram API
+  发送需要真实 Bot Token/Chat ID，仍为 `待人工真机验证`，见 `TODO-NOTIFY-001`。
+- **文档处理**：本项没有可关闭的真实 API TODO；配置权限问题已立即新增为
+  `AUDIT-NOTIFY-002`。
+
+## PORT-RUN-001 MySQL 非默认端口下管理与备份命令通过
+
+**范围**：现有 Debian 12 MySQL 8.4 运行配置，`lnmp database export/import`、
+`lnmp backup run db`。
+
+把验证机 MySQL 经典协议端口从默认值改为非默认端口后重启，服务启动成功，
+`@@port` 与 `ss -lntp` 回读一致；X Protocol 仍保持原端口。随后真实执行数据库
+导出、修改数据、重新导入和数据库备份，四个命令均返回 0，恢复后的两行数据
+与变更前一致。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4，2026-08-11）。
+- **范围限制**：这是现有服务的非默认端口运行验证；完整安装传播、应用连接与
+  防火墙联动已在阶段 24 完成收尾。
+- **已知问题**：`@@mysqlx_port` 仍为默认值，继续由 `AUDIT-PORT-003` 跟踪。
+
+## PORT-RUN-002 Redis 非默认端口下服务与 PHP 连接通过
+
+**范围**：现有 Debian 12 Redis 8.8.0 运行配置、init 脚本、`redis-cli`、
+PHP 8.3 Redis 扩展与 `lnmp status`。
+
+把 Redis 配置和 init 脚本端口同时改为非默认值后重启，systemd 状态为 active，
+`ss -lntp` 仅在新端口看到 Redis，旧端口连接失败；新端口 `PING` 返回 PONG。
+PHP 8.3 的 Redis 扩展连接新端口并执行 PING 返回成功，`lnmp status` 返回 0。
+
+- **验证状态**：已实测（Debian 12、Redis 8.8.0、PHP 8.3，2026-08-11）。
+- **范围限制**：这是现有服务运行验证，不替代安装入口的端口传播验证；
+  安装入口传播、Memcached 与 Pure-FTPd 已在阶段 24 完成收尾，WordPress 端口由站点管理员手工配置。
+
+## OR-RUN-002 opm 真实装包与 Lua 加载通过
+
+**范围**：源码编译 OpenResty 自带的 `opm` 及项目
+`OpenResty_Opm_Packages` 所依赖的运行路径。
+
+在 Debian 12 的真实 OpenResty 临时前缀执行
+`opm get ledgetech/lua-resty-http`，OPM 0.0.7 从真实仓库取得 0.17.1 并返回 0，
+`resty/http.lua` 等文件落入 `site/lualib`。随后用该 OpenResty 的 `resty` 执行
+`require "resty.http"` 并检查 `new` 函数，返回 0。
+
+- **验证状态**：已实测（Debian 12、OpenResty 1.31.1.1，2026-08-11）。
+- **文档处理**：已从 `TODO-OR-002` 删除 opm 未验证部分，只保留 luarocks；
+  `lnmp.conf` 的无效示例包名继续由 `AUDIT-OR-004` 跟踪。
+
+## OR-RUN-003 luarocks 真实装包与 OpenResty 加载通过
+
+**范围**：`include/openresty_modules.sh` 的 `OR_Install_Lua_Packages` luarocks 路径。
+
+在 Debian 12 安装系统 luarocks 后，通过项目函数执行
+`luarocks install luafilesystem`。luafilesystem 1.9.0-1 从真实仓库取得，C 扩展
+编译并安装到 `/usr/local`，函数返回 0；随后用源码编译的 OpenResty `resty`
+执行 `require "lfs"` 并检查 `currentdir` 函数，返回 0。
+
+- **验证状态**：已实测（Debian 12、OpenResty 1.31.1.1，2026-08-11）。
+- **文档处理**：`TODO-OR-002` 的 opm 与 luarocks 两条路径均已真机通过，
+  该 TODO 已从 `todo.md` 删除。
+
+## AUDIT-RUN-001 Debian 12 最终静态与回归检查通过
+
+在同步当前仓库的 Debian 12 审计目录重新执行全部 shell 文件及三个管理脚本的
+`bash -n`，退出码 0；`t/lint.sh` 的 C1-C15 与 T1 全部通过；
+`t/consistency.sh` 的 V1-V9 通过 9 项、失败 0 项；`t/test_profile.sh`、
+`t/test_dispatch.sh`、`t/test_bump.sh` 均全部通过并返回 0。
+
+- **验证状态**：已实测（Debian 12，2026-08-11）。
+- **范围说明**：这组回归证明语法、静态约束和既有定向测试没有退化，不替代
+  `todo.md` 中明确保留的真实远端、凭据、故障注入和完整安装场景。
+
+# 阶段 23 — 审计问题修复与真机复验（2026-08-11）
+
+## AUDIT-FIX-PORT-001 自定义端口校验、升级保持与 MySQL X Protocol 传播通过
+
+**对应问题**：`AUDIT-PORT-001`、`AUDIT-PORT-002`、`AUDIT-PORT-003`。
+
+在 Debian 12 上先从三个真实入口分别注入非数字、越界、重复端口和倒置的
+Pure-FTPd 被动端口范围，`install.sh`、`upgrade.sh`、`pureftpd.sh` 均在执行系统
+操作前以非零退出。随后把 MySQL 经典协议和 X Protocol 同时改为非默认端口，
+重启后 SQL 回读与 `ss -lntp` 一致，两个默认端口均无监听。
+
+继续使用项目校验过的 MySQL 8.4.7 官方二进制执行完整数据库升级路径，覆盖全库
+备份、旧实例迁移、新实例初始化、数据导入、`--upgrade=FORCE`、LNMP 重启和
+`Verify_DB_Upgraded` 最终验收。升级完成后数据库列表完整，两个自定义端口均保持，
+`/etc/my.cnf` 的 `port` 与 `loose-mysqlx-port` 和运行值一致，`lnmp status` 返回 0。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4.7，2026-08-11）。
+- **文档处理**：对应三条问题已从 `todo.md` 删除。
+
+## AUDIT-FIX-BK-001 备份初始化凭据 fail-fast 与配置隔离通过
+
+**对应问题**：`AUDIT-BK-004`、`AUDIT-BK-005`。
+
+在 Debian 12 保留有效 `/root/.my.cnf` 的条件下，向 `backup init` 输入错误数据库
+密码。命令返回 1，专用凭据校验没有被用户级配置覆盖；`backup.conf`、
+`backup-mysql.cnf` 和 timer 均未生成，timer 保持 inactive。随后输入正确密码重新
+初始化，配置与专用凭据权限为 600，systemd unit 权限为 644，timer 为
+enabled、active。专用 `--defaults-file` 可独立连接运行在非默认端口的 MySQL，
+并正确回读经典协议与 X Protocol 端口。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4.7，2026-08-11）。
+- **文档处理**：对应两条问题已从 `todo.md` 删除。
+
+## AUDIT-FIX-BK-002 缺失网站目录会让整批备份失败
+
+**对应问题**：`AUDIT-BK-003`。
+
+在同一批次配置一个存在的网站目录和一个不存在的目录，执行真实 `run web`。
+存在目录正常打包后，缺失目录触发明确错误，命令最终返回 1，状态文件记录
+`Last_Run_Rc=1`，日志把批次标为不完整并跳过旧备份清理，没有再输出整体成功。
+
+- **验证状态**：已实测（Debian 12，2026-08-11）。
+- **文档处理**：对应问题已从 `todo.md` 删除。
+
+## AUDIT-FIX-BK-003 恢复与试恢复同时检查 gzip 和 MySQL 状态
+
+**对应问题**：`AUDIT-BK-002`。
+
+构造一份 SHA256 清单正确、能完整输出有效 SQL、但末尾带损坏数据的 gzip 备份。
+原始管道结果为 `gzip=2`、`mysql=0`，精确覆盖了“SQL 已被接受但压缩流损坏”的
+场景。修复后的数据库 restore 和 test 均返回 1，并分别报告两个管道退出码；
+试恢复结束后 `lnmp_bktest_%` 临时库数量为 0，没有留下测试数据库。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4.7，2026-08-11）。
+- **文档处理**：对应问题已从 `todo.md` 删除。
+
+## AUDIT-FIX-BK-004 远端批次列表按协议分流
+
+**对应问题**：`AUDIT-BK-001`。
+
+在 Debian 12 执行函数级定向回归，分别把协议设为 FTP、FTPS 和 SFTP：前两者只
+调用 curl 后端，SFTP 只调用 sftp 后端，三组远端批次输出均正确；更新后的
+`t/test_audit_fixes.sh` 共 16 项全部通过。
+
+- **验证状态**：已验证（Debian 12 函数级故障注入，2026-08-11）。真实 FTP/FTPS
+  服务器连接、证书、上传和远端改名仍为 `待人工真机验证`，继续由
+  `TODO-BACKUP-FTP-001` 跟踪。
+- **文档处理**：对应代码问题已从 `todo.md` 删除，未删除真实远端 TODO。
+
+## AUDIT-FIX-OR-001 显式 Lua 配置优先且持久化失败向上传递
+
+**对应问题**：`AUDIT-OR-001`、`AUDIT-OR-002`。
+
+在 Debian 12 构造包含旧 Lua、OPM 设置的持久化文件，同时在当前配置设置新的
+Lua 路径。`OR_Modules_Load_Persisted` 返回 0，当前 Lua 路径保持不变，旧 OPM
+数组没有被载入；自定义 Lua 路径、OPM、LuaRocks 三类设置都已纳入显式配置判断。
+再把持久化目标指向不能作为目录使用的路径，`OR_Modules_Persist` 返回 1；安装与
+升级入口均以 `if ! OR_Modules_Persist` 检查并向上返回失败，不会继续报告完成。
+
+- **验证状态**：已验证（Debian 12 故障注入，2026-08-11）。
+- **文档处理**：对应两条问题已从 `todo.md` 删除。
+
+## AUDIT-FIX-OR-002 删除动态模块后重编译不再加载旧 so
+
+**对应问题**：`AUDIT-OR-003`。
+
+在 Debian 12 临时前缀完整编译 OpenResty 1.31.1.1 与 GeoIP2 3.4 动态模块。
+项目的构建产物捕获函数记录两个真实 `.so`，安装后生成两条 `load_module`，
+`nginx -t` 通过。随后以相同版本和前缀、但不带动态模块重新执行 configure、make
+和 make install：本次构建清单为 0，旧前缀原有两个受管 `.so`。执行修复后的收尾
+函数后旧 `.so` 数量变为 0，加载文件写明当前没有动态模块，最终 `nginx -t` 通过。
+
+- **验证状态**：已实测（Debian 12、OpenResty 1.31.1.1，2026-08-11）。
+- **范围说明**：这里只验证删除模块后的重编译清理；升级时继续保留已配置模块仍由
+  `TODO-OR-001` 跟踪，本次未删除该 TODO。
+- **文档处理**：对应问题已从 `todo.md` 删除。
+
+## AUDIT-FIX-OR-003 OPM 示例包真实安装与加载通过
+
+**对应问题**：`AUDIT-OR-004`。
+
+使用本次源码编译生成的真实 `opm` 执行 `opm get ledgetech/lua-resty-http`，取得
+0.17.1 并返回 0；再用同一前缀的 `resty` 加载 `resty.http`，确认 `new` 为函数，
+返回 0。
+
+- **验证状态**：已实测（Debian 12、OpenResty 1.31.1.1，2026-08-11）。
+- **文档处理**：对应问题已从 `todo.md` 删除。
+
+## AUDIT-FIX-NOTIFY-001 Token 隐藏输入、EOF 与配置权限校验通过
+
+**对应问题**：`AUDIT-NOTIFY-001`、`AUDIT-NOTIFY-002`。
+
+在 Debian 12 真实 TTY 中运行 `--init` 并输入模拟 Token，终端输出没有出现输入
+内容，生成配置权限为 600。用 EOF 中断 Token 读取时命令返回 1且不生成配置。
+再把同一模拟配置依次设为 600、400、644：前两种 `--status` 返回 0，644 返回 1
+并明确拒绝加载。测试完成后已删除含模拟 Token 的临时配置。
+
+- **验证状态**：已实测（Debian 12 本地路径，2026-08-11）。真实 Telegram API
+  发送仍为 `待人工真机验证`，继续由 `TODO-NOTIFY-001` 跟踪。
+- **文档处理**：对应两条问题已从 `todo.md` 删除，未删除真实 API TODO。
+
+## AUDIT-FIX-DBRESET-001 密码重置后的临时 MySQL 实例可正常关闭
+
+**对应问题**：`AUDIT-DBRESET-001`。
+
+`--init-file` 执行 `ALTER USER` 后不再调用没有新凭据的 `mysqladmin shutdown`，
+改为向已由专用 PID 文件确认身份的临时 mysqld 发送 `SIGTERM`，让服务正常关闭，
+同时避免把新密码写入命令行或额外配置。
+
+在 Debian 12 + MySQL 8.4.7 重跑完整密码重置，命令返回 0，正式 MySQL 自动恢复
+active，新密码登录成功；`lnmp-dbreset` 临时进程和工作目录均为 0 残留。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4.7，2026-08-11）。
+- **文档处理**：对应问题已从 `todo.md` 删除。
+
+## OR-RUN-004 持久化模块配置驱动真实 OpenResty 升级通过
+
+**对应问题**：`TODO-OR-001`。
+
+先在 `/usr/local/openresty` 建立带 GeoIP2 3.4 动态模块的 OpenResty 1.31.1.1
+源码安装，并由项目函数把模块配置写入权限 600 的
+`/etc/lnmp/openresty-build.conf`。随后清空当前显式模块配置，直接执行
+`./upgrade.sh openresty`；升级日志明确从持久化文件沿用配置，OpenResty 源码包
+PGP 验签和模块 SHA256 校验均通过，真实 configure、make、make install 返回成功。
+
+升级命令返回 0，安装目录保留两个 GeoIP2 `.so` 和两条 `load_module`，`nginx -V`
+含 GeoIP2 动态模块参数，OpenResty 自身 `nginx -t` 返回 0，持久化文件仍保留模块
+条目。
+
+- **验证状态**：已实测（Debian 12、OpenResty 1.31.1.1，2026-08-11）。
+- **文档处理**：对应 TODO 已从 `todo.md` 删除。
+
+# 阶段 24 — 自定义端口完整安装与历史状态复验（2026-08-11）
+
+## UNINST-RUN-001 完整卸载与半安装兜底路径通过
+
+**对应条目**：`FIX-UNINST-001`、`FIX-UNINST-002`。
+
+先对现有 Debian 12 LNMP 主栈执行 `uninstall.sh lnmp`。数据库数据目录成功移动到
+`/root/databases_backup_<时间>`，目标目录存在且非空；Nginx、PHP、MySQL、
+phpMyAdmin 和管理命令均被清理。随后构造一个只有 PHP 8.5 目录、init 脚本和
+nginx 配置片段，且没有 `/bin/lnmp` 的半安装状态，再以命令行参数执行卸载。
+
+第二次卸载正确进入逐个 init 脚本的停止兜底，未出现 `lnmp: command not found`；
+PHP 8.5 目录、init 脚本及 nginx 配置片段均被删除。两组清理与数据备份断言返回 0。
+
+- **验证状态**：已实测（Debian 12，2026-08-11）。
+- **文档处理**：阶段 16 的 `FIX-UNINST-001`、`FIX-UNINST-002` 已关闭。
+
+## PORT-RUN-003 自定义端口主线安装与 phpMyAdmin 登录通过
+
+**对应问题**：`TODO-PORT-001`（主栈部分，已由阶段 24 收尾）。
+
+在清理旧 LNMP 后，从 `install.sh lnmp` 入口一次安装 MySQL 8.4.7、PHP 8.3.33、
+Nginx 和 phpMyAdmin，并注入非默认数据库经典协议、X Protocol、Redis、Memcached
+及 FTP 端口配置；安装器返回 0。MySQL TCP 查询回读自定义经典/X 端口和版本，
+默认端口无监听；Nginx 配置测试成功，Nginx、PHP-FPM、MySQL 均为 active。
+nftables 的数据库阻断规则与两个实际端口一致，`CheckMirror=n` 分支也实际执行。
+
+phpMyAdmin 首页返回 HTTP 200，使用刚生成的 root 凭据完成真实登录，响应包含
+`route=/logout`，证明 PHP mysqli 经当前 MySQL 配置可用。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4.7、PHP 8.3.33、phpMyAdmin，2026-08-11）。
+- **范围说明**：Redis、Memcached、Pure-FTPd 已由阶段 24 后续条目完成实测；WordPress 非默认数据库端口由站点管理员手工配置 `wp-config.php`，不属于本包自动化验收。
+
+## PORT-RUN-004 Redis 安装入口自定义端口与 PHP 连接通过
+
+从已完成的主线环境执行 `addons.sh install redis`，注入非默认端口。Redis 服务配置
+和 init 脚本均回读为该端口，systemd 服务 active，`ss` 仅看到新端口；默认
+`6379` 无监听，nftables 规则与新端口一致。`redis-cli PING` 返回 `PONG`，PHP
+8.3 Redis 扩展连接新端口并执行 `PING` 返回成功。
+
+- **验证状态**：已实测（Debian 12、Redis 8.10.0、PHP 8.3，2026-08-11）。
+
+## PORT-RUN-005 Memcached 安装入口自定义端口与服务生命周期通过
+
+从 `addons.sh install memcached` 入口安装 Memcached 1.6.39，设置非默认端口
+`41211`，并选择 PHP `memcache` 扩展。修复 init 脚本把 PID 文件放入由 root 创建、
+由 `memcached` 用户可写的 `/run/memcached`，且启动后等待 PID/进程确认，安装验收
+同时检查服务状态。Debian 12 实测中，init 脚本启动、`status`、`restart`、`stop`
+及再次启动的退出码符合预期；PHP 8.3 `Memcache` 对新端口真实执行连接、set/get
+成功；新端口监听、默认 `11211` 无监听，nftables TCP/UDP 阻断规则均存在。
+
+- **验证状态**：已实测（Debian 12、Memcached 1.6.39、PHP 8.3，2026-08-11）。
+- **文档处理**：`AUDIT-MEMCACHED-001` 已修复并从 `todo.md` 删除。
+
+## PORT-RUN-006 Pure-FTPd 自定义端口与被动 FTPS 传输通过
+
+从 `pureftpd.sh` 入口安装 Pure-FTPd 1.0.54，设置控制端口 `42121`、数据端口
+`42020` 和被动端口范围 `43000-43010`。修复安装收尾优先通过 native systemd
+unit 启动并检查 active，避免直接调用 SysV 脚本造成 systemd 状态失真。Debian 12
+实测 `systemctl is-active` 与 `is-enabled` 均成功，配置中的 `Bind`、
+`PassivePortRange`、控制端口监听及 nftables 规则一致。
+
+创建临时 PureDB 用户后，使用真实 FTPS 客户端完成目录列表、被动模式上传、下载
+和内容比对，全部返回 0；测试用户和临时文件已清理。
+
+- **验证状态**：已实测（Debian 12、Pure-FTPd 1.0.54，2026-08-11）。
+- **文档处理**：`AUDIT-FTP-001` 与 `TODO-PORT-001` 已完成并从 `todo.md` 删除；
+  WordPress 非默认数据库端口仍由站点管理员手工配置 `wp-config.php`。
+
+# 阶段 25 — 端口收尾后的回归与文档对账（2026-08-11）
+
+修复后的目标脚本 `bash -n` 全部通过；`t/lint.sh` C1-C15/T1 全部通过，
+`t/consistency.sh` V1-V10 全部通过，`t/test_audit_fixes.sh` 19 项、
+`t/test_profile.sh`、`t/test_dispatch.sh`、`t/test_bump.sh` 均返回 0。
+
+已从 `todo.md` 删除完成的 `AUDIT-MEMCACHED-001`、`AUDIT-FTP-001` 与
+`TODO-PORT-001`；保留项均仍需要外部服务器、真实密钥或非主线组合，状态与本阶段
+实测范围没有冲突。WordPress 非默认数据库端口按约定由站点管理员手工配置，未冒充
+本包自动化测试结果。
+
+- **验证状态**：已验证（Debian 12，2026-08-11）。
+
+## SEC-PMA-RUN-001 phpMyAdmin 升级路径与随机密钥通过
+
+在 Debian 12 对已运行的 phpMyAdmin 5.2.1 执行
+`printf '5.2.1\\n\\n' | bash ./upgrade.sh phpmyadmin`，下载文件通过上游 SHA256
+核对，暂存目录切换成功，命令返回 0。升级后入口 HTTP 返回 200，配置中的
+`blowfish_secret` 为 64 位十六进制随机值；旧备份目录和临时检查文件已清理。
+
+- **验证状态**：已实测（Debian 12、phpMyAdmin 5.2.1，2026-08-11）。
+ - **文档处理**：`SEC-PMA-001` 已从“待收尾验证”改为已验证。
+
+## DB-SOURCE-RUN-001 独立 MySQL 8.4 源码安装与日志凭据检查
+
+在清理现有 LNMP 后执行：
+`DBSelect=2 Bin=n CheckMirror=n InstallInnodb=y LNMP_Auto=y ./install.sh db`。
+MySQL 8.4.7 源码包和 Boost 1.84.0 均下载并通过 SHA256 校验，随后 CMake 把源码
+目录错误解析为项目 `src/`，报告缺少 `CMakeLists.txt`，`src/build` 没有 Makefile，
+命令返回 1，未达到安装完成验收。该结果已记录为 `AUDIT-DBSOURCE-001`，本轮不改代码。
+
+同时检查 `/root/install_database.log`：没有出现测试用 root 密码，证明失败路径没有把
+凭据写入日志；但成功安装后的 `Print_DB_Password_Notice` 路径尚未走到，`SEC2-006`
+保留待修复后复验。
+
+- **验证状态**：已实测失败（Debian 12，2026-08-11）。
+
+# 阶段 26 — 源码构建修复复验与遗留审计项收尾（2026-08-11）
+
+## DB-SOURCE-FIX-001 MySQL 8.4 源码构建目录解析修复通过
+
+**对应问题**：`AUDIT-DBSOURCE-001`（即 `FIX-DB-001` 的源码路径）。
+
+`include/mysql.sh` 的源码分支在 `Install_Boost` 之后补了一次显式
+`cd "${cur_dir}/src/${Mysql_Ver}"`：`Install_Boost` 下载外部 Boost 时会把工作目录
+留在 `src/`，之前直接 `mkdir build && cd build`，构建目录落到 `src/build`，
+`cmake ..` 指向项目 `src/`，报缺少 `CMakeLists.txt`。
+
+Debian 12 实测 `DBSelect=2 Bin=n CheckMirror=n InstallInnodb=y ./install.sh db`：
+CMake 输出 `Build files have been written to: .../src/mysql-8.4.7/build`，
+Makefile 生成在源码树内，`src/build` 不再出现。编译推进到 100%，
+`make install` 返回 0，`mysqld --version` 报告 `8.4.7 ... (Source distribution)`，
+安装目录约 1.5GB。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4.7，2026-08-11）。
+- **范围说明**：编译与 `make install` 之后的初始化、启动和验收步骤，本轮由
+  同一入口的通用二进制安装覆盖（见 `SEC2-006-RUN-001`）；源码路径从
+  `make install` 到安装收尾的连续执行未在同一次运行中走完。
+- **文档处理**：`AUDIT-DBSOURCE-001` 已从 `todo.md` 删除。
+
+## AUDIT-OOM-001 并行编译只看核数，小内存机器被 OOM 杀掉
+
+**位置**：`include/init.sh` 的 `Make_Install`、`PHP_Make_Install`，
+`include/upgrade_nginx.sh`、`include/upgrade_php.sh`、`include/upgrade_mphp.sh`、
+`include/openresty.sh`、`include/upgrade_openresty.sh`
+
+七处并行编译，四种写法，全部按 CPU 核数决定 `-j`，不考虑内存。Debian 12 /
+8 核 / 5923MB 实测：`make -j8` 编译 MySQL 8.4 的 `sql_gis` 时被内核 OOM 杀掉
+（`cc1plus` 单进程 `anon-rss` 787MB × 8 并发），`Make_Install` 的串行回退接住了，
+但白跑一整轮，之后单核推进 9.5 分钟只前进 3%。
+
+新增公共函数 `Build_Jobs`：按每任务 1GB 折算内存能支撑的并发，再与核数取小，
+非数字或读不到时退到保守值。七处调用点统一改为 `-j"$(Build_Jobs)"`。
+内存宽裕的机器结果仍是核数，行为不变。
+
+实测：该机上 `Build_Jobs` 返回 5（8 核 / 5923MB）。以 5 个任务续编至 100%，
+全程 `dmesg` 无新增 OOM 记录（唯一一次仍是此前 `-j8` 那次），
+峰值内存占用约 1.5GB、可用 4.4GB。
+
+新增静态检查 `t/lint.sh` C16：`make ... -j` 后必须是 `"$(Build_Jobs)"`。
+该规则在加入时即抓出 `upgrade_php.sh`、`upgrade_mphp.sh` 两处漏改
+（`make ZEND_EXTRA_LIBS=... -j`，`-j` 不与 `make` 相邻，人工 grep 未命中），
+并已通过注入验证（把任一处改回 `$(nproc)` 即报错）。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4.7，2026-08-11）。
+- **范围说明**：只在 MySQL 源码编译路径实测；PHP、nginx、OpenResty 的编译
+  路径同步改造但未各跑一遍。
+
+## FEAT-DBSRC-001 源码编译数据库前的可行性把关与说明
+
+**位置**：`include/main.sh` 的 `Check_DB_Source_Build`、`include/profile.sh` 的
+`Select_DB_Bin`
+
+本包的典型用户是 1-2GB 内存的小 VPS，而原有把关只有一句
+「内存低于 `DB_Min_Mem_MB`（MySQL 8.x 为 1024MB）就拒绝」。1GB 机器因此可以
+「通过」检查，然后编译几小时或中途失败，选择界面也没有任何代价说明。
+
+改为三档：
+
+| 条件 | 行为 |
+| --- | --- |
+| 内存低于 `DB_Min_Mem_MB` 与 2048MB 取大者 | 直接拒绝，提示改用 `Bin=y` |
+| 项目目录所在分区可用空间低于 15360MB | 直接拒绝，说明编译目录会涨到 7GB 以上 |
+| 内存够但低于建议的 4096MB | 打印代价说明，交互式必须输入 `y` 才继续 |
+| 非交互（无终端或 `LNMP_Auto=y`） | 打印警告后继续，不破坏既有自动化 |
+
+`Select_DB_Bin` 的二进制/源码选择提示前补充中文说明：通用二进制由上游构建、
+校验值同样强制核对、几分钟装完；源码编译需要 4GB 内存和 15GB 磁盘、通常要跑
+数小时，只有确需定制编译参数时才选。
+
+磁盘门槛取自本轮实测：编译目录约 7.8GB，加安装目录 1.5GB 与源码，
+峰值消耗约 11.3GB。
+
+实测：该机磁盘降到 5480MB 可用时执行 `Bin=n ./install.sh db`，命令在下载、
+装依赖和任何系统改动之前打印剩余空间与门槛并返回 1。
+
+- **验证状态**：已实测拒绝分支（Debian 12，2026-08-11）。
+- **范围说明**：内存拒绝分支与交互确认分支未在真机构造（该机内存高于硬下限、
+  测试为非交互执行）。
+
+## SEC2-006-RUN-001 成功安装路径不泄露数据库口令
+
+**对应问题**：`SEC2-006`。
+
+从 `install.sh db` 入口用通用二进制完成 MySQL 8.4.7 安装，命令返回 0，
+`Install_Only_Database` 的成功分支执行到 `Print_DB_Password_Notice`，
+终端出现「密码不再回显」提示。随后检索 `/root/install_database.log`、
+整个运行输出日志和 `/root/.bash_history`，本次使用的探针口令 0 处命中。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4.7，2026-08-11）。
+- **文档处理**：`SEC2-006` 由「部分验证」改为已验证。
+
+## AUDIT-FW-001 单装数据库不配置防火墙
+
+**位置**：`include/only.sh` 的 `Install_Database`
+
+`Install_Only_Nginx` 会调用 `Add_Iptables_Rules`，`Install_Only_Database` 没有。
+结果是最该挡的场景反而没挡：只装数据库的机器上，`DB_Port` 与 `DB_X_Port`
+一条规则都没有。Debian 12 实测确认 `nft` 表里只有此前遗留的规则，
+没有数据库端口的 drop。
+
+在数据库服务启动之后补 `Add_Iptables_Rules || return 1`；防火墙配置失败要如实
+反映到安装结果，不能只打印一行红字。
+
+实测：清空 `nft` 表后重跑单装数据库，命令返回 0，规则表出现
+`tcp dport 22/80/443 accept`、ICMP accept 以及两个自定义数据库端口的 `drop`。
+
+- **验证状态**：已实测（Debian 12，2026-08-11）。
+
+## AUDIT-PORT-002-FIX-002 addons.sh 缺少端口校验
+
+**位置**：`addons.sh`
+
+`Validate_Service_Ports` 此前只接在 `install.sh`、`upgrade.sh`、`pureftpd.sh`。
+`addons.sh` 是 Redis 与 Memcached 的独立安装入口，同样会把端口写进 `sed` 和
+防火墙命令。Debian 12 实测：`Redis_Port=abc bash addons.sh install redis`
+一路走到下载 Redis 源码，没有任何拦截。
+
+在 `addons.sh` 的 source 段之后补 `Validate_Service_Ports || exit 1`，
+并把 `t/consistency.sh` 的 V10 入口清单加上 `addons.sh`。
+
+实测四个失败分支均在任何系统动作前返回 1：非数字 `Redis_Port=abc`、
+越界 `Memcached_Port=70000`、越界 `SSH_Port=0`、
+被动端口区间倒置 `Pureftpd_Passive_Min=30001`；不注入变量时正常放行。
+
+- **验证状态**：已实测（Debian 12，2026-08-11）。
+
+## AUDIT-PORT-003-RUN-001 MySQL X Protocol 端口实测生效
+
+**对应问题**：`AUDIT-PORT-003`。
+
+阶段 24 记录该项时 `@@mysqlx_port` 仍为默认值。本轮以非默认的经典协议端口和
+X Protocol 端口完成安装后实测：`/etc/my.cnf` 中 `port` 与 `loose-mysqlx-port`
+为设定值，SQL 回读 `@@port`、`@@mysqlx_port` 一致，
+`@@bind_address` 与 `@@mysqlx_bind_address` 均为回环地址，
+`ss -lntp` 只在两个自定义端口看到 mysqld，默认的 3306 与 33060 无监听，
+nftables 对两个自定义端口均有 drop 规则。
+
+- **验证状态**：已实测（Debian 12、MySQL 8.4.7，2026-08-11）。
+
+## AUDIT-MEMCACHED-002 Memcached 启动绕开 systemd
+
+**位置**：`init.d/memcached.service`（新增）、`include/memcached.sh`、
+`include/main.sh` 的 `Use_Systemd_Unit`
+
+`AUDIT-MEMCACHED-001` 修好的是 PID 文件，但该条审计描述的症状
+（`systemctl is-active memcached` 报 inactive）没有闭合：安装收尾仍直接调用
+`/etc/init.d/memcached start`，而 `init.d/` 下也没有 memcached 的 unit，
+`StartOrStop` 只能退回 SysV 脚本。其余服务（nginx、php-fpm、数据库、Redis）
+都有自己的 unit 并走 `StartOrStop`。
+
+新增 `init.d/memcached.service`：`Type=forking`，`ExecStart` 调 SysV 脚本而不是
+直接拉二进制 —— 监听地址、端口、账号、容量和连接数都定义在 init 脚本里，
+端口还要按 `lnmp.conf` 的 `Memcached_Port` 改写，在 unit 里再抄一份必然对不上。
+`include/memcached.sh` 在 `StartUp` 之前无条件部署该 unit（放在
+「已安装则跳过」分支之外，否则老机器仍然绕开 systemd），启动改为
+`StartOrStop start memcached`。
+
+同时把「这次走不走 systemd」的判断从 `StartOrStop` 里提出来成为
+`Use_Systemd_Unit`，条件逐字保持不变，供安装收尾的状态核对复用。
+
+实测（自定义端口 41211）：unit 已部署且 `systemctl is-enabled` 为 enabled；
+`StartOrStop start memcached` 返回 0 后 `systemctl is-active` 为 active，
+init 脚本 `status` 报 running，`ss` 在自定义端口看到 memcached；
+`systemctl stop memcached` 之后 `is-active` 为 inactive 且进程数为 0，
+证明 systemd 确实管住了该进程。`Use_Systemd_Unit` 对有 unit 的服务判为 systemd、
+对不存在的服务判为 SysV。
+
+- **验证状态**：已实测（Debian 12、Memcached 1.6.39，2026-08-11）。
+- **范围说明**：该机未安装 PHP，`addons.sh install memcached` 在 PHP 扩展编译处
+  以 `exit 1` 终止，未走到启动步骤；上述启动与状态核对是直接调用项目函数完成的。
+  该终止行为已记入 `TODO-ADDONS-001`。
+
+## AUDIT-FTP-002 Pure-FTPd 启动判断遗漏 WSL 与容器
+
+**位置**：`pureftpd.sh` 安装收尾
+
+`AUDIT-FTP-001` 的修复自己写了一套 systemctl 条件，只判断 `command -v systemctl`
+和 unit 文件是否存在，没有像 `StartUp`、`StartOrStop` 那样排除 WSL 与容器，
+且 systemctl 失败后不回落 SysV 而直接 `exit 1`。这类环境里 systemctl 可能存在
+却不可用，本来能装完的机器会卡在这一步。
+
+改为调用 `StartOrStop start pureftpd`，再按 `Use_Systemd_Unit` 的判定选择核对
+方式：systemd 分支问 `systemctl is-active`，SysV 分支查 pid 文件对应的进程。
+不使用 init 脚本的 `status`—— 它只打印文字、恒返回 0，已记入 `TODO-INITD-001`。
+
+实测（控制端口 42121、数据端口 42020、被动范围 43000-43010）：`pureftpd.sh`
+返回 0，`systemctl is-active` 与 `is-enabled` 均成功，部署后的配置里 `Bind`
+与 `PassivePortRange` 为设定值，`ss` 在控制端口看到 pure-ftpd，
+nftables 三条放行规则齐全。核对判据本身也做了两向验证：服务停止时返回 3，
+运行时返回 0。
+
+- **验证状态**：已实测（Debian 12、Pure-FTPd 1.0.54，2026-08-11）。
+- **范围说明**：WSL 与容器环境未实测，该分支的依据是与 `StartUp`、`StartOrStop`
+  共用同一个 `Use_Systemd_Unit` 判定。
+
+## AUDIT-RUN-002 静态检查与新增防回归项
+
+`t/lint.sh` C1-C16 与 T1 全部通过；`t/consistency.sh` V1-V11 通过 11 项、
+失败 0 项；本轮改动过的脚本 `bash -n` 全部通过。
+
+新增两项防回归检查，均做过注入验证：
+
+- C16：并行编译任务数必须来自 `Build_Jobs`；
+- V11：memcached 必须有 unit、必须走 `StartOrStop`、不得再直调 SysV 脚本，
+  pureftpd 必须复用 `Use_Systemd_Unit`（移走 `init.d/memcached.service` 即报错）。
+
+`todo.md` 删除已完成的 `AUDIT-DBSOURCE-001`，新增 `TODO-ADDONS-001`
+与 `TODO-INITD-001`。
+
+- **验证状态**：已验证（2026-08-11）。
+
+## DOC-601 README 补充数据库编译方式的选择说明
+
+**位置**：`README.md`「支持范围」
+
+`FEAT-DBSRC-001` 改变了用户可见的行为：低于门槛的机器会被直接拒绝源码编译。
+README 原先只在架构一节提过一句「源码编译耗时和内存占用更高」，没有给出
+判断依据，也没有说明推荐哪一种。
+
+补充一节：明确无特殊需求选通用二进制、列出本轮实测的编译目录与安装目录体积、
+单进程内存峰值和 8 核并行被 OOM 的结果，写明脚本的两条拒绝门槛与一条确认门槛，
+并给出非交互安装的完整命令示例。
+
+- **验证状态**：已验证（文档与 `include/main.sh`、`include/profile.sh` 的实现逐条对照，
+  数值取自本阶段实测，2026-08-11）。
+
+## FIX-ADDONS-001 addons 安装前先确认有 PHP
+
+**对应问题**：`TODO-ADDONS-001`。
+
+`addons.sh` 装的都是要编进当前 PHP 的扩展。机器上没有 PHP 时，原流程会一路装到
+扩展编译才失败，而那里是 `Make_Install || exit 1`，整个脚本当场退出：memcached
+的服务端、init 脚本、systemd unit 和开机自启都已经装好，启动、防火墙和安装验收
+却全部没执行，用户只看到一句失败，看不出装了一半。
+
+新增 `Check_PHP_Installed`：检查 `${PHP_Path}/bin/php-config` 是否可执行，
+缺失时说明「本脚本装的是 PHP 扩展」并给出两条安装 PHP 的命令，返回 1。
+调用点放在 `install)` 分支开头，`uninstall)` 不拦 —— PHP 已被删掉的机器
+仍然要能清理扩展残留。
+
+Debian 12（未安装 PHP）实测：`addons.sh install memcached` 打印提示并返回 1，
+`src/` 下没有产生任何组件源码目录，即一件也没开始装；
+同一台机器上 `addons.sh uninstall memcached` 不受影响，正常执行到完成。
+
+- **验证状态**：已实测（Debian 12，2026-08-11）。
+- **范围说明**：只拦入口。各扩展安装函数内部的 `exit` 写法未改，
+  其它原因导致的编译失败仍会中途退出，已记入 `TODO-ADDONS-002`。
+
+## FIX-INITD-001 pure-ftpd 的 init 脚本返回码改为真实结果
+
+**对应问题**：`TODO-INITD-001`。
+
+`init.d/init.d.pureftpd` 的 `status()` 只按 pid 文件是否存在打印一行文字，
+两个分支都不设返回码，最终返回最后一条 `echo` 的退出码，恒为 0；
+`start()` 同样如此，启动失败时打印 " failed" 却返回 0；`case` 也不把函数的
+返回码传出去。`lnmp pureftpd status` 在没有 systemd unit 的分支直接采用该退出码
+（见 `conf/lnmp` 的 `Svc`），因此判断必然被误导。
+
+改动：
+
+- 新增 `is_running()`，一律以 pid 对应的进程是否存活为准，
+  不再只看文件在不在（崩溃或 `kill -9` 之后 pid 文件会留下来）；
+- `status()` 按 LSB 约定返回 0（在跑）或 3（没在跑）；
+- `start()` 先清理陈旧 pid 文件，启动后轮询等待 pid 落地（`Daemonize yes`
+  会立刻返回），据此返回 0 或 1；已在跑时直接返回 0，保持幂等；
+- `stop()` 等待进程真正退出后才报成功，失败或本来没在跑返回 1；
+- `case` 末尾补 `exit $?`，非法参数返回 2，用法提示补上 `status`。
+
+Debian 12 实测九个分支：未运行 status=3；start=0；运行中 status=0；
+重复 start=0 且进程数仍为 1；stop=0；重复 stop=1；非法参数=2；
+写入一个指向已死进程的陈旧 pid 文件后 status 仍为 3 并报 not running；
+从停止态 restart=0 且随后 status=0。
+负向测试：临时移走 pure-ftpd 二进制后 `start` 返回 1（旧实现此处返回 0）。
+测试结束后二进制已还原，服务恢复由 systemd 托管且 `is-active` 为 active。
+
+- **验证状态**：已实测（Debian 12、Pure-FTPd 1.0.54，2026-08-11）。
+- **范围说明**：`init.d/init.d.nginx`、`init.d.httpd`、`init.d.redis` 的返回码
+  未在本轮核查，`init.d.memcached` 的 `status` 返回码本来就是真实的。
+
+## AUDIT-RUN-003 新增 V12 防回归检查
+
+`t/consistency.sh` 新增 V12：`init.d.pureftpd` 与 `init.d.memcached` 的 `status`
+必须有 `return 3`、`init.d.pureftpd` 必须把返回码 `exit $?` 传出、
+`addons.sh` 必须有 `Check_PHP_Installed || exit 1`。
+注入验证：把 `init.d.memcached` 的 `return 3` 改成 `return 0` 即报错，改回通过。
+
+`t/lint.sh` C1-C16 与 T1 全部通过；`t/consistency.sh` V1-V12 通过 12 项、
+失败 0 项；改动过的脚本 `bash -n` 全部通过。
+`todo.md` 删除已完成的 `TODO-ADDONS-001`、`TODO-INITD-001`，
+新增 `TODO-ADDONS-002`。
+
+- **验证状态**：已验证（2026-08-11）。
+
+## FIX-ADDONS-002 扩展安装函数改用 return，退出码由入口统一交出
+
+**对应问题**：`TODO-ADDONS-002`。
+
+`addons.sh` 分发的十二个安装函数全部只被它自己调用，却一律用 `exit` 结束：
+成功 `exit 0`、失败 `exit 1`、`Make_Install || exit 1`。任何一步失败都会让整个
+脚本当场退出，跳过后面的启动、防火墙和安装验收，把机器停在半装状态。
+`include/apcu.sh`、`include/imageMagick.sh` 和 `include/memcached.sh` 的收尾判断
+还没有返回码，走到失败分支时最终返回的是 `rm`/`Echo_Red` 的 0 —— 报了 failed
+却返回成功。
+
+改动：
+
+- `opcache.sh` 与七个 `php_*.sh`：函数内 `exit 0` / `exit 1` 改为
+  `return 0` / `return 1`；
+- `redis.sh`、`imageMagick.sh`、`memcached.sh`：`Make_Install || exit 1`
+  改为 `|| return 1`；
+- `imageMagick.sh`：`Build_ImageMagick_Lib` 的返回值改为必须处理
+  （库没编出来就不再编扩展，否则报出来的是 configure 找不到目录，误导排查），
+  收尾补 `return 0` / `return 1`；
+- `apcu.sh`：收尾补 `return 0` / `return 1`；
+- `memcached.sh`：扩展安装失败只记录 `ext_rc`，不再中断，后面的启动、防火墙
+  和验收照常执行；收尾按「服务端」和「PHP 扩展」分别给结论，两者都成才返回 0；
+- `addons.sh` 末尾补 `Addons_Rc=$?; exit ${Addons_Rc}`，把返回码明确交出去，
+  不再依赖「最后一条命令恰好是那个函数」。
+
+新增 `t/consistency.sh` V13：上述十二个文件里不得再出现独立的 `exit`，
+且 `addons.sh` 必须传出返回码。规则做过两种写法的注入验证
+（函数体内 `{ exit 1; }`、`Make_Install || exit 1`），都能报错。
+第一版正则只覆盖行首和 `||` 前缀，漏掉花括号写法，已修正后重验。
+
+Debian 12 实测：
+
+- 没有 PHP 时 `addons.sh install opcache` 由入口拦下，返回 1；
+- 造一个只提供 `php-config` 的假 PHP，让 `Install_Opcache` 真正执行到收尾：
+  `opcache.so` 不存在 → 打印失败、返回 1，且失败时写入的 ini 已被清理；
+- 同样条件下 `addons.sh install memcached`：返回 1，输出分成
+  「memcached 服务端已安装并在运行」与「PHP 扩展 memcache.so 没有装成」两句；
+  `systemctl is-active memcached` 为 active、自定义端口有监听、
+  nftables 的 TCP/UDP 阻断规则都已写入 —— 说明扩展失败后流程没有中断，
+  服务端该做完的都做完了，结论仍如实为失败。
+
+- **验证状态**：已实测（Debian 12、Memcached 1.6.39，2026-08-11）。
+- **范围说明**：opcache 与 memcached 两条路径实测；其余十个函数为同构改动，
+  未逐个执行。`addons.sh` 内层 `case` 的未知子命令仍返回 0，
+  已记入 `TODO-ADDONS-003`。
+
+## FIX-INITD-002 nginx、httpd 的 init 脚本返回码与进程判定
+
+**对应问题**：`TODO-ADDONS-003`，以及上一条记录里「三个 init 脚本返回码未核查」
+的收尾。逐个核查了 `init.d.nginx`、`init.d.httpd`、`init.d.redis`，
+`init.d.redis` 的 `status` 本来就返回 0/1/3，无需改动。
+
+**`init.d/init.d.nginx`**
+
+- `status` 两个分支的返回码是反的：服务停止时 `exit 0`，在跑时靠 `echo` 的
+  退出码碰巧也是 0，等于无论状态如何都报成功。改为 LSB 约定的 0（在跑）/
+  3（没在跑）。
+- 进程判定原先是 `ps -ef | grep "$NGINX_BIN"`：命令行里出现过这个路径的进程
+  全都算数，编辑器、`tail`、甚至一条带路径的 ssh 命令都会被当成 nginx 在跑 ——
+  `status` 凭空报成功，`start` 则拒绝启动。改为新函数 `Nginx_Pid`：以
+  `/usr/local/nginx/logs/nginx.pid` 为准并确认进程存活，pid 文件不可用时退回
+  `pgrep -x nginx`（精确匹配进程名）。五个分支统一改用它。
+  该 pid 路径在 `conf/nginx.conf`、`nginx_a.conf`、`openresty.conf` 三份配置里
+  一致，OpenResty 经 `/usr/local/nginx` 软链同样成立。
+- 已在运行时 `start` 由 `exit 1` 改为 `exit 0`，与 redis、pureftpd 一致；
+  返回 1 会让重复执行的安装流程把正常情况当成失败。
+- `reload` 原先无论 `nginx -s reload` 成败都打印 " done" 并返回 0。
+  `conf/lnmp` 的 vhost 删除靠这一步让站点真正下线，失败必须传出去。
+
+**`init.d/init.d.httpd`**
+
+- `start|stop|restart|graceful|graceful-stop` 失败时只打印 " failed"，
+  退出码是那条 `echo` 的 0，补 `exit 1`。
+- `status` 两个分支都不设返回码（恒 0），且只看 pid 文件在不在 ——
+  进程被 `kill -9` 之后文件会留下，把已经死掉的 Apache 报成 running。
+  改为 pid 对应进程存活判定，返回 0 / 3。
+- 未知参数由返回 0 改为 `exit 2`，与文件头部 apachectl 的退出码约定一致。
+
+**`tools/remove_disable_function.sh`**
+
+调用的是 `/etc/init.d/httpd -k restart`，而 init 脚本的 `case` 匹配的是
+`start|stop|restart|...`，`-k restart` 落到 `*)` 只打印一行用法 ——
+Apache 从来没有被重启过，以前返回 0 所以看不出来。改为 `/etc/init.d/httpd restart`
+（`-k` 由 init 脚本自己加）。这个问题是 httpd 的 `*)` 改成 `exit 2` 之后暴露的。
+
+**`addons.sh`**
+
+两个内层 `case` 的 `*)` 打印 Usage 后返回 0，`./addons.sh install nosuchthing`
+什么都没装却报成功。补 `exit 1`（外层 `*)` 本来就是 `exit 1`）。
+
+**`t/consistency.sh`**
+
+V12 扩展：nginx、httpd、redis 的 `status` 必须有 `exit 3`；
+`addons.sh` 每条 Usage 提示后必须跟 `exit 1`。
+注入验证：把 nginx 的 `exit 3` 改成 `exit 0` 即报错。
+
+Debian 12 实测（nginx、Apache 未安装，用替身进程与改路径的脚本副本定向验证
+被修改的判定分支）：
+
+| 场景 | 结果 |
+| --- | --- |
+| nginx 无 pid 文件 `status` | 3 |
+| nginx 陈旧 pid 文件（进程已死）`status` | 3 |
+| nginx 进程存活 `status` | 0 |
+| nginx 已在跑时 `start` | 0 |
+| nginx 未运行时 `stop` | 1 |
+| nginx 非法参数 | 1 |
+| 命令行含 nginx 路径的无关进程存在时 `status` | 3（旧实现会报 running） |
+| httpd 无 pid 文件 `status` | 3 |
+| httpd 陈旧 pid 文件 `status` | 3 |
+| httpd 进程存活 `status` | 0 |
+| httpd 非法参数 | 2 |
+| `addons.sh install nosuchthing` | 1 |
+| `addons.sh uninstall nosuchthing` | 1 |
+
+- **验证状态**：已实测（Debian 12，2026-08-11）。
+- **范围说明**：nginx 的 `stop`（运行中）、`force-quit|kill` 和 `reload` 需要
+  真实 nginx 才能覆盖，已记入 `TODO-INITD-002`；httpd 的 `start|stop` 失败传出
+  同样未在真实 Apache 上执行。`t/lint.sh` C1-C16 与 T1 全部通过，
+  `t/consistency.sh` V1-V13 通过 13 项、失败 0 项。
+
+## FIX-INITD-003 nginx 进程判定：自我匹配与 pid 回收误杀
+
+**对应问题**：`TODO-INITD-002`，以及在真实 nginx 上验证 `FIX-INITD-002` 时
+发现的两个新问题。用 OpenResty 官方软件包装出真实 nginx（`ORMode=pkg`，
+不编译，Debian 12 上约一分钟装完 openresty 1.31.1.1），本包的
+`/etc/init.d/nginx` 由 `OpenResty_Post_Install` 正常接管。
+
+**问题一：init 脚本把自己当成了 nginx**
+
+`FIX-INITD-002` 把进程判定从 `ps -ef | grep` 换成 `pgrep -x nginx` 之后引入了
+新的失效模式：Linux 上 shebang 脚本的 `comm` 是脚本名，而这个 init 脚本本身
+就叫 `nginx`。于是 `pgrep -x nginx` 会匹配到脚本自己的进程，
+`status` 在 nginx 根本没运行时报「nginx (pid …) is running」，
+`stop` 与 `force-quit` 则 `kill` 掉自己 —— 实测退出码 143（SIGTERM），
+终端出现 `Terminated`。
+
+只加 `comm` 比对不能解决，因为脚本自己的 `comm` 恰好就是 `nginx`。
+
+**问题二：pid 回收后误杀无关进程**
+
+pid 文件里的号码可能已经被系统回收给别的进程。原判定只做 `kill -0`，
+只能证明「这个号码上有进程」，而 `stop`、`force-quit` 是要 `kill` 它的。
+
+**改动**：新增 `Nginx_Is_Nginx <pid>`，以 `/proc/<pid>/exe` 指向的可执行文件
+与 `$NGINX_BIN` 比对（都经 `readlink -f` 解析软链，OpenResty 走
+`/usr/local/nginx` 软链同样成立）。`/proc` 不可用时退回进程名比对，
+并显式排除 `$$`。`Nginx_Pid` 的两条路径（pid 文件、`pgrep` 候选）都必须过这一关；
+`pgrep` 分支还要跳过 worker（父进程也是 nginx），只认 master，
+否则 `kill` 掉 worker 会被 master 立刻拉起来，`stop` 看着成功其实没停。
+
+Debian 12 真实 nginx（openresty/1.31.1.1）实测：
+
+| 场景 | 结果 |
+| --- | --- |
+| `start`（停止态） | 0，进程数 9（master + 8 worker） |
+| `status`（运行中） | 0 |
+| 重复 `start` | 0，进程数仍为 9，未新增实例 |
+| `reload`（配置正常） | 0 |
+| `reload`（配置损坏） | 1（旧实现返回 0） |
+| `reload`（配置恢复） | 0 |
+| `stop`（运行中） | 0，进程数 0，worker 全退 |
+| `status`（已停） | 3 |
+| `force-quit` | 0，master 与 worker 全退 |
+| `restart`（停止态） | 0，进程数 9 |
+| 空 pid 文件（包安装遗留）时 `status` | 3（未被自身进程匹配） |
+| pid 文件指向非 nginx 的存活进程时 `force-quit` | 1，且该无关进程仍存活 |
+
+安装 curl 后核对服务本身：默认站点目录为空时首页返回 403，
+放入 `index.html` 后返回 200 且内容正确，`Server: openresty`。
+
+- **验证状态**：已实测（Debian 12、openresty 1.31.1.1，2026-08-11）。
+- **范围说明**：`stop` 走 `nginx -s stop` 失败转 `force-quit` 的那条支路未构造；
+  Apache 侧的启停失败返回码仍未在真实 Apache 上验证，已记入 `TODO-INITD-003`。
+  `t/lint.sh` C1-C16 与 T1 全部通过，`t/consistency.sh` V1-V13 通过 13 项。

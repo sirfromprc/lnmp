@@ -246,7 +246,8 @@ Install_OpenResty_Source()
         Echo_Red "OpenResty configure 失败。常见原因是缺少 libpcre2-dev / libssl-dev。"
         return 1
     fi
-    make -j"$(nproc 2>/dev/null || echo 2)" || { Echo_Red "OpenResty 编译失败。"; return 1; }
+    make -j"$(Build_Jobs)" || { Echo_Red "OpenResty 编译失败。"; return 1; }
+    OR_Modules_Capture_Built || { Echo_Red "无法记录本次动态模块产物。"; return 1; }
     make install || { Echo_Red "OpenResty 安装失败。"; return 1; }
 
     cd ${cur_dir}/src/
@@ -352,7 +353,10 @@ OpenResty_Post_Install()
 
     StartUp nginx
     # 记录本次的编译期配置，升级时沿用
-    OR_Modules_Persist
+    if ! OR_Modules_Persist; then
+        Echo_Red "OpenResty 已安装，但编译期配置持久化失败，不能报告安装完成。"
+        exit 1
+    fi
     Echo_Green "OpenResty 安装完成：$(/usr/local/openresty/nginx/sbin/nginx -v 2>&1)"
 }
 

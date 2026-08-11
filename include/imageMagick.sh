@@ -36,7 +36,7 @@ Build_ImageMagick_Lib()
         Tar_Cd ${ImageMagick_Ver}.tar.gz ${ImageMagick_Ver}
 
         ./configure --prefix=/usr/local/imagemagick
-        Make_Install || exit 1
+        Make_Install || return 1
         cd ../
         rm -rf ${cur_dir}/src/${ImageMagick_Ver}
     fi
@@ -54,7 +54,9 @@ Install_ImageMagic()
         rm -f "${zend_ext}"
     fi
 
-    Build_ImageMagick_Lib
+    # 库没编出来就不用继续编扩展了，否则 configure 会因为找不到
+    # /usr/local/imagemagick 而失败，报出来的又是另一回事。
+    Build_ImageMagick_Lib || return 1
 
     cd ${cur_dir}/src
     Download_Files https://pecl.php.net/get/${Imagick_Ver}.tgz ${Imagick_Ver}.tgz
@@ -62,7 +64,7 @@ Install_ImageMagic()
     Tar_Cd ${Imagick_Ver}.tgz ${Imagick_Ver}
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config --with-imagick=/usr/local/imagemagick
-    Make_Install || exit 1
+    Make_Install || return 1
     cd ../
 
     cat >${PHP_Path}/conf.d/008-imagick.ini<<EOF
@@ -73,10 +75,11 @@ EOF
         Restart_PHP
         Echo_Green "====== ImageMagick install completed ======"
         Echo_Green "ImageMagick installed successfully, enjoy it!"
-    else
-        rm -f ${PHP_Path}/conf.d/008-imagick.ini
-        Echo_Red "imagick install failed!"
+        return 0
     fi
+    rm -f ${PHP_Path}/conf.d/008-imagick.ini
+    Echo_Red "imagick install failed!"
+    return 1
 }
 
 Uninstall_ImageMagick()

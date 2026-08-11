@@ -12,7 +12,7 @@ Install_PHP_Imap()
     ${PHP_Path}/bin/php -m|grep imap
     if [ $? -eq 0 ]; then
         Echo_Red "PHP Module 'imap' already loaded!"
-        exit 1
+        return 1
     fi
 
     if [ "$PM" = "yum" ]; then
@@ -56,11 +56,11 @@ EOF
     if [ -s "${zend_ext}" ]; then
         Echo_Green "====== PHP Imap install completed ======"
         Echo_Green "PHP Imap installed successfully, enjoy it!"
-        exit 0
+        return 0
     else
         rm -f ${PHP_Path}/conf.d/009-imap.ini
         Echo_Red "PHP Imap install failed!"
-        exit 1
+        return 1
     fi
 }
 
