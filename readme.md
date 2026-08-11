@@ -251,7 +251,26 @@ lnmp database import <库名> <文件.sql.gz>   # 导入到已存在的库
 会停掉数据库，用私有 socket + 禁用网络的方式临时启动、改密码、再正常启动。
 全程不开放网络端口，密码输入不回显。
 
-**备份**：`tools/backup.sh`（支持网站文件与数据库，可配置保留份数）。
+**备份**：`lnmp backup`（网站文件与数据库，自动导出、自动上传、可试恢复）。
+
+```bash
+lnmp backup init      # 扫描已有站点生成 /etc/lnmp/backup.conf，并装好 systemd timer
+lnmp backup run       # 立即执行一次（timer 会自动调用，通常不必手工跑）
+lnmp backup status    # 上次结果、下次计划、最近错误
+lnmp backup list      # 列出本地与远端的备份批次
+lnmp backup test      # 试恢复：把最新库备份导入临时库校验后删除
+lnmp backup restore db  <库名> [批次]
+lnmp backup restore web <域名> [批次]
+```
+
+配置在 `/etc/lnmp/backup.conf`（权限 600），站点按
+`域名|网站目录|数据库名` 一行一条，数据库和网站可以有各自的备份周期与保留天数
+（例如库每天一份留 14 天，网站每周一份留 60 天）。
+
+`init` 之后本地备份就已经由 systemd timer 自动执行。异地上传默认关闭，
+开启需要一台独立的备份服务器并在两侧各配一次 ——
+备份账号、chroot、专用密钥、主机指纹核对和排查表都写在
+`HowtoGuides.md` 的「8.5 异地备份（SFTP）」，照着做即可。
 
 ### 3.4 PHP
 
@@ -360,7 +379,8 @@ lnmp ftp {add|list|edit|del|show}
 
 | 脚本 | 用途 |
 |---|---|
-| `backup.sh` | 备份网站与数据库 |
+| `lnmp-backup.sh` | `lnmp backup` 的实现，安装为 /bin/lnmp-backup |
+| `backup.sh` | 已废弃，转发到 `lnmp backup run all` |
 | `cut_nginx_logs.sh` | Nginx 日志切割 |
 | `check502.sh` | 检测 502 并自动重启 PHP-FPM |
 | `reset_mysql_root_password.sh` | 重置数据库 root 密码 |

@@ -833,11 +833,47 @@ lnmp database import <库名> <文件.sql.gz>   # 导入到已存在的库
 
 ### 8.4 备份
 
+推荐用内置的备份命令，它会自动导出数据库与网站程序、生成校验清单，
+配置了异地之后自动上传：
+
 ```bash
-/root/lnmp2.3/tools/backup.sh
+lnmp backup init          # 扫描已有站点生成配置，并装好 systemd timer
+lnmp backup run all       # 立即完整跑一次
+lnmp backup status        # 上次结果与下次计划
+lnmp backup test          # 试恢复验证：导入临时库校验后删除
 ```
 
-WordPress 站点至少要备份两样：**数据库** 和 **`wp-content/` 目录**
+`init` 会扫描 nginx / apache 的 vhost 配置，反查站点目录，并从
+`wp-config.php` 里读出 `DB_NAME`，生成形如
+`域名|网站目录|数据库名` 的条目写进 `/etc/lnmp/backup.conf`（权限 600）。
+新建站点后重跑一次 `init`，或手工往配置里加一行。
+
+要点：
+
+- 数据库和网站各有各的周期与保留天数。默认库每次都备份、保留 14 天；
+  网站每 7 天一次、保留 60 天，用 `Web_Interval_Days`、`Keep_Days_Db`、
+  `Keep_Days_Web` 调整。
+- 批次目录用秒级时间戳，同一天跑多次不会互相覆盖；保留策略删除的是
+  所有早于保留期的批次，不是只删“正好第 N 天”那一批。
+- 每个批次带 `SHA256SUMS`，`restore` 与 `test` 会先校验再动手，
+  校验不过直接拒绝。
+- 异地上传默认关闭，开启方法和备份机侧的配置见 [8.5 异地备份（SFTP）](#85-异地备份sftp)。
+  上传先传到远端 `.incoming/<批次>/`，逐个核对大小无误后才改名到正式目录，
+  最后才清理远端旧批次 —— 传输中断不会损失已有的恢复点。
+- 同一时刻只允许一个备份在跑（flock，没有 flock 的环境退回 mkdir 锁）。
+
+恢复：
+
+```bash
+lnmp backup list                       # 先看有哪些批次
+lnmp backup restore db  wpdemo         # 不给批次就用最新的一批
+lnmp backup restore web wp.example.com 20260810-033000
+```
+
+> `tools/backup.sh` 是旧模板，已废弃，现在只会把请求转发到
+> `lnmp backup run all`。老的 cron 条目请改成 `/bin/lnmp-backup run`。
+
+如果要手工备份，WordPress 站点至少要备份两样：**数据库** 和 **`wp-content/` 目录**
 （主题、插件、上传的媒体文件）。核心文件可以重新下载，这两样不能。
 
 ```bash
@@ -861,7 +897,198 @@ tar czf /root/backup/wp-content-$(date +%F).tar.gz \
 
 > `--single-transaction` 让 InnoDB 表在备份期间不锁表，站点不用停。
 
-### 8.5 日志
+### 8.5 异地备份（SFTP）
+
+> **本节与全文其余部分不同：这些命令没有在真机上完整跑过。**
+> 备份逻辑本身经过定向测试（含模拟的 SFTP 远端），但真实备份服务器上的
+> 上传、目录改名和 systemd timer 触发尚未验证，见 `todo.md` 的 `TODO-BK-001`。
+> 第一次配置时请按 8.5.4 的顺序逐步确认，不要直接依赖定时任务。
+
+本地备份在 `lnmp backup init` 之后就已经自动执行了。异地上传默认关闭，
+需要一台**独立的备份服务器**，并在两侧各配一次。
+
+整体结构：
+
+```
+生产机                                备份机
+/home/backup/                        /srv/sftp/backupuser/   ← chroot 根
+  db/<批次>/  ── SFTP ──────────────→   backup/
+  www/<批次>/                            db/<批次>/
+                                         www/<批次>/
+                                         .incoming/          ← 上传中转
+```
+
+上传过程是：先传到 `.incoming/<批次>-<类型>/`，逐个核对文件大小，
+全部对上之后把整个目录 `rename` 到正式位置，最后才清理远端过期批次。
+所以传输中断不会损失已有的恢复点，也不会在正式目录里留下残缺文件。
+
+#### 8.5.1 备份机：建账号和目录
+
+以下命令在**备份服务器**上执行。
+
+```bash
+# 专用账号，不给 shell
+useradd -m -d /home/backupuser -s /usr/sbin/nologin backupuser
+
+# chroot 根目录：必须 root 所有，且不能被组或其他人写，
+# 否则 sshd 会拒绝登录并在日志里报 "bad ownership or modes"
+mkdir -p /srv/sftp/backupuser
+chown root:root /srv/sftp/backupuser
+chmod 755 /srv/sftp/backupuser
+
+# chroot 内真正存备份的子目录，这个才属于备份账号
+mkdir -p /srv/sftp/backupuser/backup
+chown backupuser:backupuser /srv/sftp/backupuser/backup
+chmod 700 /srv/sftp/backupuser/backup
+```
+
+> chroot 根本身对该账号是只读的，这是 OpenSSH 的硬性要求。
+> 备份写在下面那个 `backup/` 子目录里，生产机配置中的
+> `Remote_Dir="backup"` 指的就是它（相对 chroot 根）。
+
+#### 8.5.2 备份机：限制这个账号只能做 SFTP
+
+编辑 `/etc/ssh/sshd_config`，在**文件末尾**追加（`Match` 块必须放在最后，
+它之后的配置都属于这个块）：
+
+```
+Match User backupuser
+    ChrootDirectory /srv/sftp/backupuser
+    ForceCommand internal-sftp
+    AllowTcpForwarding no
+    X11Forwarding no
+    PermitTTY no
+```
+
+检查语法后重载：
+
+```bash
+sshd -t && systemctl reload ssh      # Debian/Ubuntu 服务名是 ssh
+# sshd -t && systemctl reload sshd   # EL 系是 sshd
+```
+
+`sshd -t` 没有输出就是通过了。**先别关掉当前的 SSH 会话**，
+另开一个连接确认自己还能登录，再关旧会话。
+
+#### 8.5.3 生产机：密钥与主机指纹
+
+以下命令回到**生产服务器**上执行。
+
+**第一步，生成专用密钥。** 不要复用日常登录的密钥 —— 这把钥匙就放在被备份的
+这台机器上，一旦这台机器失陷，它能开的门越少越好：
+
+```bash
+ssh-keygen -t ed25519 -N '' -f /root/.ssh/lnmp_backup
+```
+
+**第二步，把公钥装到备份机。** 把 `/root/.ssh/lnmp_backup.pub` 的内容加到备份机的
+`/home/backupuser/.ssh/authorized_keys`，并在前面加上限制前缀：
+
+```
+restrict,command="internal-sftp" ssh-ed25519 AAAAC3NzaC1...（你的公钥）
+```
+
+备份机上这两个权限必须对，否则公钥认证会被静默拒绝：
+
+```bash
+chown -R backupuser:backupuser /home/backupuser/.ssh
+chmod 700 /home/backupuser/.ssh
+chmod 600 /home/backupuser/.ssh/authorized_keys
+```
+
+> `authorized_keys` 放在 `/home/backupuser/` 而不是 chroot 里面，是因为
+> sshd 读它是在切进 chroot **之前**、以 root 身份读的。
+
+**第三步，固定并核对主机指纹。** 备份脚本用
+`StrictHostKeyChecking=yes`，遇到未知主机直接失败，不会像 `accept-new`
+那样在首次连接时盲信 —— 所以这一步必须做：
+
+```bash
+ssh-keyscan -p 22 备份机地址 > /root/.ssh/lnmp_backup_known_hosts
+ssh-keygen -lf /root/.ssh/lnmp_backup_known_hosts
+```
+
+记下输出的指纹，然后**到备份机本机上**（不要通过刚才那条网络连接）执行：
+
+```bash
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+两边的指纹逐字比对，对上了才算可信。对不上说明中间有人，别继续。
+
+```bash
+chmod 600 /root/.ssh/lnmp_backup /root/.ssh/lnmp_backup_known_hosts
+```
+
+#### 8.5.4 生产机：开启上传并验证
+
+编辑 `/etc/lnmp/backup.conf`（权限 600），改这几项：
+
+```bash
+Enable_Remote_Backup=1
+Remote_Host="备份机地址"
+Remote_Port=22
+Remote_User="backupuser"
+Remote_Dir="backup"
+Remote_SSH_Key="/root/.ssh/lnmp_backup"
+Remote_Known_Hosts="/root/.ssh/lnmp_backup_known_hosts"
+```
+
+**按这个顺序验证，不要跳步**：
+
+```bash
+# 1. 先单独确认 SFTP 通道本身是通的
+sftp -i /root/.ssh/lnmp_backup      -o IdentitiesOnly=yes      -o StrictHostKeyChecking=yes      -o UserKnownHostsFile=/root/.ssh/lnmp_backup_known_hosts      backupuser@备份机地址
+# 进去之后执行 pwd 应显示 /，ls 能看到 backup 目录，然后 bye
+
+# 2. 完整跑一次备份（包含上传）
+lnmp backup run all
+echo "退出码：$?"       # 必须是 0
+
+# 3. 看本地和远端各有哪些批次
+lnmp backup list
+
+# 4. 验证备份真的能恢复
+lnmp backup test
+```
+
+只有第 2 步退出码为 0、且第 3 步的「远端 db 批次」里能看到刚才的批次，
+这条路才算真的通了。之后 systemd timer 会每天自动执行同样的 `run`，
+库每天一份、网站按 `Web_Interval_Days` 的周期一份，都会自动上传。
+
+```bash
+systemctl list-timers lnmp-backup.timer    # 确认下次触发时间
+journalctl -u lnmp-backup.service -n 50    # 看最近一次自动执行的输出
+tail -f /var/log/lnmp/backup.log           # 备份自己的日志
+```
+
+#### 8.5.5 出错时对照排查
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `HOST KEY VERIFICATION FAILED` | 备份机主机密钥与记录的指纹不符 | **先查清楚原因**。备份机重装过就重新 keyscan 并带外核对；否则按中间人处理，不要直接覆盖 known_hosts |
+| `Permission denied (publickey)` | 公钥没装对，或备份机上 `.ssh`/`authorized_keys` 权限不对 | 检查 700 / 600，以及属主是不是 backupuser |
+| 登录就断开，日志报 `bad ownership or modes for chroot directory` | chroot 根不是 root 所有或被组/其他人可写 | `chown root:root` + `chmod 755` |
+| `远端缺少文件` 或 `远端文件大小不符` | 上传中断或备份机磁盘满 | 脚本已拒绝改名，正式目录没被污染。清理 `.incoming` 后重跑；先看备份机 `df -h` |
+| 远端改名失败 | 该账号在 chroot 内没有写权限 | 确认 `backup/` 子目录属主是 backupuser 且权限 700 |
+| `找不到数据库 option file` | 没在 `init` 时填数据库密码 | 重跑 `lnmp backup init`，或手工建 `/etc/lnmp/backup-mysql.cnf`（600） |
+| `另一个备份任务正在运行` | 上一次还没跑完，或异常退出留下了锁 | 用 `lnmp backup status` 看上次执行时间；确认没有在跑的任务后删除 `/var/lock/lnmp-backup.lock*` |
+| 备份成功但没有自动执行 | timer 没启用 | `systemctl enable --now lnmp-backup.timer` |
+
+#### 8.5.6 关于远端校验的边界
+
+远端只做**逐个文件的大小核对**，不是内容校验。
+
+受限的 `internal-sftp` 账号不能在备份机上执行命令，所以脚本没法让远端算
+SHA-256。大小核对能发现传输截断和文件缺失，发现不了内容被改写。
+内容级校验依赖每个批次里的 `SHA256SUMS`，在生产机本地做（`restore` 和
+`test` 都会先校验再动手）。
+
+要做到远端内容校验，需要备份机侧配合，两个方向：在备份机上放一个定期
+`sha256sum -c SHA256SUMS` 的任务；或者改用允许执行受限命令的通道。
+这部分不属于本包能单独完成的范围。
+
+### 8.6 日志
 
 | 日志 | 路径 |
 |---|---|

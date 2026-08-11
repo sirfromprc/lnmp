@@ -188,6 +188,7 @@ Uninstall_LNMP()
     rm -f /etc/init.d/nginx
     rm -f /etc/init.d/php-fpm
     rm -f /bin/lnmp
+    rm -f /bin/lnmp-backup
     echo "LNMP Uninstall completed."
 }
 
@@ -217,6 +218,7 @@ Uninstall_LNMPA()
     rm -f /etc/init.d/nginx
     rm -f /etc/init.d/httpd
     rm -f /bin/lnmp
+    rm -f /bin/lnmp-backup
     echo "LNMPA Uninstall completed."
 }
 
@@ -244,6 +246,7 @@ Uninstall_LAMP()
     rm -f /etc/my.cnf
     rm -f /etc/init.d/httpd
     rm -f /bin/lnmp
+    rm -f /bin/lnmp-backup
     echo "LAMP Uninstall completed."
 }
 
@@ -275,6 +278,7 @@ ${MySQL_Dir}
 /usr/local/zend
 /etc/my.cnf
 /bin/lnmp
+/bin/lnmp-backup
 EOF
         Sleep_Sec 3
         Press_Start
@@ -295,6 +299,7 @@ ${MySQL_Dir}
 /usr/local/zend
 /etc/my.cnf
 /bin/lnmp
+/bin/lnmp-backup
 EOF
         Sleep_Sec 3
         Press_Start
@@ -313,6 +318,7 @@ ${MySQL_Dir}
 /usr/local/zend
 /etc/my.cnf
 /bin/lnmp
+/bin/lnmp-backup
 EOF
         Sleep_Sec 3
         Press_Start

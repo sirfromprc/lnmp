@@ -23,11 +23,20 @@ Add_Iptables_Rules()
     Firewall_Save
 }
 
+# 管理命令和备份实现要一起安装：lnmp backup 子命令调用 /bin/lnmp-backup，
+# 只更新其中一个会让新版 lnmp 调到旧版或根本不存在的备份脚本。
+Install_LNMP_Command()
+{
+    \cp ${cur_dir}/conf/$1 /bin/lnmp
+    chmod +x /bin/lnmp
+    \cp ${cur_dir}/tools/lnmp-backup.sh /bin/lnmp-backup
+    chmod +x /bin/lnmp-backup
+}
+
 Add_LNMP_Startup()
 {
     echo "Add Startup and Starting LNMP..."
-    \cp ${cur_dir}/conf/lnmp /bin/lnmp
-    chmod +x /bin/lnmp
+    Install_LNMP_Command lnmp
     StartUp nginx
     StartOrStop start nginx
     Startup_DB
@@ -60,8 +69,7 @@ Startup_DB()
 Add_LNMPA_Startup()
 {
     echo "Add Startup and Starting LNMPA..."
-    \cp ${cur_dir}/conf/lnmpa /bin/lnmp
-    chmod +x /bin/lnmp
+    Install_LNMP_Command lnmpa
     StartUp nginx
     StartOrStop start nginx
     Startup_DB
@@ -72,8 +80,7 @@ Add_LNMPA_Startup()
 Add_LAMP_Startup()
 {
     echo "Add Startup and Starting LAMP..."
-    \cp ${cur_dir}/conf/lamp /bin/lnmp
-    chmod +x /bin/lnmp
+    Install_LNMP_Command lamp
     StartUp httpd
     StartOrStop start httpd
     Startup_DB

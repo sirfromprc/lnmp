@@ -170,12 +170,24 @@ Function_Database()
 esac
 }
 
+Function_Backup()
+{
+    # 备份实现是独立文件，三个管理脚本共用同一份，安装时与 lnmp 一起复制
+    local bin="/bin/lnmp-backup"
+    if [ ! -x "${bin}" ]; then
+        Echo_Red "找不到 ${bin}，安装不完整。"
+        Echo_Red "可从源码目录补装："
+        Echo_Red "  cp tools/lnmp-backup.sh /bin/lnmp-backup && chmod +x /bin/lnmp-backup"
+        return 1
+    fi
+    "${bin}" "$@"
+}
+
 Function_Ftp()
 {
     case "$1" in
         [aA][dD][dD])
-            Add_Ftp_Menu
-            Add_Ftp
+            Add_Ftp_Menu && Add_Ftp
             ;;
         [lL][iI][sS][tT])
             List_Ftp
@@ -187,14 +199,14 @@ Function_Ftp()
             Edit_Ftp
             ;;
         [eE][xX][iI][tT])
-            exit 1
+            return 1
             ;;
         [sS][hH][oO][wW])
             Show_Ftp
             ;;
         *)
-            echo "Usage: lnmp ftp {add|list|del}"
-            exit 1
+            echo "Usage: lnmp ftp {add|list|edit|del|show}"
+            return 1
             ;;
 esac
 }
@@ -352,6 +364,7 @@ Add_VHost()
 
     if [ "${create_ftp}" == "y" ]; then
         Add_Ftp
+        ftp_add_rc=$?
     fi
 
     if [ "${create_ssl}" == "y" ]; then
@@ -381,8 +394,13 @@ Add_VHost()
         echo "Create database: no"
     fi
     if [ "${create_ftp}" == "y" ]; then
-        echo "FTP account name: ${ftp_account_name}"
-        echo "FTP account password: (你刚输入的那个，不回显)"
+        if [ "${ftp_add_rc:-1}" -eq 0 ]; then
+            echo "FTP account name: ${ftp_account_name}"
+            echo "FTP account password: (你刚输入的那个，不回显)"
+        else
+            Echo_Red "FTP: 账号创建失败，站点本身已建好。"
+            Echo_Red "可稍后执行 lnmp ftp add 单独重试。"
+        fi
     else
         echo "Create ftp account: no"
     fi
@@ -1017,7 +1035,7 @@ Check_Backup_Path()
 
 Export_Database()
 {
-    local database_name="$1" out_file="$2" tmp_file dump_rc gzip_rc
+    local database_name="$1" out_file="$2" tmp_file dump_rc gzip_rc pipe_st
 
     if [ -z "$1" ] || [ -z "$2" ]; then
         echo "Usage: lnmp database export <数据库名> <文件.sql.gz>"
@@ -1047,8 +1065,13 @@ Export_Database()
         --single-transaction --quick --routines --triggers --events \
         --default-character-set=utf8mb4 \
         "${database_name}" | gzip -c > "${tmp_file}"
-    dump_rc=${PIPESTATUS[0]}
-    gzip_rc=${PIPESTATUS[1]}
+    # PIPESTATUS 必须一次性快照：第一条赋值语句本身就会把它重置成
+    # 那条赋值的状态，再取 [1] 拿到的不是管道右侧的退出码 ——
+    # set -u 下直接报 unbound variable，没开 set -u 则静默变成空字符串，
+    # gzip / mysql 的失败会被当成没发生。
+    pipe_st=("${PIPESTATUS[@]}")
+    dump_rc=${pipe_st[0]}
+    gzip_rc=${pipe_st[1]}
     if [ "${dump_rc}" -ne 0 ] || [ "${gzip_rc}" -ne 0 ]; then
         rm -f "${tmp_file}"
         Echo_Red "Export database: ${database_name} failed! (mysqldump=${dump_rc} gzip=${gzip_rc})"
@@ -1067,7 +1090,7 @@ Export_Database()
 
 Import_Database()
 {
-    local database_name="$1" in_file="$2" rc gz_rc mysql_rc
+    local database_name="$1" in_file="$2" rc gz_rc mysql_rc pipe_st
 
     if [ -z "$1" ] || [ -z "$2" ]; then
         echo "Usage: lnmp database import <数据库名> <文件.sql.gz>"
@@ -1099,8 +1122,9 @@ Import_Database()
     if gzip -t "${in_file}" 2>/dev/null; then
         gzip -dc "${in_file}" | ${MySQL_Bin} --defaults-file=~/.my.cnf \
             --default-character-set=utf8mb4 "${database_name}"
-        gz_rc=${PIPESTATUS[0]}
-        mysql_rc=${PIPESTATUS[1]}
+        pipe_st=("${PIPESTATUS[@]}")
+        gz_rc=${pipe_st[0]}
+        mysql_rc=${pipe_st[1]}
         rc=0
         [ "${gz_rc}" -ne 0 ] && rc=1
         [ "${mysql_rc}" -ne 0 ] && rc=1
@@ -1121,7 +1145,7 @@ Enter_Ftp_Name()
 {
     while :;do
         Echo_Yellow "Enter ftp account name (只允许字母/数字/下划线): "
-        read ftp_account_name
+        Read_Input ftp_account_name "FTP 账号名"
         # 账号名会被拼进 /tmp 路径和 pure-pw 的参数，必须先约束字符集
         if ! Check_DB_Identifier "${ftp_account_name}"; then
             continue
@@ -1135,8 +1159,9 @@ Add_Ftp_Menu()
 {
     Enter_Ftp_Name
     while :;do
-        Echo_Yellow "Enter password for ftp account ${ftp_account_name}: "
-        read ftp_account_password
+        Echo_Yellow "Enter password for ftp account ${ftp_account_name} (输入不回显): "
+        Read_Secret ftp_account_password "FTP 密码"
+        echo
         if [ "${ftp_account_password}" == "" ]; then
             Echo_Red "FTP password can't be empty!"
         else
@@ -1146,7 +1171,7 @@ Add_Ftp_Menu()
     if [ "${vhostdir}" == "" ]; then
         while :;do
             Echo_Yellow "Enter directory for ftp account ${ftp_account_name}: "
-            read vhostdir
+            Read_Input vhostdir "FTP 目录"
             # 复用站点目录校验。该目录随后会被 mkdir -p 与 chown -R www:www，
             # 并作为 FTP 根目录传给 pure-pw：填 / 或 /etc 时前者不可逆，
             # 后者会让该 FTP 账号看到 www 身份能访问的全部内容。
@@ -1155,6 +1180,7 @@ Add_Ftp_Menu()
             vhostdir=''
         done
     fi
+    return 0
 }
 
 Check_Pureftpd()
@@ -1167,94 +1193,143 @@ Check_Pureftpd()
 
 Add_Ftp()
 {
+    local rc ftp_pass_file www_uid www_gid
     # 兜底校验：本函数也可由 vhost 流程直接调用，不能假设 vhostdir 已被校验。
     # Check_Vhost_Dir 幂等，对已规范化的路径重复调用无副作用。
     Check_Vhost_Dir "${vhostdir}" || return 1
-    www_uid=`id -u www`
-    www_gid=`id -g www`
+    # www 账号缺失时 id 输出为空，pure-pw 会拿到空的 -u/-g 参数并报一个
+    # 难以对应到原因的用法错误，这里先说清楚
+    www_uid=$(id -u www 2>/dev/null) || { Echo_Red "系统里没有 www 用户，无法创建 FTP 账号。"; return 1; }
+    www_gid=$(id -g www 2>/dev/null) || { Echo_Red "系统里没有 www 用户组，无法创建 FTP 账号。"; return 1; }
     if [ ! -d "${vhostdir}" ]; then
-        mkdir -p "${vhostdir}"
+        mkdir -p "${vhostdir}" || { Echo_Red "创建目录失败：${vhostdir}"; return 1; }
         chown www:www -R "${vhostdir}"
     fi
 
-    LNMP_Tmp_Init || exit 1
-    ftp_pass_file=$(LNMP_Mktemp ftppass) || exit 1
+    LNMP_Tmp_Init || return 1
+    ftp_pass_file=$(LNMP_Mktemp ftppass) || return 1
     chmod 600 "${ftp_pass_file}"
     cat >"${ftp_pass_file}"<<EOF
 ${ftp_account_password}
 ${ftp_account_password}
 EOF
-    /usr/local/pureftpd/bin/pure-pw useradd "${ftp_account_name}" -f /usr/local/pureftpd/etc/pureftpd.passwd -u ${www_uid} -g ${www_gid} -d "${vhostdir}" -m < "${ftp_pass_file}"
-    [ $? -eq 0 ] && echo "Created FTP User: ${ftp_account_name} Sucessfully." || echo "FTP User: ${ftp_account_name} already exists!"
+    /usr/local/pureftpd/bin/pure-pw useradd "${ftp_account_name}" -f /usr/local/pureftpd/etc/pureftpd.passwd -u "${www_uid}" -g "${www_gid}" -d "${vhostdir}" -m < "${ftp_pass_file}"
+    rc=$?
     rm -f "${ftp_pass_file}"
+    if [ ${rc} -ne 0 ]; then
+        Echo_Red "Create FTP User: ${ftp_account_name} failed! (pure-pw 返回 ${rc})"
+        Echo_Red "常见原因：同名账号已存在，或密码库 /usr/local/pureftpd/etc/pureftpd.passwd 不可写。"
+        Echo_Red "先用 lnmp ftp list 确认账号是否已经存在。"
+        return ${rc}
+    fi
+    echo "Created FTP User: ${ftp_account_name} Sucessfully."
+    return 0
 }
 
 List_Ftp()
 {
+    local rc
     /usr/local/pureftpd/bin/pure-pw list -f /usr/local/pureftpd/etc/pureftpd.passwd
-    [ $? -eq 0 ] && echo "List FTP User Sucessfully." || echo "Read database failed."
+    rc=$?
+    if [ ${rc} -ne 0 ]; then
+        Echo_Red "List FTP User failed! (pure-pw 返回 ${rc})"
+        return ${rc}
+    fi
+    echo "List FTP User Sucessfully."
+    return 0
 }
 
 Edit_Ftp()
 {
+    local pass_rc=0 dir_rc=0 ftp_pass_file www_uid www_gid
+    # 这里不因 List_Ftp 失败而中止：列表只是给用户看的参考
     List_Ftp
     Enter_Ftp_Name
     Echo_Yellow "Enter password for ftp account ${ftp_account_name} (输入不回显，留空则不改): "
     read -r -s ftp_account_password
     echo
     if [ "${ftp_account_password}" != "" ]; then
-        LNMP_Tmp_Init || exit 1
-        ftp_pass_file=$(LNMP_Mktemp ftppass) || exit 1
+        LNMP_Tmp_Init || return 1
+        ftp_pass_file=$(LNMP_Mktemp ftppass) || return 1
         chmod 600 "${ftp_pass_file}"
         cat >"${ftp_pass_file}"<<EOF
 ${ftp_account_password}
 ${ftp_account_password}
 EOF
         /usr/local/pureftpd/bin/pure-pw passwd "${ftp_account_name}" -f /usr/local/pureftpd/etc/pureftpd.passwd -m < "${ftp_pass_file}"
-        [ $? -eq 0 ] && echo "FTP User: ${ftp_account_name} change password Sucessfully." || echo "FTP User: ${ftp_account_name} change password failed!"
+        pass_rc=$?
         rm -f "${ftp_pass_file}"
+        if [ ${pass_rc} -ne 0 ]; then
+            Echo_Red "FTP User: ${ftp_account_name} change password failed! (pure-pw 返回 ${pass_rc}，账号可能不存在)"
+        else
+            echo "FTP User: ${ftp_account_name} change password Sucessfully."
+        fi
     else
         echo "FTP password will not change."
     fi
     Echo_Yellow "Enter directory for ftp account ${ftp_account_name} (留空则不改): "
-    read vhostdir
+    Read_Input vhostdir "FTP 目录"
     if [ "${vhostdir}" != "" ]; then
         # 留空表示不修改，因此只在确实填了新值时校验。约束同 Add_Ftp_Menu。
         if ! Check_Vhost_Dir "${vhostdir}"; then
             Echo_Red "FTP 目录未修改。"
             return 1
         fi
-        www_uid=`id -u www`
-        www_gid=`id -g www`
+        www_uid=$(id -u www 2>/dev/null) || { Echo_Red "系统里没有 www 用户。"; return 1; }
+        www_gid=$(id -g www 2>/dev/null) || { Echo_Red "系统里没有 www 用户组。"; return 1; }
         if [ ! -d "${vhostdir}" ]; then
-            mkdir -p "${vhostdir}"
+            mkdir -p "${vhostdir}" || { Echo_Red "创建目录失败：${vhostdir}"; return 1; }
             chown www:www -R "${vhostdir}"
         fi
-        /usr/local/pureftpd/bin/pure-pw usermod ${ftp_account_name} -f /usr/local/pureftpd/etc/pureftpd.passwd -u ${www_uid} -g ${www_gid} -d "${vhostdir}" -m
-        [ $? -eq 0 ] && echo "FTP User: ${ftp_account_name} change diretcory Sucessfully." || echo "FTP User: ${ftp_account_name} change directory failed!"
+        /usr/local/pureftpd/bin/pure-pw usermod "${ftp_account_name}" -f /usr/local/pureftpd/etc/pureftpd.passwd -u "${www_uid}" -g "${www_gid}" -d "${vhostdir}" -m
+        dir_rc=$?
+        if [ ${dir_rc} -ne 0 ]; then
+            Echo_Red "FTP User: ${ftp_account_name} change directory failed! (pure-pw 返回 ${dir_rc}，账号可能不存在)"
+        else
+            echo "FTP User: ${ftp_account_name} change diretcory Sucessfully."
+        fi
     else
         echo "Directory will not change."
     fi
+    # 改密码和改目录是两件独立的事，任一失败都要让整体返回非 0
+    if [ ${pass_rc} -ne 0 ] || [ ${dir_rc} -ne 0 ]; then
+        return 1
+    fi
+    return 0
 }
 
 Del_Ftp()
 {
+    local rc
     List_Ftp
     Enter_Ftp_Name
     echo "Your will delete ftp user ${ftp_account_name}"
     echo "Sleep 10s,Press ctrl+c to cancel..."
     Sleep_Sec 10
-    /usr/local/pureftpd/bin/pure-pw userdel ${ftp_account_name} -f /usr/local/pureftpd/etc/pureftpd.passwd -m
-    [ $? -eq 0 ] && echo "FTP User: ${ftp_account_name} deleted Sucessfully." || echo "FTP User: ${ftp_account_name} not exists!"
+    /usr/local/pureftpd/bin/pure-pw userdel "${ftp_account_name}" -f /usr/local/pureftpd/etc/pureftpd.passwd -m
+    rc=$?
+    if [ ${rc} -ne 0 ]; then
+        Echo_Red "FTP User: ${ftp_account_name} delete failed! (pure-pw 返回 ${rc}，账号可能不存在)"
+        return ${rc}
+    fi
+    echo "FTP User: ${ftp_account_name} deleted Sucessfully."
+    return 0
 }
 
 Show_Ftp()
 {
+    local rc
     List_Ftp
     Enter_Ftp_Name
     echo "Your ftp account ${ftp_account_name} details:"
-    /usr/local/pureftpd/bin/pure-pw show ${ftp_account_name}
-    [ $? -eq 0 ] && echo "Ok." || echo "failed."
+    /usr/local/pureftpd/bin/pure-pw show "${ftp_account_name}"
+    rc=$?
+    if [ ${rc} -ne 0 ]; then
+        Echo_Red "Show FTP User: ${ftp_account_name} failed! (pure-pw 返回 ${rc}，账号可能不存在)"
+        return ${rc}
+    fi
+    echo "Ok."
+    return 0
 }
 
 Add_SSL_Info_Menu()
@@ -1905,7 +1980,14 @@ case "${arg1}" in
         ;;
     ftp)
         Check_Pureftpd
-        Function_Ftp ${arg2}
+        Function_Ftp "${arg2}"
+        exit $?
+        ;;
+    backup)
+        # 子命令参数个数不定（restore 要三个），去掉 backup 本身后原样转交
+        shift
+        Function_Backup "$@"
+        exit $?
         ;;
     ssl)
         info="n"
@@ -1926,6 +2008,7 @@ case "${arg1}" in
         echo "Usage: lnmp database export <数据库名> <文件.sql.gz>"
         echo "Usage: lnmp database import <数据库名> <文件.sql.gz>"
         echo "Usage: lnmp ftp {add|list|edit|del|show}"
+        echo "Usage: lnmp backup {init|run|status|list|restore|test}"
         echo "Usage: lnmp ssl add"
         echo "Usage: lnmp {dnsssl|dns} {cx|ali|cf|dp|he|gd|aws}"
         echo "Usage: lnmp onlyssl {cx|ali|cf|dp|he|gd|aws}"

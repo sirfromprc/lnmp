@@ -5627,3 +5627,173 @@ SQL 语句一侧的 `Sql_Quote` 不受影响，两者各管各的转义场景。
   自身的 option file 解析，未在真实 MySQL 8.4 上复验，真机复验待收尾。
 - `todo.md` 中 `TODO-DB-001` 至 `TODO-DB-004` 已关闭并删除，
   仅保留 `TODO-FTP-001`。
+
+# 阶段 19 — FTP 子命令大修与备份功能化（2026-08-10）
+
+本阶段处理两件事：`todo.md` 里挂着的 `TODO-FTP-001`，以及把
+`tools/backup.sh` 这个手工模板做成正式运维命令 `lnmp backup`。
+
+## FIX-FTP-001 FTP 子命令的返回码、帮助与失败文案
+
+**位置**：三个管理脚本的 `Function_Ftp`、`Add_Ftp_Menu`、`Add_Ftp`、`List_Ftp`、
+`Edit_Ftp`、`Del_Ftp`、`Show_Ftp`，主分派 `ftp)` 分支，`Add_VHost` 的建账号路径
+
+与阶段 17 的 `database` 同类问题：五个操作函数都是
+`[ $? -eq 0 ] && echo 成功 || echo 失败`，返回码取自最后那个 `echo`，恒为 0；
+`Function_Ftp` 的默认分支用 `exit 1`，内部帮助只列 `add|list|del`，
+漏掉已实现的 `edit` 和 `show`。
+
+失败文案还会误导排查方向：`Add_Ftp` 把所有失败一律说成
+“FTP User: xxx already exists!”，`Del_Ftp` 一律说成 “not exists!”，
+而实际可能是密码库不可写、`www` 账号缺失或参数不合法。
+`www` 缺失时 `id -u www` 输出为空，`pure-pw` 会收到空的 `-u`/`-g` 参数并报一个
+与真实原因对不上的用法错误。
+
+**改动**：五个函数保存并返回真实退出码，失败时红字给出 pure-pw 的返回码和
+常见原因；`Edit_Ftp` 的改密码与改目录各自判定，任一失败整体返回非 0；
+`Function_Ftp` 帮助补齐 `edit|show`、默认分支改 `return 1`；
+主分派传出真实退出码；`Add_Ftp`、`Edit_Ftp` 显式检查 `www` 账号是否存在，
+`mkdir` 失败也不再被忽略；账号名统一加引号传给 `pure-pw`。
+`Add_VHost` 记录建账号结果，失败时在站点摘要里如实说明并提示可单独重试。
+
+`Add_Ftp_Menu` 的密码输入原先明文回显，且与 `Enter_Ftp_Name`、`Edit_Ftp`
+一样用裸 `read`（输入耗尽时空转刷屏）。现统一改用带 EOF 检测的
+`Read_Secret`/`Read_Input`，密码不再回显，与数据库那边的行为一致。
+
+**行为变化**：`lnmp ftp {add|list|edit|del|show}` 成功返回 0、失败返回非 0；
+新增 FTP 账号时密码输入不回显。
+
+## FIX-PIPE-001 PIPESTATUS 取第二个下标永远取不到管道右侧的退出码
+
+**位置**：三个管理脚本的 `Export_Database`、`Import_Database`，
+`tools/lnmp-backup.sh` 的 `Dump_Db`、`Tar_Dir`
+
+```bash
+dump_rc=${PIPESTATUS[0]}
+gzip_rc=${PIPESTATUS[1]}     # 恒为空
+```
+
+第一条赋值语句本身就会把 `PIPESTATUS` 重置成那条赋值的状态（单元素数组），
+第二行取到的不是管道右侧的退出码。`set -u` 下直接报 unbound variable；
+没开 `set -u` 的管理脚本里则展开成空字符串，
+`[ "" -ne 0 ]` 报 “integer expression expected” 并判定为假 ——
+gzip 写盘失败被完全忽略，磁盘写满时导出会“成功”。
+
+阶段 17 新增 `database export` 时就带进了这个写法，当时的测试只覆盖了
+`mysqldump` 一侧的失败，没有发现。
+
+**改动**：四处统一改为先快照整个数组再取下标：
+
+```bash
+pipe_st=("${PIPESTATUS[@]}")
+dump_rc=${pipe_st[0]}
+gzip_rc=${pipe_st[1]}
+```
+
+只取 `${PIPESTATUS[0]}` 且是管道后首次引用的地方（`include/multiplephp.sh`、
+`install.sh`、`upgrade.sh` 等）不受影响，未改动。
+
+**行为变化**：`database export`、`database import` 与备份中 gzip 一侧的失败
+现在能被真实发现并反映到退出码。
+
+## FEAT-BACKUP-001 备份从手工模板改为正式运维命令 lnmp backup
+
+**位置**：新增 `tools/lnmp-backup.sh`（安装为 `/bin/lnmp-backup`）；
+三个管理脚本新增 `Function_Backup` 与 `backup)` 分支；
+`include/end.sh` 新增 `Install_LNMP_Command`；`include/only.sh`、`pureftpd.sh`、
+`uninstall.sh` 同步；`tools/backup.sh` 改为废弃转发
+
+原 `tools/backup.sh` 是一个需要手工编辑数组、手工加 cron 的模板，
+安装流程既不配置它也不调度它，且存在以下问题（逐条对应本次的处理）：
+
+| 原问题 | 现在的做法 |
+| --- | --- |
+| 只取 `mysqldump` 的退出码，gzip 与写盘失败被忽略 | 快照整个 `PIPESTATUS`，两侧都检查；另外校验 mysqldump 的 `-- Dump completed` 结束标记，退出码为 0 但被截断的转储也会判失败 |
+| 产物直接写最终文件名 | 先写 `.part`，全部检查通过后才 `mv` 改名 |
+| `Keep_Days=3` 只删“正好三天前”那一天 | 批次名按 `YYYYmmdd-HHMMSS` 与截止日期数值比较，删除所有早于保留期的批次 |
+| 保留期只有一个，README 还写成“保留份数” | 库与网站各自的 `Keep_Days_Db`、`Keep_Days_Web`，并用 `Web_Interval_Days` 让网站按更长周期备份 |
+| 同一天重复执行会覆盖 | 批次目录用秒级时间戳 |
+| 没有并发锁 | `flock`；没有 flock 的环境退回 `mkdir` 原子锁，并按 PID 判断陈旧锁 |
+| 远端先删旧备份再上传新的 | 上传 → 核对 → 改名 → 最后才清理旧批次；本次有失败项时完全跳过清理 |
+| 上传直接用最终名，中断会留下残缺文件 | 先传到远端 `.incoming/<批次>-<类型>/`，核对通过后整目录 `rename` 到正式目录 |
+| 没有校验清单，没有恢复验证 | 每个批次生成 `SHA256SUMS`；`restore` 前强制校验；新增 `test` 子命令做试恢复 |
+| 配置靠手工维护数组，站点与库没有对应关系 | `/etc/lnmp/backup.conf`（600）按 `域名\|网站目录\|数据库名` 建立关联，`init` 扫描 vhost 并从 `wp-config.php` 读 `DB_NAME` 自动生成 |
+| 不是自动功能 | `init` 生成 systemd service + timer 并启用；无 systemd 时退回 `/etc/cron.d/lnmp-backup` |
+
+子命令：
+
+```
+lnmp backup init                 生成配置、备份目录与定时任务
+lnmp backup run [db|web|all]     执行备份；不带参数按配置周期决定是否备份网站
+lnmp backup status               上次结果、下次计划与配置概览
+lnmp backup list [db|web]        列出本地与远端批次
+lnmp backup restore db  <库名> [批次]
+lnmp backup restore web <域名> [批次]
+lnmp backup test                 试恢复：导入临时库校验后删除
+```
+
+其它实现要点：
+
+- 备份实现是独立文件，三个管理脚本共用同一份，不各存一份副本；
+  `Install_LNMP_Command` 把管理脚本与备份实现一起安装，避免只更新其中一个。
+- 导出用 `--single-transaction --quick --routines --triggers --events`，
+  不用 `--databases`，产物不含 `CREATE DATABASE`/`USE`，可恢复到别的库名。
+- 删除批次前核对目标：必须落在 `${Backup_Home}/{db,www}` 下且名字是合法批次，
+  不合格式的目录不删。
+- 凭据不进命令行参数：数据库口令走 0600 的 option file（写入时对反斜杠做转义，
+  同 `FIX-DB-014`），上传走专用 SSH 密钥 + 固定主机指纹，`StrictHostKeyChecking=yes`。
+- 可选 age / gpg 加密，校验清单针对加密后的文件计算。
+
+**已知边界**：受限的 `internal-sftp` 账号无法在远端执行校验命令，
+所以远端只做逐文件大小核对（能发现截断与缺失），内容级 SHA-256 校验在本地清单上做。
+这一点在 `HowtoGuides.md` 中明确写出，不表述为“远端已校验”。
+
+## DOC-401 异地备份的配置步骤写入操作文档
+
+**位置**：`HowtoGuides.md` 新增 8.5 节「异地备份（SFTP）」，原 8.5 日志顺延为 8.6；
+8.4 与 `README.md` 的备份段落加上指向该节的链接
+
+`lnmp backup` 的异地上传默认关闭，开启需要一台独立备份服务器并在两侧各配一次。
+只写「把 `Enable_Remote_Backup` 改成 1」不足以让人配起来 —— chroot 目录的属主与
+权限、`authorized_keys` 为什么放在 chroot 外、主机指纹要带外核对，
+这些不写清楚第一次配一定会卡住。
+
+新增小节按操作顺序分为：备份机建账号与目录（含 chroot 的属主/权限硬性要求）、
+备份机限制该账号只能走 internal-sftp、生产机生成专用密钥与固定并核对主机指纹、
+生产机开启上传并按 4 步顺序验证、出错时的现象-原因-处理对照表、
+以及远端只做大小核对这一边界的说明。
+
+**验证状态**：该节命令未在真机执行过，节首已明确标注，并指向
+`todo.md` 的 `TODO-BK-001`。文档中不含伪造的执行回显。
+
+## DEPR-001 tools/backup.sh 废弃
+
+原文件改为一个转发脚本：检测到 `/bin/lnmp-backup` 就打印废弃提示并
+`exec /bin/lnmp-backup run all`，否则报错并给出补装与 `init` 指引。
+这样老的 cron 条目不会在升级后静默停止备份，也不必维护两套备份实现。
+`README.md` 与 `HowtoGuides.md` 的备份章节同步改写。
+
+## 本阶段验证结果
+
+- `bash -n`：三个管理脚本、`tools/lnmp-backup.sh`、`tools/backup.sh`、
+  `include/end.sh`、`include/only.sh`、`pureftpd.sh`、`uninstall.sh` 均通过。
+- `t/lint.sh` 全部通过；`t/consistency.sh` 通过 7 项，失败 0 项。
+- FTP 定向测试（stub 顶替 `pure-pw`，硬编码路径重写到临时目录）：
+  三个脚本各 24 项全部通过。覆盖帮助补齐、六个入口的成功与失败返回码、
+  失败文案不再一律说“已存在 / 不存在”、密码经 stdin 传入且不出现在命令行参数、
+  临时密码文件不残留、缺少 `www` 账号时的提示、`Edit_Ftp` 两段独立判定、
+  输入耗尽不空转。
+- 备份定向测试（stub 顶替 mysqldump / mysql，远端用本地目录模拟 SFTP）：
+  54 项全部通过。覆盖：秒级批次不覆盖、`SHA256SUMS` 生成与校验、
+  mysqldump 失败 / 转储为空 / 转储缺少结束标记 / gzip 失败四种情况都返回非 0
+  且不留 `.part`、保留算法删除所有早于保留期的批次而不是只删某一天、
+  非批次格式目录不被误删、库与网站保留期各自独立、并发锁、
+  上传成功后 `.incoming` 清空、上传失败与远端截断都不污染正式目录、
+  上传失败时不清理旧批次、试恢复建临时库并在结束后删除、
+  校验和被篡改时 `restore` 与 `test` 均拒绝、站点无库名时只备份文件、
+  `Web_Interval_Days` 控制网站备份周期。
+- 数据库与端到端测试回归：三个脚本各 66 项、17 项全部通过。
+- **验证状态**：已验证（静态与 stub 环境）。以下未在 Debian 12 真机执行，
+  待收尾验证：真实 `mysqldump`/`tar` 产物、真实 SFTP 服务器上的上传与改名、
+  systemd timer 的实际触发、`init` 的交互流程、age/gpg 加密路径。
+- `todo.md` 的 `TODO-FTP-001` 已关闭并删除；本阶段新增的待验证项记入 `todo.md`。

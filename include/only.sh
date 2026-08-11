@@ -57,7 +57,7 @@ Install_Only_Nginx()
     StartOrStop start nginx
     Add_Iptables_Rules
     \cp ${cur_dir}/conf/index.html ${Default_Website_Dir}/index.html
-    \cp ${cur_dir}/conf/lnmp /bin/lnmp
+    Install_LNMP_Command lnmp
     # 只装 nginx，没有数据库，置空服务名让 lnmp 的 Svc 跳过它
     sed -i 's#^DB_SERVICE=mysql$#DB_SERVICE=#' /bin/lnmp
     Check_Nginx_Files

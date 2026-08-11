@@ -97,6 +97,8 @@ Install_Pureftpd()
     if [ ! -s /bin/lnmp ]; then
         \cp ${cur_dir}/conf/lnmp /bin/lnmp
         chmod +x /bin/lnmp
+        \cp ${cur_dir}/tools/lnmp-backup.sh /bin/lnmp-backup
+        chmod +x /bin/lnmp-backup
     fi
     id -u www
     if [ $? -ne 0 ]; then
