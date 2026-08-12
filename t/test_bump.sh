@@ -60,6 +60,115 @@ run_case()
     rm -rf "${work}"
 }
 
+run_collision_case()
+{
+    local work same='8.3.33' next='8.3.77777'
+    work=$(mktemp -d) || { fail=1; return 1; }
+    mkdir -p "${work}/include" "${work}/t" "${work}/.upstream"
+    cp include/main.sh include/version.sh include/profile.sh "${work}/include/"
+    cp t/bump_version.sh t/test_profile.sh t/probe_urls.sh t/gen_checksums.sh "${work}/t/"
+    cp lnmp.conf "${work}/"
+
+    # 人为让 MariaDB 与 PHP 使用同一个三段版本号，再只升级 PHP。
+    perl -pi -e "s/10\\.11\\.18/${same}/g" "${work}/include/profile.sh" \
+        "${work}/t/probe_urls.sh" "${work}/t/gen_checksums.sh" "${work}/t/test_profile.sh"
+    printf 'PHP_8.3\t%s\t%s\tAUTO\n' "${same}" "${next}" > "${work}/.upstream/bumps.tsv"
+
+    if ( cd "${work}" && bash t/bump_version.sh --kinds AUTO ) >/dev/null 2>&1 &&
+       grep -q "MARIADB_VERS='${same}" "${work}/t/probe_urls.sh" &&
+       grep -q "PHP_VERS=.*${next}" "${work}/t/probe_urls.sh" &&
+       grep -q $'^PHP_8.3\t8.3.33\t8.3.77777$' "${work}/.upstream/changed.tsv"; then
+        printf 'ok   %-30s %s\n' '组件版本号碰撞隔离' '只修改 PHP'
+    else
+        printf 'FAIL %-30s %s\n' '组件版本号碰撞隔离' 'MariaDB 被误改或 changed.tsv 缺少组件键'
+        fail=1
+    fi
+    rm -rf "${work}"
+}
+
+run_checksum_collision_case()
+{
+    local work old='8.3.33' new='8.3.77777' php_sum maria_sum
+    work=$(mktemp -d) || { fail=1; return 1; }
+    mkdir -p "${work}/src" "${work}/t" "${work}/.upstream" "${work}/bin"
+    cp t/refresh_checksums.sh "${work}/t/"
+    php_sum=$(printf 'a%.0s' {1..64})
+    maria_sum=$(printf 'b%.0s' {1..64})
+    printf '%s  php-%s.tar.bz2\n%s  mariadb-%s.tar.gz\n' \
+        "${php_sum}" "${old}" "${maria_sum}" "${old}" > "${work}/src/checksums.sha256"
+    printf 'PHP_8.3\t%s\t%s\n' "${old}" "${new}" > "${work}/.upstream/changed.tsv"
+
+    cat > "${work}/t/gen_checksums.sh" <<EOF
+#!/usr/bin/env bash
+echo 'https://example.invalid/php-${new}.tar.bz2 php-${new}.tar.bz2'
+echo 'https://example.invalid/mariadb-${new}.tar.gz mariadb-${new}.tar.gz'
+EOF
+    cat > "${work}/bin/wget" <<'EOF'
+#!/usr/bin/env bash
+out=''
+while [ $# -gt 0 ]; do
+    [ "$1" = '-O' ] && { out="$2"; shift 2; continue; }
+    shift
+done
+printf 'php archive' > "${out}"
+EOF
+    chmod +x "${work}/t/gen_checksums.sh" "${work}/bin/wget"
+
+    # 断言必须逐行整行匹配，不能用子串：两行被拼成一行时，子串 grep 仍然全部命中，
+    # 会把被写坏的清单判成通过（refresh_checksums.sh 的行尾正则曾因此漏检）。
+    if ( cd "${work}" && PATH="${work}/bin:${PATH}" bash t/refresh_checksums.sh ) \
+        >/dev/null 2>&1 &&
+       [ "$(wc -l < "${work}/src/checksums.sha256")" -eq 2 ] &&
+       [ "$(grep -cE "^[0-9a-f]{64}  [^[:space:]]+$" "${work}/src/checksums.sha256")" -eq 2 ] &&
+       grep -qE "^${maria_sum}  mariadb-${old}\.tar\.gz$" "${work}/src/checksums.sha256" &&
+       grep -qE "^[0-9a-f]{64}  php-${new//./\\.}\.tar\.bz2$" "${work}/src/checksums.sha256"; then
+        printf 'ok   %-30s %s\n' '校验值版本碰撞隔离' '只更新 PHP，清单仍为 2 条合法行'
+    else
+        printf 'FAIL %-30s %s\n' '校验值版本碰撞隔离' 'MariaDB 被误选、PHP 未更新或清单行被写坏'
+        printf '       实际清单：\n'; sed 's/^/         /' "${work}/src/checksums.sha256"
+        fail=1
+    fi
+    rm -rf "${work}"
+}
+
+# 清单被写坏时必须拒绝写回：宁可这一步失败，也不能把坏清单交给安装流程。
+run_checksum_guard_case()
+{
+    local work old='8.3.33' new='8.3.77777'
+    work=$(mktemp -d) || { fail=1; return 1; }
+    mkdir -p "${work}/src" "${work}/t" "${work}/.upstream" "${work}/bin"
+    cp t/refresh_checksums.sh "${work}/t/"
+    printf '%s  php-%s.tar.bz2\n' "$(printf 'a%.0s' {1..64})" "${old}" \
+        > "${work}/src/checksums.sha256"
+    printf 'PHP_8.3\t%s\t%s\n' "${old}" "${new}" > "${work}/.upstream/changed.tsv"
+    cat > "${work}/t/gen_checksums.sh" <<EOF
+#!/usr/bin/env bash
+echo 'https://example.invalid/php-${new}.tar.bz2 php-${new}.tar.bz2'
+EOF
+    # sha256sum 返回一个带空格的"哈希"，逼出格式非法的清单行
+    cat > "${work}/bin/sha256sum" <<'EOF'
+#!/usr/bin/env bash
+echo "not a valid sha256  $1"
+EOF
+    cat > "${work}/bin/wget" <<'EOF'
+#!/usr/bin/env bash
+out=''
+while [ $# -gt 0 ]; do [ "$1" = '-O' ] && { out="$2"; shift 2; continue; }; shift; done
+printf 'php archive' > "${out}"
+EOF
+    chmod +x "${work}/t/gen_checksums.sh" "${work}/bin/wget" "${work}/bin/sha256sum"
+
+    if ! ( cd "${work}" && PATH="${work}/bin:${PATH}" bash t/refresh_checksums.sh ) \
+            >/dev/null 2>&1 &&
+       grep -qE "^[0-9a-f]{64}  php-${old//./\\.}\.tar\.bz2$" "${work}/src/checksums.sha256"; then
+        printf 'ok   %-30s %s\n' '坏清单拒绝写回' '返回非零且原清单未被覆盖'
+    else
+        printf 'FAIL %-30s %s\n' '坏清单拒绝写回' '格式非法的清单仍被写回或返回 0'
+        fail=1
+    fi
+    rm -rf "${work}"
+}
+
 echo "=== 升版跨文件同步 ==="
 
 # PHP：expect_php <编号> <分支> php-<版本> ...
@@ -84,6 +193,10 @@ while read -r kind ver; do
         mariadb) run_case "MariaDB ${ver%.*}" "MariaDB_${ver%.*}" "${ver}" "$(Fake_Next "${ver}")" ;;
     esac
 done < <(awk '/^expect_db /{v=$4; sub(/^[a-z]+-/,"",v); print $3, v}' "${TESTPF}" | sort -u)
+
+run_collision_case
+run_checksum_collision_case
+run_checksum_guard_case
 
 echo
 if [ ${fail} -eq 0 ]; then

@@ -380,6 +380,38 @@ check_v13()
     fi
 }
 
+# ---------------------------------------------------------------------------
+# V14 校验清单的每一行都必须是合法条目
+#
+# V4 只查"某个版本号有没有出现在清单里"，用的是子串匹配，因此清单被写坏
+# （两行被拼成一行、缺列、混入 CRLF）时它照样通过。而安装侧
+# Verify_Download_File 取值用的是 awk '$2 == 文件名' 精确匹配：
+# 一旦某行被拼接，涉及的两个条目会同时查不到，安装在下载完成后才 fail-closed
+# 中止，并把刚下好的文件删掉。t/refresh_checksums.sh 曾因正则用 \s 吃掉行尾
+# 换行而产生这种清单，全部既有检查都没能发现。
+# ---------------------------------------------------------------------------
+check_v14()
+{
+    local sums='src/checksums.sha256' bad_lines dup
+    if [ ! -s "${sums}" ]; then
+        bad V14 "${sums} 缺失或为空"
+        return
+    fi
+    # 合法行：64 位小写十六进制 + 两个空格 + 不含空白的文件名；注释行与空行放行
+    bad_lines=$(grep -nvE '^([0-9a-f]{64}  [^[:space:]]+|[[:space:]]*#.*|[[:space:]]*)$' "${sums}" | head -5)
+    if [ -n "${bad_lines}" ]; then
+        bad V14 "校验清单存在格式非法的行：$(printf '%s' "${bad_lines}" | tr '\n' ' ')"
+        return
+    fi
+    # 同一个落地文件名出现两条不同哈希时，awk 只取第一条，另一条形同虚设
+    dup=$(awk '$1 !~ /^#/ && NF == 2 {print $2}' "${sums}" | sort | uniq -d | head -5)
+    if [ -n "${dup}" ]; then
+        bad V14 "校验清单有重复文件名：$(printf '%s' "${dup}" | tr '\n' ' ')"
+        return
+    fi
+    ok V14 "校验清单每行格式合法且文件名不重复"
+}
+
 echo "=== 跨文件一致性检查 ==="
 check_v1
 check_v2
@@ -394,6 +426,7 @@ check_v10
 check_v11
 check_v12
 check_v13
+check_v14
 
 echo
 echo "通过 ${pass} 项，失败 ${fail} 项。"

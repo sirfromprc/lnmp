@@ -72,3 +72,6 @@ jobs:
       # 漏改的后果是升版分支在这一步之前都是绿的，直到映射表自测才报错。
       - name: 升版跨文件同步自测（t/test_bump.sh）
         run: bash t/test_bump.sh
+
+      - name: 上游检查失败与候选包自测（t/test_upstream.sh）
+        run: bash t/test_upstream.sh

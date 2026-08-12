@@ -65,6 +65,21 @@ probe()
     esac
 }
 
+probe_mysql()
+{
+    # MySQL 安装器先访问 Downloads，失败后回退到 archives。
+    # 健康检查按同一条链路判断，任一路径可用即算可下载。
+    local tag="$1" branch="$2" name="$3"
+    local primary="https://cdn.mysql.com/Downloads/MySQL-${branch}/${name}"
+    local fallback="https://cdn.mysql.com/archives/mysql-${branch}/${name}"
+
+    if wget -q --spider --timeout=${TIMEOUT} --tries=1 --max-redirect=10 "${primary}"; then
+        probe "${tag}" "${primary}"
+    else
+        probe "${tag}" "${fallback}"
+    fi
+}
+
 echo "=== 核心组件（lnmp 默认路径必经）==="
 probe nginx    "https://nginx.org/download/${Nginx_Ver}.tar.gz"
 probe openssl  "https://github.com/openssl/openssl/releases/download/${Openssl_New_Ver}/${Openssl_New_Ver}.tar.gz"
@@ -77,6 +92,14 @@ probe freetype "https://downloads.sourceforge.net/freetype/${Freetype_New_Ver}.t
 probe libzip   "https://libzip.org/download/${Libzip_Ver}.tar.xz"
 
 echo
+echo "=== 可选：OpenResty（仅 ORMode=src 源码编译方式使用）==="
+# 走官方 apt/yum 仓库时装的是仓库里的当前版本，不经过这个地址；
+# 源码编译方式由 include/openresty.sh 与 include/upgrade_openresty.sh 下载它。
+# 它只有 PGP 签名、不进 src/checksums.sha256（见 consistency.sh V4 的豁免），
+# 但可达性仍需探测：上游同样会下线旧点版本。
+probe openresty "https://openresty.org/download/${OpenResty_Ver}.tar.gz"
+
+echo
 echo "=== PHP 源码 ==="
 for v in ${PHP_VERS}; do
     probe php "https://www.php.net/distributions/php-${v}.tar.bz2"
@@ -86,10 +109,10 @@ echo
 echo "=== MySQL（源码 + 二进制）==="
 for v in ${MYSQL_VERS}; do
     branch="${v%.*}"
-    probe mysql源码 "https://cdn.mysql.com/Downloads/MySQL-${branch}/mysql-${v}.tar.gz"
+    probe_mysql mysql源码 "${branch}" "mysql-${v}.tar.gz"
 done
-probe mysql二进制 "https://cdn.mysql.com/Downloads/MySQL-8.0/mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz"
-probe mysql二进制 "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.7-linux-glibc2.17-x86_64.tar.xz"
+probe_mysql mysql二进制 8.0 mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz
+probe_mysql mysql二进制 8.4 mysql-8.4.7-linux-glibc2.17-x86_64.tar.xz
 
 echo
 echo "=== MariaDB（源码 + 二进制）==="
@@ -100,8 +123,10 @@ done
 
 echo
 echo "=== boost（MySQL 源码编译需要）==="
-probe boost "https://archives.boost.io/release/1.59.0/source/${Boost_Ver}.tar.bz2"
-probe boost "https://archives.boost.io/release/1.67.0/source/${Boost_New_Ver}.tar.bz2"
+for boost in "${Boost_Ver}" "${Boost_New_Ver}"; do
+    boost_ver=$(echo "${boost#boost_}" | tr '_' '.')
+    probe boost "https://archives.boost.io/release/${boost_ver}/source/${boost}.tar.bz2"
+done
 
 echo
 echo "=== Apache / phpMyAdmin ==="

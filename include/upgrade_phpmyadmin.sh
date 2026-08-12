@@ -56,7 +56,19 @@ Upgrade_phpMyAdmin()
         Echo_Red "写入 config.inc.php 失败，线上未改动。"; rm -rf "${stage}"; exit 1; }
 
     sed -i "s/LNMPORG/$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')/g" "${stage}/${pma_src}/config.inc.php"
-    sed -i "s/LNMP_DB_PORT/${DB_Port}/g" "${stage}/${pma_src}/config.inc.php"
+    # 端口取本机实际值。升级时 lnmp.conf 的 DB_Port 往往只是默认值 3306，
+    # 主栈当初若用环境变量指定过别的端口，照抄 lnmp.conf 会把能用的配置改坏。
+    local db_port
+    db_port=$(Get_Actual_DB_Port) || \
+        Echo_Yellow "未能从 /etc/my.cnf 读到数据库端口，按 lnmp.conf 的 ${db_port} 写入。"
+    [ "${db_port}" = "${DB_Port}" ] || \
+        Echo_Yellow "数据库实际端口为 ${db_port}（lnmp.conf 记的是 ${DB_Port}），按实际端口写入。"
+    sed -i "s/LNMP_DB_PORT/${db_port}/g" "${stage}/${pma_src}/config.inc.php"
+    if grep -qE 'LNMPORG|LNMP_DB_PORT' "${stage}/${pma_src}/config.inc.php"; then
+        Echo_Red "config.inc.php 中的占位符未全部替换，线上未改动。"
+        rm -rf "${stage}"
+        exit 1
+    fi
     # 模板缓存目录在网站根目录之外，与 php.sh 的首装路径保持一致。
     # 网站目录下不再建 upload/save：导出的库转储落在那里就是公网可下载的。
     mkdir -p /var/lib/phpmyadmin/tmp

@@ -4,7 +4,7 @@
 #
 # 用法：
 #   bash t/refresh_checksums.sh            # 读 .upstream/changed.tsv
-#   bash t/refresh_checksums.sh 8.4.7 8.4.8 [更多 old new 对...]
+#   bash t/refresh_checksums.sh MySQL_8.4 8.4.7 8.4.8 [更多 key old new 三元组...]
 #
 # 不使用 t/gen_checksums.sh 全量重算，避免下载全部 MySQL 和 MariaDB
 # 二进制包，也避免未经确认地更新未发生版本变更的校验值。
@@ -20,13 +20,13 @@ CHANGED="${OUT_DIR:-.upstream}/changed.tsv"
 
 [ -f "${SUMS}" ] || { echo "找不到 ${SUMS}" >&2; exit 1; }
 
-# 收集 old->new 对
+# 收集 key->old->new 三元组
 PAIRS=''
-if [ $# -ge 2 ]; then
-    while [ $# -ge 2 ]; do
-        PAIRS="${PAIRS}$1	$2
+if [ $# -ge 3 ]; then
+    while [ $# -ge 3 ]; do
+        PAIRS="${PAIRS}$1	$2	$3
 "
-        shift 2
+        shift 3
     done
 elif [ -s "${CHANGED}" ]; then
     PAIRS=$(cat "${CHANGED}")
@@ -56,9 +56,28 @@ failed=0
 TMP="${WORK}/sums.new"
 cp "${SUMS}" "${TMP}"
 
-while IFS=$'\t' read -r old new; do
+checksum_prefix()
+{
+    case "$1" in
+        PHP_*) echo 'php-' ;;
+        MySQL_*) echo 'mysql-' ;;
+        MariaDB_*) echo 'mariadb-' ;;
+        Apache_Ver) echo 'httpd-' ;;
+        PhpMyAdmin_Ver) echo 'phpMyAdmin-' ;;
+        *) echo '' ;;
+    esac
+}
+
+while IFS=$'\t' read -r key old new; do
     [ -z "${old}" ] && continue
-    # 清单里所有含旧版本号的行
+    prefix=$(checksum_prefix "${key}")
+    escaped_old=$(printf '%s' "${old}" | sed 's/[][\\.^$*+?{}|()]/\\&/g')
+    # profile 组件用文件名前缀限定；version.sh 组件使用自身带前缀的完整值。
+    if [ -n "${prefix}" ]; then
+        pattern="${prefix}[^[:space:]]*${escaped_old}"
+    else
+        pattern="${escaped_old}"
+    fi
     while IFS= read -r stale; do
         [ -z "${stale}" ] && continue
         old_name=$(printf '%s' "${stale}" | awk '{print $2}')
@@ -81,14 +100,33 @@ while IFS=$'\t' read -r old new; do
         sum=$(sha256sum "${WORK}/f" | awk '{print $1}')
         rm -f "${WORK}/f"
 
-        # 原位替换并保持清单行序
-        perl -pi -e "s|^[0-9a-f]{64}\s+\Q${old_name}\E\s*\$|${sum}  ${new_name}|" "${TMP}"
+        # 原位替换并保持清单行序。
+        # 行尾只能用水平空白 \h，不能用 \s：\s 含换行，贪婪匹配会把行尾的 \n
+        # 一起吃掉，替换串又不带换行，结果是本行与下一行被拼成一行 ——
+        # 两条校验值同时失效，而 Verify_Download_File 按 awk '$2 == 文件名'
+        # 精确取值，合并行一条都匹配不到，安装会在下载后 fail-closed 中止。
+        if ! perl -pi -e "s|^[0-9a-f]{64}\h+\Q${old_name}\E\h*\$|${sum}  ${new_name}|" "${TMP}"; then
+            echo "!! 替换 ${old_name} 失败" >&2
+            failed=$((failed+1))
+            continue
+        fi
         updated=$((updated+1))
-    done < <(grep -E "^[0-9a-f]{64}[[:space:]]+.*$(printf '%s' "${old}" | sed 's/[.[\*^$]/\\&/g')" "${SUMS}")
+    done < <(grep -E "^[0-9a-f]{64}[[:space:]]+${pattern}" "${SUMS}")
 done <<< "${PAIRS}"
 
+# 写回前先核对格式：清单是 fail-closed 校验的唯一依据，一旦被写坏，
+# 安装要到下载完那个文件才会中止。宁可这里不写回，也不要放行坏清单。
 if [ ${updated} -gt 0 ]; then
-    mv "${TMP}" "${SUMS}"
+    bad_lines=$(grep -vcE '^([0-9a-f]{64}  [^[:space:]]+|#.*|)$' "${TMP}")
+    if [ "${bad_lines}" -ne 0 ]; then
+        echo "!! 生成的清单有 ${bad_lines} 行不符合 '<64位sha256><两个空格><文件名>' 格式，已放弃写回：" >&2
+        grep -nvE '^([0-9a-f]{64}  [^[:space:]]+|#.*|)$' "${TMP}" | head -5 >&2
+        exit 1
+    fi
+    if ! mv "${TMP}" "${SUMS}"; then
+        echo "!! 写回 ${SUMS} 失败" >&2
+        exit 1
+    fi
 fi
 
 echo

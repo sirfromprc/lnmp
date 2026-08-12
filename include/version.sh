@@ -26,6 +26,13 @@ Libzip_Ver='libzip-1.3.2'
 
 Openssl_New_Ver='openssl-3.5.7'
 
+# --- MySQL 源码编译依赖的 Boost 校验版本 ---
+# 这两个变量只供 t/probe_urls.sh、t/gen_checksums.sh 维护下载探测和校验清单。
+# MySQL 8.x 安装仍从已下载源码的 cmake/boost.cmake 读取实际所需版本，
+# 不使用这里的固定值，也不恢复 CLN-302 删除的 pinned 安装分支。
+Boost_Ver='boost_1_77_0'
+Boost_New_Ver='boost_1_84_0'
+
 # --- 内存分配器（可选）---
 Jemalloc_Ver='jemalloc-5.3.1'
 TCMalloc_Ver='gperftools-2.18.1'

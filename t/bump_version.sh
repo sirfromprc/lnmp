@@ -41,7 +41,7 @@ done
 
 [ -s "${BUMPS}" ] || { echo "没有待应用的升级建议（${BUMPS} 为空）"; exit 0; }
 
-CHANGED=''      # 记录 old->new，供 refresh_checksums.sh 用
+CHANGED=''      # 记录 key->old->new，供 refresh_checksums.sh 按组件筛选
 applied=0
 
 # 仅在指定文件中替换完整版本值，避免修改注释和示例中的版本片段。
@@ -63,6 +63,25 @@ subst()
     done
 }
 
+# 只替换探测脚本里指定组件的版本，避免相同裸版本号误伤其它组件。
+subst_probe()
+{
+    local family="$1" old="$2" new="$3"
+    local expr
+    case "${family}" in
+        php)     expr="if (/^PHP_VERS=/ || /probe php /) { s/\\Q${old}\\E/${new}/g }" ;;
+        mysql)   expr="if (/^MYSQL_VERS=/ || /mysql-/) { s/\\Q${old}\\E/${new}/g }" ;;
+        mariadb) expr="if (/^MARIADB_VERS=/ || /mariadb-/) { s/\\Q${old}\\E/${new}/g }" ;;
+        *) return 1 ;;
+    esac
+    if [ -n "${DRY}" ]; then
+        echo "    [dry] ${PROBE}: ${family} ${old} -> ${new}"
+    else
+        perl -pi -e "${expr}" "${PROBE}"
+        echo "    ${PROBE}"
+    fi
+}
+
 VERSION_SH='include/version.sh'
 PROFILE_SH='include/profile.sh'
 PROBE='t/probe_urls.sh'
@@ -82,18 +101,18 @@ while IFS=$'\t' read -r key old new kind; do
         # 漏掉它会让升版后的常规 CI 因断言旧版本而失败。
         subst "php-${old}" "php-${new}" "${PROFILE_SH}" "${GENSUM}" "${TESTPF}"
         subst "PHP ${old}" "PHP ${new}" "${PROFILE_SH}"
-        subst "${old}"     "${new}"     "${PROBE}"
+        subst_probe php "${old}" "${new}"
         ;;
     MySQL_*)
         subst "mysql-${old}" "mysql-${new}" "${PROFILE_SH}" "${GENSUM}" "${TESTPF}"
         subst "MySQL ${old}" "MySQL ${new}" "${PROFILE_SH}"
-        subst "${old}"       "${new}"       "${PROBE}"
+        subst_probe mysql "${old}" "${new}"
         # 二进制包 URL 中的 MySQL-8.4/ 为分支号，无需修改
         ;;
     MariaDB_*)
         subst "mariadb-${old}" "mariadb-${new}" "${PROFILE_SH}" "${GENSUM}" "${TESTPF}"
         subst "MariaDB ${old}" "MariaDB ${new}" "${PROFILE_SH}"
-        subst "${old}"         "${new}"         "${PROBE}"
+        subst_probe mariadb "${old}" "${new}"
         ;;
     Apache_Ver)
         # 同 PHP：t/test_profile.sh 断言 httpd-<版本>，需一并更新。
@@ -119,7 +138,7 @@ while IFS=$'\t' read -r key old new kind; do
         ;;
     esac
 
-    CHANGED="${CHANGED}${old}	${new}
+    CHANGED="${CHANGED}${key}	${old}	${new}
 "
     applied=$((applied+1))
 done < "${BUMPS}"

@@ -109,11 +109,11 @@
 ```bash
 # 方式一：clone（方便后续 git pull 更新）
 yum install -y git || apt-get install -y git
-git clone https://github.com/123456/lnmp.git lnmp
+git clone https://github.com/sirfromprc/lnmp.git lnmp
 cd lnmp
 
 # 方式二：下载 release 压缩包
-wget https://github.com/123456/lnmp/archive/refs/tags/v2.3.tar.gz
+wget https://github.com/sirfromprc/lnmp/archive/refs/tags/v2.3.tar.gz
 tar zxf v2.3.tar.gz
 cd lnmp-2.3
 ```

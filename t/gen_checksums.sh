@@ -80,6 +80,23 @@ grab()
     ok=$((ok+1))
 }
 
+grab_mysql()
+{
+    # 与 DB_Download_Files 一致：先用当前下载区，失败后查 archives。
+    # LIST_ONLY 用于升版后的增量校验，新版本应优先从 Downloads 获取。
+    local branch="$1" name="$2"
+    local primary="https://cdn.mysql.com/Downloads/MySQL-${branch}/${name}"
+    local fallback="https://cdn.mysql.com/archives/mysql-${branch}/${name}"
+
+    if [ -n "${LIST_ONLY:-}" ]; then
+        grab "${primary}" "${name}"
+    elif wget -q --spider --timeout=30 --tries=1 --max-redirect=10 "${primary}"; then
+        grab "${primary}" "${name}"
+    else
+        grab "${fallback}" "${name}"
+    fi
+}
+
 # 获取上游公布的校验值；获取失败时不执行交叉核对
 fetch_sum()
 {
@@ -113,10 +130,10 @@ done
 
 echo
 echo "# --- MySQL ---"
-grab "https://cdn.mysql.com/Downloads/MySQL-8.0/mysql-8.0.46.tar.gz" "mysql-8.0.46.tar.gz"
-grab "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.7.tar.gz" "mysql-8.4.7.tar.gz"
-grab "https://cdn.mysql.com/Downloads/MySQL-8.0/mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz" "mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz"
-grab "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.7-linux-glibc2.17-x86_64.tar.xz" "mysql-8.4.7-linux-glibc2.17-x86_64.tar.xz"
+grab_mysql 8.0 mysql-8.0.46.tar.gz
+grab_mysql 8.4 mysql-8.4.7.tar.gz
+grab_mysql 8.0 mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz
+grab_mysql 8.4 mysql-8.4.7-linux-glibc2.17-x86_64.tar.xz
 
 echo
 echo "# --- MariaDB ---"
@@ -127,8 +144,10 @@ done
 
 echo
 echo "# --- boost（MySQL 源码编译用）---"
-grab "https://archives.boost.io/release/1.59.0/source/${Boost_Ver}.tar.bz2" "${Boost_Ver}.tar.bz2"
-grab "https://archives.boost.io/release/1.67.0/source/${Boost_New_Ver}.tar.bz2" "${Boost_New_Ver}.tar.bz2"
+for boost in "${Boost_Ver}" "${Boost_New_Ver}"; do
+    boost_ver=$(echo "${boost#boost_}" | tr '_' '.')
+    grab "https://archives.boost.io/release/${boost_ver}/source/${boost}.tar.bz2" "${boost}.tar.bz2"
+done
 
 if [ "${SCOPE}" = "core" ]; then
     echo

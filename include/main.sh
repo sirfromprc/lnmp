@@ -727,6 +727,57 @@ Check_Conf_Applied()
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# Get_Actual_DB_Port [配置文件]
+#
+# 输出本机数据库实际监听的端口，取不到时退回 lnmp.conf 的 DB_Port。
+# 返回 0 表示取自配置文件，返回 1 表示用的是退回值。
+# 参数只为定向测试传入替身配置，实际调用一律用默认的 /etc/my.cnf。
+#
+# lnmp.conf 里写的是 DB_Port="${DB_Port:-3306}"：装主栈时可以用环境变量
+# 指定非默认端口（DB_Port=3307 ./install.sh lnmp），该值进了 /etc/my.cnf，
+# 但不会回写 lnmp.conf。事后单独补装或升级 phpMyAdmin 时环境变量早已不在，
+# 读到的仍是 3306，写进 config.inc.php 就是错的 —— 而 config.inc.php 用
+# host = 127.0.0.1 走 TCP（不用 localhost，见该文件注释），端口错了直接连不上库。
+#
+# 只认 [mysqld] 段里的 port：[client] 段那条是客户端默认值，管理员可能单独改过。
+# MySQL 与 MariaDB 的模板都写在 /etc/my.cnf，两者取法相同。
+# ---------------------------------------------------------------------------
+Get_Actual_DB_Port()
+{
+    local conf="${1:-/etc/my.cnf}" port=''
+
+    if [ -s "${conf}" ]; then
+        port=$(awk '
+            /^[[:space:]]*\[/ {
+                section = $0
+                sub(/^[[:space:]]*\[[[:space:]]*/, "", section)
+                sub(/[[:space:]]*\].*$/, "", section)
+                next
+            }
+            section == "mysqld" && /^[[:space:]]*port[[:space:]]*=/ {
+                value = $0
+                sub(/^[^=]*=[[:space:]]*/, "", value)
+                sub(/[[:space:]#].*$/, "", value)
+                if (value != "") last = value
+            }
+            END { if (last != "") print last }
+        ' "${conf}" 2>/dev/null)
+    fi
+
+    case "${port}" in
+        ''|*[!0-9]*) port='' ;;
+        *) [ "${port}" -ge 1 ] && [ "${port}" -le 65535 ] || port='' ;;
+    esac
+
+    if [ -z "${port}" ]; then
+        printf '%s\n' "${DB_Port}"
+        return 1
+    fi
+    printf '%s\n' "${port}"
+    return 0
+}
+
 # 在任何安装动作前统一校验端口。变量会进入配置、sed 和防火墙命令，
 # 非数字、越界或互相冲突都应在下载、停服务或改系统之前直接拒绝。
 Validate_Service_Ports()

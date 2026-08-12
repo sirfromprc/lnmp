@@ -180,9 +180,9 @@ Clean_DB_Src_Dir()
     [ "${DB_Kind}" = "none" ] && return 0
     [ -n "${DB_Ver}" ] && rm -rf ${cur_dir}/src/${DB_Ver}
 
-    # Boost 源码目录清理。原代码按 DBSelect=4/5 分别清理 Boost_Ver/Boost_New_Ver，
-    # 这两个固定版本变量已随 MySQL 5.7 的移除一并删除（见 version.sh），
-    # 现在只有一条动态路径：版本由 cmake/boost.cmake 决定，落在 Get_Boost_Ver。
+    # Boost 源码目录清理只跟安装时动态解析的 Get_Boost_Ver 走。
+    # version.sh 的 Boost_Ver/Boost_New_Ver 仅供探测与校验清单使用，
+    # 不参与安装目录选择。
     #
     # 必须检查非空值，避免变量为空时 rm -rf ${cur_dir}/src/ 删除整个 src 目录。
     if [ "${DB_Needs_Boost}" = "y" ]; then

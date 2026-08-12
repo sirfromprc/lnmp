@@ -6997,3 +6997,323 @@ Debian 12 真实 nginx（openresty/1.31.1.1）实测：
   工作目录内第三方文件扫描噪音，因此不记为全仓检查通过。
 
 - **验证状态**：定向功能已实测；全仓检查存在上述第三方源码命中（2026-08-12）。
+
+# 阶段 30 - GitHub Actions 下载清单与维护文档（2026-08-12）
+
+## GHA-URL-001 下载探测与安装回退链保持一致
+
+- `include/version.sh` 恢复 `Boost_Ver='boost_1_77_0'` 和
+  `Boost_New_Ver='boost_1_84_0'`，只供 `t/probe_urls.sh`、
+  `t/gen_checksums.sh` 维护下载探测与校验清单。
+- MySQL 安装逻辑不变：安装所需 Boost 仍从源码树的 `cmake/boost.cmake`
+  动态解析，没有恢复 `CLN-302` 删除的 `pinned` 分支。
+- Boost URL 的点号版本和包名均由变量推导，不再保留 1.59/1.67 的陈旧地址。
+- MySQL 探测和全量校验采集改为与 `DB_Download_Files` 相同的顺序：先访问
+  `cdn.mysql.com/Downloads`，失败后回退到 `cdn.mysql.com/archives`。
+
+**验证**：Debian 12 上执行相关文件 `bash -n`、`t/lint.sh`、
+`t/consistency.sh`、`t/test_profile.sh`、`t/test_bump.sh` 均通过；
+`LIST_ONLY=1 bash t/gen_checksums.sh` 正确生成 Boost 1.77.0/1.84.0 和 MySQL
+8.0.46/8.4.7 清单。联网执行 `t/probe_urls.sh`，69 个地址全部可达；另行确认
+MySQL 8.4.7 archives 源码包、二进制包及两个 Boost 官方包均可达。全仓检查前暂移
+验证机已有的第三方解压源码，测试后原样恢复，验证机 Git 状态保持干净。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）。
+
+## DOC-GHA-001 整理工作流说明
+
+- 重写 `.github/WORKFLOWS.md`，按五个现有工作流说明触发条件、执行内容、失败结果、
+  手动参数、发布规则和首次配置。
+- 删除重复背景说明，补充 MySQL 回退链及两个 Boost 变量的用途边界。
+
+- **验证状态**：已静态核对五份 workflow 配置（2026-08-12）。
+
+# 阶段 31 - phpMyAdmin 完整安装与上游升级检查收尾（2026-08-12）
+
+## PMA-FIX-003 管理入口复用同一份访问开关实现
+
+- 删除 `include/php.sh` 中重复的 `Set_PhpMyAdmin_Access`；
+  `./install.sh phpmyadmin enable|disable|status` 改为调用安装后的
+  `/bin/lnmp-phpmyadmin`，默认安装逻辑和命令行为不变。
+- `t/test_install_phpmyadmin.sh` 覆盖三种子命令的转调和退出码；Debian 12 上实际执行
+  `bash install.sh phpmyadmin status`，命令正确转交并返回 0。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）。
+
+## PMA-FIX-004 完整安装路径按部署结果返回
+
+- `Creat_PHP_Tools` 对解压、复制配置、占位符替换、随机值生成、权限调整和最终移动
+  逐步检查返回码；先在临时目录完成部署，失败时清理临时及不完整产物。
+- LNMP、LNMPA、LAMP 三条完整安装路径都会接收该返回码，不再在 phpMyAdmin
+  部署失败后继续打印成功信息。
+- `t/test_install_phpmyadmin.sh` 增加完整安装故障注入；损坏归档会返回非零，且目标
+  目录没有残留。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）。
+
+## UPSTREAM-FIX-001 上游取数失败会阻止自动升级 PR
+
+- `t/check_upstream.sh` 在任一上游取数失败时返回非零，工作流随即停止，不再继续
+  应用版本、重算校验值或创建 PR。
+- 新增 `t/test_upstream.sh`，用故障注入确认网络取数失败时退出码非零；该测试已加入
+  CI 和发布工作流。
+
+- **验证状态**：stub 故障注入与工作流配置检查通过（2026-08-12）。
+
+## UPSTREAM-FIX-002 补全 PINNED 版本说明
+
+- 原先未归类的 Apache 依赖、nginx 模块、Lua 库及旧 PHP 扩展全部列入报告的
+  `PINNED` 表，写明保留现有版本的原因；没有新增 `AUTO` 升级范围。
+- `Boost_Ver`、`Boost_New_Ver` 继续只供下载探测和校验清单使用；MySQL 安装所需
+  Boost 仍从源码树动态读取。
+- libunwind 自动检查限定为最新 `1.x`，当前保持 `1.8.3`，不会采用上游不属于当前
+  发布线的 `4.0.10` tag。
+
+- **验证状态**：静态覆盖测试通过；Debian 12 联网上游检查确认 libunwind 无跨主版本
+  更新（2026-08-12）。
+
+## UPSTREAM-FIX-003 MySQL 候选版本同时检查源码包和默认二进制包
+
+- MySQL 8.0 候选同时检查源码包和 glibc 2.28 x86_64 包；MySQL 8.4 候选同时检查
+  源码包和 glibc 2.17 x86_64 包。两者都存在才提出升级；404 视为候选未发布，
+  网络错误或其它 HTTP 错误视为检查失败。
+- 定向测试确认“只有源码包”的候选不会被采纳，取数错误会返回非零。
+- Debian 12 完整联网检查退出 0，结果为 `AUTO 2 / COUPLED 0 / MANUAL 0 / 取数失败 0`，
+  正常识别 MySQL 8.4.10 和 Memcached 1.6.45。
+
+- **验证状态**：stub 与真实上游检查均通过（Debian 12，2026-08-12）。
+
+## UPSTREAM-FIX-004 增量替换按组件限定范围
+
+- `.upstream/changed.tsv` 每行改为记录组件键、旧值和新值；
+  `t/bump_version.sh` 的探测清单替换和 `t/refresh_checksums.sh` 的校验行选择均按组件
+  限定，不再以裸版本号全局匹配。
+- 碰撞测试使用相同的 PHP 与 MariaDB 点版本，确认只更新目标 PHP 条目，不改动
+  MariaDB；相关失败注入也已覆盖。
+
+- **验证状态**：`t/test_bump.sh` 定向回归通过（Debian 12，2026-08-12）。
+
+## UPSTREAM-RUN-001 定向回归与联网检查
+
+相关脚本 `bash -n` 通过；`t/lint.sh`、`t/consistency.sh`、`t/test_profile.sh`、
+`t/test_dispatch.sh`、`t/test_audit_fixes.sh`、`t/test_install_phpmyadmin.sh`、
+`t/test_upstream.sh`、`t/test_bump.sh` 全部通过。另修正 gperftools 的 tag 解析，按上游
+实际的 `gperftools-*` 前缀取数；单组件联网检查和完整联网检查均返回 0。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）。
+
+# 阶段 32 - 阶段 31 的复核返工（2026-08-12）
+
+对阶段 31 的七项改动做代码复核，五项结论成立，两项存在缺陷，另发现四处同类残留。
+以下为返工内容，全部在 Debian 12 上实测。
+
+## FIX-CHK-001 校验清单刷新会把相邻两条拼成一行
+
+**位置**：`t/refresh_checksums.sh` 的原位替换
+
+**问题**：替换正则的行尾用了 `\s*$`。`\s` 含换行且贪婪，会连行尾的 `\n` 一起匹配，
+而替换串不带换行，结果本行与下一行被拼成一行 —— 涉及的两条校验值同时失效。
+`include/main.sh` 的 `Verify_Download_File` 取值用 `awk '$2 == 文件名'` 精确匹配，
+合并行一条都命中不了，安装会在下载完成后 fail-closed 中止并删掉刚下好的文件。
+`upstream-check.yml` 正是在开 PR 前调用它，产出会直接进 PR。
+
+漏检原因：`t/test_bump.sh` 的碰撞用例与 `t/consistency.sh` 的 V4 都用子串匹配，
+合并后的那一行照样命中，两者均报通过。
+
+**改动**：
+
+- 行尾改用水平空白 `\h`；`perl` 替换失败计入 `failed` 并跳过该条。
+- 写回前核对清单格式，出现非法行一律放弃写回并返回非零。
+- `t/test_bump.sh` 的断言改为整行匹配加行数核对，并新增「坏清单拒绝写回」用例。
+- `t/consistency.sh` 新增 V14：清单每行必须是
+  `<64位sha256><两个空格><文件名>`，且落地文件名不得重复。V4 查覆盖率、
+  V14 查格式，两者互补。
+
+**验证**：修复前同一场景产出 1 行、合法行 0 条，精确查表命中 0 条；修复后产出
+2 行、合法行 2 条，两个文件名均精确命中。把真实清单的第 82、83 行人为合并后，
+V4 仍报通过，V14 准确指出第 82 行非法。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）。
+
+## FIX-PMA-005 OpenResty 完整安装的 phpMyAdmin 入口不生效
+
+**位置**：`conf/openresty.conf`
+
+**问题**：`conf/nginx.conf`、`conf/nginx_a.conf` 和两份 httpd 模板都带
+`include phpmyadmin.*.conf;` 钩子，只有 `conf/openresty.conf` 没有，而
+`include/openresty.sh` 会把它整份覆盖成 `nginx.conf`。于是
+`WebServer=openresty` 且 `Enable_PhpMyAdmin=y` 的完整安装：程序部署成功、
+访问片段写入成功、安装返回 0，但主配置从不 include 该片段，入口返回 404。
+`Creat_PHP_Tools` 不调用 `Ensure_PhpMyAdmin_Config_Hooks`（那是补装路径动态补钩子用的），
+所以完整安装完全依赖模板自带这一行。
+
+**改动**：`conf/openresty.conf` 在 `include enable-php.conf;` 之后补上同样的钩子，
+位置与 `conf/nginx.conf` 一致。`t/test_install_phpmyadmin.sh` 新增断言，
+五份默认站点模板都必须带钩子。
+
+**验证**：线上 `nginx.conf` 与修复前的仓库模板 `diff` 只差这一行。行为实测
+（每次 reload 后连采多次取稳定值）：片段存在时，用修复前的模板入口稳定 404，
+用修复后的模板稳定 200，换回线上配置仍为 200。
+
+- **验证状态**：已实测（Debian 12、OpenResty 1.31.1.1，2026-08-12）。
+
+## FIX-UPS-005 lua 全家桶的取数失败被写成了上游结论
+
+**位置**：`t/check_upstream.sh` 的 `check_lua_stack`
+
+**问题**：`lua-resty-core` 的 tag 列表取空、或逐个 tag 取 `base.lua` 失败时，
+都只是让匹配结果为空，随后被写成「lua-nginx-module 有新版，但尚未找到声明配套的
+lua-resty-core，整组保持不动」，计入 COUPLED，`errors` 不加，退出码仍为 0。
+这正是 `UPSTREAM-FIX-001` 要堵的那一类：检查没做成，却产出了一条结论。
+
+**改动**：tag 列表取空走 `require_value` 计入 `errors`；`base.lua` 有取数失败且
+最终没有匹配到版本时同样计入 `errors` 并返回，不再写「上游没有配套版本」。
+
+**验证**：分别注入 tag 列表取数失败和 `base.lua` 取数失败，两种情况均返回非零，
+且报告中不再出现「尚未找到声明配套的 lua-resty-core」。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）。
+
+## FIX-UPS-006 组件取数失败不再中断后续组件的检查
+
+**位置**：`t/check_upstream.sh` 的 `check_misc`、`check_lua_stack` 尾部
+
+**问题**：各组件用 `require_value ... || return 0`，而它们同处一个函数中，
+任何一个取数失败都会整体返回。实测 Apache 目录取数失败后，
+redis 与 memcached 的地址一次都没被请求 —— 报告里区分不出「没有新版」和
+「根本没查」。`check_mariadb` 用的是 `|| continue`，两处写法本就不一致。
+
+**改动**：改为 `if require_value ...; then propose ...; fi`，失败只跳过该组件。
+失败仍由 `require_value` 计入 `errors`，整体退出码不变。
+`lua-resty-lrucache` 与 `luajit2` 同样互不阻断。
+
+**验证**：注入 Apache 取数失败后退出码仍为非零，且 redis、memcached 的地址
+确实被请求过。完整联网检查返回 0，结果为 `AUTO 2 / COUPLED 0 / MANUAL 0 /
+取数失败 0`，与返工前一致。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）。
+
+## FIX-URL-003 探测清单补上 OpenResty 源码包
+
+**位置**：`t/probe_urls.sh`
+
+`include/openresty.sh` 与 `include/upgrade_openresty.sh` 在源码编译方式下会下载
+`openresty.org/download/<版本>.tar.gz`，该地址此前不在探测清单内。它只有 PGP 签名、
+不进 `src/checksums.sha256`（`consistency.sh` V4 对此有豁免），但上游同样会下线
+旧点版本，可达性仍需探测。
+
+**验证**：联网执行 `t/probe_urls.sh`，70 个地址全部可达，返回 0。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）。
+
+## FIX-PMA-006 phpMyAdmin 部署路径的删除保护与状态清理
+
+**位置**：`include/php.sh` 的 `Creat_PHP_Tools`、`Config_PhpMyAdmin_Access`、
+`Rollback_PhpMyAdmin_Install`
+
+**行为变化**：
+
+- 新增 `Remove_PhpMyAdmin_Dir`：变量为空或为 `/` 时不动手。`Creat_PHP_Tools`
+  原有两处 `rm -rf ${PhpMyAdmin_Dir}` 既没加引号也没有这层保护，
+  `Rollback_PhpMyAdmin_Install` 里的同一段判断改为复用该函数。
+- `Config_PhpMyAdmin_Access` 重建入口时一并删除遗留的停用片段
+  `.phpmyadmin.enable.conf.disabled`。此前完整安装会在停用片段仍存在的情况下
+  写出启用片段，两者并存后 `lnmp phpmyadmin enable|disable` 判定状态不明、
+  返回 1 并要求人工处理（补装路径 `Install_Only_phpMyAdmin` 本就有前置检查，
+  完整安装路径没有）。
+- `Config_PhpMyAdmin_Access` 的片段写入、`chmod` 现在逐步判返回码；
+  一个片段都没写出来（既没有 Nginx 也没有 Apache 的配置目录）时返回 1，
+  不再走完两个都不成立的 `if` 而返回 0。
+
+**验证**：停用状态下调用 `Config_PhpMyAdmin_Access` 返回 0，启用片段生成、
+停用片段被清除，`nginx -t` 通过，`lnmp phpmyadmin status` 与 `disable` 均恢复正常
+（并存时实测为 rc=1 拒绝执行）。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）。
+
+## RUN-032 复核回归
+
+- `bash -n` 覆盖本轮改动文件与安装、升级、卸载、三种管理脚本、辅助脚本。
+- `t/lint.sh`、`t/consistency.sh`（14 项全过）、`t/test_profile.sh`、
+  `t/test_dispatch.sh`、`t/test_audit_fixes.sh`、`t/test_bump.sh`、
+  `t/test_upstream.sh`、`t/test_install_phpmyadmin.sh` 全部返回 0。
+- 联网 `t/probe_urls.sh` 70/70 可达返回 0；联网 `t/check_upstream.sh` 返回 0。
+- 测试机在验证前后状态一致：`nginx.conf` 与备份逐字节相同，phpMyAdmin
+  入口保持关闭，临时备份文件已删除。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）。
+
+**阶段 31 中经复核成立、未作改动的部分**：`PMA-FIX-003` 的开关去重
+（`Set_PhpMyAdmin_Access` 已无残留，三份管理脚本的栈参数正确）、
+`PMA-FIX-004` 的返回码链路（三条完整安装路径均接收返回码并经
+`PIPESTATUS[0]` 传出）、`UPSTREAM-FIX-002` 的 PINNED 覆盖
+（`include/version.sh` 全部变量已逐个核对，无遗漏）、`UPSTREAM-FIX-003`
+的 MySQL 探测（说明与实现一致，glibc 映射与 `profile.sh`、`t/probe_urls.sh`
+三处一致）、`UPSTREAM-FIX-004` 的组件锚定、`GHA-URL-001` 的 MySQL 回退链。
+
+# 阶段 33 - phpMyAdmin 连接参数取本机实际值（2026-08-12）
+
+## FIX-PMA-007 补装与升级按机器实际数据库端口写配置
+
+**位置**：`include/main.sh` 新增 `Get_Actual_DB_Port`；
+`include/php.sh` 的 `Install_Only_phpMyAdmin`、
+`include/upgrade_phpmyadmin.sh` 的 `Upgrade_phpMyAdmin`
+
+**问题**（原 `todo.md` 的 TODO-PMA-002）：`lnmp.conf` 里是
+`DB_Port="${DB_Port:-3306}"`，装主栈时可以用环境变量指定非默认端口
+（`DB_Port=3307 ./install.sh lnmp`），该值写进 `/etc/my.cnf` 但不回写
+`lnmp.conf`。事后单独补装或升级 phpMyAdmin 时环境变量已不在，读到的仍是
+默认值，填进 `config.inc.php` 就是错的。而该文件用 `host = 127.0.0.1` 走 TCP
+（不用 `localhost` 以免 mysqli 改走 UNIX socket 绕过端口设置），端口错了直接
+连不上库；`Smoke_Test_PhpMyAdmin_HTTP` 只校验页面里出现 phpMyAdmin 字样，
+登录页本身不连库，因此这种故障会被判成安装成功，用户点登录才会发现。
+
+**行为变化**：
+
+- 新增 `Get_Actual_DB_Port [配置文件]`：读 `/etc/my.cnf` 的 `[mysqld]` 段取
+  `port`，取不到或取值非法时退回 `lnmp.conf` 的 `DB_Port`；返回 0 表示取自
+  配置文件，返回 1 表示用的是退回值。只认 `[mysqld]` 段 ——`[client]` 段那条
+  是客户端默认值，管理员可能单独改过。MySQL 与 MariaDB 的模板都写在
+  `/etc/my.cnf`，取法相同。参数只为定向测试传入替身配置。
+- 补装与升级两处改用该值填 `LNMP_DB_PORT`，并在实际值与 `lnmp.conf` 不一致、
+  或未能读到配置文件时打印提示。
+- 完整安装路径 `Creat_PHP_Tools` 仍用本次安装选定的 `DB_Port`：那条路径上
+  数据库就是本次按该值装的，`/etc/my.cnf` 可能还是上一次安装的遗留。
+- 升级路径补上替换后的占位符残留检查，与首装路径一致。
+
+**验证**：`t/test_db_port.sh` 覆盖 13 种取值情形全部通过：`[mysqld]` 与
+`[client]` 不同时取前者、行内注释、制表符分隔、段名带空白、同段重复取最后一条、
+后续段不干扰、文件缺失、空文件、非数字、越界、端口为 0、`report_host` 这类
+前缀相同的选项不误取。
+
+真机验证：测试机 `/etc/my.cnf` 的 `[mysqld] port = 13306`，`ss` 显示数据库
+确实监听 `127.0.0.1:13306`，而 `lnmp.conf` 读出来是 3306。该机上已装的
+phpMyAdmin（经补装路径安装）配置里写的正是 `'port' => '3306'`。
+按同一条 TCP 路径实测：`-P 3306` 返回 `ERROR 2003 Can't connect (111)`，
+`-P 13306` 返回 `ERROR 1045 Access denied` —— 前者端口上没有服务，后者连上了
+只是账号不对。修复后 `Get_Actual_DB_Port` 在该机返回 13306。
+
+- **验证状态**：已实测（Debian 12 + MySQL，2026-08-12）。
+
+## FIX-PMA-008 配置入口锚定 default_server 块的 root 指令
+
+**位置**：`include/php.sh` 的 `Ensure_PhpMyAdmin_Config_Hooks`
+
+同一类问题的另一半：插入 `include phpmyadmin.*.conf;` 时，原实现用
+`lnmp.conf` 的 `Default_Website_Dir` 去精确比对 nginx.conf 里的
+`root  <目录>`，老环境自定义过网站目录时匹配不上，补装会在写配置前中止。
+改为锚定 `default_server` 块内的 `root` 指令本身，不比对具体目录 ——
+这里要的只是"插进默认站点块里"，root 的值无关紧要。定位失败时的报错
+补上具体条件，说明需要一个带 `default_server` 且块内有 `root` 的 server 块。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）；定向断言已加入
+  `t/test_install_phpmyadmin.sh`。
+
+## RUN-033 回归
+
+`bash -n` 覆盖本轮改动文件与安装、升级、卸载、三份管理脚本、辅助脚本；
+`t/lint.sh`、`t/consistency.sh`、`t/test_profile.sh`、`t/test_dispatch.sh`、
+`t/test_audit_fixes.sh`、`t/test_bump.sh`、`t/test_upstream.sh`、
+`t/test_db_port.sh`、`t/test_install_phpmyadmin.sh` 全部返回 0。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）。

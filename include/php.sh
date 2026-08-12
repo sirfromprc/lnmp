@@ -373,6 +373,8 @@ LNMP_PHP_Opt()
 
 Creat_PHP_Tools()
 {
+    local pma_stage pma_secret access_url pma_vardir_was_absent='n'
+
     cd ${cur_dir}/src
 
     \cp ${cur_dir}/conf/index.html ${Default_Website_Dir}/index.html
@@ -390,19 +392,47 @@ eof
     if [ "${Enable_PhpMyAdmin}" = "y" ]; then
         echo "============================Install PHPMyAdmin================================="
         # 装到网站根目录之外，同时清掉历史版本留在根目录下的那一份
-        [[ -d ${Default_Website_Dir}/phpmyadmin ]] && rm -rf ${Default_Website_Dir}/phpmyadmin
-        [[ -d ${PhpMyAdmin_Dir} ]] && rm -rf ${PhpMyAdmin_Dir}
-        tar Jxf ${PhpMyAdmin_Ver}.tar.xz
-        mv ${PhpMyAdmin_Ver} ${PhpMyAdmin_Dir}
-        \cp ${cur_dir}/conf/config.inc.php ${PhpMyAdmin_Dir}/config.inc.php
+        if [ -n "${Default_Website_Dir}" ] && [ -d "${Default_Website_Dir}/phpmyadmin" ]; then
+            rm -rf "${Default_Website_Dir}/phpmyadmin"
+        fi
+        Remove_PhpMyAdmin_Dir
+        pma_stage="${cur_dir}/src/.phpmyadmin-full-install.$$"
+        rm -rf "${pma_stage}"
+        mkdir -p "${pma_stage}" || return 1
+        if ! tar Jxf "${PhpMyAdmin_Ver}.tar.xz" -C "${pma_stage}" ||
+           [ ! -s "${pma_stage}/${PhpMyAdmin_Ver}/index.php" ]; then
+            Echo_Red "phpMyAdmin 解压失败或归档结构异常。"
+            rm -rf "${pma_stage}"
+            return 1
+        fi
+        if ! \cp "${cur_dir}/conf/config.inc.php" \
+            "${pma_stage}/${PhpMyAdmin_Ver}/config.inc.php"; then
+            Echo_Red "写入 phpMyAdmin 配置失败。"
+            rm -rf "${pma_stage}"
+            return 1
+        fi
         # blowfish_secret 必须随机，否则所有安装共用同一密钥
-        sed -i "s/LNMPORG/$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')/g" ${PhpMyAdmin_Dir}/config.inc.php
-        sed -i "s/LNMP_DB_PORT/${DB_Port}/g" ${PhpMyAdmin_Dir}/config.inc.php
+        pma_secret=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        access_url="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')_phpmyadmin"
+        if [ -z "${pma_secret}" ] || [ "${access_url}" = '_phpmyadmin' ] ||
+           ! sed -i "s/LNMPORG/${pma_secret}/g" \
+                "${pma_stage}/${PhpMyAdmin_Ver}/config.inc.php" ||
+           ! sed -i "s/LNMP_DB_PORT/${DB_Port}/g" \
+                "${pma_stage}/${PhpMyAdmin_Ver}/config.inc.php" ||
+           grep -qE 'LNMPORG|LNMP_DB_PORT' \
+                "${pma_stage}/${PhpMyAdmin_Ver}/config.inc.php"; then
+            Echo_Red "生成 phpMyAdmin 配置失败。"
+            rm -rf "${pma_stage}"
+            return 1
+        fi
         # 访问路径随机化，避开针对固定 /phpmyadmin 的批量扫描与爆破。
         # 保留 _phpmyadmin 结尾：默认站点若配了严格的访问控制，
         # 这个固定后缀能让人一眼认出该路径的用途，写放行或封禁规则时好处理。
-        printf '%s_phpmyadmin\n' "$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')" > ${PhpMyAdmin_Url_File}
-        chmod 600 ${PhpMyAdmin_Url_File}
+        if ! printf '%s\n' "${access_url}" > \
+            "${pma_stage}/${PhpMyAdmin_Ver}/.access_url"; then
+            rm -rf "${pma_stage}"
+            return 1
+        fi
         # 模板缓存目录放在网站根目录之外：它需要 PHP 可写，而网站根目录下
         # 任何可写目录都是「上传 webshell 后能直接访问」的落点。
         # 不建这个目录 phpMyAdmin 也能跑，只是每次请求都要重新编译模板。
@@ -410,17 +440,46 @@ eof
         # 导入/导出用的 UploadDir、SaveDir 默认关闭（见 conf/config.inc.php），
         # 不在网站目录下创建 upload/save；导出文件包含完整数据库内容，
         # 落在网站目录里等于把整个数据库放到公网可下载的位置。
-        mkdir -p /var/lib/phpmyadmin/tmp
-        chown -R www:www /var/lib/phpmyadmin
-        chmod 700 /var/lib/phpmyadmin/tmp
-        chmod 755 -R ${PhpMyAdmin_Dir}/
-        chown www:www -R ${PhpMyAdmin_Dir}/
-        chmod 600 ${PhpMyAdmin_Url_File}
+        [ -e /var/lib/phpmyadmin ] || pma_vardir_was_absent='y'
+        if ! mkdir -p /var/lib/phpmyadmin/tmp ||
+           ! chown -R www:www /var/lib/phpmyadmin ||
+           ! chmod 700 /var/lib/phpmyadmin/tmp ||
+           ! chmod 755 -R "${pma_stage}/${PhpMyAdmin_Ver}" ||
+           ! chown -R www:www "${pma_stage}/${PhpMyAdmin_Ver}" ||
+           ! chmod 600 "${pma_stage}/${PhpMyAdmin_Ver}/.access_url" ||
+           ! mv "${pma_stage}/${PhpMyAdmin_Ver}" "${PhpMyAdmin_Dir}"; then
+            Echo_Red "部署 phpMyAdmin 失败。"
+            rm -rf "${pma_stage}"
+            Remove_PhpMyAdmin_Dir
+            [ "${pma_vardir_was_absent}" = 'y' ] && rm -rf /var/lib/phpmyadmin
+            return 1
+        fi
+        rm -rf "${pma_stage}"
         echo "============================phpMyAdmin install completed======================="
     fi
 
     # 开启和关闭都在这里同步，不需要手工去改 default 站点的配置
-    Config_PhpMyAdmin_Access
+    if ! Config_PhpMyAdmin_Access; then
+        rm -f /usr/local/nginx/conf/phpmyadmin.enable.conf \
+              /usr/local/apache/conf/extra/phpmyadmin.enable.conf
+        if [ "${Enable_PhpMyAdmin}" = 'y' ]; then
+            Remove_PhpMyAdmin_Dir
+            [ "${pma_vardir_was_absent}" = 'y' ] && rm -rf /var/lib/phpmyadmin
+        fi
+        return 1
+    fi
+    return 0
+}
+
+# Remove_PhpMyAdmin_Dir
+#
+# 删除 phpMyAdmin 程序目录。变量为空或指向根目录时一律不动手：
+# 这个路径来自 include/main.sh 的赋值，但函数在多条清理和回滚路径上被调用，
+# 任何一条上游漏赋值都不该变成 rm -rf /。
+Remove_PhpMyAdmin_Dir()
+{
+    [ -n "${PhpMyAdmin_Dir}" ] && [ "${PhpMyAdmin_Dir}" != '/' ] || return 0
+    rm -rf "${PhpMyAdmin_Dir}"
 }
 
 # Config_PhpMyAdmin_Access
@@ -432,7 +491,15 @@ Config_PhpMyAdmin_Access()
 {
     local nginx_frag='/usr/local/nginx/conf/phpmyadmin.enable.conf'
     local apache_frag='/usr/local/apache/conf/extra/phpmyadmin.enable.conf'
-    local pma_url
+    # lnmp phpmyadmin disable 是把启用片段改名成这两个文件来实现的。
+    # 本函数重新生成（或删除）启用片段后，它们就是过时的残留：留着会让启用片段
+    # 与停用片段同时存在，之后 lnmp phpmyadmin enable|disable 会判定状态不明、
+    # 返回 1 并要求人工处理。安装流程重建入口时一并清掉。
+    local nginx_saved='/usr/local/nginx/conf/.phpmyadmin.enable.conf.disabled'
+    local apache_saved='/usr/local/apache/conf/extra/.phpmyadmin.enable.conf.disabled'
+    local pma_url written=0
+
+    rm -f "${nginx_saved}" "${apache_saved}"
 
     if [ "${Enable_PhpMyAdmin}" != "y" ]; then
         rm -f "${nginx_frag}" "${apache_frag}"
@@ -448,7 +515,7 @@ Config_PhpMyAdmin_Access()
     if [ -d /usr/local/nginx/conf ]; then
         if [ "${Stack}" = "lnmpa" ]; then
             # LNMPA 下 PHP 由 Apache 执行，nginx 只负责把该路径整体反代过去
-            cat >"${nginx_frag}"<<EOF
+            cat >"${nginx_frag}"<<EOF || return 1
         location = /${pma_url} {
             return 301 /${pma_url}/;
         }
@@ -461,7 +528,7 @@ EOF
         else
             # open_basedir 用 PHP_ADMIN_VALUE 下发：程序已不在网站根目录下，
             # 根目录里的 .user.ini 管不到它，必须在这里单独划定可访问范围。
-            cat >"${nginx_frag}"<<EOF
+            cat >"${nginx_frag}"<<EOF || return 1
         location = /${pma_url} {
             return 301 /${pma_url}/;
         }
@@ -481,11 +548,12 @@ EOF
         }
 EOF
         fi
-        chmod 644 "${nginx_frag}"
+        chmod 644 "${nginx_frag}" || return 1
+        written=$((written+1))
     fi
 
     if [ -d /usr/local/apache/conf/extra ]; then
-        cat >"${apache_frag}"<<EOF
+        cat >"${apache_frag}"<<EOF || return 1
 Alias /${pma_url} "${PhpMyAdmin_Dir}"
 
 <Directory "${PhpMyAdmin_Dir}">
@@ -495,8 +563,17 @@ Alias /${pma_url} "${PhpMyAdmin_Dir}"
     php_admin_value open_basedir "${PhpMyAdmin_Dir}/:/var/lib/phpmyadmin/:/tmp/:/proc/"
 </Directory>
 EOF
-        chmod 644 "${apache_frag}"
+        chmod 644 "${apache_frag}" || return 1
+        written=$((written+1))
     fi
+
+    # 一个片段都没写出来说明没找到 Web 服务的配置目录。此前这里会走完
+    # 两个都不成立的 if 而返回 0，把"什么都没配"报成配置成功。
+    if [ "${written}" -eq 0 ]; then
+        Echo_Red "未找到 Nginx 或 Apache 的配置目录，phpMyAdmin 访问入口未写入。"
+        return 1
+    fi
+    return 0
 }
 
 # Detect_PhpMyAdmin_Stack
@@ -551,7 +628,11 @@ Ensure_PhpMyAdmin_Config_Hooks()
             PMA_Nginx_Main_Backup="${cur_dir}/src/.nginx-pma-backup.$$"
             tmp="${cur_dir}/src/.nginx-pma-new.$$"
             \cp -p "${nginx_conf}" "${PMA_Nginx_Main_Backup}" || return 1
-            if ! awk -v website_root="${Default_Website_Dir}" '
+            # 插入点锚定 default_server 块里的 root 指令本身，不比对具体目录：
+            # 老环境可能改过网站目录，而 lnmp.conf 的 Default_Website_Dir 只是
+            # 本次读到的默认值，拿它去精确比对会匹配不上（同 Get_Actual_DB_Port
+            # 那一类问题）。这里要的只是"插进默认站点块里"，root 的值无关紧要。
+            if ! awk '
                 /^[[:space:]]*server[[:space:]]*\{/ { in_server=1; is_default=0 }
                 in_server && /^[[:space:]]*listen[[:space:]].*default_server/ { is_default=1 }
                 {
@@ -559,7 +640,7 @@ Ensure_PhpMyAdmin_Config_Hooks()
                     line=$0
                     sub(/^[[:space:]]*/, "", line)
                     sub(/[[:space:]]*;[[:space:]]*$/, "", line)
-                    if (is_default && line == "root  " website_root) {
+                    if (is_default && line ~ /^root[[:space:]]/) {
                         print "        include phpmyadmin.*.conf;"
                         inserted=1
                         is_default=0
@@ -568,6 +649,7 @@ Ensure_PhpMyAdmin_Config_Hooks()
                 END { if (!inserted) exit 1 }
             ' "${nginx_conf}" > "${tmp}"; then
                 Echo_Red "未能在 Nginx 默认站点中定位 phpMyAdmin 配置入口。"
+                Echo_Red "需要 ${nginx_conf} 里有一个带 default_server 的 server 块，且块内有 root 指令。"
                 rm -f "${tmp}"
                 return 1
             fi
@@ -644,28 +726,6 @@ Reload_PhpMyAdmin_Web()
     esac
 }
 
-PhpMyAdmin_Access_Status()
-{
-    local nginx_live='/usr/local/nginx/conf/phpmyadmin.enable.conf'
-    local apache_live='/usr/local/apache/conf/extra/phpmyadmin.enable.conf'
-    local enabled='y'
-
-    if [ ! -s "${PhpMyAdmin_Dir}/index.php" ] || [ ! -s "${PhpMyAdmin_Url_File}" ]; then
-        Echo_Red "phpMyAdmin 未安装。"
-        return 1
-    fi
-    case "${Stack}" in
-    lnmp) [ -s "${nginx_live}" ] || enabled='n' ;;
-    lnmpa) [ -s "${nginx_live}" ] && [ -s "${apache_live}" ] || enabled='n' ;;
-    lamp) [ -s "${apache_live}" ] || enabled='n' ;;
-    esac
-    if [ "${enabled}" = 'y' ]; then
-        Echo_Green "phpMyAdmin 访问已开启：http://<服务器IP>/$(cat "${PhpMyAdmin_Url_File}")/"
-    else
-        Echo_Yellow "phpMyAdmin 访问已关闭，程序和配置保留在 ${PhpMyAdmin_Dir}。"
-    fi
-}
-
 Install_PhpMyAdmin_Manager_Command()
 {
     local manager='/bin/lnmp'
@@ -715,96 +775,6 @@ Install_PhpMyAdmin_Manager_Command()
     return 0
 }
 
-Set_PhpMyAdmin_Access()
-{
-    local action="$1"
-    local nginx_live='/usr/local/nginx/conf/phpmyadmin.enable.conf'
-    local apache_live='/usr/local/apache/conf/extra/phpmyadmin.enable.conf'
-    local nginx_saved='/usr/local/nginx/conf/.phpmyadmin.enable.conf.disabled'
-    local apache_saved='/usr/local/apache/conf/extra/.phpmyadmin.enable.conf.disabled'
-    local nginx_moved='n' apache_moved='n'
-
-    if [ ! -s "${PhpMyAdmin_Dir}/index.php" ] || [ ! -s "${PhpMyAdmin_Url_File}" ]; then
-        Echo_Red "phpMyAdmin 未安装，无法修改访问状态。"
-        return 1
-    fi
-    case "${action}" in
-    status)
-        PhpMyAdmin_Access_Status
-        return $?
-        ;;
-    disable)
-        if { [ -e "${nginx_live}" ] && [ -e "${nginx_saved}" ]; } ||
-           { [ -e "${apache_live}" ] && [ -e "${apache_saved}" ]; }; then
-            Echo_Red "phpMyAdmin 访问配置同时存在启用和停用副本，请先人工核对。"
-            return 1
-        fi
-        if [ "${Stack}" = 'lnmp' ] || [ "${Stack}" = 'lnmpa' ]; then
-            [ ! -e "${nginx_live}" ] || {
-                mv "${nginx_live}" "${nginx_saved}" || return 1; nginx_moved='y'; }
-        fi
-        if [ "${Stack}" = 'lamp' ] || [ "${Stack}" = 'lnmpa' ]; then
-            if [ -e "${apache_live}" ]; then
-                if ! mv "${apache_live}" "${apache_saved}"; then
-                    [ "${nginx_moved}" = 'y' ] && mv "${nginx_saved}" "${nginx_live}"
-                    return 1
-                fi
-                apache_moved='y'
-            fi
-        fi
-        if [ "${nginx_moved}" = 'n' ] && [ "${apache_moved}" = 'n' ]; then
-            PhpMyAdmin_Access_Status
-            return 0
-        fi
-        ;;
-    enable)
-        if { [ -e "${nginx_live}" ] && [ -e "${nginx_saved}" ]; } ||
-           { [ -e "${apache_live}" ] && [ -e "${apache_saved}" ]; }; then
-            Echo_Red "phpMyAdmin 访问配置同时存在启用和停用副本，请先人工核对。"
-            return 1
-        fi
-        if [ "${Stack}" = 'lnmp' ] || [ "${Stack}" = 'lnmpa' ]; then
-            [ -e "${nginx_live}" ] || {
-                [ -s "${nginx_saved}" ] || { Echo_Red "找不到停用的 Nginx 访问配置。"; return 1; }
-                mv "${nginx_saved}" "${nginx_live}" || return 1; nginx_moved='y'; }
-        fi
-        if [ "${Stack}" = 'lamp' ] || [ "${Stack}" = 'lnmpa' ]; then
-            if [ ! -e "${apache_live}" ]; then
-                if [ ! -s "${apache_saved}" ] || ! mv "${apache_saved}" "${apache_live}"; then
-                    [ "${nginx_moved}" = 'y' ] && mv "${nginx_live}" "${nginx_saved}"
-                    Echo_Red "找不到或无法恢复停用的 Apache 访问配置。"
-                    return 1
-                fi
-                apache_moved='y'
-            fi
-        fi
-        if [ "${nginx_moved}" = 'n' ] && [ "${apache_moved}" = 'n' ]; then
-            PhpMyAdmin_Access_Status
-            return 0
-        fi
-        ;;
-    *)
-        Echo_Red "Usage: ./install.sh phpmyadmin {enable|disable|status}"
-        return 1
-        ;;
-    esac
-
-    if ! Check_PhpMyAdmin_Web_Config || ! Reload_PhpMyAdmin_Web; then
-        if [ "${action}" = 'disable' ]; then
-            [ "${nginx_moved}" = 'y' ] && mv "${nginx_saved}" "${nginx_live}"
-            [ "${apache_moved}" = 'y' ] && mv "${apache_saved}" "${apache_live}"
-        else
-            [ "${nginx_moved}" = 'y' ] && mv "${nginx_live}" "${nginx_saved}"
-            [ "${apache_moved}" = 'y' ] && mv "${apache_live}" "${apache_saved}"
-        fi
-        Check_PhpMyAdmin_Web_Config >/dev/null 2>&1 &&
-            Reload_PhpMyAdmin_Web >/dev/null 2>&1 || true
-        Echo_Red "Web 配置测试或重载失败，phpMyAdmin 访问状态已恢复。"
-        return 1
-    fi
-    PhpMyAdmin_Access_Status
-}
-
 Smoke_Test_PhpMyAdmin_HTTP()
 {
     local url="$1"
@@ -844,8 +814,7 @@ Rollback_PhpMyAdmin_Install()
     # 模板缓存目录也是本次安装建的，回滚要一并撤掉；但只删本次新建的那次，
     # 上一次安装留下的内容不能因为这次失败被清掉。
     [ "${PMA_Vardir_Was_Absent:-n}" = 'y' ] && rm -rf /var/lib/phpmyadmin
-    [ -n "${PhpMyAdmin_Dir}" ] && [ "${PhpMyAdmin_Dir}" != '/' ] && \
-        rm -rf "${PhpMyAdmin_Dir}"
+    Remove_PhpMyAdmin_Dir
 }
 
 Clean_PhpMyAdmin_Config_Backups()
@@ -859,7 +828,7 @@ Clean_PhpMyAdmin_Config_Backups()
 Install_Only_phpMyAdmin()
 {
     local action="${1:-}"
-    local pma_ver pma_stage access_url smoke_body http_port
+    local pma_ver pma_stage access_url smoke_body http_port db_port
 
     echo "+-----------------------------------------------------------------------+"
     echo "|                    Install phpMyAdmin for LNMP                       |"
@@ -868,7 +837,16 @@ Install_Only_phpMyAdmin()
     Detect_PhpMyAdmin_Stack || return 1
 
     if [ -n "${action}" ]; then
-        Set_PhpMyAdmin_Access "${action}"
+        case "${action}" in enable|disable|status) ;; *)
+            Echo_Red "Usage: ./install.sh phpmyadmin {enable|disable|status}"
+            return 1
+            ;;
+        esac
+        if [ ! -x /bin/lnmp-phpmyadmin ]; then
+            Echo_Red "未找到 /bin/lnmp-phpmyadmin，请先完成 phpMyAdmin 安装。"
+            return 1
+        fi
+        /bin/lnmp-phpmyadmin "${Stack}" "${action}"
         return $?
     fi
 
@@ -935,7 +913,13 @@ Install_Only_phpMyAdmin()
     sed -i "s/LNMPORG/$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')/g" \
         "${pma_stage}/${PhpMyAdmin_Ver}/config.inc.php" || {
         rm -rf "${pma_stage}"; return 1; }
-    sed -i "s/LNMP_DB_PORT/${DB_Port}/g" \
+    # 端口取本机实际值：补装时 lnmp.conf 的 DB_Port 可能只是默认值 3306，
+    # 而主栈当初是用环境变量指定别的端口装的（见 Get_Actual_DB_Port 的说明）。
+    db_port=$(Get_Actual_DB_Port) || \
+        Echo_Yellow "未能从 /etc/my.cnf 读到数据库端口，按 lnmp.conf 的 ${db_port} 写入。"
+    [ "${db_port}" = "${DB_Port}" ] || \
+        Echo_Yellow "数据库实际端口为 ${db_port}（lnmp.conf 记的是 ${DB_Port}），按实际端口写入。"
+    sed -i "s/LNMP_DB_PORT/${db_port}/g" \
         "${pma_stage}/${PhpMyAdmin_Ver}/config.inc.php" || {
         rm -rf "${pma_stage}"; return 1; }
     printf '%s\n' "${access_url}" > \

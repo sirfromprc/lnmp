@@ -1,147 +1,166 @@
-# GitHub Actions 说明
+# GitHub Actions 使用说明
 
-五个工作流，分工如下。全部可以在仓库页面的 **Actions** 标签页里手动触发
-（选中左侧的工作流 → 右上角 **Run workflow**），不需要命令行 ——
-用 GitHub Desktop 只管推代码，其余在网页上点。
+仓库目前有五个工作流。除自动触发外，都可以在仓库的 **Actions** 页面手动运行：
+选择左侧工作流，点击右上角 **Run workflow**。
 
-| 工作流 | 何时跑 | 干什么 | 失败了会怎样 |
+| 工作流 | 自动触发 | 用途 | 失败结果 |
 | --- | --- | --- | --- |
-| `CI` | 每次 push / PR | 语法、ShellCheck、不变式、跨文件一致性、映射与升版自测 | PR 变红，几十秒出结果 |
-| `Build Test` | 被其它工作流调用，也可手动 | **真编译真启动**，容器用 debian:12 | 调用它的工作流一并失败 |
-| `上游版本检查` | 每月 8 号 03:00（北京时间），也可手动 | 查上游新版本 → 自动升 → 重算校验值 → 真编译 → 开 PR | 不开 PR，失败原因写进 Actions 摘要 |
-| `下载源存活探测` | 每周二 03:00（北京时间），也可手动 | 探测所有下载 URL 是否还在 | 自动开 issue（同一个 issue 追加评论，不刷屏） |
-| `发布` | 手动，或推 `v2.3-*` tag | 静态检查 → 真编译 → 打包 → 构建证明 → 发 Release | **不发布** |
+| `CI` | push、PR | Bash 语法、ShellCheck、lint、一致性和定向自测 | 当前提交或 PR 检查失败 |
+| `Build Test` | 由其它工作流调用 | 在 Debian 12 容器内编译并启动验证 | 调用方中止 |
+| `上游版本检查` | 每月 8 日 03:00（北京时间） | 检查版本、更新校验值、编译并创建 PR | 不创建 PR，详情写入 Actions 摘要 |
+| `下载源存活探测` | 每周二 03:00（北京时间） | 检查当前版本的下载地址 | 创建或更新 `url-health` issue |
+| `发布` | 推送 `v2.3-*` tag | 检查、编译、打包并发布 Release | 不发布 |
 
----
+## CI
 
-## 关于版本号
+`CI` 通常几十秒完成，依次运行：
 
-产品版本固定是 **v2.3**，不随发布次数递增。
-
-但 git tag 必须唯一 —— 同一个 tag 反复移动，会让已经下载过的人再次校验时
-对不上（同名 tag、不同内容，是供应链上最难排查的一类问题）。所以：
-
-```
-tag        v2.3-20260908
-Release 名 LNMP v2.3 (2026-09-08)
-包名       lnmp-v2.3-20260908.tar.gz
-```
-
-日期只是「这一次发布」的标识，产品版本始终是 v2.3。
-
----
-
-## 自动升级：哪些自动、哪些不自动
-
-`t/check_upstream.sh` 把每个组件分成四类，**默认只自动应用 AUTO**。
-
-**AUTO** —— 同分支内的点版本，无跨组件耦合。nginx（stable 分支内）、
-OpenSSL（3.5 LTS 内）、PHP 各分支、MySQL 8.0/8.4、MariaDB 三个 LTS、
-Apache 2.4、phpMyAdmin、Redis、Memcached、pure-ftpd、PECL 扩展等。
-
-**COUPLED** —— Lua 全家桶。必须成组升，理由见下一节。
-默认不自动应用，手动触发时可以在下拉框里选 `AUTO,COUPLED`。
-
-**MANUAL** —— 只报告不动手。换 nginx stable 分支、OpenResty 大版本
-（它自带的 nginx 会跟着变，且只有 PGP 签名没有 sha256）等。
-
-**PINNED** —— 连查都不查，理由写在 `include/version.sh` 各自的注释里。
-比如 `Pcre_Ver` 锁在 8.45（PCRE1 最终版）、`NgxBrotli_Commit` 锁在具体
-commit（上游只有一个 2021 年的 rc tag，跟 master 会让 sha256 天天漂）。
-
----
-
-## 为什么 Lua 全家桶不能各升各的
-
-`lua-resty-core` 的 `lib/resty/core/base.lua` 里有一段硬断言：
-
-```lua
-or ngx.config.ngx_lua_version ~= 10031
-...
-error("ngx_http_lua_module 0.10.31 required but got " .. ver)
+```text
+bash -n
+ShellCheck
+t/lint.sh
+t/consistency.sh
+t/test_profile.sh
+t/test_dispatch.sh
+t/test_audit_fixes.sh
+t/test_bump.sh
+t/test_upstream.sh
 ```
 
-`10031` 是 `lua-nginx-module` 版本的编码：`major*1000000 + minor*1000 + patch`，
-即 0.10.31。两者版本不匹配就必然报错。
+这里既检查单个脚本，也检查版本号、配置映射和下载清单之间是否一致。
 
-麻烦的是**它在 Lua 运行时才触发**：
+## 上游版本检查
 
+工作流文件是 `.github/workflows/upstream-check.yml`，执行顺序如下：
+
+```text
+t/check_upstream.sh
+  -> t/bump_version.sh
+  -> t/refresh_checksums.sh
+  -> t/consistency.sh
+  -> t/probe_urls.sh
+  -> Build Test (quick)
+  -> 创建 PR
 ```
-./configure  通过
-make         通过
-nginx -t     通过      ← 不加载 Lua 代码就不触发
-nginx 启动   通过
-第一次访问带 Lua 的 location  → 500
+
+任一步失败都会停止，未验证的改动不会进入 PR。手动运行时有两个选项：
+
+- `kinds`：默认 `AUTO`；需要检查 Lua 配套升级时选 `AUTO,COUPLED`。
+- `dry_run`：启用后只生成报告，不创建 PR。
+
+`t/bump_version.sh` 生成的 `.upstream/changed.tsv` 每行记录组件键、旧值和新值，
+`t/refresh_checksums.sh` 据此只重算该组件的校验条目。
+
+组件分为四类：
+
+| 类别 | 处理方式 |
+| --- | --- |
+| `AUTO` | 同一稳定分支内的常规点版本更新，默认自动应用 |
+| `COUPLED` | 有配套关系的 Lua 组件，只在手动选择后应用 |
+| `MANUAL` | 只报告，例如切换 nginx stable 分支或 OpenResty 大版本 |
+| `PINNED` | 固定版本，不检查更新；固定原因列在检查报告的 PINNED 表中 |
+
+Lua 组件不能拆开升级。`lua-resty-core` 会在运行时核对
+`lua-nginx-module` 版本，因此 quick 构建除了编译和启动，还会访问一个 Lua location
+并检查响应。
+
+## 下载源存活探测
+
+`url-health.yml` 每周检查当前配置中的下载地址。它与上游版本检查的区别是：
+
+- 上游版本检查关注有没有新版本；
+- 下载源存活探测关注当前版本是否仍能下载。
+
+MySQL 探测与安装器使用相同顺序：先查 `Downloads`，再查 `archives`。两处都不可用
+才算失败。失败时工作流会查找现有的 `url-health` issue；有则追加评论，没有则新建，
+避免每周生成重复 issue。
+
+## Build Test
+
+`Build Test` 使用 `debian:12` 容器，有两档：
+
+| 级别 | 内容 | 使用位置 |
+| --- | --- | --- |
+| `quick` | Lua 组件编译、启动和请求验证 | 上游版本 PR、手动检查 |
+| `full` | quick 加 nginx 全模块和 PHP 默认分支编译 | 发布前检查 |
+
+上游升级尚未提交时，`upstream-check.yml` 会把修改后的文件作为 artifact 传给
+`Build Test`，确保编译的是待提交内容。
+
+## 发布
+
+产品版本固定为 `v2.3`，每次发布用日期区分：
+
+```text
+tag         v2.3-20260908
+Release     LNMP v2.3 (20260908)
+压缩包      lnmp-v2.3-20260908.tar.gz
 ```
 
-前面每一道都给绿灯。所以：
+不要移动或重复使用已有 tag。同名 tag 指向不同内容后，已经下载的文件将无法稳定校验。
 
-1. `t/check_upstream.sh` 先定 `lua-nginx-module` 的目标版本，
-   再去 `lua-resty-core` 的历史 tag 里逐个拉 `base.lua`，
-   找出**声明需要这个版本**的那一个，两个凑齐才提建议。
-   凑不齐（新模块发布了但配套的 resty-core 还没出）就整组不动。
-2. `lua-resty-core` 经常先出 rc —— 当前包里用的就是 `0.1.34rc3`。
-   新模块发布后配套的往往只有 rc，这时用 rc 是对的，
-   退回上一个正式版反而会因断言不匹配而起不来。
-3. `t/build_test.sh lua` 最后一步是**真发一次请求**，
-   curl 一个 `content_by_lua` 的 location 并比对响应体。少这一步拦不住。
+推送 `v2.3-*` tag 时，发布工作流固定执行 full 构建。网页手动运行默认也是 full，
+可选择 quick 和是否标记为 prerelease。检查全部通过后才会：
 
----
+1. 打包发布文件；
+2. 生成 `SHA256SUMS`；
+3. 生成 GitHub build provenance attestation；
+4. 创建 Release。
 
-## 发布前的编译验证
-
-`Build Test` 有两档：
-
-- `quick`（默认）：只验 Lua 全家桶。约 6–10 分钟。升级 PR 走这一档。
-- `full`：再加 nginx 全模块（含自建 OpenSSL 3.5、ngx_brotli 系统库软链）
-  和 PHP 默认分支编译。约 40–90 分钟。**正式发布强制走这一档**。
-
-容器用 `debian:12`，与本项目的目标发行版一致 ——
-在 ubuntu-latest 上编得过不代表在 Debian 12 上编得过。
-
----
-
-## 签名
-
-默认用 GitHub 原生的**构建证明**（build provenance attestation），
-不需要管理任何密钥。使用者这样验：
+使用者可这样校验：
 
 ```bash
 sha256sum -c SHA256SUMS
 gh attestation verify lnmp-v2.3-YYYYMMDD.tar.gz --repo <owner>/<repo>
 ```
 
-如果想额外提供 GPG 分离签名，在仓库
-**Settings → Secrets and variables → Actions** 里加两个 secret：
+GPG 分离签名是可选项。仓库配置了 `GPG_PRIVATE_KEY` 和 `GPG_PASSPHRASE` 后，
+发布工作流会额外生成 `.asc`；未配置时跳过，不影响构建证明和发布。
 
-- `GPG_PRIVATE_KEY`：`gpg --armor --export-secret-keys <KEYID>` 的完整输出
-- `GPG_PASSPHRASE`：该私钥的口令
+## 维护版本号
 
-配了才走，没配自动跳过，不影响发布。
+数据库、PHP、Apache 和 phpMyAdmin 的菜单版本在 `include/profile.sh`，其它大部分版本
+在 `include/version.sh`。相关列表还会出现在：
 
----
+- `t/probe_urls.sh`
+- `t/gen_checksums.sh`
+- `t/test_profile.sh`
+- `src/checksums.sha256`
 
-## 首次启用要做的三件事
+修改版本时应同步这些位置，并运行一致性检查。`Boost_Ver`、`Boost_New_Ver` 是下载探测
+和校验清单使用的版本；MySQL 安装所需的 Boost 仍从源码树的 `cmake/boost.cmake`
+动态读取，两者不要混用。
 
-1. **仓库 Settings → Actions → General → Workflow permissions**
-   选 **Read and write permissions**，并勾选
-   **Allow GitHub Actions to create and approve pull requests** ——
-   否则「上游版本检查」开不了 PR。
-2. 建两个 label：`dependencies`、`url-health`（工作流会用到，
-   不存在时打标签会失败）。
-3. 手动跑一次 `CI` 和 `上游版本检查`（勾上 *只看报告，不开 PR*）确认环境正常。
+`t/refresh_checksums.sh` 只更新本次升版涉及的条目。不要用全量生成脚本替代日常增量
+更新，否则会下载所有数据库二进制包，并改动与本次升级无关的校验值。
 
----
+## 仓库设置
 
-## 本地也能跑
+首次启用前确认：
 
-所有逻辑都在 `t/` 下的脚本里，工作流只是薄薄一层调用。
-在 Linux 机器上可以直接跑：
+1. **Settings -> Actions -> General -> Workflow permissions** 设为
+   **Read and write permissions**，并允许 Actions 创建和批准 PR。
+2. 创建 `dependencies`、`automated`、`url-health` 和 `bug` 标签。
+3. 手动运行一次 `CI`；再以 `dry_run` 方式运行一次 `上游版本检查`。
+
+## 本地检查
+
+以下命令在 Linux 环境运行：
 
 ```bash
-bash t/consistency.sh          # 跨文件一致性（离线，秒级）
-bash t/check_upstream.sh       # 查上游（联网，只读，不改文件）
-bash t/bump_version.sh --dry-run
-bash t/test_bump.sh            # 升版跨文件同步自测（离线，秒级）
-bash t/build_test.sh lua       # 真编译，需 root
+bash -n include/version.sh t/probe_urls.sh t/gen_checksums.sh
+bash t/lint.sh
+bash t/consistency.sh
+bash t/test_profile.sh
+bash t/test_bump.sh
+bash t/test_upstream.sh
+LIST_ONLY=1 bash t/gen_checksums.sh
+```
+
+联网检查和编译验证：
+
+```bash
+bash t/check_upstream.sh
+bash t/probe_urls.sh
+bash t/build_test.sh lua
 ```

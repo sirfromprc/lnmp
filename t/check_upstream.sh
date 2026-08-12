@@ -21,7 +21,7 @@
 #   AUTO     可以自动升。同分支内的点版本升级，无跨组件耦合。
 #   COUPLED  必须成组更新，不能单独更新。
 #   MANUAL   需要人工评估的更新，仅生成报告。
-#   PINNED   固定版本，不执行上游检查；理由见 include/version.sh。
+#   PINNED   固定版本，不执行上游检查；理由见报告末尾的 PINNED 表。
 #
 # 新组件默认归入 MANUAL，确认可自动更新后再调整类别。
 # ---------------------------------------------------------------------------
@@ -54,6 +54,15 @@ want()
 
 log()  { printf '%s\n' "$*" >&2; }
 note() { printf '%s\n' "$*" >> "${REPORT}"; }
+
+require_value()
+{
+    # require_value <说明> <值>
+    [ -n "$2" ] && return 0
+    log "  !! 取 $1 失败"
+    errors=$((errors+1))
+    return 1
+}
 
 # propose <变量名> <当前值> <建议值> <类别> [说明]
 propose()
@@ -104,6 +113,22 @@ gh_latest() { gh_tags "$1" "$2" | tail -1; }
 # url_alive <URL>：读取首字节以判断文件是否存在。
 # 不用 HEAD：cdn.mysql.com、files.phpmyadmin.net 等对 HEAD 返回 403/405。
 url_alive() { ${CURL} -r 0-0 -o /dev/null "$1" 2>/dev/null; }
+
+# mysql_url_state <URL>：输出 alive / missing / error。
+# MySQL 没有版本 API，需要把正常的 404 与网络、限流、服务端错误分开。
+mysql_url_state()
+{
+    local code rc
+    code=$(curl -sL --retry 2 --retry-delay 3 --max-time 40 -r 0-0 \
+        -o /dev/null -w '%{http_code}' "$1" 2>/dev/null)
+    rc=$?
+    [ ${rc} -ne 0 ] && { echo error; return; }
+    case "${code}" in
+        200|206) echo alive ;;
+        404) echo missing ;;
+        *) echo error ;;
+    esac
+}
 
 # 列目录型站点里找最大版本： list_latest <目录URL> <文件名ERE，版本号用\1捕获>
 list_latest()
@@ -159,11 +184,21 @@ check_lua_stack()
     want_code=$(echo "${new_mod}" | awk -F. '{printf "%d", $1*1000000 + $2*1000 + $3}')
 
     # 从最近 10 个 resty-core tag 中查找断言匹配 want_code 的版本。
-    local candidate matched=''
-    for candidate in $(gh_tags openresty/lua-resty-core '^0\.1\.[0-9]+' | tail -10 | tac); do
+    #
+    # 取数失败必须与"上游确实还没发布配套版本"区分开：两者都会让 matched 为空，
+    # 但前者是检查没做成，不能写成结论、更不能让退出码保持 0。
+    local candidates
+    candidates=$(gh_tags openresty/lua-resty-core '^0\.1\.[0-9]+' | tail -10 | tac)
+    require_value 'lua-resty-core tag' "${candidates}" || return 0
+
+    local candidate matched='' fetch_failed=''
+    for candidate in ${candidates}; do
         local base_lua
         base_lua=$(${CURL} "https://raw.githubusercontent.com/openresty/lua-resty-core/v${candidate}/lib/resty/core/base.lua")
-        [ -z "${base_lua}" ] && continue
+        if [ -z "${base_lua}" ]; then
+            fetch_failed='y'
+            continue
+        fi
         # 第一处 ngx_lua_version 断言就是 http 子系统的那条
         local code
         code=$(printf '%s' "${base_lua}" \
@@ -174,6 +209,13 @@ check_lua_stack()
             break
         fi
     done
+
+    # 有 base.lua 没取到，就不能断言"上游没有配套版本"——漏掉的那个可能正是它。
+    if [ -z "${matched}" ] && [ -n "${fetch_failed}" ]; then
+        log "  !! 部分 lua-resty-core 的 base.lua 取数失败，无法判定配套版本"
+        errors=$((errors+1))
+        return 0
+    fi
 
     if [ -z "${matched}" ]; then
         note "| Lua 全家桶 | mod ${cur_mod} / core ${cur_core} | — | COUPLED | \
@@ -196,11 +238,16 @@ lua-nginx-module 有新版 ${new_mod}，但**尚未找到声明配套的 lua-res
         "该 tag 的 base.lua 声明需要 lua-nginx-module ${new_mod}"
 
     # lrucache 与 luajit2 同属该运行时组件组，一并更新。
+    # 其中一个取数失败只跳过它自己，不影响另一个的检查结果。
     local new_lru new_jit
     new_lru=$(gh_latest openresty/lua-resty-lrucache '^0\.[0-9.]+$')
     new_jit=$(gh_latest openresty/luajit2 '^2\.1-[0-9]{8}$')
-    propose LuaRestyLrucache "${LuaRestyLrucache}" "lua-resty-lrucache-${new_lru}" COUPLED "随全家桶同升"
-    propose Luajit_Ver "${Luajit_Ver}" "luajit2-${new_jit}" COUPLED "随全家桶同升"
+    if require_value 'lua-resty-lrucache tag' "${new_lru}"; then
+        propose LuaRestyLrucache "${LuaRestyLrucache}" "lua-resty-lrucache-${new_lru}" COUPLED "随全家桶同升"
+    fi
+    if require_value 'luajit2 tag' "${new_jit}"; then
+        propose Luajit_Ver "${Luajit_Ver}" "luajit2-${new_jit}" COUPLED "随全家桶同升"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -221,6 +268,7 @@ check_nginx()
     local latest
     latest=$(list_latest "https://nginx.org/download/" \
              "nginx-(${branch//./\\.}\.[0-9]+)\.tar\.gz")
+    require_value 'nginx 下载目录' "${latest}" || return 0
     propose Nginx_Ver "${Nginx_Ver}" "nginx-${latest}" AUTO "stable ${branch} 分支内点版本"
 
     # 新 stable 分支仅生成提示，不自动更新
@@ -246,6 +294,7 @@ check_openssl()
     local latest
     latest=$(gh_latest openssl/openssl "^openssl-${branch//./\\.}\.[0-9]+$")
     latest="${latest#openssl-}"
+    require_value 'OpenSSL tag' "${latest}" || return 0
     propose Openssl_New_Ver "${Openssl_New_Ver}" "openssl-${latest}" AUTO "${branch} LTS 分支内"
 }
 
@@ -271,8 +320,12 @@ check_php()
         latest=$(${CURL} "https://www.php.net/releases/index.php?json&version=${br}" \
                  | grep -oE "php-${br//./\\.}\.[0-9]+\.tar\.gz" \
                  | head -1 | sed -e 's/^php-//' -e 's/\.tar\.gz$//')
-        # PHP 8.0 已 EOL，API 可能不再返回该分支
-        [ -z "${latest}" ] && continue
+        # PHP 8.0 已 EOL，API 不再返回该分支；其它分支取不到值算检查失败。
+        if [ -z "${latest}" ]; then
+            [ "${br}" = '8.0' ] && continue
+            require_value "PHP ${br} releases API" "${latest}"
+            continue
+        fi
         propose "PHP_${br}" "${cur}" "${latest}" AUTO "profile.sh + probe_urls.sh 三处同步"
     done
 }
@@ -286,14 +339,26 @@ check_mysql()
 {
     want mysql || return 0
     log "检查 MySQL..."
-    local br cur best n miss
+    local br cur best n miss glibc source binary source_state binary_state
     for br in 8.0 8.4; do
         cur=$(grep -oE "mysql-${br//./\\.}\.[0-9]+" include/profile.sh | head -1)
         cur="${cur#mysql-}"
         [ -z "${cur}" ] && continue
         best="${cur##*.}"; n=$((best+1)); miss=0
+        case "${br}" in
+            8.0) glibc='2.28' ;;
+            8.4) glibc='2.17' ;;
+        esac
         while [ ${miss} -lt 3 ]; do
-            if url_alive "https://cdn.mysql.com/Downloads/MySQL-${br}/mysql-${br}.${n}.tar.gz"; then
+            source="https://cdn.mysql.com/Downloads/MySQL-${br}/mysql-${br}.${n}.tar.gz"
+            binary="https://cdn.mysql.com/Downloads/MySQL-${br}/mysql-${br}.${n}-linux-glibc${glibc}-x86_64.tar.xz"
+            source_state=$(mysql_url_state "${source}")
+            binary_state=$(mysql_url_state "${binary}")
+            if [ "${source_state}" = error ] || [ "${binary_state}" = error ]; then
+                log "  !! MySQL ${br}.${n} 上游探测失败"
+                errors=$((errors+1))
+                break
+            elif [ "${source_state}" = alive ] && [ "${binary_state}" = alive ]; then
                 best="${n}"; miss=0
             else
                 miss=$((miss+1))
@@ -318,12 +383,17 @@ check_mariadb()
         [ -z "${cur}" ] && continue
         latest=$(${CURL} "https://downloads.mariadb.org/rest-api/mariadb/${series}/" \
                  | grep -oE "\"${series//./\\.}\.[0-9]+\"" | tr -d '"' | sort -V | tail -1)
+        require_value "MariaDB ${series} REST API" "${latest}" || continue
         propose "MariaDB_${series}" "${cur}" "${latest}" AUTO ""
     done
 }
 
 # ---------------------------------------------------------------------------
 # 7. 其余组件按上游类型分组检查
+#
+# 各组件之间没有依赖关系，任何一个取数失败都只跳过它自己：早退会让后面的组件
+# 连请求都不发，报告里看不出是"没有新版"还是"根本没查"。失败已由
+# require_value 计入 errors，最终退出码仍为非零。
 # ---------------------------------------------------------------------------
 check_misc()
 {
@@ -333,54 +403,82 @@ check_misc()
         log "检查 Apache..."
         local cur; cur=$(grep -oE 'Apache 2\.4\.[0-9]+' include/profile.sh | head -1); cur="${cur#Apache }"
         latest=$(list_latest "https://downloads.apache.org/httpd/" 'httpd-(2\.4\.[0-9]+)\.tar\.bz2')
-        propose Apache_Ver "${cur}" "${latest}" AUTO "2.4 分支内"
+        if require_value 'Apache 下载目录' "${latest}"; then
+            propose Apache_Ver "${cur}" "${latest}" AUTO "2.4 分支内"
+        fi
     fi
 
     if want phpmyadmin; then
         log "检查 phpMyAdmin..."
-        latest=$(${CURL} "https://www.phpmyadmin.net/home_page/version.json" \
-                 | grep -oE '"version"[[:space:]]*:[[:space:]]*"[0-9.]+"' \
-                 | sed -e 's/.*"\(.*\)"$/\1/' | head -1)
-        propose PhpMyAdmin_Ver "${PhpMyAdmin_Ver}" \
-                "phpMyAdmin-${latest}-all-languages" AUTO ""
+        local pma_current
+        pma_current=$(grep -oE 'phpMyAdmin-[0-9.]+-all-languages' include/profile.sh | head -1)
+        if require_value 'profile.sh 中的 phpMyAdmin 版本' "${pma_current}"; then
+            latest=$(${CURL} "https://www.phpmyadmin.net/home_page/version.json" \
+                     | grep -oE '"version"[[:space:]]*:[[:space:]]*"[0-9.]+"' \
+                     | sed -e 's/.*"\(.*\)"$/\1/' | head -1)
+            if require_value 'phpMyAdmin version.json' "${latest}"; then
+                propose PhpMyAdmin_Ver "${pma_current}" \
+                        "phpMyAdmin-${latest}-all-languages" AUTO ""
+            fi
+        fi
     fi
 
     if want openresty; then
         log "检查 OpenResty..."
         latest=$(list_latest "https://openresty.org/download/" 'openresty-([0-9.]+)\.tar\.gz')
-        propose OpenResty_Ver "${OpenResty_Ver}" "openresty-${latest}" MANUAL \
-                "自带 nginx 版本会变，且**不进 checksums（只有 PGP 签名）**，升级前确认签名密钥未变"
+        if require_value 'OpenResty 下载目录' "${latest}"; then
+            propose OpenResty_Ver "${OpenResty_Ver}" "openresty-${latest}" MANUAL \
+                    "自带 nginx 版本会变，且**不进 checksums（只有 PGP 签名）**，升级前确认签名密钥未变"
+        fi
     fi
 
     if want redis; then
         latest=$(gh_latest redis/redis '^[0-9]+\.[0-9]+\.[0-9]+$')
-        propose Redis_Stable_Ver "${Redis_Stable_Ver}" "redis-${latest}" AUTO ""
+        if require_value 'Redis tag' "${latest}"; then
+            propose Redis_Stable_Ver "${Redis_Stable_Ver}" "redis-${latest}" AUTO ""
+        fi
     fi
     if want memcached; then
         latest=$(gh_latest memcached/memcached '^[0-9]+\.[0-9]+\.[0-9]+$')
-        propose Memcached_Ver "${Memcached_Ver}" "memcached-${latest}" AUTO ""
+        if require_value 'Memcached tag' "${latest}"; then
+            propose Memcached_Ver "${Memcached_Ver}" "memcached-${latest}" AUTO ""
+        fi
     fi
     if want pureftpd; then
         latest=$(gh_latest jedisct1/pure-ftpd '^[0-9]+\.[0-9]+\.[0-9]+$')
-        propose Pureftpd_Ver "${Pureftpd_Ver}" "pure-ftpd-${latest}" AUTO ""
+        if require_value 'pure-ftpd tag' "${latest}"; then
+            propose Pureftpd_Ver "${Pureftpd_Ver}" "pure-ftpd-${latest}" AUTO ""
+        fi
     fi
     if want nghttp2; then
         latest=$(gh_latest nghttp2/nghttp2 '^[0-9]+\.[0-9]+\.[0-9]+$')
-        propose Nghttp2_Ver "${Nghttp2_Ver}" "nghttp2-${latest}" AUTO ""
+        if require_value 'nghttp2 tag' "${latest}"; then
+            propose Nghttp2_Ver "${Nghttp2_Ver}" "nghttp2-${latest}" AUTO ""
+        fi
     fi
     if want jemalloc; then
         latest=$(gh_latest jemalloc/jemalloc '^[0-9]+\.[0-9]+\.[0-9]+$')
-        propose Jemalloc_Ver "${Jemalloc_Ver}" "jemalloc-${latest}" AUTO ""
+        if require_value 'jemalloc tag' "${latest}"; then
+            propose Jemalloc_Ver "${Jemalloc_Ver}" "jemalloc-${latest}" AUTO ""
+        fi
     fi
     if want gperftools; then
-        latest=$(gh_latest gperftools/gperftools '^[0-9]+\.[0-9]+(\.[0-9]+)?$')
-        propose TCMalloc_Ver "${TCMalloc_Ver}" "gperftools-${latest}" AUTO ""
-        latest=$(gh_latest libunwind/libunwind '^[0-9]+\.[0-9]+(\.[0-9]+)?$')
-        propose Libunwind_Ver "${Libunwind_Ver}" "libunwind-${latest}" AUTO ""
+        latest=$(gh_latest gperftools/gperftools '^gperftools-[0-9]+\.[0-9]+(\.[0-9]+)?$')
+        if require_value 'gperftools tag' "${latest}"; then
+            latest="${latest#gperftools-}"
+            propose TCMalloc_Ver "${TCMalloc_Ver}" "gperftools-${latest}" AUTO ""
+        fi
+        # libunwind 仓库有不属于当前发布线的 4.0.10 tag；本项目只跟 1.x。
+        latest=$(gh_latest libunwind/libunwind '^1\.[0-9]+(\.[0-9]+)?$')
+        if require_value 'libunwind tag' "${latest}"; then
+            propose Libunwind_Ver "${Libunwind_Ver}" "libunwind-${latest}" AUTO ""
+        fi
     fi
     if want imagemagick; then
         latest=$(gh_latest ImageMagick/ImageMagick '^7\.[0-9.]+-[0-9]+$')
-        propose ImageMagick_Ver "${ImageMagick_Ver}" "ImageMagick-${latest}" AUTO ""
+        if require_value 'ImageMagick tag' "${latest}"; then
+            propose ImageMagick_Ver "${ImageMagick_Ver}" "ImageMagick-${latest}" AUTO ""
+        fi
     fi
 
 # PECL 扩展通过官方 stable.txt 获取版本
@@ -392,9 +490,8 @@ check_misc()
             local v
             v=$(${CURL} "https://pecl.php.net/rest/r/$1/stable.txt" | tr -d '[:space:]')
             case "${v}" in
-                ''|*[!0-9.]*)
-                    [ -n "${v}" ] && log "  跳过 $1：上游当前只有预发布版 ${v}"
-                    return 0 ;;
+                '') printf '%s' '__FETCH_ERROR__'; return 0 ;;
+                *[!0-9.]*) printf '%s' "__PRERELEASE__:${v}"; return 0 ;;
             esac
             printf '%s' "${v}"
         }
@@ -403,7 +500,14 @@ check_misc()
         {
             # pecl_propose <变量名> <当前值> <pecl包名> <前缀> [说明]
             local v; v=$(pecl_stable "$3")
-            [ -n "${v}" ] || return 0
+            case "${v}" in
+                __FETCH_ERROR__)
+                    log "  !! 取 PECL $3 stable.txt 失败"
+                    errors=$((errors+1)); return 0 ;;
+                __PRERELEASE__:*)
+                    log "  跳过 $3：上游当前只有预发布版 ${v#__PRERELEASE__:}"
+                    return 0 ;;
+            esac
             propose "$1" "$2" "$4${v}" AUTO "${5:-}"
         }
         pecl_propose PHPRedis_Ver      "${PHPRedis_Ver}"      redis     'redis-'
@@ -440,6 +544,17 @@ cat >> "${REPORT}" <<'EOF'
 | `Libmemcached_Ver` | 1.0.18 | 上游停更，且需要打 gcc7 补丁 |
 | `Autoconf_Ver` | 2.13 | 只服务少数老编译路径，升级会破坏它们 |
 | `Curl_Ver` | 7.62.0 | 仅编译期依赖的特定路径使用，升级需人工确认调用点 |
+| `Freetype_New_Ver` | freetype-2.13.0 | 本包使用 SourceForge 归档命名，迁移到新上游发布源需人工评估 |
+| `Libiconv_Ver` / `Libzip_Ver` | 1.17 / 1.3.2 | 保持现有编译基线；升级需覆盖旧 PHP/数据库组合 |
+| `APR_Ver` / `APR_Util_Ver` | 1.7.6 / 1.6.4 | 仅 Apache 路径使用，按当前归档固定；Apache 组合需一并验证 |
+| `Boost_Ver` / `Boost_New_Ver` | 1.77.0 / 1.84.0 | 只服务校验清单；安装版本由 MySQL 源码动态解析 |
+| `NgxBrotli_Ver` | 随 commit | 由 `NgxBrotli_Commit` 派生，不是独立上游版本 |
+| `NgxDevelKit` / `NgxFancyIndex_Ver` | 0.3.4 / 0.6.0 | nginx 第三方模块，升级需随 nginx 全模块编译验证 |
+| `LuaCjson` / `LuaRestyLock` / `LuaRestyString` / `LuaRestyRedis` / `LuaRestyMysql` | — | 保持当前 Lua 运行时组合，不拆分自动升级 |
+| `LuaRestyUpload` / `LuaRestyWebsocket` / `LuaRestyDns` / `LuaRestyMemcached` / `LuaRestyLimitTraffic` | — | 保持当前 Lua 运行时组合，不拆分自动升级 |
+| `PHP8Memcache_Ver` | memcache-8.2 | PHP 8 可选扩展，保持现有版本；升级需做 PHP 各分支编译验证 |
+| `PHPSodium_Ver` / `PHPApcu_Bc_Ver` | — | PHP 8 已内建 sodium；apcu_bc 只服务旧兼容路径 |
+| `PHPMemcache_Ver` / `PHPMemcached_Ver` | — | PHP 5 时代扩展，PHP 8 使用 `PHP8*` 变量 |
 | `ZendOpcache_Ver` / `PHP7*` / `PHPOldApcu_Ver` | — | 服务 PHP 7 及更早，本包只发 PHP 8.x，留作兼容路径 |
 EOF
 
@@ -457,4 +572,4 @@ EOF
 log "=== 检查完成：AUTO ${n_auto} / COUPLED ${n_coupled} / MANUAL ${n_manual}，取数失败 ${errors} ==="
 log "清单：${BUMPS}"
 log "报告：${REPORT}"
-exit 0
+[ ${errors} -eq 0 ]

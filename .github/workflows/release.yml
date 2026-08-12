@@ -49,6 +49,7 @@ jobs:
       - run: bash t/test_audit_fixes.sh
       - run: bash t/test_dispatch.sh
       - run: bash t/test_bump.sh
+      - run: bash t/test_upstream.sh
 
   # ---- 第二关：真编译 ----
   build:
