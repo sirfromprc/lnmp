@@ -56,6 +56,7 @@ Upgrade_phpMyAdmin()
         Echo_Red "写入 config.inc.php 失败，线上未改动。"; rm -rf "${stage}"; exit 1; }
 
     sed -i "s/LNMPORG/$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')/g" "${stage}/${pma_src}/config.inc.php"
+    sed -i "s/LNMP_DB_PORT/${DB_Port}/g" "${stage}/${pma_src}/config.inc.php"
     # 模板缓存目录在网站根目录之外，与 php.sh 的首装路径保持一致。
     # 网站目录下不再建 upload/save：导出的库转储落在那里就是公网可下载的。
     mkdir -p /var/lib/phpmyadmin/tmp
@@ -83,8 +84,11 @@ Upgrade_phpMyAdmin()
 
     # 访问路径记录跟着搬过来，否则升级后 lnmp status 就查不到入口了。
     # Web 服务器上的映射片段用的还是同一个路径，无需重新生成。
+    # 属主跟着程序目录一起给 www：首装时该文件就是 www:www 600，
+    # 升级后若变成 root:root 会与首装结果不一致。
     if [ -s "${pma_bak}/.access_url" ]; then
         \cp "${pma_bak}/.access_url" "${pma_live}/.access_url"
+        chown www:www "${pma_live}/.access_url"
         chmod 600 "${pma_live}/.access_url"
     fi
 

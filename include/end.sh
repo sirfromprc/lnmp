@@ -33,6 +33,8 @@ Install_LNMP_Command()
     chmod +x /bin/lnmp-backup
     \cp ${cur_dir}/tools/lnmp-tgnotice.sh /bin/lnmp-tgnotice
     chmod +x /bin/lnmp-tgnotice
+    \cp ${cur_dir}/tools/lnmp-phpmyadmin.sh /bin/lnmp-phpmyadmin
+    chmod +x /bin/lnmp-phpmyadmin
     Install_Tgnotice_Profile
 }
 

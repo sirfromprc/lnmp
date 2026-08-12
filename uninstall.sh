@@ -190,6 +190,7 @@ Uninstall_LNMP()
     rm -f /bin/lnmp
     rm -f /bin/lnmp-backup
     rm -f /bin/lnmp-tgnotice
+    rm -f /bin/lnmp-phpmyadmin
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     echo "LNMP Uninstall completed."
 }
@@ -222,6 +223,7 @@ Uninstall_LNMPA()
     rm -f /bin/lnmp
     rm -f /bin/lnmp-backup
     rm -f /bin/lnmp-tgnotice
+    rm -f /bin/lnmp-phpmyadmin
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     echo "LNMPA Uninstall completed."
 }
@@ -252,6 +254,7 @@ Uninstall_LAMP()
     rm -f /bin/lnmp
     rm -f /bin/lnmp-backup
     rm -f /bin/lnmp-tgnotice
+    rm -f /bin/lnmp-phpmyadmin
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     echo "LAMP Uninstall completed."
 }

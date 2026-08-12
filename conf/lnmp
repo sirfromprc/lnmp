@@ -156,8 +156,11 @@ lnmp_status()
     Svc "${DB_SERVICE}" status
 
     # phpMyAdmin 的访问路径是安装时随机生成的，在这里回显，省得去翻安装日志
-    if [ -s /usr/local/phpmyadmin/.access_url ]; then
+    if [ -s /usr/local/phpmyadmin/.access_url ] &&
+       [ -s /usr/local/nginx/conf/phpmyadmin.enable.conf ]; then
         echo "phpMyAdmin: http://<服务器IP>/$(cat /usr/local/phpmyadmin/.access_url)/"
+    elif [ -s /usr/local/phpmyadmin/.access_url ]; then
+        echo "phpMyAdmin: access disabled (program retained)"
     fi
 }
 
@@ -2623,6 +2626,10 @@ case "${arg1}" in
         /bin/lnmp-tgnotice "$@"
         exit $?
         ;;
+    phpmyadmin)
+        /bin/lnmp-phpmyadmin lnmp "${arg2}"
+        exit $?
+        ;;
     ssl)
         info="n"
         Add_SSL_Menu
@@ -2645,6 +2652,7 @@ case "${arg1}" in
         echo "Usage: lnmp backup {init|run|status|list|restore|test}"
         echo "Usage: lnmp backup run [db|web|all] [域名...]"
         echo "Usage: lnmp tgnotice {--init|--test|--status} | lnmp tgnotice \"文本\" [md]"
+        echo "Usage: lnmp phpmyadmin {enable|disable|status}"
         echo "Usage: lnmp ssl add"
         echo "Usage: lnmp {dnsssl|dns} {cx|ali|cf|dp|he|gd|aws}"
         echo "Usage: lnmp onlyssl {cx|ali|cf|dp|he|gd|aws}"

@@ -3,7 +3,8 @@
  * phpMyAdmin 配置（适用于 phpMyAdmin 5.2.x）
  *
  * 本文件由 install.sh / upgrade.sh phpmyadmin 复制到
- * <网站根目录>/phpmyadmin/config.inc.php，并把下面的占位符换成随机值。
+ * /usr/local/phpmyadmin/config.inc.php，并把下面的占位符换成随机值。
+ * 程序目录不在网站根目录下，访问入口由 Web 服务器上的随机路径映射过去。
  *
  * 全部可用配置项见 https://docs.phpmyadmin.net/en/latest/config.html
  */
@@ -27,12 +28,10 @@ $i++;
 /* cookie = 弹出登录框，口令加密存 Cookie。
  * 不要改成 config（把口令明文写进本文件、任何人打开 /phpmyadmin 都直接进库）。 */
 $cfg['Servers'][$i]['auth_type'] = 'cookie';
-/* localhost 会让 PHP 走 UNIX socket 连库（比 TCP 略快，也不受
- * my.cnf 里 bind-address = 127.0.0.1 的影响）。
- * 若报 "No such file or directory"，说明 socket 路径和 PHP 的默认值不一致，
- * 取消下面 socket 那行的注释，填 my.cnf 里的实际路径即可。 */
-$cfg['Servers'][$i]['host'] = 'localhost';
-// $cfg['Servers'][$i]['socket'] = '/tmp/mysql.sock';
+/* 用 TCP 连接本机数据库，端口由 lnmp.conf 的 DB_Port 在安装时写入。
+ * 不用 localhost：mysqli 遇到 localhost 会改走 UNIX socket，从而绕过自定义端口。 */
+$cfg['Servers'][$i]['host'] = '127.0.0.1';
+$cfg['Servers'][$i]['port'] = 'LNMP_DB_PORT';
 /* 与数据库之间启用压缩协议。同机连接没有收益，保持 false。 */
 $cfg['Servers'][$i]['compress'] = false;
 /* 禁止空口令登录。数据库账号若真的没设口令，应该去补口令，而不是放开这里。 */

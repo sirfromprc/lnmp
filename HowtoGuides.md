@@ -99,8 +99,13 @@ DB_Root_Password='换成你自己的强密码' \
 | `Enable_PhpMyAdmin` | `y`/`n` | **默认 `n`**（安全考虑）。要 phpMyAdmin 必须显式开启 |
 | `DB_Root_Password` | 字符串 | 留空则随机生成 |
 
-> **`Enable_PhpMyAdmin` 只在整包安装时生效。** `addons.sh` 里没有单独安装
-> phpMyAdmin 的入口，装完 LNMP 再想加只能重装或手工部署。**装之前想清楚。**
+> **`Enable_PhpMyAdmin` 只控制整包安装，默认仍为 `n`。** 主栈装好后如需补装，
+> 显式执行 `./install.sh phpmyadmin`；重复执行不会覆盖现有安装，升级使用
+> `./upgrade.sh phpmyadmin`。
+>
+> 临时不用时执行 `lnmp phpmyadmin disable` 关闭 Web 入口；需要时执行
+> `lnmp phpmyadmin enable` 恢复。关闭操作保留程序、配置和随机路径，
+> `lnmp phpmyadmin status` 可查看当前访问状态。
 >
 > 开启后，程序装在 `/usr/local/phpmyadmin`（不在网站根目录下），
 > 访问路径随机生成，形如 `49763abb_phpmyadmin`。地址在安装结束时打印，

@@ -6919,7 +6919,7 @@ Debian 12 真实 nginx（openresty/1.31.1.1）实测：
   只写域名等价 `run all <域名>`（不受网站备份周期限制）；任一域名对不上即整体
   失败并列出可用站点。部分备份不推进网站周期计时、不清理任何本地/远端旧批次。
 
-**验证**：Debian 12 测试机（bookworm 6.1.0-23）实测。
+**验证**：Debian 12 实机验证。
 构造真实 nginx 多行 vhost（a.com/b.com/default，两个带 wp-config.php），
 系统路径重定向到沙箱、`systemctl` 打空桩以不污染真实 systemd，mysql/mysqldump
 用桩（库路径代码未改动）。端到端 26 项全过：init 排除 default、备份目录写入
@@ -6941,3 +6941,59 @@ Debian 12 真实 nginx（openresty/1.31.1.1）实测：
   `t/lint.sh` C1-C16、T1 全部通过。大库压力与真实 SFTP/FTP 远端上传不在本次
   范围（见 `todo.md` TODO-BK-001、TODO-BACKUP-FTP-001）。README.md「3.3 备份」
   与 HowtoGuides.md「8.4 备份」已同步说明挑选站点、备份目录询问与 `run <域名>`。
+
+# 阶段 29 - phpMyAdmin 后装与访问开关（2026-08-12）
+
+## PMA-INSTALL-001 主栈安装后可单独补装 phpMyAdmin
+
+**行为变化**：
+
+- 新增 `./install.sh phpmyadmin`。完整 LNMP/LNMPA/LAMP 安装仍由
+  `lnmp.conf` 的 `Enable_PhpMyAdmin` 控制，默认值保持 `n`；单独补装不会修改
+  `lnmp.conf`。
+- 补装识别现有栈与 PHP/mysqli 条件，复用校验下载，分阶段部署并生成随机入口；
+  Web 配置测试、重载、产物检查或 HTTP 冒烟任一步失败都会回滚。
+- `config.inc.php` 使用 `127.0.0.1` TCP 连接，并把 `lnmp.conf` 的 `DB_Port`
+  写入 `Servers.port`，避免 `localhost` 改走 Unix socket 而忽略自定义端口。
+- HTTP 冒烟在 Web reload 后有限重试 5 次，覆盖旧 worker 短暂返回 404 的切换窗口。
+
+**真机验证**：Debian 12、OpenResty、PHP 8.3.33、MySQL 环境执行
+`./install.sh phpmyadmin`，官方归档 SHA-256 校验通过，Nginx 配置测试通过，
+随机入口返回 HTTP 200 和登录页，固定 `/phpmyadmin/` 返回 404；生成配置的主机、
+端口分别为 `127.0.0.1` 和 `lnmp.conf` 当前 `DB_Port`，占位符全部清除。
+重复安装返回 1 且未覆盖现有文件。首次单次冒烟复现 reload 窗口 404，加入有限
+重试后同一流程退出 0。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）。
+
+## PMA-ACCESS-001 phpMyAdmin 访问可关闭和恢复，程序不卸载
+
+**行为变化**：
+
+- 三种管理脚本均支持 `lnmp phpmyadmin enable|disable|status`；源码目录也支持
+  `./install.sh phpmyadmin enable|disable|status`。
+- `disable` 把 Web 映射移动到 Web 配置目录中的隐藏停用文件，测试配置并重载；
+  `/usr/local/phpmyadmin`、`config.inc.php` 和随机入口文件均保留。
+- `enable` 恢复原映射并测试、重载；配置测试或重载失败时恢复切换前状态。
+- 对旧版已安装环境执行补装时，事务式补齐 `/bin/lnmp` 子命令与
+  `/bin/lnmp-phpmyadmin`，失败与主安装一起回滚。
+
+**真机验证**：开启状态入口返回 200；执行 `disable` 返回 0，入口返回 404，
+程序、随机入口及数据库端口配置保持不变；执行 `enable` 返回 0，入口恢复 200
+并包含登录页标识；再次关闭后保持 404。故意写坏 Nginx 主配置再开启，命令返回
+1，停用映射恢复且入口仍为 404；恢复主配置后 `nginx -t` 通过。最终测试环境
+保留 PHP、phpMyAdmin 程序和 nftables，并将 phpMyAdmin 入口保持关闭。
+
+- **验证状态**：已实测（Debian 12，2026-08-12）。
+
+## PMA-RUN-001 定向回归与全仓检查
+
+- `bash -n` 覆盖安装、升级、卸载、三种管理脚本、辅助脚本和定向测试。
+- `/usr/local/php/bin/php -l conf/config.inc.php` 通过。
+- `t/test_install_phpmyadmin.sh` 覆盖默认值、入口退出码、重复安装、回滚、端口传播、
+  reload 重试、三种栈管理命令和访问开关失败恢复，全部通过。
+- `t/lint.sh` 与 `t/consistency.sh` 的项目脚本语法和其它规则通过；测试机 `src/`
+  下解压的第三方 Boost、memcache、PHP 源码及构建产物触发 C13、C16、V7，属于
+  工作目录内第三方文件扫描噪音，因此不记为全仓检查通过。
+
+- **验证状态**：定向功能已实测；全仓检查存在上述第三方源码命中（2026-08-12）。

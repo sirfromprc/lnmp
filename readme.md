@@ -14,7 +14,7 @@
 - [一、这个分支改了什么](#一这个分支改了什么)
 - [二、安装](#二安装)
 - [三、常用功能说明](#三常用功能说明)
-- [四、以后手工升级怎么改](#四以后手工升级怎么改)
+- [四、组件手工升级](#四组件手工升级)
 - [五、常见问题](#五常见问题)
 - [六、相关文档](#六相关文档)
 
@@ -109,11 +109,11 @@
 ```bash
 # 方式一：clone（方便后续 git pull 更新）
 yum install -y git || apt-get install -y git
-git clone https://github.com/sirfromprc/lnmp.git lnmp
+git clone https://github.com/123456/lnmp.git lnmp
 cd lnmp
 
 # 方式二：下载 release 压缩包
-wget https://github.com/sirfromprc/lnmp/archive/refs/tags/v2.3.tar.gz
+wget https://github.com/123456/lnmp/archive/refs/tags/v2.3.tar.gz
 tar zxf v2.3.tar.gz
 cd lnmp-2.3
 ```
@@ -256,6 +256,38 @@ lnmp tgnotice {--init|--test|--status}            # Telegram 通知，见 3.3.1
 inactive，后续运维命令判断不了服务状态。init 脚本仍然保留，供没有 systemd 的
 环境（容器、WSL）使用。
 
+### 3.1.1 自定义服务端口
+
+端口统一在 `lnmp.conf` 里配置，安装时会**同时**写进服务自己的配置文件和nftables 规则：
+
+```bash
+SSH_Port=22                  # 仅用于放行；本包不改 sshd_config
+DB_Port=3306                 # 写进 /etc/my.cnf，并按此端口阻断
+DB_X_Port=33060              # MySQL X Protocol，同样写进配置并阻断
+Redis_Port=6379              # 写进 redis.conf、init 脚本与自测页
+Memcached_Port=11211         # 写进 init 脚本
+Pureftpd_Port=21             # 写进 pure-ftpd.conf 的 Bind
+Pureftpd_Data_Port=20
+Pureftpd_Passive_Min=20000   # 写进 PassivePortRange
+Pureftpd_Passive_Max=30000
+```
+
+安装时用环境变量覆盖也可以：
+
+```bash
+Pureftpd_Port=2121 Redis_Port=6380 ./install.sh lnmp
+```
+
+覆写之后脚本会回读确认写进去了；模板结构变化导致没写成会直接报错停下，
+不会出现"服务监听老端口、防火墙放行新端口"这种两边对不上又没有报错的情况。
+
+> **改 `SSH_Port` 要格外小心**：本包只用它生成放行规则，不会去改
+> `sshd_config`。如果你已经把 SSH 换到别的端口，这里必须跟着改，
+> 否则装完防火墙只放行 22，你会被关在门外。
+>
+> nginx 的 80/443 不在其中 —— 那两个端口散落在 nginx.conf、每个站点配置和
+> SSL 签发流程里，不是一个变量能覆盖的。
+
 ### 3.2 Nginx
 
 **配置文件**
@@ -371,102 +403,6 @@ lnmp database import <库名> <文件.sql.gz>   # 导入到已存在的库
 
 会停掉数据库，用私有 socket + 禁用网络的方式临时启动、改密码、再正常启动。
 全程不开放网络端口，密码输入不回显。
-
-**备份**：`lnmp backup`（网站文件与数据库，自动导出、自动上传、可试恢复）。
-
-```bash
-lnmp backup init         # 扫描已有站点，挑选要备份的站点后生成 /etc/lnmp/backup.conf，并装好 systemd timer
-lnmp backup run          # 立即执行一次（timer 会自动调用，通常不必手工跑）
-lnmp backup run <域名>…  # 只备份指定站点（该站点的文件与库）
-lnmp backup run db  <域名>…  # 只备份指定站点的库
-lnmp backup run web <域名>…  # 只备份指定站点的文件
-lnmp backup status    # 上次结果、下次计划、最近错误
-lnmp backup list      # 列出本地与远端的备份批次
-lnmp backup test      # 试恢复：把最新库备份导入临时库校验后删除
-lnmp backup restore db  <库名> [批次]
-lnmp backup restore web <域名> [批次]
-```
-
-配置在 `/etc/lnmp/backup.conf`（权限 600），站点按
-`域名|网站目录|数据库名` 一行一条，数据库和网站可以有各自的备份周期与保留天数
-（例如库每天一份留 14 天，网站每周一份留 60 天）。
-
-`init` 扫描到站点后会让你挑选要纳入备份的站点：回车全选，`1 3` 或直接写域名只选
-指定项，`-default` 或 `-2` 排除指定项 —— `default` 这类占位站点可以在这一步排除。
-`init` 还会询问备份存放目录（默认 `/home/backup`，磁盘不够时改到大盘），并在结尾
-醒目列出仍是默认值、需要按实际情况修改的参数，尤其是默认关闭的异地上传与加密。
-配置改完直接生效，不必重跑 `init`（只有要改执行时间才需要重跑）。
-
-`run` 不带站点参数时按配置整体执行；带域名时只备份指定站点，此类部分备份不会推进
-网站备份周期、也不会清理任何旧批次，适合临时给某个站点补一份。
-
-`init` 之后本地备份就已经由 systemd timer 自动执行。异地上传默认关闭，
-开启需要一台独立的备份服务器并在两侧各配一次 ——
-备份账号、chroot、专用密钥、主机指纹核对和排查表都写在
-`HowtoGuides.md` 的「8.5 异地备份（SFTP）」，照着做即可。
-
-### 3.3.1 Telegram 通知
-
-```bash
-lnmp tgnotice --init      # 交互写入 /etc/lnmp/notify.conf（600）
-lnmp tgnotice --test      # 发一条测试消息
-lnmp tgnotice --status    # 看当前配置（token 只显示前段）
-```
-
-配好之后，`tgnotice` 是一个**全局可用的 shell 函数**，在任何脚本或交互
-shell 里都能直接写：
-
-```bash
-tgnotice "备份失败：wpdemo"          # 默认 HTML 格式
-tgnotice "*备份完成*" md             # MarkdownV2 格式
-tgnotice "原样文本 < & >" text       # 不做格式解析
-```
-
-函数由 `/etc/profile.d/lnmp-tgnotice.sh` 自动加载。非交互脚本里如果取不到，
-显式加载一次：`. /bin/lnmp-tgnotice`。
-
-几个行为要点：
-
-- bot token 和消息正文都不进命令行参数（走 curl 的 600 配置文件），
-  同机其他用户 `ps` 看不到。
-- 文本原样发送，不替你转义 —— HTML 模式下 `<b>粗体</b>` 是有效的。
-  代价是纯文本里的 `<` `&` 会让 Telegram 报 400，此时会**自动降级成纯文本
-  重发一次**并打印告警，通知不会因为格式问题丢掉。
-- 未配置或 `TG_Enable=0` 时静默跳过并返回 0，所以在脚本里随手加调用是安全的。
-- 发送失败返回非 0。通知失败通常不该中断主流程，需要时写
-  `tgnotice "..." || true`。
-
-### 3.3.2 自定义服务端口
-
-端口统一在 `lnmp.conf` 里配置，安装时会**同时**写进服务自己的配置文件和nftables 规则：
-
-```bash
-SSH_Port=22                  # 仅用于放行；本包不改 sshd_config
-DB_Port=3306                 # 写进 /etc/my.cnf，并按此端口阻断
-DB_X_Port=33060              # MySQL X Protocol，同样写进配置并阻断
-Redis_Port=6379              # 写进 redis.conf、init 脚本与自测页
-Memcached_Port=11211         # 写进 init 脚本
-Pureftpd_Port=21             # 写进 pure-ftpd.conf 的 Bind
-Pureftpd_Data_Port=20
-Pureftpd_Passive_Min=20000   # 写进 PassivePortRange
-Pureftpd_Passive_Max=30000
-```
-
-安装时用环境变量覆盖也可以：
-
-```bash
-Pureftpd_Port=2121 Redis_Port=6380 ./install.sh lnmp
-```
-
-覆写之后脚本会回读确认写进去了；模板结构变化导致没写成会直接报错停下，
-不会出现"服务监听老端口、防火墙放行新端口"这种两边对不上又没有报错的情况。
-
-> **改 `SSH_Port` 要格外小心**：本包只用它生成放行规则，不会去改
-> `sshd_config`。如果你已经把 SSH 换到别的端口，这里必须跟着改，
-> 否则装完防火墙只放行 22，你会被关在门外。
->
-> nginx 的 80/443 不在其中 —— 那两个端口散落在 nginx.conf、每个站点配置和
-> SSL 签发流程里，不是一个变量能覆盖的。
 
 ### 3.4 PHP
 
@@ -596,7 +532,41 @@ lnmp ftp {add|list|edit|del|show}
 | `denyhosts.sh` / `fail2ban.sh` | SSH 防爆破 |
 | `denyhosts_removeip.sh` | 解封被误封的 IP |
 
-### 3.10 防火墙
+
+### 3.10备份：`lnmp backup`（网站文件与数据库，自动导出、自动上传、可试恢复）。
+
+```bash
+lnmp backup init         # 扫描已有站点，挑选要备份的站点后生成 /etc/lnmp/backup.conf，并装好 systemd timer
+lnmp backup run          # 立即执行一次（timer 会自动调用，通常不必手工跑）
+lnmp backup run <域名>…  # 只备份指定站点（该站点的文件与库）
+lnmp backup run db  <域名>…  # 只备份指定站点的库
+lnmp backup run web <域名>…  # 只备份指定站点的文件
+lnmp backup status    # 上次结果、下次计划、最近错误
+lnmp backup list      # 列出本地与远端的备份批次
+lnmp backup test      # 试恢复：把最新库备份导入临时库校验后删除
+lnmp backup restore db  <库名> [批次]
+lnmp backup restore web <域名> [批次]
+```
+
+配置在 `/etc/lnmp/backup.conf`（权限 600），站点按
+`域名|网站目录|数据库名` 一行一条，数据库和网站可以有各自的备份周期与保留天数
+（例如库每天一份留 14 天，网站每周一份留 60 天）。
+
+`init` 扫描到站点后会让你挑选要纳入备份的站点：回车全选，`1 3` 或直接写域名只选
+指定项，`-default` 或 `-2` 排除指定项 —— `default` 这类占位站点可以在这一步排除。
+`init` 还会询问备份存放目录（默认 `/home/backup`，磁盘不够时改到大盘），并在结尾
+醒目列出仍是默认值、需要按实际情况修改的参数，尤其是默认关闭的异地上传与加密。
+配置改完直接生效，不必重跑 `init`（只有要改执行时间才需要重跑）。
+
+`run` 不带站点参数时按配置整体执行；带域名时只备份指定站点，此类部分备份不会推进
+网站备份周期、也不会清理任何旧批次，适合临时给某个站点补一份。
+
+`init` 之后本地备份就已经由 systemd timer 自动执行。异地上传默认关闭，
+开启需要一台独立的备份服务器并在两侧各配一次 ——
+备份账号、chroot、专用密钥、主机指纹核对和排查表都写在
+`HowtoGuides.md` 的「8.5 异地备份（SFTP）」，照着做即可。
+
+### 3.11 防火墙
 
 本包用 nftables，规则在独立的 `inet lnmp` 表里：
 
@@ -606,13 +576,44 @@ nft list ruleset                # 查看全部规则
 ```
 
 默认放行 `SSH_Port`（默认 22）、80、443 和 ping，挡掉数据库、Redis、Memcached
-端口的外部访问；具体端口跟随 `lnmp.conf` 里的变量（见 3.3.2），不是写死的。
+端口的外部访问；具体端口跟随 `lnmp.conf` 里的变量（见 3.1.1），不是写死的。
 链的默认策略为 `accept`，避免安装过程阻断现有管理连接。
 持久化文件：Debian 系 `/etc/nftables.d/lnmp.nft`，由 `nftables.service` 加载。
 
+### 3.12 Telegram 通知
+
+```bash
+lnmp tgnotice --init      # 交互写入 /etc/lnmp/notify.conf（600）
+lnmp tgnotice --test      # 发一条测试消息
+lnmp tgnotice --status    # 看当前配置（token 只显示前段）
+```
+
+配好之后，`tgnotice` 是一个**全局可用的 shell 函数**，在任何脚本或交互
+shell 里都能直接写：
+
+```bash
+tgnotice "备份失败：wpdemo"          # 默认 HTML 格式
+tgnotice "*备份完成*" md             # MarkdownV2 格式
+tgnotice "原样文本 < & >" text       # 不做格式解析
+```
+
+函数由 `/etc/profile.d/lnmp-tgnotice.sh` 自动加载。非交互脚本里如果取不到，
+显式加载一次：`. /bin/lnmp-tgnotice`。
+
+几个行为要点：
+
+- bot token 和消息正文都不进命令行参数（走 curl 的 600 配置文件），
+  同机其他用户 `ps` 看不到。
+- 文本原样发送，不替你转义 —— HTML 模式下 `<b>粗体</b>` 是有效的。
+  代价是纯文本里的 `<` `&` 会让 Telegram 报 400，此时会**自动降级成纯文本
+  重发一次**并打印告警，通知不会因为格式问题丢掉。
+- 未配置或 `TG_Enable=0` 时静默跳过并返回 0，所以在脚本里随手加调用是安全的。
+- 发送失败返回非 0。通知失败通常不该中断主流程，需要时写
+  `tgnotice "..." || true`。
+
 ---
 
-## 四、以后手工升级怎么改
+## 四、组件手工升级
 
 ### 4.1 优先用升级脚本
 
@@ -626,6 +627,26 @@ nft list ruleset                # 查看全部规则
 ./upgrade.sh phpmyadmin   # 升级 phpMyAdmin
 ./upgrade.sh mphp         # 升级多版本 PHP 中的某一个
 ```
+
+完整安装默认不部署 phpMyAdmin。主栈装好后如需补装，可显式执行：
+
+```bash
+./install.sh phpmyadmin
+```
+
+安装后可随时关闭或重新开启公网入口，程序、配置和随机访问路径不会删除：
+
+```bash
+lnmp phpmyadmin disable
+lnmp phpmyadmin enable
+lnmp phpmyadmin status
+```
+
+在源码目录中也可使用 `./install.sh phpmyadmin disable|enable|status`。
+
+脚本会识别现有 LNMP/LNMPA/LAMP 环境，校验下载文件，生成随机访问路径并在
+Web 配置检查通过后重载服务。重复执行不会覆盖现有安装；升级仍使用
+`./upgrade.sh phpmyadmin`。
 
 脚本会要求输入目标版本号。Nginx 和 PHP 的升级采用**事务式**流程：
 先在临时目录构建、跑冒烟测试、通过后才切换，失败自动回滚。

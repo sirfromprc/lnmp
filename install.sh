@@ -199,10 +199,15 @@ case "${Stack}" in
         Install_Multiplephp
         Install_Rc=$?
         ;;
+    phpmyadmin)
+        Install_Only_phpMyAdmin "${2:-}" 2>&1 | tee /root/phpmyadmin-install.log
+        Install_Rc=${PIPESTATUS[0]}
+        ;;
     *)
 
         Echo_Red "Usage: $0 {lnmp|lnmpa|lamp}"
-        Echo_Red "Usage: $0 {nginx|db|mphp}"
+        Echo_Red "Usage: $0 {nginx|db|mphp|phpmyadmin}"
+        Echo_Red "Usage: $0 phpmyadmin {enable|disable|status}"
         Install_Rc=1
         ;;
 esac

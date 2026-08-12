@@ -117,6 +117,12 @@ lamp_status()
 {
     Svc httpd status
     Svc "${DB_SERVICE}" status
+    if [ -s /usr/local/phpmyadmin/.access_url ] &&
+       [ -s /usr/local/apache/conf/extra/phpmyadmin.enable.conf ]; then
+        echo "phpMyAdmin: http://<服务器IP>/$(cat /usr/local/phpmyadmin/.access_url)/"
+    elif [ -s /usr/local/phpmyadmin/.access_url ]; then
+        echo "phpMyAdmin: access disabled (program retained)"
+    fi
 }
 
 Function_Vhost()
@@ -2003,6 +2009,10 @@ case "${arg1}" in
         /bin/lnmp-tgnotice "$@"
         exit $?
         ;;
+    phpmyadmin)
+        /bin/lnmp-phpmyadmin lamp "${arg2}"
+        exit $?
+        ;;
     ssl)
         info="n"
         Add_SSL_Menu
@@ -2025,6 +2035,7 @@ case "${arg1}" in
         echo "Usage: lnmp backup {init|run|status|list|restore|test}"
         echo "Usage: lnmp backup run [db|web|all] [域名...]"
         echo "Usage: lnmp tgnotice {--init|--test|--status} | lnmp tgnotice \"文本\" [md]"
+        echo "Usage: lnmp phpmyadmin {enable|disable|status}"
         echo "Usage: lnmp ssl add"
         echo "Usage: lnmp {dnsssl|dns} {cx|ali|cf|dp|he|gd|aws}"
         echo "Usage: lnmp onlyssl {cx|ali|cf|dp|he|gd|aws}"
