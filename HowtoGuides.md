@@ -902,8 +902,11 @@ lnmp database import <库名> <文件.sql.gz>   # 导入到已存在的库
 配置了异地之后自动上传：
 
 ```bash
-lnmp backup init          # 扫描已有站点生成配置，并装好 systemd timer
+lnmp backup init          # 扫描已有站点、挑选后生成配置，并装好 systemd timer
 lnmp backup run all       # 立即完整跑一次
+lnmp backup run wp.example.com   # 只备份某个站点（文件与它的库）
+lnmp backup run db  wp.example.com   # 只备份某个站点的库
+lnmp backup run web wp.example.com   # 只备份某个站点的文件
 lnmp backup status        # 上次结果与下次计划
 lnmp backup test          # 试恢复验证：导入临时库校验后删除
 ```
@@ -912,6 +915,22 @@ lnmp backup test          # 试恢复验证：导入临时库校验后删除
 `wp-config.php` 里读出 `DB_NAME`，生成形如
 `域名|网站目录|数据库名` 的条目写进 `/etc/lnmp/backup.conf`（权限 600）。
 新建站点后重跑一次 `init`，或手工往配置里加一行。
+
+`init` 交互要点：
+
+- **挑选站点**：扫描到站点后会列出编号，让你选哪些纳入备份 ——
+  回车全选；`1 3` 或直接写域名只备份指定项；`-2` 或 `-default` 排除指定项
+  （`default` 这类占位站点在这一步排掉即可）。EOF、连续三次乱输入、
+  或排除到一个不剩，都会安全退回全选或重新询问。
+- **备份目录**：会询问存放目录（默认 `/home/backup`），只接受绝对路径且不能是
+  系统目录；磁盘不够时在这里改到大盘。
+- **参数提示**：结尾会醒目列出仍是默认值、需要按实际情况修改的项，尤其是默认关闭
+  的异地上传（`Enable_Remote_Backup` 及各 `Remote_*`）与加密。改完配置直接生效，
+  不必重跑 `init`，只有要改执行时间才需要重跑。
+
+只备份指定站点（`run [db|web] <域名>…`）是临时补一份用的：它不会推进网站备份周期、
+也不会清理任何本地或远端旧批次；给的域名只要有一个不在配置里就整体报错并列出可用
+站点，不会静默漏备。
 
 要点：
 

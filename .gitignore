@@ -1,7 +1,6 @@
-
+CLAUDE.md
 .claude/
 .upstream/
-CLAUDE.md
 
 # 下载缓存与构建产物
 src/*.tar.gz

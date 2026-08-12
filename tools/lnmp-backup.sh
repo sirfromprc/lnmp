@@ -5,6 +5,7 @@
 #
 #   lnmp backup init                 生成配置、目录与定时任务
 #   lnmp backup run [db|web|all]     执行备份（不带参数按配置的周期决定）
+#   lnmp backup run [范围] <域名>... 只备份指定站点
 #   lnmp backup status               上次结果、下次计划、最近错误
 #   lnmp backup list [db|web]        列出本地批次（配了远端则一并列远端）
 #   lnmp backup restore ...          从备份恢复
@@ -109,12 +110,7 @@ Load_Conf()
     # shellcheck disable=SC1090
     . "${Conf_File}" || Die "配置文件语法有误：${Conf_File}"
 
-    [ -n "${Backup_Home}" ] || Die "Backup_Home 不能为空。"
-    case "${Backup_Home}" in
-        /|/bin|/etc|/home|/root|/usr|/var) Die "Backup_Home 不能是系统目录：${Backup_Home}" ;;
-        /*) : ;;
-        *) Die "Backup_Home 必须是绝对路径：${Backup_Home}" ;;
-    esac
+    Check_Backup_Home "${Backup_Home}" || Die "Backup_Home 配置有误：${Conf_File}"
     Is_Number "${Keep_Days_Db}"   || Die "Keep_Days_Db 必须是数字。"
     Is_Number "${Keep_Days_Web}"  || Die "Keep_Days_Web 必须是数字。"
     Is_Number "${Web_Interval_Days}" || Die "Web_Interval_Days 必须是数字。"
@@ -128,6 +124,20 @@ Load_Conf()
 }
 
 Is_Number() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+# 备份目录必须是绝对路径且不能落在系统目录上：Cleanup_Local 会按批次名删除
+# ${Backup_Home}/{db,www} 下的目录，指错地方后果不可逆。
+# init 写配置前和每次 Load_Conf 都走这一份判断，两处不各写一套。
+Check_Backup_Home()
+{
+    local home="${1:-}"
+    [ -n "${home}" ] || { Err "备份目录不能为空。"; return 1; }
+    case "${home}" in
+        /|/bin|/etc|/home|/root|/usr|/var) Err "备份目录不能是系统目录：${home}"; return 1 ;;
+        /*) return 0 ;;
+        *) Err "备份目录必须是绝对路径：${home}"; return 1 ;;
+    esac
+}
 
 # option file 与私钥里是最高权限凭据，权限不对直接停下
 Check_Perm()
@@ -724,6 +734,32 @@ Cleanup_Local()
 # ---------------------------------------------------------------------------
 Site_Field() { printf '%s' "$1" | awk -F'|' -v i="$2" '{gsub(/^[ \t]+|[ \t]+$/, "", $i); print $i}'; }
 
+# 按域名把 Backup_Site 缩成一个子集，供 `lnmp backup run <域名>...` 用。
+# 任何一个域名对不上都直接失败：静默少备份一个站点比报错危险得多。
+Filter_Sites()
+{
+    local want entry domain hit
+    local -a kept=()
+    for want in "$@"; do
+        hit=0
+        for entry in "${Backup_Site[@]}"; do
+            domain=$(Site_Field "${entry}" 1)
+            [ "${domain}" = "${want}" ] || continue
+            hit=1
+            kept+=("${entry}")
+        done
+        if [ "${hit}" -eq 0 ]; then
+            Err "配置里没有站点 ${want}。当前配置的站点："
+            for entry in "${Backup_Site[@]}"; do
+                Err "  $(Site_Field "${entry}" 1)"
+            done
+            return 1
+        fi
+    done
+    Backup_Site=("${kept[@]}")
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # 子命令：run
 # ---------------------------------------------------------------------------
@@ -745,7 +781,7 @@ Run_Db()
         out=$(Encrypt_File "${dir}/db-${db}.sql.gz") || { failed=1; continue; }
     done
     if [ "${n}" -eq 0 ]; then
-        Log WARN "配置里没有任何数据库，跳过库备份。"
+        Log WARN "本次选中的站点都没有配数据库名，跳过库备份。"
         rmdir "${dir}" 2>/dev/null
         return 0
     fi
@@ -774,7 +810,7 @@ Run_Web()
         out=$(Encrypt_File "${dir}/www-${domain}.tar.gz") || { failed=1; continue; }
     done
     if [ "${n}" -eq 0 ]; then
-        Log WARN "配置里没有任何网站目录，跳过网站备份。"
+        Log WARN "本次选中的站点都没有配网站目录，跳过网站备份。"
         rmdir "${dir}" 2>/dev/null
         return 0
     fi
@@ -800,9 +836,25 @@ Web_Due()
 
 Cmd_Run()
 {
-    local what="${1:-auto}" batch rc_db=0 rc_web=0 do_db=0 do_web=0 overall=0
+    local what batch rc_db=0 rc_web=0 do_db=0 do_web=0 overall=0 partial=0
+
+    # 用法：run [db|web|all] [域名...]
+    #   第一个参数是 db/web/all 时当作范围，其余一律当站点域名。
+    #   只写域名（run example.com）等价于 run all example.com —— 指名道姓要备份
+    #   某个站点时，没有理由再让它受网站备份周期的限制。
+    case "${1:-}" in
+        db|web|all) what="$1"; shift ;;
+        '')         what="auto" ;;
+        -*)         Err "run 的用法：lnmp backup run [db|web|all] [域名...]"; return 1 ;;
+        *)          what="all" ;;
+    esac
+    [ "$#" -eq 0 ] || partial=1
 
     Load_Conf || return 1
+    if [ "${partial}" -eq 1 ]; then
+        Filter_Sites "$@" || return 1
+        Log INFO "本次只备份指定站点：$*"
+    fi
     Acquire_Lock || return 1
     mkdir -p "${Backup_Home}" || Die "无法创建 ${Backup_Home}"
     chmod 700 "${Backup_Home}"
@@ -815,7 +867,6 @@ Cmd_Run()
             do_db=1
             if Web_Due; then do_web=1; else Log INFO "网站备份未到周期（每 ${Web_Interval_Days} 天），本次跳过。"; fi
             ;;
-        *) Err "run 的参数只能是 db、web 或 all"; return 1 ;;
     esac
 
     batch=$(New_Batch)
@@ -829,7 +880,7 @@ Cmd_Run()
             State_Set Last_Db_Batch "${batch}"
             if [ "${Enable_Remote_Backup}" = "1" ]; then
                 if Upload_Batch db "${batch}"; then
-                    Cleanup_Remote db "${Keep_Days_Db}"
+                    [ "${partial}" -eq 1 ] || Cleanup_Remote db "${Keep_Days_Db}"
                 else
                     rc_db=1
                 fi
@@ -842,10 +893,12 @@ Cmd_Run()
         Run_Web "${batch}"; rc_web=$?
         if [ "${rc_web}" -eq 0 ] && [ -d "${Backup_Home}/www/${batch}" ]; then
             State_Set Last_Web_Batch "${batch}"
-            State_Set Last_Web_Epoch "$(date '+%s')"
+            # 只备份了部分站点的批次不能推进周期计时，否则下一次 auto 会以为
+            # 整站文件已经备过，把真正的全量网站备份跳过去。
+            [ "${partial}" -eq 1 ] || State_Set Last_Web_Epoch "$(date '+%s')"
             if [ "${Enable_Remote_Backup}" = "1" ]; then
                 if Upload_Batch www "${batch}"; then
-                    Cleanup_Remote www "${Keep_Days_Web}"
+                    [ "${partial}" -eq 1 ] || Cleanup_Remote www "${Keep_Days_Web}"
                 else
                     rc_web=1
                 fi
@@ -854,8 +907,11 @@ Cmd_Run()
         [ "${rc_web}" -eq 0 ] || overall=1
     fi
 
-    # 清理放在最后：先确认这次有了新的可恢复点，再删旧的
-    if [ "${overall}" -eq 0 ]; then
+    # 清理放在最后：先确认这次有了新的可恢复点，再删旧的。
+    # 指定站点的部分备份不算“新的可恢复点”，这一轮不清理任何旧批次。
+    if [ "${partial}" -eq 1 ]; then
+        Log INFO "本次是指定站点的备份，跳过过期清理。"
+    elif [ "${overall}" -eq 0 ]; then
         [ "${do_db}" -eq 1 ]  && Cleanup_Local db  "${Keep_Days_Db}"
         [ "${do_web}" -eq 1 ] && Cleanup_Local www "${Keep_Days_Web}"
     else
@@ -1105,6 +1161,107 @@ Discover_Sites()
     done
 }
 
+# 扫描结果不等于该备份的清单：default 这类占位站点、测试站、只放静态文件的
+# 目录都没必要每天打包上传。让用户在写配置前挑一次，比写完再去手工删行省事。
+# 结果放进全局数组 Picked_Sites（不用 nameref，兼容 bash 4.2）。
+Picked_Sites=()
+Select_Sites()
+{
+    local line ans tok i idx n mode tries=0 bad
+    local -a all=() toks=() hit=() keep=()
+
+    while IFS= read -r line; do
+        [ -n "${line}" ] && all+=("${line}")
+    done <<< "$1"
+    n=${#all[@]}
+    Picked_Sites=()
+    [ "${n}" -gt 0 ] || return 0
+
+    Say "发现以下站点（域名 | 目录 | 数据库）："
+    for ((i = 0; i < n; i++)); do
+        printf '  %2d) %s\n' "$((i + 1))" "$(printf '%s' "${all[i]}" | sed 's/|/  |  /g')"
+    done
+    Say ""
+    Say "选择要备份的站点："
+    Say "  回车        全部备份"
+    Say "  1 3         只备份 1、3 号（也可以写域名）"
+    Say "  -2          除 2 号以外全部备份（也可以写 -default）"
+
+    while :; do
+        printf '> '
+        if ! read -r ans; then
+            echo
+            Warn "非交互执行，按全部站点写入配置。"
+            Picked_Sites=("${all[@]}")
+            return 0
+        fi
+        ans="${ans//,/ }"
+        if [ -z "${ans// /}" ]; then
+            Picked_Sites=("${all[@]}")
+            return 0
+        fi
+
+        # read -a 按 IFS 切分且不做通配展开，用户输入 * 不会被展开成文件名
+        read -r -a toks <<< "${ans}"
+        hit=(); for ((i = 0; i < n; i++)); do hit[i]=0; done
+        mode=""; bad=0
+        for tok in "${toks[@]}"; do
+            case "${tok}" in
+                -*) if [ "${mode}" = "keep" ]; then
+                        Err "不能把“只备份”和“排除”两种写法混在一起。"; bad=1; break
+                    fi
+                    mode="drop"; tok="${tok#-}" ;;
+                *)  if [ "${mode}" = "drop" ]; then
+                        Err "不能把“只备份”和“排除”两种写法混在一起。"; bad=1; break
+                    fi
+                    mode="keep" ;;
+            esac
+            idx=-1
+            if Is_Number "${tok}"; then
+                [ "${tok}" -ge 1 ] && [ "${tok}" -le "${n}" ] && idx=$((tok - 1))
+                [ "${idx}" -ge 0 ] && hit[idx]=1
+            else
+                for ((i = 0; i < n; i++)); do
+                    [ "$(Site_Field "${all[i]}" 1)" = "${tok}" ] || continue
+                    hit[i]=1; idx=${i}
+                done
+            fi
+            if [ "${idx}" -lt 0 ]; then
+                Err "无法识别：${tok}"; bad=1; break
+            fi
+        done
+
+        if [ "${bad}" -eq 0 ]; then
+            keep=()
+            for ((i = 0; i < n; i++)); do
+                if [ "${mode}" = "drop" ]; then
+                    [ "${hit[i]}" -eq 1 ] && continue
+                else
+                    [ "${hit[i]}" -eq 1 ] || continue
+                fi
+                keep+=("${all[i]}")
+            done
+            if [ "${#keep[@]}" -eq 0 ]; then
+                Err "这样选下来一个站点都不剩。"
+                bad=1
+            else
+                Picked_Sites=("${keep[@]}")
+                Say "本次写入配置的站点："
+                printf '%s\n' "${Picked_Sites[@]}" | sed 's/^/  /'
+                return 0
+            fi
+        fi
+
+        tries=$((tries + 1))
+        if [ "${tries}" -ge 3 ]; then
+            Warn "连续三次输入无效，按全部站点写入配置。"
+            Picked_Sites=("${all[@]}")
+            return 0
+        fi
+        Say "请重新输入。"
+    done
+}
+
 Guess_Db()
 {
     local root="$1"
@@ -1163,6 +1320,7 @@ EOF
 Cmd_Init()
 {
     local sites site_lines ans hour db_pass mysql_bin my_cnf_tmp
+    local backup_home="/home/backup"
 
     [ "$(id -u)" = "0" ] || { Err "init 需要 root 权限。"; return 1; }
     mkdir -p "${Conf_Dir}" && chmod 700 "${Conf_Dir}" || { Err "无法创建 ${Conf_Dir}"; return 1; }
@@ -1180,9 +1338,8 @@ Cmd_Init()
     Say "扫描已有站点..."
     sites=$(Discover_Sites)
     if [ -n "${sites}" ]; then
-        Say "发现以下站点（域名 | 目录 | 数据库）："
-        printf '%s\n' "${sites}" | sed 's/^/  /'
-        site_lines=$(printf '%s\n' "${sites}" | sed 's/^/    "/; s/$/"/')
+        Select_Sites "${sites}"
+        site_lines=$(printf '%s\n' "${Picked_Sites[@]}" | sed 's/^/    "/; s/$/"/')
     else
         Warn "没有扫描到站点，配置里会留一条示例，请手工填写。"
         site_lines='    #"example.com|/home/wwwroot/example.com|wpdb"'
@@ -1240,14 +1397,25 @@ EOF
         Say "沿用已有的数据库凭据文件：${My_Cnf}"
     fi
 
+    # 备份目录是最常需要改的一项：默认盘往往放不下整站加整库。
+    # 在这里问一次，省得写完配置再回头改。
+    while :; do
+        printf '备份存放目录（回车用默认 %s）: ' "${backup_home}"
+        read -r ans || { echo; Say "非交互执行，使用默认 ${backup_home}。"; break; }
+        [ -n "${ans}" ] || break
+        if Check_Backup_Home "${ans}"; then backup_home="${ans%/}"; break; fi
+    done
+
     cat > "${Conf_File}" <<EOF
 # LNMP 备份配置 —— 由 lnmp backup init 生成
+#
+# 改完这个文件直接生效，不需要重跑 init；只有要改执行时间才需要重跑。
 #
 # 站点条目格式：域名|网站目录|数据库名
 #   数据库名留空表示这个站点只备份文件。
 #   新建站点后记得往这里加一行，或重跑 lnmp backup init 重新扫描。
 
-Backup_Home="/home/backup"
+Backup_Home="${backup_home}"
 
 # 留空则自动探测 /usr/local/{mysql,mariadb}/bin/mysqldump
 MySQL_Dump=""
@@ -1299,7 +1467,7 @@ EOF
     chmod 600 "${Conf_File}"
     Ok "配置已写入 ${Conf_File}（600）。"
 
-    mkdir -p "/home/backup" && chmod 700 "/home/backup"
+    mkdir -p "${backup_home}" && chmod 700 "${backup_home}"
 
     printf '每天几点执行备份？(0-23，默认 3) '
     read -r hour
@@ -1312,11 +1480,56 @@ EOF
         Write_Cron "${hour}"
     fi
 
+    Notice_Review_Conf "${backup_home}"
+    return 0
+}
+
+# init 只是把一份默认配置铺好，除了站点清单和执行时间，其余全是脚本里写死的
+# 默认值 —— 尤其异地上传和加密默认关闭，不看一眼配置的人会以为已经异地了。
+# 这段提示单独成块，不要混进上面的流水输出里。
+Notice_Review_Conf()
+{
+    local home="${1:-}"
+    # 提示里引用的路径取自内置默认值，不在这里再写死一份
+    Set_Conf_Defaults
     Say ""
-    Say "接下来："
-    Say "  1. 按需编辑 ${Conf_File}（保留天数、网站周期、异地上传）"
-    Say "  2. 立即跑一次：lnmp backup run all"
-    Say "  3. 验证可恢复：lnmp backup test"
+    Color "1;33" "══════════════════════════════════════════════════════"
+    Color "1;33" " 重要：下面这些都还是默认值，请按实际情况改一遍"
+    Color "1;33" "══════════════════════════════════════════════════════"
+    Say "  配置文件：${Conf_File}"
+    Say ""
+    Say "  Backup_Site             要备份的站点，新建站点后要补一行"
+    Say "  Backup_Home             备份存放目录${home:+（当前 ${home}）}，磁盘不够时改到大盘"
+    Say "  Keep_Days_Db=14         库备份保留天数"
+    Say "  Keep_Days_Web=60        网站备份保留天数"
+    Say "  Web_Interval_Days=7     网站文件多少天备份一次（库每次都备）"
+    Warn "  Enable_Encrypt=0        备份不加密：放到不完全可信的存储前先开"
+    Say ""
+    Color "1;33" " 异地备份服务器：现在是空的，不填就只备份在本机"
+    Warn "  Enable_Remote_Backup=0  默认关闭。这台机器坏了、盘坏了、被删了，"
+    Warn "                          备份跟着一起没 —— 强烈建议配上远端。"
+    Say "  改成 1 之后，下面这几项必须按你自己的备份服务器填："
+    Say "    Remote_Protocol=\"sftp\"  sftp（推荐，密钥登录）/ ftps / ftp"
+    Say "    Remote_Host=\"\"          备份服务器地址"
+    Say "    Remote_Port=22          sftp 通常 22，ftp/ftps 通常 21，别忘了一起改"
+    Say "    Remote_User=\"\"          备份服务器账号"
+    Say "    Remote_Dir=\"backup\"     备份放在远端的哪个目录"
+    Say "  用 sftp 还要准备好这两个文件（脚本不会自动接受未知主机）："
+    Say "    Remote_SSH_Key          专用私钥，权限 600，不要复用日常登录密钥"
+    Say "      ssh-keygen -t ed25519 -f ${Remote_SSH_Key} -N ''"
+    Say "      ssh-copy-id -i ${Remote_SSH_Key}.pub -p <端口> <账号>@<主机>"
+    Say "    Remote_Known_Hosts      对端指纹，要带外核对一次"
+    Say "      ssh-keyscan -p <端口> <主机> > ${Remote_Known_Hosts}"
+    Say "  用 ftps/ftp 则要填 Remote_Password；ftp 是明文传输，能不用就不用。"
+    Say "  配好后先手工验证一次：lnmp backup run db && lnmp backup list"
+    Say ""
+    Say "  改完直接生效，不用重跑 init；只有要改执行时间才需要重跑。"
+    Color "1;33" "──────────────────────────────────────────────────────"
+    Say "  编辑配置：nano ${Conf_File}"
+    Say "  立即备份：lnmp backup run all"
+    Say "  只备份一个站点：lnmp backup run <域名>"
+    Say "  验证可恢复：lnmp backup test"
+    Say ""
     return 0
 }
 
@@ -1328,6 +1541,8 @@ Usage: lnmp backup <子命令>
 
   init                      生成配置、备份目录与定时任务
   run [db|web|all]          执行备份；不带参数按配置的周期决定是否备份网站
+  run <域名>...             只备份指定站点（文件与它的库）
+  run db|web <域名>...      只备份指定站点的库 / 文件
   status                    上次执行结果、下次计划与配置概览
   list [db|web]             列出批次（配了异地上传则一并列远端）
   restore db  <库名> [批次]  从备份恢复数据库

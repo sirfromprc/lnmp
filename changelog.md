@@ -6892,3 +6892,52 @@ Debian 12 真实 nginx（openresty/1.31.1.1）实测：
 - **范围说明**：`stop` 走 `nginx -s stop` 失败转 `force-quit` 的那条支路未构造；
   Apache 侧的启停失败返回码仍未在真实 Apache 上验证，已记入 `TODO-INITD-003`。
   `t/lint.sh` C1-C16 与 T1 全部通过，`t/consistency.sh` V1-V13 通过 13 项。
+
+---
+
+## BK-RUN-002 backup init 站点可选、可改备份目录、run 支持指定站点
+
+**位置**：`tools/lnmp-backup.sh`（`Cmd_Init`、`Select_Sites`、`Filter_Sites`、
+`Cmd_Run`、`Notice_Review_Conf`、`Check_Backup_Home`）；`conf/lnmp`、`conf/lnmpa`、
+`conf/lamp` 的用法帮助行。
+
+**背景**：`init` 把扫描到的站点无条件全部写进配置，`default` 这类占位站点也会被
+每天打包上传；`run` 只能整体执行，无法只备份某一个站点；备份目录、异地上传、加密
+等默认值全写死在脚本里，用户第一次 `init` 后不看配置就会误以为已经异地备份。
+
+**行为变化**：
+
+- `init` 扫描到站点后进入挑选界面：回车全选；`1 3` 或域名只备份指定项；
+  `-2` 或 `-default` 排除指定项。非交互（EOF）、非法输入连续三次、排除到空
+  均安全兜底为全选或重问，通配符 `*` 不会被 glob 展开。
+- `init` 新增“备份存放目录”询问，输入经 `Check_Backup_Home` 校验（绝对路径、
+  非系统目录），同时用于写配置与建目录；原先建目录处硬编码的 `/home/backup`
+  改为跟随该值。`Load_Conf` 的备份目录校验抽成同一个 `Check_Backup_Home`。
+- `init` 结尾新增醒目提示块（`Notice_Review_Conf`），逐项列出仍是默认值的参数，
+  并单列异地备份服务器需要填写的 `Remote_*` 各项与 sftp 密钥/指纹准备命令。
+- `run` 支持 `run <域名>...`、`run db|web <域名>...`：只备份指定站点。
+  只写域名等价 `run all <域名>`（不受网站备份周期限制）；任一域名对不上即整体
+  失败并列出可用站点。部分备份不推进网站周期计时、不清理任何本地/远端旧批次。
+
+**验证**：Debian 12 测试机（bookworm 6.1.0-23）实测。
+构造真实 nginx 多行 vhost（a.com/b.com/default，两个带 wp-config.php），
+系统路径重定向到沙箱、`systemctl` 打空桩以不污染真实 systemd，mysql/mysqldump
+用桩（库路径代码未改动）。端到端 26 项全过：init 排除 default、备份目录写入
+输入值、配置 600、提示块含远端各项与 ssh-keyscan、systemd timer 小时正确；
+`run all` 真实 tar 打包两站并 `sha256sum -c` 校验通过、真实解包内容正确、
+清理旧批次；`run <域名>`/`run web|db <域名>` 只备份指定站点、不推进周期、
+不清理旧批次；`run nosuch.com` 返回 1 并指明站点。另有 28 项站点挑选/过滤/
+目录校验的定向单元测试全过。真实 `/etc/systemd/system` 未新增任何 unit。
+
+数据库路径另在真实 MySQL 8.4.7 下验证 13 项全过：真实建库插数后 `run db`
+用真实 mysqldump 转储（校验含 `-- Dump completed` 结束标记、含真实数据行）、
+`SHA256SUMS` 校验通过；`test` 真实导入临时库校验后删除、无残留临时库；
+篡改 `adb` 后 `restore db adb <批次>` 真实还原、行数与内容回到备份时点；
+`run db <域名>` 只导出指定库。测试机库 root 口令为本次自行重置的已知值。
+
+- **验证状态**：已实测（Debian 12 + MySQL 8.4.7，2026-08-11）。
+  站点/目录/参数逻辑与库备份、试恢复、恢复均在真机真实组件上跑通。
+- **范围说明**：`bash -n` 覆盖 `tools/lnmp-backup.sh` 与三个管理脚本；
+  `t/lint.sh` C1-C16、T1 全部通过。大库压力与真实 SFTP/FTP 远端上传不在本次
+  范围（见 `todo.md` TODO-BK-001、TODO-BACKUP-FTP-001）。README.md「3.3 备份」
+  与 HowtoGuides.md「8.4 备份」已同步说明挑选站点、备份目录询问与 `run <域名>`。

@@ -2643,6 +2643,7 @@ case "${arg1}" in
         echo "Usage: lnmp database import <数据库名> <文件.sql.gz>"
         echo "Usage: lnmp ftp {add|list|edit|del|show}"
         echo "Usage: lnmp backup {init|run|status|list|restore|test}"
+        echo "Usage: lnmp backup run [db|web|all] [域名...]"
         echo "Usage: lnmp tgnotice {--init|--test|--status} | lnmp tgnotice \"文本\" [md]"
         echo "Usage: lnmp ssl add"
         echo "Usage: lnmp {dnsssl|dns} {cx|ali|cf|dp|he|gd|aws}"
