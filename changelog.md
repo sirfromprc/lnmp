@@ -9016,6 +9016,74 @@ lowerdir 会把真实的 `/bin/lnmp` 带进沙箱，"尚未安装"的场景构�
 
 - **验证状态**：已实测（本机 WSL Ubuntu 24.04）。
 
+## FEAT-VHOST-001 站点级"是否开启 PHP"选项
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的 `Add_VHost`、`Add_VHost_Config`、
+`Add_SSL_Info_Menu`、`Add_SSL_Only_Info_Menu`、`Create_SSL_Config`；
+`README.md`、`HowtoGuides.md`。
+
+**行为变化**：`lnmp vhost add` 在伪静态之后、Pathinfo 与 PHP 版本选择之前新增
+`是否开启 PHP? (Y/n，默认 y)`。默认 `y`，原有建站流程不变。
+
+选 `n` 时：不再询问 Pathinfo，不再选择 PHP 版本；站点配置不写任何 PHP 执行入口，
+首页候选去掉 `index.php`、`default.php`，站点目录不写 `.user.ini`、不 reload php-fpm。
+各栈的具体形态：
+
+| 栈 | PHP=n 时的站点配置 |
+|---|---|
+| LNMP | 不写 `include enable-php*.conf;`，改写一段 `location ~ [^/]\.php(/\|$) { return 404; }` |
+| LNMPA | Nginx 不写 `include proxy-pass-php.conf;`，同样写入上述 404 段；Apache 侧 `php_admin_flag engine off` + `RedirectMatch 404 "\.php(/\|$)"`，`DirectoryIndex` 去掉 `index.php` |
+| LAMP | Apache 侧同上，并把 `php_admin_value open_basedir` 注释掉 |
+
+Nginx 侧的 404 段不能省：站点目录里存在 `.php` 文件时，没有该段会按
+`default_type application/octet-stream` 把源码整份返回（nginx 自带 `mime.types`
+没有 `.php`）。Apache 侧同样不能省：`.php` 的处理器挂在 `httpd.conf` 全局，
+站点配置不写就等于照常执行。`php_admin_flag` 不能被 `.htaccess` 覆盖，
+因此 `AllowOverride All` 保持不变。
+
+**HTTPS 继承**：`lnmp ssl add` 从现有站点配置读回状态——LNMP/LNMPA 判断有没有
+`enable-php*.conf` / `proxy-pass-php.conf`，LAMP 判断有没有 `php_admin_flag engine off`。
+判定为未开启时打印 `网站 <域名> 未开启 PHP，HTTPS 配置沿用同一状态。`，
+443 与 80 写同一形态。default 站点仍按内置形态生成，不参与该判定。
+
+**非交互接口**：新增提示在标准输入不是终端时**不读取输入行**，只看环境变量
+`VHOST_PHP`：未设置按 `y` 处理，`VHOST_PHP=n` 关闭。既让自动化能显式关闭 PHP，
+也保证原有的管道喂入序列不因新增这一问而整体错位。
+
+**连带调整**：`conf/lnmp` 中 7 处 y/n 提示的默认项统一改为大写标记
+（`(y/N，默认 n)`；`conf/lnmpa`、`conf/lamp` 原本即为 `[y/N]` 形式）。
+
+**验证**：
+
+- `tests/test_vhost_php_switch.sh`（60 项）：三栈的非交互分支不消耗输入行、
+  `VHOST_PHP` 取值、真实 pty 下的默认值/`n`/非法输入重问/EOF 兜底，
+  `Add_VHost_Config` 与 `Create_SSL_Config` 在 PHP=y/n 下生成的 Nginx 与 Apache
+  配置，`Add_SSL_Only_Info_Menu` 读回状态。函数从源码按名提取，路径改写到沙箱，
+  不触碰真实安装目录。
+- `tests/verify_vhost_php_remote.sh`（43 项，Debian 13 实跑）：建三个站点
+  （PHP=y+Pathinfo=n、PHP=y+Pathinfo=y、PHP=n），覆盖 HTTP 与 HTTPS 下真实存在
+  与不存在的 `.php`、`.php/xxx`（均 404 且不含源码）、静态文件、首页、
+  反代到 `127.0.0.1:3000` 的后端、重复建站的非零返回、`ssl add` 状态继承、
+  phpMyAdmin 入口不受影响。
+- `t/lint.sh` 18 项、`t/consistency.sh` 14 项、`tests/test_vhost_prompt_output.sh` 通过。
+
+**未覆盖**：LNMPA 与 LAMP 的 Apache 侧只做了配置文本断言，未在真实 Apache 上
+实跑（需源码编译 Apache），见 `todo.md` 的 `AUDIT-VHOST-014-APACHE`。
+
+- **验证状态**：已实测（LNMP 栈，Debian 13）；Apache 两栈待真机验证。
+
+## RUN-036 Debian 13 真机验证批次（第三轮）
+
+**环境**：Debian 13 (trixie)、NAT 网络。沿用第二轮留下的环境：
+nginx 1.30.4（编译版，`Enable_Nginx_Lua=n`）、PHP 8.3.33、MariaDB 11.8.8，
+本轮另行安装 phpMyAdmin 5.2.3 以覆盖入口不受影响的检查。
+
+**本轮实测通过并归档**：FEAT-VHOST-001（43 项，见该条目的验证段）。
+
+**未覆盖**：LNMPA 与 LAMP 的 Apache 侧行为，需要各完整安装一次（源码编译 Apache）。
+
+- **验证状态**：已实测（Debian 13）。
+
 ## RUN-035 Debian 13 真机验证批次（第二轮）
 
 **环境**：Debian 13 (trixie)、NAT 网络。本轮先后经过三套环境：

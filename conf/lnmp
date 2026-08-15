@@ -347,8 +347,92 @@ Function_Ftp()
     esac
 }
 
+# ---------------------------------------------------------------------------
+# 站点级 PHP 开关。
+#
+# enable_site_php=y（默认）：保持原有行为，继续询问 Pathinfo、选择 PHP 版本。
+# enable_site_php=n：站点配置里不写任何 PHP 执行入口，改写 Site_PHP_Off_Block
+#   的兜底规则，供纯静态站点以及 Node、Go 等自带后端的站点使用。
+#
+# 非交互执行（标准输入不是终端）时不读取输入行，改看环境变量 VHOST_PHP：
+# 未设置一律按 y 处理。这样自动化能显式关闭 PHP，原有的管道喂入序列也不会
+# 因为新增这一问而整体错位。
+# ---------------------------------------------------------------------------
+Site_PHP_Menu()
+{
+    local answer
+    if [ ! -t 0 ]; then
+        case "${VHOST_PHP}" in
+            [nN])
+                enable_site_php="n"
+                echo "非交互执行，按 VHOST_PHP=n 关闭本站点的 PHP。"
+                ;;
+            *)
+                enable_site_php="y"
+                echo "非交互执行，本站点默认开启 PHP（如需关闭，设置环境变量 VHOST_PHP=n）。"
+                ;;
+        esac
+        return 0
+    fi
+
+    while :;do
+        Echo_Yellow "是否开启 PHP? (Y/n，默认 y) "
+        if ! read answer; then
+            echo
+            echo "读取 PHP 开关时遇到 EOF，按默认值开启 PHP。"
+            enable_site_php="y"
+            break
+        fi
+        case "${answer}" in
+            ""|[yY])
+                enable_site_php="y"
+                echo "已开启 PHP。"
+                break
+                ;;
+            [nN])
+                enable_site_php="n"
+                echo "已关闭 PHP，本站点不执行任何 .php。"
+                break
+                ;;
+            *)
+                Echo_Red "请输入 y 或 n。"
+                ;;
+        esac
+    done
+}
+
+# 未开启 PHP 的站点写进 Nginx server 块的兜底规则，HTTP 与 HTTPS 共用。
+# 缩进按模板里占位符所处的位置对齐：首行不带缩进，其余行自带 8 个空格。
+Site_PHP_Off_Block()
+{
+    cat <<'EOF'
+# 本站点未开启 PHP：.php 以及 .php/xxx 一律返回 404。
+        # 少了这段规则，站点目录里一旦出现 .php 文件（旧站遗留、备份、被写入
+        # 的后门），Nginx 会把它当普通静态文件返回：自带的 mime.types 里没有
+        # .php，按 default_type application/octet-stream 把源码整份交出去。
+        # 若本站点改为整站反代（proxy_pass 给 Node、Go 等后端），需要把 .php
+        # 路径原样透传给后端处理，删掉本段即可。
+        location ~ [^/]\.php(/|$) {
+            return 404;
+        }
+EOF
+}
+
+# 站点首页候选。未开启 PHP 时不再把 PHP 文件列为首页。
+Site_Index_Line()
+{
+    if [ "${enable_site_php}" = "n" ]; then
+        echo "index index.html index.htm default.html default.htm;"
+    else
+        echo "index index.html index.htm index.php default.html default.htm default.php;"
+    fi
+}
+
 Add_VHost_Config()
 {
+    local vhost_index
+    vhost_index="$(Site_Index_Line)"
+
     if [ ! -f /usr/local/nginx/conf/rewrite/${rewrite}.conf ]; then
         echo "正在创建虚拟主机伪静态规则文件......"
         touch /usr/local/nginx/conf/rewrite/${rewrite}.conf
@@ -361,7 +445,7 @@ server {
         listen 80;
         #listen [::]:80;
         server_name ${domain} ${moredomain};
-        index index.html index.htm index.php default.html default.htm default.php;
+        ${vhost_index}
         root  ${vhostdir};
 
         include rewrite/${rewrite}.conf;
@@ -829,7 +913,7 @@ Add_VHost()
     done
     echo "虚拟主机目录：${vhostdir}"
 
-    Echo_Yellow "是否开启伪静态规则? (y/n，默认 n) "
+    Echo_Yellow "是否开启伪静态规则? (y/N，默认 n) "
     read allow_rewrite
     if [[ "${allow_rewrite}" == "n" || "${allow_rewrite}" == "" ]]; then
         rewrite="none"
@@ -848,17 +932,24 @@ Add_VHost()
     fi
     echo "已选择伪静态规则：$([ "${rewrite}" = "none" ] && echo "无" || echo "${rewrite}")"
 
-    Echo_Yellow "是否开启 PHP Pathinfo? (y/n，默认 n) "
-    read enable_pathinfo
-    if [[ "${enable_pathinfo}" == "n" || "${enable_pathinfo}" == "" ]]; then
-        echo "已禁用 PHP Pathinfo。"
+    Site_PHP_Menu
+
+    # Pathinfo 只是 PHP 的一种 URL 解析方式，站点不开 PHP 就没有可问的余地。
+    if [ "${enable_site_php}" == "y" ]; then
+        Echo_Yellow "是否开启 PHP Pathinfo? (y/N，默认 n) "
+        read enable_pathinfo
+        if [[ "${enable_pathinfo}" == "n" || "${enable_pathinfo}" == "" ]]; then
+            echo "已禁用 PHP Pathinfo。"
+            enable_pathinfo="n"
+        elif [ "${enable_pathinfo}" == "y" ]; then
+            echo "已启用 PHP Pathinfo。"
+            enable_pathinfo="y"
+        fi
+    else
         enable_pathinfo="n"
-    elif [ "${enable_pathinfo}" == "y" ]; then
-        echo "已启用 PHP Pathinfo。"
-        enable_pathinfo="y"
     fi
 
-    Echo_Yellow "是否开启访问日志? (y/n，默认 n) "
+    Echo_Yellow "是否开启访问日志? (y/N，默认 n) "
     read access_log
     if [[ "${access_log}" == "n" || "${access_log}" == "" ]]; then
         echo "已禁用访问日志。"
@@ -873,7 +964,7 @@ Add_VHost()
         echo "访问日志文件名：${al_name}.log"
     fi
 
-    Echo_Yellow "是否开启 IPv6? (y/n，默认 n) "
+    Echo_Yellow "是否开启 IPv6? (y/N，默认 n) "
     read enable_ipv6
     if [[ "${enable_ipv6}" == "n" || "${enable_ipv6}" == "" ]]; then
         echo "当前虚拟主机已禁用 IPv6。"
@@ -883,10 +974,14 @@ Add_VHost()
         enable_ipv6="y"
     fi
 
-    Multiple_PHP_Select
+    if [ "${enable_site_php}" == "y" ]; then
+        Multiple_PHP_Select
+    else
+        include_enable_php="$(Site_PHP_Off_Block)"
+    fi
 
     if [[ -x /usr/local/mysql/bin/mysql || -x /usr/local/mariadb/bin/mariadb || -x /usr/local/mariadb/bin/mysql ]]; then
-        Echo_Yellow "是否创建同名数据库和 MySQL 用户? (y/n，默认 n) "
+        Echo_Yellow "是否创建同名数据库和 MySQL 用户? (y/N，默认 n) "
         read create_database
 
         if [ "${create_database}" == "y" ]; then
@@ -896,7 +991,7 @@ Add_VHost()
     fi
 
     if [ -s /usr/local/pureftpd/sbin/pure-ftpd ]; then
-        Echo_Yellow "是否创建 FTP 账号? (y/n，默认 n) "
+        Echo_Yellow "是否创建 FTP 账号? (y/N，默认 n) "
         read create_ftp
 
         if [ "${create_ftp}" == "y" ]; then
@@ -904,7 +999,7 @@ Add_VHost()
         fi
     fi
 
-    Echo_Yellow "是否添加 SSL 证书? (y/n，默认 n) "
+    Echo_Yellow "是否添加 SSL 证书? (y/N，默认 n) "
     read create_ssl
     if [ "${create_ssl}" == "y" ]; then
         Add_SSL_Menu
@@ -935,17 +1030,20 @@ Add_VHost()
         Add_VHost_Config
     fi
 
-    # 重建同名站点时旧的 .user.ini 可能还在，且带着 immutable 属性。
-    # 不先解除，下面的重定向会以 "Operation not permitted" 失败，
-    # 同时更新 open_basedir，避免站点目录变更后仍限制在旧路径。
-    [ -f "${vhostdir}/.user.ini" ] && chattr -i "${vhostdir}/.user.ini" 2>/dev/null
-    cat >"${vhostdir}/.user.ini"<<EOF
+    # .user.ini 只对 PHP 生效，未开启 PHP 的站点不写，也不必惊动 php-fpm。
+    if [ "${enable_site_php}" != "n" ]; then
+        # 重建同名站点时旧的 .user.ini 可能还在，且带着 immutable 属性。
+        # 不先解除，下面的重定向会以 "Operation not permitted" 失败，
+        # 同时更新 open_basedir，避免站点目录变更后仍限制在旧路径。
+        [ -f "${vhostdir}/.user.ini" ] && chattr -i "${vhostdir}/.user.ini" 2>/dev/null
+        cat >"${vhostdir}/.user.ini"<<EOF
 open_basedir=${vhostdir}:/tmp/:/proc/
 EOF
-    chmod 644 "${vhostdir}/.user.ini"
-    chattr +i "${vhostdir}/.user.ini"
+        chmod 644 "${vhostdir}/.user.ini"
+        chattr +i "${vhostdir}/.user.ini"
 
-    /etc/init.d/php-fpm reload
+        /etc/init.d/php-fpm reload
+    fi
 
     if [ "${create_database}" == "y" ]; then
         Add_Database
@@ -969,6 +1067,11 @@ EOF
     echo "域名：${domain}"
     echo "网站目录：${vhostdir}"
     echo "伪静态规则：$([ "${rewrite}" = "none" ] && echo "无" || echo "${rewrite}")"
+    if [ "${enable_site_php}" == "n" ]; then
+        echo "PHP：未开启（.php 请求一律返回 404）"
+    else
+        echo "PHP：已开启"
+    fi
     if [ "${access_log}" == "n" ]; then
         echo "访问日志：未启用"
     else
@@ -2034,13 +2137,19 @@ Add_SSL_Info_Menu()
         echo "访问日志文件名：${al_name}.log"
     fi
 
-    Echo_Yellow "是否启用 PHP Pathinfo [y/N]（默认 n）: "
-    read enable_pathinfo
-    if [[ "${enable_pathinfo}" == "n" || "${enable_pathinfo}" == "" ]]; then
-        echo "已禁用 Pathinfo。"
-    elif [ "${allow_rewrite}" == "y" ]; then
-        echo "已启用 Pathinfo。"
-        enable_pathinfo="y"
+    Site_PHP_Menu
+
+    if [ "${enable_site_php}" == "y" ]; then
+        Echo_Yellow "是否启用 PHP Pathinfo [y/N]（默认 n）: "
+        read enable_pathinfo
+        if [[ "${enable_pathinfo}" == "n" || "${enable_pathinfo}" == "" ]]; then
+            echo "已禁用 Pathinfo。"
+        elif [ "${allow_rewrite}" == "y" ]; then
+            echo "已启用 Pathinfo。"
+            enable_pathinfo="y"
+        fi
+    else
+        enable_pathinfo="n"
     fi
 
     Echo_Yellow "是否启用 IPv6 [y/N]（默认 n）: "
@@ -2053,7 +2162,11 @@ Add_SSL_Info_Menu()
         enable_ipv6="y"
     fi
 
-    Multiple_PHP_Select
+    if [ "${enable_site_php}" == "y" ]; then
+        Multiple_PHP_Select
+    else
+        include_enable_php="$(Site_PHP_Off_Block)"
+    fi
 }
 
 # lnmp ssl add 只给已经存在的虚拟主机添加证书。站点参数从现有配置读取，
@@ -2110,6 +2223,16 @@ Add_SSL_Only_Info_Menu()
     rewrite=$(awk '$1 == "include" && $2 ~ /^rewrite\/[^;]+\.conf;$/ { value=$2; sub(/^rewrite\//, "", value); sub(/\.conf;$/, "", value); print value; exit }' "${vhost_conf}")
     rewrite="${rewrite:-none}"
     include_enable_php=$(awk '$1 == "include" && $2 ~ /^enable-php[^;]*\.conf;$/ { print "include " $2; exit }' "${vhost_conf}")
+    if [ -z "${include_enable_php}" ]; then
+        # 现有配置里没有任何 enable-php*.conf，说明建站时选择了不开启 PHP。
+        # HTTPS 必须沿用同一状态：443 若不写兜底规则，站点目录里的 .php
+        # 会被当成静态文件把源码返回。
+        enable_site_php="n"
+        include_enable_php="$(Site_PHP_Off_Block)"
+        echo "网站 ${domain} 未开启 PHP，HTTPS 配置沿用同一状态。"
+    else
+        enable_site_php="y"
+    fi
     al=$(awk '$1 == "access_log" { sub(/^[[:space:]]*/, ""); print; exit }' "${vhost_conf}")
     al="${al:-access_log off;}"
     if grep -Eq '^[[:space:]]*listen[[:space:]]+\[::\]:80' "${vhost_conf}"; then
@@ -2362,15 +2485,19 @@ Create_SSL_Config()
 {
     local vhost_conf="/usr/local/nginx/conf/vhost/${domain}.conf" backup
     local ssl_listen='listen 443 ssl;' ssl_ipv6_listen='#listen [::]:443 ssl;'
-    local ssl_server_name="${domain} ${moredomain}" ssl_rewrite_line ssl_php_block
+    local ssl_server_name="${domain} ${moredomain}" ssl_rewrite_line ssl_php_block ssl_index
 
     ssl_rewrite_line="include rewrite/${rewrite}.conf;"
     ssl_php_block="${include_enable_php}"
+    ssl_index="$(Site_Index_Line)"
     if [ "${domain}" = "default" ]; then
         ssl_listen='listen 443 ssl default_server;'
         ssl_ipv6_listen='#listen [::]:443 ssl default_server ipv6only=on;'
         ssl_server_name='_'
         ssl_rewrite_line=''
+        # default 站点始终按内置形态生成：phpMyAdmin 入口保留，
+        # 根目录下的其它 .php 一律 404，与 nginx.conf 里的 80 端口块一致。
+        ssl_index='index index.html index.htm index.php default.html default.htm default.php;'
         ssl_php_block='include phpmyadmin.*.conf;
 
         location ~ [^/]\.php(/|$) {
@@ -2404,7 +2531,7 @@ server {
         # 写在 listen 后面的 http2 参数会被警告为已废弃。
         http2 on;
         server_name ${ssl_server_name};
-        index index.html index.htm index.php default.html default.htm default.php;
+        ${ssl_index}
         root  ${vhostdir};
 
         ssl_certificate ${ssl_certificate};

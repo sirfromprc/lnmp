@@ -254,7 +254,7 @@ lnmp pureftpd {start|stop|restart|reload|status}
 其余管理子命令：
 
 ```bash
-lnmp vhost    {add|list|del}                      # 虚拟主机，见 3.2
+lnmp vhost    {add|list|del}                      # 虚拟主机（含站点级 PHP 开关），见 3.2
 lnmp database {add|list|edit|del|export|import}   # 数据库，见 3.3
 lnmp backup   {init|run|status|list|restore|test} # 备份，见 3.3
 lnmp ftp      {add|list|edit|del|show}            # FTP 账号，见 3.8
@@ -346,10 +346,20 @@ lnmp vhost list    # 列出所有站点
 lnmp vhost del     # 删除站点（只删配置，不删网站文件）
 ```
 
-`lnmp vhost add` 会依次问：主域名 → 附加域名 → 网站目录 → 是否加防跨目录（`.user.ini`）
-→ 是否写访问日志 → 伪静态规则 → 是否申请 SSL 证书。新站点配置写入
-`/usr/local/nginx/conf/vhost/<域名>.conf`。**配置语法检查不通过会自动删除并报错退出**，
-不会留下一个起不来的 Nginx。
+`lnmp vhost add` 会依次问：主域名 → 附加域名 → 网站目录 → 伪静态规则 →
+**是否开启 PHP** → Pathinfo → 是否写访问日志 → IPv6 → 是否建库 → 是否申请 SSL 证书。
+新站点配置写入 `/usr/local/nginx/conf/vhost/<域名>.conf`。
+**配置语法检查不通过会自动删除并报错退出**，不会留下一个起不来的 Nginx。
+
+**站点级 PHP 开关**：`是否开启 PHP? (Y/n，默认 y)` 默认开启，与原有建站流程一致。
+选 `n` 时不再询问 Pathinfo 和 PHP 版本，站点配置里不写任何 PHP 执行入口
+（LNMP 不写 `include enable-php*.conf;`，LNMPA 不写 `include proxy-pass-php.conf;`，
+LAMP 关掉该站点的 PHP 引擎），首页候选去掉 `index.php`，`.php` 及 `.php/xxx`
+一律返回 404，站点目录也不写 `.user.ini`。适用于纯静态站点以及 Node、Go 等
+自带后端的站点——反代地址仍由你按实际监听端口自行配置。
+`lnmp ssl add` 会从现有站点配置读回该状态，HTTPS 不会重新打开 PHP。
+非交互执行时这一问不读标准输入，只看环境变量 `VHOST_PHP`（不设即开启 PHP），
+用法见 `HowtoGuides.md` 4.4。
 
 **修改默认站点域名**：编辑 `/usr/local/nginx/conf/vhost/default.conf` 找到
 `server_name _;`，改为实际域名（多个域名用空格分隔），然后执行
@@ -484,7 +494,8 @@ lnmp php-fpm restart                    # 重启（改 php.ini / php-fpm.conf �
 
 装好后在站点配置里把 `include enable-php.conf;` 换成
 `include enable-php8.4.conf;`（版本号按实际），然后 `lnmp nginx reload`。
-`lnmp vhost add` 同样会要求选择 PHP 版本。
+`lnmp vhost add` 同样会要求选择 PHP 版本；建站时选择不开启 PHP 的站点
+不会问版本，也不写任何 PHP 执行入口（见 3.2）。
 
 **进程数调优**：编辑 `/usr/local/php/etc/php-fpm.conf` 的
 `pm.max_children` / `pm.start_servers` / `pm.min_spare_servers` / `pm.max_spare_servers`，
@@ -536,7 +547,7 @@ lnmp onlyssl {cx|ali|cf|dp|he|gd|aws}         # 只签证书，不改 Nginx 配�
 
 `lnmp ssl add` 只处理已有虚拟主机：输入域名后先检查站点配置，不存在则提示先执行
 `lnmp vhost add`，不会再次进入目录、伪静态、日志、Pathinfo 或 IPv6 等建站问答。
-站点目录和附加域名直接从现有配置读取。
+站点目录、附加域名和 PHP 开关状态直接从现有配置读取。
 
 底层用 acme.sh，证书放在 `/usr/local/nginx/conf/ssl/`，会自动加续期任务。
 密钥类型使用 acme.sh 默认的 **EC-256**。
@@ -816,8 +827,12 @@ lnmp vhost list    # 查看
 lnmp vhost del     # 删除（只删配置，网站文件保留）
 ```
 
-添加时会依次询问域名、附加域名、网站目录、是否防跨目录、是否记日志、
-伪静态规则、是否申请 SSL。
+添加时会依次询问域名、附加域名、网站目录、伪静态规则、**是否开启 PHP**、
+Pathinfo、是否记日志、IPv6、是否建库、是否申请 SSL。
+
+不需要 PHP 的站点（纯静态、Node、Go 等）在 `是否开启 PHP? (Y/n，默认 y)`
+选 `n`：站点不写任何 PHP 执行入口，`.php` 与 `.php/xxx` 一律返回 404，
+`lnmp ssl add` 追加的 HTTPS 配置沿用同一状态。非交互执行用 `VHOST_PHP=n`。
 
 ### 如何修改默认虚拟主机的域名？
 

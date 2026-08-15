@@ -381,28 +381,34 @@ define( 'WP_REDIS_PASSWORD', '上面生成的密码' );
 lnmp vhost add
 ```
 
-**完整的交互顺序**（单 PHP 版本、未装 pure-ftpd 的情况，共 15 步）：
+**完整的交互顺序**（单 PHP 版本、未装 pure-ftpd 的情况，共 16 步）：
 
 | # | 提示 | WordPress 场景填什么 |
 |---|---|---|
 | 1 | `请输入域名(示例: www.example.com):` | `wp.example.com` |
 | 2 | `请输入更多域名(示例: example.com sub.example.com，直接回车跳过):` | 回车跳过，或填 `example.com` |
 | 3 | `默认目录(直接回车使用): /home/wwwroot/<域名>` | 回车用默认 `/home/wwwroot/<域名>` |
-| 4 | `是否开启伪静态规则? (y/n，默认 n)` | **`y`** |
+| 4 | `是否开启伪静态规则? (y/N，默认 n)` | **`y`** |
 | 5 | `(默认 other，直接回车使用):` | **`wordpress`** |
-| 6 | `是否开启 PHP Pathinfo? (y/n，默认 n)` | `n`（WordPress 不需要） |
-| 7 | `是否开启访问日志? (y/n，默认 n)` | `y` |
-| 8 | `请输入访问日志文件名(默认: <域名>.log，直接回车使用):` | 回车用默认 |
-| 9 | `是否开启 IPv6? (y/n，默认 n)` | 有 IPv6 就 `y` |
-| 10 | `是否创建同名数据库和 MySQL 用户? (y/n，默认 n)` | **`y`** |
-| 11 | `请输入当前数据库 root 密码（输入不回显）:` | 数据库 root 密码（不回显） |
-| 12 | `请输入数据库名（只允许字母、数字和下划线）:` | `wpdemo`（库名与用户名相同） |
-| 13 | `请输入数据库用户 <库名> 的密码（输入不回显）:` | 库用户密码（不回显） |
-| 14 | `是否添加 SSL 证书? (y/n，默认 n)` | 先 `n`，第七章单独做 |
-| 15 | `按任意键开始创建虚拟主机，或按 Ctrl+C 取消...` | 任意键 |
+| 6 | `是否开启 PHP? (Y/n，默认 y)` | 回车用默认 `y`（WordPress 要跑 PHP） |
+| 7 | `是否开启 PHP Pathinfo? (y/N，默认 n)` | `n`（WordPress 不需要） |
+| 8 | `是否开启访问日志? (y/N，默认 n)` | `y` |
+| 9 | `请输入访问日志文件名(默认: <域名>.log，直接回车使用):` | 回车用默认 |
+| 10 | `是否开启 IPv6? (y/N，默认 n)` | 有 IPv6 就 `y` |
+| 11 | `是否创建同名数据库和 MySQL 用户? (y/N，默认 n)` | **`y`** |
+| 12 | `请输入当前数据库 root 密码（输入不回显）:` | 数据库 root 密码（不回显） |
+| 13 | `请输入数据库名（只允许字母、数字和下划线）:` | `wpdemo`（库名与用户名相同） |
+| 14 | `请输入数据库用户 <库名> 的密码（输入不回显）:` | 库用户密码（不回显） |
+| 15 | `是否添加 SSL 证书? (y/N，默认 n)` | 先 `n`，第七章单独做 |
+| 16 | `按任意键开始创建虚拟主机，或按 Ctrl+C 取消...` | 任意键 |
 
 第 5 步之前会先列出已内置的伪静态规则名（`wordpress`、`typecho`、`discuzx` 等），
-第 8 步只在第 7 步选了 `y` 时出现；第 11–13 步只在第 10 步选了 `y` 时出现。
+第 9 步只在第 8 步选了 `y` 时出现；第 12–14 步只在第 11 步选了 `y` 时出现。
+
+**第 6 步选 `n` 时**（纯静态站点，或 Node、Go 等自带后端的站点）：不再问 Pathinfo，
+装了多个 PHP 版本时也不再问选哪个版本；站点配置里不写任何 PHP 执行入口，
+首页候选去掉 `index.php`，`.php` 与 `.php/xxx` 一律返回 404，
+站点目录也不再写 `.user.ini`。详见 4.4。
 
 > **第 5 步的 `wordpress` 是关键。** 它会引用内置的
 > `/usr/local/nginx/conf/rewrite/wordpress.conf`：
@@ -416,18 +422,34 @@ lnmp vhost add
 
 ### 4.2 非交互创建
 
+**带 PHP 的站点**（WordPress 场景，与 4.1 的问答一一对应）：
+
 ```bash
 printf 'wp.example.com\n\n\ny\nwordpress\nn\ny\n\nn\ny\n数据库root密码\nwpdemo\n库用户密码\nn\n\n' \
   | lnmp vhost add
 ```
+
+**不带 PHP 的站点**（纯静态，或 Node、Go 等自带后端）：用 `VHOST_PHP=n` 关掉 PHP，
+喂入序列里不再有 Pathinfo 那一行，也不建库：
+
+```bash
+printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
+```
+
+> 依次是：域名 → 更多域名(空) → 目录(空) → 伪静态 `n` → 访问日志 `n` →
+> IPv6 `n` → 建库 `n` → SSL `n` → 任意键。站点行为见 4.4。
 
 > 注意：**输入项数量必须精确**。域名、数据库 root 密码、数据库名、库用户密码
 > 这四项少喂时会报 `读取<项目>时遇到 EOF —— 标准输入已经没有内容了。` 并退出
 > （这是有意的快速失败，早期版本在这里会无限刷屏）；其余选项少喂时按默认值处理，
 > 不会报错，得到的站点配置与预期不符。
 >
-> 注意：**装了多个 PHP 版本时会多一步**（第 9 步后会问选哪个 PHP），
+> 注意：**装了多个 PHP 版本时会多一步**（第 10 步后会问选哪个 PHP），
 > 序列要相应调整。单版本时不会问。
+>
+> 注意：**第 6 步的 PHP 开关不占喂入序列的一行**。非交互执行时不读标准输入，
+> 只看环境变量 `VHOST_PHP`：不设就是开启 PHP，与旧版本行为一致，
+> 上面这条命令不用改。要建不带 PHP 的站点见 4.4。
 
 ### 4.3 验证站点
 
@@ -451,6 +473,57 @@ information_schema
 performance_schema
 wpdemo
 ```
+
+### 4.4 建不带 PHP 的站点
+
+纯静态站点，以及 Node、Go 这类自带后端进程的站点用不到 PHP。建站时第 6 步
+（`是否开启 PHP? (Y/n，默认 y)`）选 `n`，站点配置里就不会出现任何 PHP 执行入口。
+
+```bash
+# 交互：第 6 步输入 n
+lnmp vhost add
+
+# 非交互：用环境变量显式关闭，喂入序列里不要再留 Pathinfo 那一行
+# 依次是：域名、更多域名、目录、伪静态 n、访问日志 n、IPv6 n、建库 n、SSL n、任意键
+printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
+```
+
+`VHOST_PHP` 不设置时按开启 PHP 处理，与旧版本一致。
+
+关闭 PHP 后各栈的实际差别：
+
+| 栈 | HTTP / HTTPS 配置的变化 |
+|---|---|
+| LNMP | 不写 `include enable-php*.conf;`；`.php`、`.php/xxx` 一律 404 |
+| LNMPA | 不写 `include proxy-pass-php.conf;`（不再反代给 Apache）；Apache 侧同时 `php_admin_flag engine off` 并把 `.php` 挡成 404 |
+| LAMP | Apache `php_admin_flag engine off` + `RedirectMatch 404 "\.php(/|$)"`，`open_basedir` 一并注释掉 |
+
+三栈共同点：首页候选去掉 `index.php`、`default.php`，站点目录不写 `.user.ini`，
+`lnmp ssl add` 追加 443 配置时会从现有站点配置读回同一状态，不会重新打开 PHP。
+
+Nginx 侧那条 404 规则**不能省**：站点目录里一旦出现 `.php` 文件（旧站遗留、备份、
+被写入的后门），Nginx 会当成普通静态文件返回——自带的 `mime.types` 没有 `.php`，
+按 `default_type application/octet-stream` 把源码整份交出去。
+Apache 侧更是必需项：`.php` 的处理器挂在 `httpd.conf` 全局，站点配置什么都不写
+就等于照常执行 PHP。
+
+**Go / Node 站点的反代**由你自己按实际监听端口写，本开关只负责关掉 PHP 执行入口：
+
+```nginx
+# /usr/local/nginx/conf/vhost/app.example.com.conf
+location / {
+    proxy_pass http://127.0.0.1:3000;
+    include proxy.conf;
+}
+```
+
+整站反代时若需要把 `.php` 路径原样透传给后端，删掉配置里那段带
+`# 本站点未开启 PHP` 注释的 `location` 即可（正则 location 优先级高于
+`location /`，留着会先被它拦成 404）。
+
+**站点建好后想改主意**：直接编辑 `/usr/local/nginx/conf/vhost/<域名>.conf`
+（LAMP 是 `/usr/local/apache/conf/vhost/<域名>.conf`），加回或删掉上述几行，
+`nginx -t` / `httpd -t` 通过后 reload 即可，不必删站重建。
 
 ---
 
@@ -802,7 +875,9 @@ lnmp ssl add
 
 `ssl add` 只给**已经存在的站点**添加证书。输入域名后会先检查对应虚拟主机配置；
 不存在就提示先执行 `lnmp vhost add` 并退出，不会在证书流程中创建网站或重新询问
-目录、rewrite、日志、Pathinfo、IPv6。现有站点的目录和附加域名会从配置中读取。
+目录、rewrite、日志、Pathinfo、IPv6。现有站点的目录和附加域名会从配置中读取，
+**站点的 PHP 开关状态也一并读回**：建站时选了不开启 PHP 的站点，追加的 443
+配置同样不写 PHP 执行入口（会打印一行 `网站 <域名> 未开启 PHP，HTTPS 配置沿用同一状态。`）。
 
 交互顺序：域名 → **证书来源(1-4)** → 是否 301 跳转。选择自有证书时会继续询问
 证书和私钥路径；选择 CA 时按需询问账户邮箱。
@@ -922,6 +997,10 @@ lnmp vhost del       # 删除站点（只删 nginx 配置，保留网站文件�
 > `vhost del` 会保留网站文件并给出提示，以避免误删数据。
 > 需要彻底删除时手工 `rm -rf`，`.user.ini` 的 immutable 属性
 > 已由删除流程自动解除。
+>
+> `vhost add` 会问 `是否开启 PHP? (Y/n，默认 y)`。选 `n` 建出的站点不执行 PHP，
+> `.php` 请求一律 404，适合纯静态站点和 Node、Go 等自带后端的站点；
+> 非交互执行用 `VHOST_PHP=n`。详见 4.4。
 
 ### 8.3 数据库管理
 
@@ -1589,6 +1668,9 @@ location ~* ^/wp-content/uploads/.*\.(php|php5|phtml)$ {
 >
 > `lnmp vhost add` 生成的配置里，`include enable-php.conf;` 在 server 块中部，
 > 编辑 `/usr/local/nginx/conf/vhost/<域名>.conf` 时，将上述规则置于该 include 之前。
+>
+> 建站时选了不开启 PHP 的站点没有这一行，取而代之的是一段返回 404 的
+> `location ~ [^/]\.php(/|$)`，站内任何 `.php` 都不会执行，不需要再加本规则（见 4.4）。
 
 修改后应验证实际请求结果；`nginx -t` 通过不代表规则已经生效：
 

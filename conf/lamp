@@ -281,21 +281,104 @@ Function_Ftp()
 esac
 }
 
+# ---------------------------------------------------------------------------
+# 站点级 PHP 开关。
+#
+# enable_site_php=y（默认）：保持原有行为，由 mod_php 执行站点里的 .php。
+# enable_site_php=n：关掉该站点的 PHP 引擎并拒绝一切 .php 请求，
+#   供纯静态站点以及 Node、Go 等自带后端的站点使用。
+#
+# 非交互执行（标准输入不是终端）时不读取输入行，改看环境变量 VHOST_PHP：
+# 未设置一律按 y 处理。这样自动化能显式关闭 PHP，原有的管道喂入序列也不会
+# 因为新增这一问而整体错位。
+# ---------------------------------------------------------------------------
+Site_PHP_Menu()
+{
+    local answer
+    if [ ! -t 0 ]; then
+        case "${VHOST_PHP}" in
+            [nN])
+                enable_site_php="n"
+                echo "非交互执行，按 VHOST_PHP=n 关闭本站点的 PHP。"
+                ;;
+            *)
+                enable_site_php="y"
+                echo "非交互执行，本站点默认开启 PHP（如需关闭，设置环境变量 VHOST_PHP=n）。"
+                ;;
+        esac
+        return 0
+    fi
+
+    while :;do
+        Echo_Yellow "是否开启 PHP [Y/n]（默认 y）: "
+        if ! read answer; then
+            echo
+            echo "读取 PHP 开关时遇到 EOF，按默认值开启 PHP。"
+            enable_site_php="y"
+            break
+        fi
+        case "${answer}" in
+            ""|[yY])
+                enable_site_php="y"
+                echo "已开启 PHP。"
+                break
+                ;;
+            [nN])
+                enable_site_php="n"
+                echo "已关闭 PHP，本站点不执行任何 .php。"
+                break
+                ;;
+            *)
+                Echo_Red "请输入 y 或 n。"
+                ;;
+        esac
+    done
+}
+
+# 未开启 PHP 的站点写进 Apache 虚拟主机的兜底规则，HTTP 与 HTTPS 共用。
+# .php 的处理器是在 httpd.conf 里全局挂的，站点配置什么都不写就等于照常执行，
+# 所以这两条是关闭 PHP 的必需项，不是额外加固。
+Site_Apache_PHP_Off_Block()
+{
+    cat <<'EOF'
+# 本站点未开启 PHP：
+# php_admin_flag engine off 关掉 mod_php 对本站点的解析。php_admin_* 不能被
+#   站点自己的 .htaccess 覆盖，所以下面的 AllowOverride All 可以照旧保留。
+# RedirectMatch 让 .php 及 .php/xxx 统一返回 404：只关引擎的话，Apache 会把
+#   .php 当普通文件返回，等于把源码交出去。
+php_admin_flag engine off
+RedirectMatch 404 "\.php(/|$)"
+EOF
+}
+
 Add_VHost_Config()
 {
+    local apache_open_basedir apache_php_off apache_dir_index
+
+    apache_open_basedir="php_admin_value open_basedir \"${vhostdir}:/tmp/:/var/tmp/:/proc/\""
+    apache_php_off=""
+    apache_dir_index="DirectoryIndex index.html index.php"
+    if [ "${enable_site_php}" = "n" ]; then
+        # open_basedir 是 PHP 的限制项，站点不跑 PHP 就没有意义
+        apache_open_basedir="#php_admin_value open_basedir \"${vhostdir}:/tmp/:/var/tmp/:/proc/\""
+        apache_php_off="$(Site_Apache_PHP_Off_Block)"
+        apache_dir_index="DirectoryIndex index.html"
+    fi
+
     cat >"/usr/local/apache/conf/vhost/${domain}.conf"<<EOF
 <VirtualHost *:80>
 ServerAdmin ${email}
-php_admin_value open_basedir "${vhostdir}:/tmp/:/var/tmp/:/proc/"
+${apache_open_basedir}
 DocumentRoot "${vhostdir}"
 ServerName ${domain}
 ErrorLog "/home/wwwlogs/${al_name}-error_log"
 CustomLog "/home/wwwlogs/${al_name}-access_log" combined
+${apache_php_off}
 <Directory "${vhostdir}">
     Options FollowSymLinks
     AllowOverride All
     Require all granted
-    DirectoryIndex index.html index.php
+    ${apache_dir_index}
 </Directory>
 </VirtualHost>
 EOF
@@ -375,6 +458,8 @@ Add_VHost()
         Check_Vhost_Dir "${vhostdir}" && break
     done
     echo "虚拟主机目录：${vhostdir}"
+
+    Site_PHP_Menu
 
     Echo_Yellow "是否启用访问日志 [y/N]（默认 n）: "
     read access_log
@@ -461,6 +546,11 @@ Add_VHost()
     echo "虚拟主机信息："
     echo "域名：${domain}"
     echo "网站目录：${vhostdir}"
+    if [ "${enable_site_php}" == "n" ]; then
+        echo "PHP：未开启（.php 请求一律返回 404）"
+    else
+        echo "PHP：已开启"
+    fi
     if [ "${access_log}" == "n" ]; then
         echo "访问日志：未启用"
     else
@@ -1470,6 +1560,8 @@ Add_SSL_Info_Menu()
     Check_Vhost_Dir "${vhostdir}" || exit 1
     echo "虚拟主机目录：${vhostdir}"
 
+    Site_PHP_Menu
+
     Echo_Yellow "是否启用访问日志 [y/N]（默认 n）: "
     read access_log
     if [[ "${access_log}" == "n" || "${access_log}" == "" ]]; then
@@ -1551,6 +1643,15 @@ Add_SSL_Only_Info_Menu()
     ' "${vhost_conf}")
     email=$(awk '$1 == "ServerAdmin" { print $2; exit }' "${vhost_conf}")
     email="${email:-webmaster@example.com}"
+    # 现有配置里有 php_admin_flag engine off，说明建站时选择了不开启 PHP。
+    # HTTPS 必须沿用同一状态，否则 443 上 .php 会照常执行。
+    # default 站点由 Create_SSL_Config 单独处理，不参与判断。
+    if [ "${domain}" != "default" ] && grep -Eq '^[[:space:]]*php_admin_flag[[:space:]]+engine[[:space:]]+off' "${vhost_conf}"; then
+        enable_site_php="n"
+        echo "网站 ${domain} 未开启 PHP，HTTPS 配置沿用同一状态。"
+    else
+        enable_site_php="y"
+    fi
     al_name="${domain}"
     if grep -Eq '^[[:space:]]*CustomLog[[:space:]]+' "${vhost_conf}"; then
         access_log="y"
@@ -1869,14 +1970,26 @@ Create_SSL_Config()
 {
     local vhost_conf="${ssl_vhost_conf:-/usr/local/apache/conf/vhost/${domain}.conf}"
     local backup httpd_conf_backup
-    local ssl_server_name="${domain}" ssl_open_basedir ssl_directory_options
+    local ssl_server_name="${domain}" ssl_open_basedir ssl_directory_options ssl_php_off
 
     ssl_open_basedir="php_admin_value open_basedir \"${vhostdir}:/tmp/:/var/tmp/:/proc/\""
     ssl_directory_options='    AllowOverride All
     Require all granted
     DirectoryIndex index.html index.php'
+    ssl_php_off=""
+    if [ "${enable_site_php}" = "n" ]; then
+        # 与 80 端口保持同一状态：关引擎并把 .php 请求统一挡成 404
+        ssl_open_basedir="#php_admin_value open_basedir \"${vhostdir}:/tmp/:/var/tmp/:/proc/\""
+        ssl_php_off="$(Site_Apache_PHP_Off_Block)"
+        ssl_directory_options='    AllowOverride All
+    Require all granted
+    DirectoryIndex index.html'
+    fi
     if [ "${domain}" = "default" ]; then
+        # default 站点按内置形态生成：phpMyAdmin 与三个演示页仍要能跑，
+        # 所以不整站关引擎，只在 <Directory> 里拒绝根目录下的 .php。
         ssl_server_name='_'
+        ssl_php_off=""
         ssl_open_basedir="#php_admin_value open_basedir \"${vhostdir}:/tmp/:/var/tmp/:/proc/\""
         ssl_directory_options='    AllowOverride None
     Require all granted
@@ -1917,6 +2030,7 @@ ${Conf_SSLChain}
 ${Conf_H2}
 ErrorLog "/home/wwwlogs/${al_name}-error_log"
 CustomLog "/home/wwwlogs/${al_name}-access_log" combined
+${ssl_php_off}
 <Directory "${vhostdir}">
     Options FollowSymLinks
 ${ssl_directory_options}
