@@ -17,10 +17,10 @@ Check_Stack_Choose()
 {
     Check_Stack
     if [[ "${Get_Stack}" = "lnmp" && "${Stack}" = "" ]]; then
-        echo "Current Stack: ${Get_Stack}, please run: ./upgrade.sh php"
+        echo "当前架构：${Get_Stack}，请执行：./upgrade.sh php"
         exit 1
     elif [[ "${Get_Stack}" = "lnmpa" || "${Get_Stack}" = "lamp" ]] && [[ "${Stack}" = "lnmp" ]]; then
-        echo "Current Stack: ${Get_Stack}, please run: ./upgrade.sh phpa"
+        echo "当前架构：${Get_Stack}，请执行：./upgrade.sh phpa"
         exit 1
     fi
 }
@@ -31,21 +31,21 @@ Start_Upgrade_PHP()
     Check_DB
     php_version=""
     Get_PHP_Ext_Dir
-    echo "Current PHP Version:${Cur_PHP_Version}"
-    echo "You can get version number from https://www.php.net/downloads"
-    read -p "Please enter a PHP Version you want: " php_version
+    echo "当前 PHP 版本：${Cur_PHP_Version}"
+    echo "可在 https://www.php.net/downloads 查看可用版本号。"
+    read -p "请输入目标 PHP 版本：" php_version
     if [ "${php_version}" = "" ]; then
-        echo "Error: You must enter a correct php version!!"
+        echo "错误：必须输入正确的 PHP 版本号！"
         exit 1
     fi
 
     if ! echo "${php_version}" | grep -Eq '^8\.[0-9]+\.[0-9]+$'; then
-        Echo_Red "Only PHP 8.0.0 and above are supported, got: ${php_version}"
-        Echo_Red "Supported: 8.0.x 8.1.x 8.2.x 8.3.x 8.4.x 8.5.x"
+        Echo_Red "仅支持 PHP 8.0.0 及以上版本，输入值：${php_version}"
+        Echo_Red "支持范围：8.0.x、8.1.x、8.2.x、8.3.x、8.4.x、8.5.x"
         exit 1
     fi
     if ! Version_GE "${php_version}" 8.0; then
-        Echo_Red "PHP ${php_version} has reached end of life and is not supported."
+        Echo_Red "PHP ${php_version} 已停止生命周期支持，本项目不再支持。"
         exit 1
     fi
 
@@ -55,8 +55,8 @@ Start_Upgrade_PHP()
     if ! Download_Verified php "${php_version}" \
          "https://www.php.net/distributions/php-${php_version}.tar.bz2" \
          "php-${php_version}.tar.bz2"; then
-        echo "You enter PHP Version was:"${php_version}
-        Echo_Red "Error! PHP ${php_version} 下载或校验失败，请检查版本号。"
+        echo "输入的 PHP 版本为：${php_version}"
+        Echo_Red "错误！PHP ${php_version} 下载或校验失败，请检查版本号。"
         exit 1
     fi
 
@@ -143,7 +143,7 @@ Switch_To_New_PHP()
 }
 Install_PHP_Dependent()
 {
-    echo "Installing Dependent for PHP..."
+    echo "正在安装 PHP 依赖包..."
     if [ "$PM" = "yum" ]; then
         if [ "${DISTRO}" = "Oracle" ]; then
             yum -y install oracle-epel-release
@@ -162,7 +162,7 @@ Install_PHP_Dependent()
     if echo "${CentOS_Version}" | grep -Eqi "^8" || echo "${RHEL_Version}" | grep -Eqi "^8" || echo "${Rocky_Version}" | grep -Eqi "^8" || echo "${Alma_Version}" | grep -Eqi "^8" || echo "${Anolis_Version}" | grep -Eqi "^8" || echo "${OpenCloudOS_Version}" | grep -Eqi "^8"; then
         Check_PowerTools
         if [ "${repo_id}" != "" ]; then
-            echo "Installing packages in PowerTools repository..."
+            echo "正在安装 PowerTools 仓库中的依赖包..."
             for c8packages in rpcgen re2c oniguruma-devel;
             do dnf --enablerepo=${repo_id} install ${c8packages} -y; done
         fi
@@ -197,7 +197,7 @@ Install_PHP_Dependent()
     if [ "${DISTRO}" = "UOS" ]; then
         Check_PowerTools
         if [ "${repo_id}" != "" ]; then
-            echo "Installing packages in PowerTools repository..."
+            echo "正在安装 PowerTools 仓库中的依赖包..."
             for uospackages in rpcgen re2c oniguruma-devel;
             do dnf --enablerepo=${repo_id} install ${uospackages} -y; done
         fi
@@ -219,15 +219,15 @@ Check_PHP_Upgrade_Files()
 {
     Echo_LNMPA_Upgrade_PHP_Failed()
     {
-        Echo_Red "======== upgrade php failed ======"
-        Echo_Red "upgrade php log: /root/upgrade_a_php${Upgrade_Date}.log"
+        Echo_Red "======== PHP 升级失败 ======"
+        Echo_Red "PHP 升级日志：/root/upgrade_a_php${Upgrade_Date}.log"
     }
     rm -rf ${cur_dir}/src/php-${php_version}
 
     if [ "${Stack}" = "lnmp" ]; then
         if [[ ! -s /usr/local/php/sbin/php-fpm || ! -s /etc/init.d/php-fpm || ! -s /usr/local/php/etc/php.ini || ! -s /usr/local/php/bin/php ]]; then
-            Echo_Red "======== upgrade php failed ======"
-            Echo_Red "upgrade php log: /root/upgrade_lnmp_php${Upgrade_Date}.log"
+            Echo_Red "======== PHP 升级失败 ======"
+            Echo_Red "PHP 升级日志：/root/upgrade_lnmp_php${Upgrade_Date}.log"
             return 1
         fi
     else
@@ -250,7 +250,7 @@ Check_PHP_Upgrade_Files()
         return 1
     fi
 
-    Echo_Green "======== upgrade php completed ======"
+    Echo_Green "======== PHP 升级完成 ======"
     Echo_Green "${run_ver}"
     return 0
 }
@@ -262,7 +262,7 @@ Check_PHP_Upgrade_Files()
 Upgrade_PHP_8x()
 {
     Install_Libzip
-    Echo_Blue "[+] Installing ${php_version}"
+    Echo_Blue "[+] 正在安装 PHP ${php_version}"
     Tar_Cd php-${php_version}.tar.bz2 php-${php_version}
     PHP_Openssl3_Patch
 
@@ -314,12 +314,12 @@ Upgrade_PHP_8x()
 
     Ln_PHP_Bin
 
-    echo "Copy new php configure file..."
+    echo "正在复制新的 PHP 配置文件..."
     mkdir -p /usr/local/php/{etc,conf.d}
     \cp php.ini-production /usr/local/php/etc/php.ini
 
     # php extensions
-    echo "Modify php.ini......"
+    echo "正在修改 php.ini..."
     sed -i 's/post_max_size =.*/post_max_size = 50M/g' /usr/local/php/etc/php.ini
     sed -i 's/upload_max_filesize =.*/upload_max_filesize = 50M/g' /usr/local/php/etc/php.ini
     sed -i 's/;date.timezone =.*/date.timezone = PRC/g' /usr/local/php/etc/php.ini
@@ -335,7 +335,7 @@ Upgrade_PHP_8x()
     cd ${cur_dir}/src
 
 if [ "${Stack}" = "lnmp" ]; then
-    echo "Creating new php-fpm configure file..."
+    echo "正在创建新的 php-fpm 配置文件..."
     cat >/usr/local/php/etc/php-fpm.conf<<EOF
 [global]
 pid = /usr/local/php/var/run/php-fpm.pid
@@ -363,7 +363,7 @@ request_slowlog_timeout = 0
 slowlog = var/log/slow.log
 EOF
 
-    echo "Copy php-fpm init.d file..."
+    echo "正在复制 php-fpm init.d 服务脚本..."
     \cp ${cur_dir}/src/php-${php_version}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm
     chmod +x /etc/init.d/php-fpm
     LNMP_PHP_Opt

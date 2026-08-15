@@ -36,7 +36,7 @@ Build_Pecl_Ext()
     local pkg="$1" so="$2" ini="$3"; shift 3
     local ext_dir
 
-    Echo_Blue "[+] Installing PHP extension ${pkg}... "
+    Echo_Blue "[+] 正在安装 PHP 扩展 ${pkg}... "
     cd ${cur_dir}/src
 
     Download_Files https://pecl.php.net/get/${pkg}.tgz ${pkg}.tgz
@@ -140,7 +140,7 @@ Install_PHP_Default_Ext()
     fi
 
     if [ "${Enable_PHP_Default_Imagick}" = 'y' ]; then
-        Echo_Blue "[+] Installing ImageMagick (编译较慢，约数分钟)... "
+        Echo_Blue "[+] 正在安装 ImageMagick（编译较慢，约数分钟）... "
         Build_ImageMagick_Lib
         if [ -s /usr/local/imagemagick/bin/convert ] || [ -s /usr/local/imagemagick/bin/magick ]; then
             Build_Pecl_Ext "${Imagick_Ver}" imagick.so 008-imagick.ini --with-imagick=/usr/local/imagemagick

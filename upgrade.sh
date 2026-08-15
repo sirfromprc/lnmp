@@ -3,7 +3,7 @@ export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~
 
 # Check if user is root
 if [ $(id -u) != "0" ]; then
-    echo "Error: You must be root to run this script"
+    echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
 fi
 
@@ -44,28 +44,25 @@ MemTotal=$(awk '/MemTotal/ {printf( "%d\n", $2 / 1024 )}' /proc/meminfo)
 
 Display_Upgrade_Menu()
 {
-    echo "1: Upgrade Nginx"
-    echo "2: Upgrade MySQL"
-    echo "3: Upgrade MariaDB"
-    echo "4: Upgrade PHP for LNMP"
-    echo "5: Upgrade PHP for LNMPA or LAMP"
-    echo "6: Upgrade MySQL to MariaDB"
-    echo "7: Upgrade phpMyAdmin"
-    echo "8: Upgrade Multiple PHP"
-    echo "9: Upgrade OpenResty"
-    echo "exit: Exit current script"
+    echo "1: 升级 Nginx"
+    echo "2: 升级 MySQL"
+    echo "3: 升级 MariaDB"
+    echo "4: 升级 LNMP 的 PHP"
+    echo "5: 升级 LNMPA 或 LAMP 的 PHP"
+    echo "6: 将 MySQL 迁移到 MariaDB"
+    echo "7: 升级 phpMyAdmin"
+    echo "8: 升级多版本 PHP"
+    echo "9: 升级 OpenResty"
+    echo "输入 exit：退出当前脚本"
     echo "###################################################"
-    read -p "Enter your choice (1-9 or exit): " action
+    read -p "请选择 [1-9]，或输入 exit 退出：" action
 }
 
 clear
-echo "+-----------------------------------------------------------------------+"
-echo "|            Upgrade script for LNMP V2.3, Written by Licess            |"
-echo "+-----------------------------------------------------------------------+"
-echo "|     A tool to upgrade Nginx,MySQL/Mariadb,PHP for LNMP/LNMPA/LAMP     |"
-echo "+-----------------------------------------------------------------------+"
-echo "|          Upstream-official sources only, checksums enforced            |"
-echo "+-----------------------------------------------------------------------+"
+Print_Banner \
+    "LNMP V2.3 升级工具" \
+    "升级 Nginx、MySQL/MariaDB 和 PHP" \
+    "仅使用上游官方源码，并强制校验完整性"
 
 Upgrade_Rc=0
 
@@ -115,7 +112,7 @@ fi
         exit 1
         ;;
     *)
-        echo "Usage: ./upgrade.sh {nginx|openresty|mysql|mariadb|m2m|php|phpa|phpmyadmin|mphp}"
+        echo "用法：./upgrade.sh {nginx|openresty|mysql|mariadb|m2m|php|phpa|phpmyadmin|mphp}"
         exit 1
     ;;
     esac

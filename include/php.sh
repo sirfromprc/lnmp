@@ -20,7 +20,7 @@ Cur_PHP_Branch()
 Check_Curl()
 {
     if [ -s /usr/local/curl/bin/curl ]; then
-        Echo_Green "Curl ...ok"
+        Echo_Green "Curl 检查通过。"
     else
         Install_Curl
     fi
@@ -137,7 +137,7 @@ PHP_with_Imap()
                     if [ -s "${cur_dir}/src/libc-client-2007f-24.el9.${ARCH}.rpm" ]; then
                         rpm -ivh ${cur_dir}/src/libc-client-2007f-24.el9.${ARCH}.rpm ${cur_dir}/src/uw-imap-devel-2007f-24.el9.${ARCH}.rpm
                     else
-                        Echo_Red "uw-imap rpm not found in src/, IMAP support may fail to build."
+                        Echo_Red "src/ 中未找到 uw-imap RPM，IMAP 支持可能编译失败。"
                     fi
                 fi
             fi
@@ -195,7 +195,7 @@ Install_Composer()
     local expected actual installer tmpdir
 
     if ! command -v php >/dev/null 2>&1 && [ ! -x /usr/local/php/bin/php ]; then
-        Echo_Red "php not found, skip composer install."
+        Echo_Red "未找到 PHP，跳过 Composer 安装。"
         return 1
     fi
 
@@ -203,42 +203,42 @@ Install_Composer()
     installer="${tmpdir}/composer-setup.php"
 
     # 先获取签名；无法取得签名时中止，避免在没有验证依据时执行远程代码。
-    echo "Fetching Composer installer signature from composer.github.io..."
+    echo "正在从 composer.github.io 获取 Composer 安装程序签名..."
     expected=$(wget -q --max-redirect=3 -O- https://composer.github.io/installer.sig)
     expected=$(echo "${expected}" | tr -d '[:space:]')
     if ! echo "${expected}" | grep -Eq '^[0-9a-f]{96}$'; then
-        Echo_Red "Composer installer signature is not a valid SHA384, refuse to continue."
-        Echo_Red "got: ${expected:0:120}"
+        Echo_Red "Composer 安装程序签名不是有效的 SHA384，拒绝继续。"
+        Echo_Red "实际获取：${expected:0:120}"
         rm -rf "${tmpdir}"
         return 1
     fi
 
-    echo "Downloading Composer installer from getcomposer.org..."
+    echo "正在从 getcomposer.org 下载 Composer 安装程序..."
     if ! wget -q --max-redirect=3 -O "${installer}" https://getcomposer.org/installer \
         || [ ! -s "${installer}" ]; then
-        Echo_Red "Composer installer download failed, skip composer install."
+        Echo_Red "Composer 安装程序下载失败，跳过 Composer 安装。"
         rm -rf "${tmpdir}"
         return 1
     fi
 
     actual=$(php -r "echo hash_file('sha384', '${installer}');")
     if [ "${expected}" != "${actual}" ]; then
-        Echo_Red "Composer installer SHA384 mismatch, refuse to execute."
-        Echo_Red "expected=${expected}"
-        Echo_Red "actual  =${actual}"
+        Echo_Red "Composer 安装程序 SHA384 不匹配，拒绝执行。"
+        Echo_Red "预期值=${expected}"
+        Echo_Red "实际值=${actual}"
         rm -rf "${tmpdir}"
         return 1
     fi
-    Echo_Green "Composer installer SHA384 ok."
+    Echo_Green "Composer 安装程序 SHA384 校验通过。"
 
     php "${installer}" --install-dir=/usr/local/bin --filename=composer
     rm -rf "${tmpdir}"
     if [ -s /usr/local/bin/composer ]; then
         chmod +x /usr/local/bin/composer
-        echo "Composer install successfully."
+        echo "Composer 安装成功。"
         return 0
     fi
-    Echo_Red "Composer install failed."
+    Echo_Red "Composer 安装失败。"
     return 1
 }
 
@@ -253,7 +253,7 @@ PHP_Openssl3_Patch()
     branch=$(Cur_PHP_Branch)
     [ "${branch}" != "8.0" ] && return 0
 
-    echo "OpenSSL 3.0, apply a patch to PHP ${branch}..."
+    echo "检测到 OpenSSL 3.0，正在为 PHP ${branch} 应用补丁..."
     patch -p1 < ${cur_dir}/src/patch/php-8.0-openssl3.0.patch
 }
 
@@ -261,7 +261,7 @@ PHP_Openssl3_Patch()
 Install_PHP_8x()
 {
     Install_Libzip
-    Echo_Blue "[+] Installing ${Php_Ver}"
+    Echo_Blue "[+] 正在安装 ${Php_Ver}"
     Tar_Cd ${Php_Ver}.tar.bz2 ${Php_Ver}
     PHP_Openssl3_Patch
 
@@ -275,12 +275,12 @@ Install_PHP_8x()
 
     Ln_PHP_Bin
 
-    echo "Copy new php configure file..."
+    echo "正在复制新的 PHP 配置文件..."
     mkdir -p /usr/local/php/{etc,conf.d}
     \cp php.ini-production /usr/local/php/etc/php.ini
 
     # php extensions
-    echo "Modify php.ini......"
+    echo "正在修改 php.ini..."
     sed -i 's/post_max_size =.*/post_max_size = 50M/g' /usr/local/php/etc/php.ini
     sed -i 's/upload_max_filesize =.*/upload_max_filesize = 50M/g' /usr/local/php/etc/php.ini
     sed -i 's/;date.timezone =.*/date.timezone = PRC/g' /usr/local/php/etc/php.ini
@@ -303,7 +303,7 @@ if [ "${Stack}" = "lnmp" ]; then
     # 该请求会让 PHP 执行外部可控脚本，从而暴露 www 进程权限。
     # 0660 + listen.owner/group = www 后，只有 www 组成员能连；
     # nginx worker 正是以 www 运行（LNMPA/LAMP 下的 httpd 同理），不受影响。
-    echo "Creating new php-fpm configure file..."
+    echo "正在创建新的 php-fpm 配置文件..."
     cat >/usr/local/php/etc/php-fpm.conf<<EOF
 [global]
 pid = /usr/local/php/var/run/php-fpm.pid
@@ -331,7 +331,7 @@ request_slowlog_timeout = 0
 slowlog = var/log/slow.log
 EOF
 
-    echo "Copy php-fpm init.d file..."
+    echo "正在复制 php-fpm init.d 服务脚本..."
     \cp ${cur_dir}/src/${Php_Ver}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm
     \cp ${cur_dir}/init.d/php-fpm.service /etc/systemd/system/php-fpm.service
     chmod +x /etc/init.d/php-fpm
@@ -381,16 +381,17 @@ Creat_PHP_Tools()
     \cp ${cur_dir}/conf/lnmp.gif ${Default_Website_Dir}/lnmp.gif
 
     if [ "${Enable_PHPInfo_Page}" = "y" ]; then
-        echo "Create PHP Info Tool..."
+        echo "正在创建 PHP 信息页面..."
         cat >${Default_Website_Dir}/phpinfo.php<<eof
 <?php
 phpinfo();
 ?>
 eof
+        Warn_Demo_Page_Not_Served phpinfo.php
     fi
 
     if [ "${Enable_PhpMyAdmin}" = "y" ]; then
-        echo "============================Install PHPMyAdmin================================="
+        echo "============================ 正在安装 phpMyAdmin ============================="
         # 装到网站根目录之外，同时清掉历史版本留在根目录下的那一份
         if [ -n "${Default_Website_Dir}" ] && [ -d "${Default_Website_Dir}/phpmyadmin" ]; then
             rm -rf "${Default_Website_Dir}/phpmyadmin"
@@ -455,7 +456,7 @@ eof
             return 1
         fi
         rm -rf "${pma_stage}"
-        echo "============================phpMyAdmin install completed======================="
+        echo "============================ phpMyAdmin 安装完成 ============================="
     fi
 
     # 开启和关闭都在这里同步，不需要手工去改 default 站点的配置
@@ -514,7 +515,11 @@ Config_PhpMyAdmin_Access()
 
     if [ -d /usr/local/nginx/conf ]; then
         if [ "${Stack}" = "lnmpa" ]; then
-            # LNMPA 下 PHP 由 Apache 执行，nginx 只负责把该路径整体反代过去
+            # LNMPA 下 PHP 由 Apache 执行，nginx 只负责把该路径整体反代过去。
+            # 这里不能再 include proxy-pass-php.conf：那是全站 PHP 反代规则，
+            # 一旦随片段进入 default，站点根目录下的 .php 也会被反代执行，
+            # 突破 default 的静态边界。phpMyAdmin 自己的 ^~ location 已经
+            # 完整反代该路径，前缀匹配优先于正则，不依赖那份全站规则。
             cat >"${nginx_frag}"<<EOF || return 1
         location = /${pma_url} {
             return 301 /${pma_url}/;
@@ -528,6 +533,12 @@ EOF
         else
             # open_basedir 用 PHP_ADMIN_VALUE 下发：程序已不在网站根目录下，
             # 根目录里的 .user.ini 管不到它，必须在这里单独划定可访问范围。
+            #
+            # 这里不能再 include enable-php.conf：那是全站 PHP 执行入口，
+            # 随片段进入 default 后，站点根目录下的 .php 会跟着被执行，
+            # 突破 default 的静态边界。下面的内层 location 已自带
+            # fastcgi_pass / fastcgi.conf / SCRIPT_FILENAME，phpMyAdmin 的 PHP
+            # 由它处理；外层 ^~ 前缀匹配优先于 default 里拒绝 PHP 的正则。
             cat >"${nginx_frag}"<<EOF || return 1
         location = /${pma_url} {
             return 301 /${pma_url}/;
@@ -616,11 +627,18 @@ Detect_PhpMyAdmin_Stack()
 
 Ensure_PhpMyAdmin_Config_Hooks()
 {
+    # 新安装的编译 Nginx、OpenResty、LNMP 和 LNMPA 都把公网 default 放在
+    # vhost/default.conf，nginx.conf 只留本机管理端口。旧环境仍可能把
+    # default_server 写在 nginx.conf，因此按实际文件内容选择，不依赖栈变量。
     local nginx_conf='/usr/local/nginx/conf/nginx.conf'
+    if grep -q 'default_server' /usr/local/nginx/conf/vhost/default.conf 2>/dev/null; then
+        nginx_conf='/usr/local/nginx/conf/vhost/default.conf'
+    fi
     local apache_conf='/usr/local/apache/conf/httpd.conf'
     local tmp
 
     PMA_Nginx_Main_Backup=''
+    PMA_Nginx_Main_Backup_Target="${nginx_conf}"
     PMA_Apache_Main_Backup=''
 
     if [ "${Stack}" = 'lnmp' ] || [ "${Stack}" = 'lnmpa' ]; then
@@ -779,17 +797,22 @@ Smoke_Test_PhpMyAdmin_HTTP()
 {
     local url="$1"
     local output="$2"
-    local attempt
+    local attempt err last_err=''
 
     command -v curl >/dev/null 2>&1 || return 1
+    # 前几次失败是正常的：配置刚写完、nginx 刚 reload，第一次请求经常还是 404。
+    # 这些中间报错先收起来，只有五次都失败才把最后一次的原因打出来，避免在
+    # 安装成功的流程里冒出一行 curl: (22) ... 404 让人误以为出了故障。
     for attempt in 1 2 3 4 5; do
-        if curl -fsS --max-time 15 "${url}" -o "${output}" &&
+        if err=$(curl -fsS --max-time 15 "${url}" -o "${output}" 2>&1) &&
            grep -qi 'phpMyAdmin' "${output}"; then
             return 0
         fi
+        [ -n "${err}" ] && last_err="${err}"
         rm -f "${output}"
         [ "${attempt}" -lt 5 ] && sleep 1
     done
+    [ -n "${last_err}" ] && printf '%s\n' "${last_err}" >&2
     return 1
 }
 
@@ -798,7 +821,9 @@ Rollback_PhpMyAdmin_Install()
     rm -f /usr/local/nginx/conf/phpmyadmin.enable.conf \
           /usr/local/apache/conf/extra/phpmyadmin.enable.conf
     if [ -n "${PMA_Nginx_Main_Backup}" ] && [ -s "${PMA_Nginx_Main_Backup}" ]; then
-        mv -f "${PMA_Nginx_Main_Backup}" /usr/local/nginx/conf/nginx.conf
+        # 必须还原到当初备份的那个文件：新安装备份 vhost/default.conf，
+        # 旧环境可能仍是 nginx.conf，写死任一位置都会把内容还原错文件。
+        mv -f "${PMA_Nginx_Main_Backup}" "${PMA_Nginx_Main_Backup_Target:-/usr/local/nginx/conf/nginx.conf}"
     fi
     if [ -n "${PMA_Apache_Main_Backup}" ] && [ -s "${PMA_Apache_Main_Backup}" ]; then
         mv -f "${PMA_Apache_Main_Backup}" /usr/local/apache/conf/httpd.conf
@@ -830,15 +855,13 @@ Install_Only_phpMyAdmin()
     local action="${1:-}"
     local pma_ver pma_stage access_url smoke_body http_port db_port
 
-    echo "+-----------------------------------------------------------------------+"
-    echo "|                    Install phpMyAdmin for LNMP                       |"
-    echo "+-----------------------------------------------------------------------+"
+    Print_Banner "为现有环境安装 phpMyAdmin"
 
     Detect_PhpMyAdmin_Stack || return 1
 
     if [ -n "${action}" ]; then
         case "${action}" in enable|disable|status) ;; *)
-            Echo_Red "Usage: ./install.sh phpmyadmin {enable|disable|status}"
+            Echo_Red "用法：./install.sh phpmyadmin {enable|disable|status}"
             return 1
             ;;
         esac
@@ -988,7 +1011,7 @@ Install_Only_phpMyAdmin()
     fi
     Clean_PhpMyAdmin_Config_Backups
 
-    Echo_Green "phpMyAdmin ${pma_ver} install completed."
+    Echo_Green "phpMyAdmin ${pma_ver} 安装完成。"
     Echo_Green "访问地址：http://<服务器IP>/${access_url}/"
     return 0
 }

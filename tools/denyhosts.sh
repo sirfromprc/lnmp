@@ -3,11 +3,19 @@ export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~
 
 # Check if user is root
 if [ $(id -u) != "0" ]; then
-    echo "Error: You must be root to run this script, please use root to install lnmp"
+    echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
 fi
 
 cur_dir=$(cd "$(dirname "$0")/.." && pwd)
+
+# 脚本被复制到源码目录之外执行时，上面推导出的 cur_dir 是错的，加载会失败。
+# 不检查的话后面每个公共函数都会 command not found，却还继续往下跑。
+if [ ! -f "${cur_dir}/include/main.sh" ]; then
+    echo "错误：找不到 ${cur_dir}/include/main.sh。"
+    echo "请在 LNMP 源码目录内执行本脚本，例如 ./tools/$(basename "$0")。"
+    exit 1
+fi
 
 . "${cur_dir}/lnmp.conf"
 . "${cur_dir}/include/main.sh"
@@ -33,15 +41,15 @@ elif [ "${PM}" = "apt" ]; then
     /etc/init.d/rsyslog restart
 fi
 
-echo "Downloading..."
+echo "正在下载 DenyHosts..."
 cd "${cur_dir}/src"
 Download_Files https://github.com/denyhosts/denyhosts/archive/refs/tags/v3.1.tar.gz denyhosts-3.1.tar.gz
 Require_File "denyhosts-3.1.tar.gz" "DenyHosts"
 Tar_Cd denyhosts-3.1.tar.gz denyhosts-3.1
-echo "Installing..."
+echo "正在安装 DenyHosts..."
 python setup.py install
 
-echo "Copy files..."
+echo "正在复制 DenyHosts 文件..."
 \cp denyhosts.conf /etc
 
 if [ "${PM}" = "yum" ]; then
@@ -86,5 +94,5 @@ cd ..
 rm -rf denyhosts-3.1
 
 StartUp denyhosts
-echo "Start DenyHosts..."
+echo "正在启动 DenyHosts..."
 /etc/init.d/denyhosts start

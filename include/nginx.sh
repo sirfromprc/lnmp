@@ -21,7 +21,7 @@ Install_Nginx_Openssl()
 Install_Nginx_Lua()
 {
     if [ "${Enable_Nginx_Lua}" = 'y' ]; then
-        echo "Installing Lua for Nginx..."
+        echo "正在为 Nginx 安装 Lua 支持..."
         cd ${cur_dir}/src
         # Lua 组件从上游官方 GitHub 仓库获取
         Download_Files https://github.com/openresty/luajit2/archive/refs/tags/v${Luajit_Ver#luajit2-}.tar.gz ${Luajit_Ver}.tar.gz
@@ -36,7 +36,7 @@ Install_Nginx_Lua()
         Require_File "${LuaRestyCore}.tar.gz" "lua-resty-core"
         Require_File "${LuaRestyLrucache}.tar.gz" "lua-resty-lrucache"
 
-        Echo_Blue "[+] Installing ${Luajit_Ver}... "
+        Echo_Blue "[+] 正在安装 ${Luajit_Ver}... "
         # 这两个只解压不编译，nginx configure 时用 --add-module 指过去；
         # 解压失败就没有模块目录，configure 一定挂，所以这里直接停。
         tar zxf ${LuaNginxModule}.tar.gz || { Echo_Red "解压 ${LuaNginxModule} 失败"; exit 1; }
@@ -195,7 +195,7 @@ Install_Lua_Resty_Libs()
         # "0.1.34rc3" 而不是 "0.1.34"，只匹配数字和点会漏掉 rc3，
         # 否则会将整个字符串错误识别为仓库名。
         repo=$(echo "${lib}" | sed -E 's/-[0-9][0-9.]*([a-zA-Z]+[0-9]*)?$//')
-        Echo_Blue "[+] Installing ${lib}... "
+        Echo_Blue "[+] 正在安装 ${lib}... "
         Download_Files https://github.com/openresty/${repo}/archive/refs/tags/v${lib##${repo}-}.tar.gz ${lib}.tar.gz
         if [ ! -s "${cur_dir}/src/${lib}.tar.gz" ]; then
             Echo_Red "${lib} 下载失败，跳过（不影响 nginx 本体）"
@@ -219,7 +219,7 @@ Install_Lua_Resty_Libs()
 Install_Ngx_Brotli()
 {
     if [ "${Enable_Ngx_Brotli}" = 'y' ]; then
-        Echo_Blue "[+] Installing ngx_brotli... "
+        Echo_Blue "[+] 正在安装 ngx_brotli... "
         cd ${cur_dir}/src
         Download_Files https://github.com/google/ngx_brotli/archive/${NgxBrotli_Commit}.tar.gz ${NgxBrotli_Ver}.tar.gz
         Require_File "${NgxBrotli_Ver}.tar.gz" "ngx_brotli"
@@ -300,7 +300,7 @@ Link_System_Brotli()
 Install_Ngx_CachePurge()
 {
     if [ "${Enable_Ngx_CachePurge}" = 'y' ]; then
-        Echo_Blue "[+] Installing ${NgxCachePurge_Ver}... "
+        Echo_Blue "[+] 正在安装 ${NgxCachePurge_Ver}... "
         cd ${cur_dir}/src
         Download_Files https://github.com/FRiCKLE/ngx_cache_purge/archive/${NgxCachePurge_Ver#ngx_cache_purge-}.tar.gz ${NgxCachePurge_Ver}.tar.gz
         Require_File "${NgxCachePurge_Ver}.tar.gz" "ngx_cache_purge"
@@ -313,7 +313,7 @@ Install_Ngx_CachePurge()
 Install_Ngx_FancyIndex()
 {
     if [ "${Enable_Ngx_FancyIndex}" = 'y' ]; then
-        echo "Installing Ngx FancyIndex for Nginx..."
+        echo "正在为 Nginx 安装 FancyIndex 模块..."
         cd ${cur_dir}/src
         Download_Files https://github.com/aperezdc/ngx-fancyindex/releases/download/v${NgxFancyIndex_Ver#ngx-fancyindex-}/${NgxFancyIndex_Ver}.tar.xz ${NgxFancyIndex_Ver}.tar.xz
         Require_File "${NgxFancyIndex_Ver}.tar.xz" "ngx-fancyindex"
@@ -323,9 +323,93 @@ Install_Ngx_FancyIndex()
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Write_Nginx_Default_VHost — 生成 Nginx/OpenResty 共用的公网静态兜底站点
+# ---------------------------------------------------------------------------
+Write_Nginx_Default_VHost()
+{
+    local conf_dir="${1:-/usr/local/nginx/conf}"
+    local listen_extra=''
+    local uname_r demo_php_block
+
+    uname_r=$(uname -r)
+    if echo "${uname_r}" | grep -Eq '^3\.(9|1[0-9])|^[4-9]\.'; then
+        listen_extra=' reuseport'
+    fi
+
+    # LNMPA 下 default 的 PHP 由 Apache 执行，nginx 只做反代；其余栈直连 php-fpm。
+    if [ "${Stack}" = 'lnmpa' ]; then
+        demo_php_block='            proxy_pass http://127.0.0.1:88;
+            include proxy.conf;'
+    else
+        demo_php_block='            try_files $uri =404;
+            fastcgi_pass  unix:/tmp/php-cgi.sock;
+            fastcgi_index index.php;
+            include fastcgi.conf;'
+    fi
+
+    if ! mkdir -p "${conf_dir}/vhost"; then
+        Echo_Red "创建 Nginx vhost 配置目录失败：${conf_dir}/vhost"
+        return 1
+    fi
+
+    cat >"${conf_dir}/vhost/default.conf"<<EOF || { Echo_Red "生成 Nginx default 站点失败。"; return 1; }
+server {
+        listen 80 default_server${listen_extra};
+        #listen [::]:80 default_server ipv6only=on;
+        server_name _;
+        index index.html index.htm;
+        root  ${Default_Website_Dir};
+
+        #error_page   404   /404.html;
+
+        # phpMyAdmin 的访问入口。该片段由安装脚本按开关生成或删除，
+        # 开启时片段会同时带入 PHP/反代配置；关闭时 default 保持静态。
+        include phpmyadmin.*.conf;
+
+        # phpinfo / redis / memcached 三个演示页由 Enable_PHPInfo_Page、
+        # Enable_Redis_Test_Page、Enable_Memcached_Test_Page 决定是否写入本目录，
+        # 默认都不写。正则 location 按出现顺序匹配，本条在下面拒绝 PHP 的规则
+        # 之前，因此这三个固定文件名可执行；开关关闭时文件不存在，请求按 404
+        # 处理，不需要按开关改配置。
+        location ~ ^/(phpinfo|redis|memcached)\.php\$ {
+${demo_php_block}
+        }
+
+        # default 是静态兜底站点，除上面三个演示页外一律不执行 PHP，
+        # 避免源码被当作静态文件下载。phpMyAdmin 片段用 ^~ 前缀 location
+        # 自带 PHP 处理，前缀匹配优先于本正则，因此启用 phpMyAdmin 不会让
+        # 根目录下的其它 .php 变得可执行。
+        location ~ [^/]\.php(/|\$) {
+            return 404;
+        }
+
+        location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)\$ {
+            expires      30d;
+        }
+
+        location ~ .*\.(js|css)\$ {
+            expires      12h;
+        }
+
+        location ^~ /.well-known/ {
+            allow all;
+        }
+
+        location ~ /\. {
+            deny all;
+        }
+
+        access_log  /home/wwwlogs/default.log main;
+        error_log   /home/wwwlogs/default.error.log;
+    }
+EOF
+    return 0
+}
+
 Install_Nginx()
 {
-    Echo_Blue "[+] Installing ${Nginx_Ver}... "
+    Echo_Blue "[+] 正在安装 ${Nginx_Ver}... "
     groupadd www
     useradd -s /sbin/nologin -g www www
 
@@ -377,21 +461,20 @@ Install_Nginx()
         if ! grep -q 'lua_package_cpath' /usr/local/nginx/conf/nginx.conf; then
             sed -i "/server_tokens off;/i\        lua_package_cpath \"/usr/local/luajit/lib/lua/5.1/?.so;;\";\n" /usr/local/nginx/conf/nginx.conf
         fi
-        if [ "${Stack}" = "lnmp" ]; then
-            sed -i "/include enable-php.conf;/i\        location /lua\n        {\n            default_type text/html;\n            content_by_lua 'ngx.say\(\"hello world\"\)';\n        }\n" /usr/local/nginx/conf/nginx.conf
-        else
-            sed -i "/include proxy-pass-php.conf;/i\        location /lua\n        {\n            default_type text/html;\n            content_by_lua 'ngx.say\(\"hello world\"\)';\n        }\n" /usr/local/nginx/conf/nginx.conf
-        fi
+        # Lua 运行库已经在编译阶段检查；不再把 /lua 自检接口注入 LNMPA 的
+        # 公网 default_server，避免破坏默认静态站点的边界。
+    elif grep -q 'location /lua' /usr/local/nginx/conf/nginx.conf; then
+        # 关了 Lua，nginx 就没编 ngx_lua 模块；LNMP/LNMPA 的管理端口里
+        # 自带的 /lua 示例都会让 nginx -t 直接报未知指令。
+        # 只删这一个 location 块，同一 server 里的 nginx_status 和
+        # access_log 不受影响。
+        sed -i '/location \/lua/,/^[[:space:]]*}[[:space:]]*$/d' /usr/local/nginx/conf/nginx.conf
     fi
     # Brotli：编进去了就同时在配置里开启，否则模块装了却没生效。
     # brotli_static on 会优先送同名 .br 文件；对已 gzip 的响应两者互不冲突，
     # 浏览器按 Accept-Encoding 协商。
     if [ "${Enable_Ngx_Brotli}" = 'y' ] && ! grep -q '^\s*brotli on;' /usr/local/nginx/conf/nginx.conf; then
         sed -i "/gzip on;/i\        brotli on;\n        brotli_static on;\n        brotli_comp_level 6;\n        brotli_min_length 1k;\n        brotli_types text/plain text/css application/json application/javascript application/x-javascript text/javascript application/xml application/xml+rss image/svg+xml;\n" /usr/local/nginx/conf/nginx.conf
-    fi
-
-    if [ "${isWSL}" = "y" ]; then
-        sed -i "/gzip on;/i\        fastcgi_buffering off;\n" /usr/local/nginx/conf/nginx.conf
     fi
 
     mkdir -p ${Default_Website_Dir}
@@ -402,11 +485,7 @@ Install_Nginx()
     chown -R www:www ${Default_Website_Dir}
     chmod 755 ${Default_Website_Dir}
 
-    mkdir /usr/local/nginx/conf/vhost
-
-    if [ "${Default_Website_Dir}" != "/home/wwwroot/default" ]; then
-        sed -i "s#/home/wwwroot/default#${Default_Website_Dir}#g" /usr/local/nginx/conf/nginx.conf
-    fi
+    Write_Nginx_Default_VHost /usr/local/nginx/conf || exit 1
 
     if [ "${Stack}" = "lnmp" ]; then
         cat >${Default_Website_Dir}/.user.ini<<EOF
@@ -430,11 +509,4 @@ EOF
 google_perftools_profiles /tmp/tcmalloc;' /usr/local/nginx/conf/nginx.conf
     fi
 
-    if [ "${Stack}" != "lamp" ]; then
-        uname_r=$(uname -r)
-        if echo $uname_r|grep -Eq "^3\.(9|1[0-9])*|^[4-9]\.*"; then
-            echo "3.9+";
-            sed -i 's/listen 80 default_server;/listen 80 default_server reuseport;/g' /usr/local/nginx/conf/nginx.conf
-        fi
-    fi
 }

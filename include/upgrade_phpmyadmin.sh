@@ -3,29 +3,27 @@
 Upgrade_phpMyAdmin()
 {
     phpMyAdmin_Version=""
-    echo "You can get version number from https://www.phpmyadmin.net/downloads/"
-    read -p "Please enter phpMyAdmin version you want, (example: 4.8.0 ): " phpMyAdmin_Version
+    echo "可在 https://www.phpmyadmin.net/downloads/ 查看可用版本号。"
+    read -p "请输入目标 phpMyAdmin 版本（例如 5.2.2）：" phpMyAdmin_Version
     if [ "${phpMyAdmin_Version}" = "" ]; then
-        echo "Error: You must enter a phpMyAdmin version!!"
+        echo "错误：必须输入 phpMyAdmin 版本号！"
         exit 1
     fi
-    echo "+---------------------------------------------------------+"
-    echo "|   You will upgrade phpMyAdmin version to ${phpMyAdmin_Version}"
-    echo "+---------------------------------------------------------+"
+    Print_Banner "即将把 phpMyAdmin 升级到 ${phpMyAdmin_Version}"
 
     Press_Start
 
-    echo "============================check files=================================="
+    echo "============================ 检查文件 ============================"
     cd ${cur_dir}/src
 
     if ! Download_Verified phpmyadmin "${phpMyAdmin_Version}" \
          "https://files.phpmyadmin.net/phpMyAdmin/${phpMyAdmin_Version}/phpMyAdmin-${phpMyAdmin_Version}-all-languages.tar.xz" \
          "phpMyAdmin-${phpMyAdmin_Version}-all-languages.tar.xz"; then
-        echo "You enter phpMyAdmin Version was:"${phpMyAdmin_Version}
-        Echo_Red "Error! 下载或校验失败，请检查版本号。"
+        echo "输入的 phpMyAdmin 版本为：${phpMyAdmin_Version}"
+        Echo_Red "错误！下载或校验失败，请检查版本号。"
         exit 1
     fi
-    echo "============================check files=================================="
+    echo "============================ 文件检查结束 ========================"
 
     local pma_src="phpMyAdmin-${phpMyAdmin_Version}-all-languages"
     # 线上目录与备份都在网站根目录之外：备份若落在根目录下，
@@ -37,7 +35,7 @@ Upgrade_phpMyAdmin()
     rm -rf "${stage}"
     mkdir -p "${stage}" || exit 1
 
-    echo "Uncompress ${pma_src}.tar.xz ..."
+    echo "正在解压 ${pma_src}.tar.xz..."
     if ! tar Jxf "${pma_src}.tar.xz" -C "${stage}"; then
         Echo_Red "解压失败，线上 phpMyAdmin 未做任何改动。"
         rm -rf "${stage}"
@@ -77,7 +75,7 @@ Upgrade_phpMyAdmin()
     chmod 755 -R "${stage}/${pma_src}/"
     chown www:www -R "${stage}/${pma_src}/"
 
-    echo "Backup old phpMyAdmin to ${pma_bak} ..."
+    echo "正在把旧 phpMyAdmin 备份到 ${pma_bak}..."
     if [ -d "${pma_live}" ]; then
         if ! mv "${pma_live}" "${pma_bak}"; then
             Echo_Red "备份原 phpMyAdmin 目录失败，放弃升级（线上未改动）。"
@@ -104,7 +102,7 @@ Upgrade_phpMyAdmin()
         chmod 600 "${pma_live}/.access_url"
     fi
 
-    Echo_Green "======== upgrade phpMyAdmin completed ======"
+    Echo_Green "======== phpMyAdmin 升级完成 ======"
     Echo_Green "原目录保留在 ${pma_bak}，确认无误后可自行删除。"
     [ -s "${pma_live}/.access_url" ] && \
         Echo_Green "访问路径不变：http://<服务器IP>/$(cat ${pma_live}/.access_url)/"

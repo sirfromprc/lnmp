@@ -28,9 +28,9 @@ DB_Default='2'      # MySQL 8.4 LTS
 PHP_Default='4'     # PHP 8.3
 Apache_Default='1'  # Apache 2.4（2.2 已随 EOL 移除）
 
-[ ${#DB_Info[@]}     -eq ${DB_Count} ]     || { echo "FATAL: DB_Info arity drift: ${#DB_Info[@]} != ${DB_Count}"; exit 1; }
-[ ${#PHP_Info[@]}    -eq ${PHP_Count} ]    || { echo "FATAL: PHP_Info arity drift: ${#PHP_Info[@]} != ${PHP_Count}"; exit 1; }
-[ ${#Apache_Info[@]} -eq ${Apache_Count} ] || { echo "FATAL: Apache_Info arity drift: ${#Apache_Info[@]} != ${Apache_Count}"; exit 1; }
+[ ${#DB_Info[@]}     -eq ${DB_Count} ]     || { echo "致命错误：DB_Info 项目数异常：${#DB_Info[@]} != ${DB_Count}"; exit 1; }
+[ ${#PHP_Info[@]}    -eq ${PHP_Count} ]    || { echo "致命错误：PHP_Info 项目数异常：${#PHP_Info[@]} != ${PHP_Count}"; exit 1; }
+[ ${#Apache_Info[@]} -eq ${Apache_Count} ] || { echo "致命错误：Apache_Info 项目数异常：${#Apache_Info[@]} != ${Apache_Count}"; exit 1; }
 
 Set_DB_Profile()
 {
@@ -91,7 +91,10 @@ Set_DB_Profile()
         ;;
     esac
 
-    if [ "${DB_Kind}" != 'none' ]; then
+    if [ "${DB_Kind}" = 'mariadb' ]; then
+        MySQL_Bin="${MySQL_Dir}/bin/mariadb"
+        MySQL_Config="${MySQL_Dir}/bin/mariadb_config"
+    elif [ "${DB_Kind}" = 'mysql' ]; then
         MySQL_Bin="${MySQL_Dir}/bin/mysql"
         MySQL_Config="${MySQL_Dir}/bin/mysql_config"
     fi
@@ -191,14 +194,14 @@ Dispatch()
     local func="$1"
 
     if [ -z "${func}" ]; then
-        Echo_Red "FATAL: empty dispatch target."
-        Echo_Red "The selection table in include/profile.sh produced no install function."
+        Echo_Red "致命错误：分发目标为空。"
+        Echo_Red "include/profile.sh 的选择表没有生成安装函数。"
         exit 1
     fi
 
     if ! declare -f "${func}" >/dev/null 2>&1; then
-        Echo_Red "FATAL: install function '${func}' is not defined."
-        Echo_Red "include/profile.sh references a function that does not exist."
+        Echo_Red "致命错误：安装函数 '${func}' 未定义。"
+        Echo_Red "include/profile.sh 引用了不存在的函数。"
         exit 1
     fi
 
@@ -229,28 +232,28 @@ DB_Bin_Available()
 Print_DB_Menu()
 {
     local i note
-    Echo_Yellow "You have ${DB_Count} options for your DataBase install."
+    Echo_Yellow "数据库有 ${DB_Count} 个可安装版本："
     i=1
     while [ ${i} -le ${DB_Count} ]; do
         Set_DB_Profile "${i}"
         note="${DB_Note}"
-        [ "${i}" = "${DB_Default}" ] && note="${note} (Default)"
-        echo "${i}: Install ${DB_Info[$((i-1))]}${note}"
+        [ "${i}" = "${DB_Default}" ] && note="${note}（默认）"
+        echo "${i}: 安装 ${DB_Info[$((i-1))]}${note}"
         i=$((i+1))
     done
-    echo "0: DO NOT Install MySQL/MariaDB"
+    echo "0: 不安装 MySQL/MariaDB"
 }
 
 Print_PHP_Menu()
 {
     local i note
-    Echo_Yellow "You have ${PHP_Count} options for your PHP install."
+    Echo_Yellow "PHP 有 ${PHP_Count} 个可安装版本："
     i=1
     while [ ${i} -le ${PHP_Count} ]; do
         Set_PHP_Profile "${i}"
         note="${PHP_Note}"
-        [ "${i}" = "${PHP_Default}" ] && note="${note} (Default)"
-        echo "${i}: Install ${PHP_Info[$((i-1))]}${note}"
+        [ "${i}" = "${PHP_Default}" ] && note="${note}（默认）"
+        echo "${i}: 安装 ${PHP_Info[$((i-1))]}${note}"
         i=$((i+1))
     done
 }
@@ -260,8 +263,8 @@ Select_DB_Bin()
 {
     # 该版本压根不提供通用二进制（如 MySQL 5.1），或当前架构没有二进制包
     if [ -z "${DB_Bin_Default}" ] || ! DB_Bin_Available; then
-        [ -z "${DB_Bin_Default}" ] && echo "You will install ${DB_Ver}"
-        [ -n "${DB_Bin_Default}" ] && echo "Default install ${DB_Ver} from Source."
+        [ -z "${DB_Bin_Default}" ] && echo "将安装 ${DB_Ver}。"
+        [ -n "${DB_Bin_Default}" ] && echo "当前平台没有可用通用二进制包，将从源码编译 ${DB_Ver}。"
         Bin="n"
         return 0
     fi
@@ -273,24 +276,24 @@ Select_DB_Bin()
         echo "y = 使用官方通用二进制：上游构建，校验值强制核对，几分钟装完（推荐）"
         echo "n = 自行编译源码：需要 4GB 以上内存和 15GB 以上磁盘，通常要跑数小时，"
         echo "    只有确实需要定制编译参数时才选它"
-        read -p "Using Generic Binaries [y/n]: " Bin
+        read -p "是否使用官方通用二进制包 [Y/n]（默认 y，推荐）: " Bin
     fi
 
     case "${Bin}" in
     [yY][eE][sS]|[yY])
-        echo "You will install ${DB_Ver} Using Generic Binaries."
+        echo "将使用官方通用二进制包安装 ${DB_Ver}。"
         Bin="y"
         ;;
     [nN][oO]|[nN])
-        echo "You will install ${DB_Ver} from Source."
+        echo "将从源码编译安装 ${DB_Ver}。"
         Bin="n"
         ;;
     *)
         if [ "${DB_Bin_Default}" = "auto" ] && [ "${CheckMirror}" != "n" ]; then
-            echo "Default install ${DB_Ver} Using Generic Binaries."
+            echo "未输入，默认使用官方通用二进制包安装 ${DB_Ver}。"
             Bin="y"
         else
-            echo "Default install ${DB_Ver} from Source."
+            echo "未输入，默认从源码编译安装 ${DB_Ver}。"
             Bin="n"
         fi
         ;;

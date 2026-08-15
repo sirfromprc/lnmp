@@ -13,30 +13,28 @@ Upgrade_Nginx()
     fi
 
     Nginx_Version=""
-    echo "Current Nginx Version:${Cur_Nginx_Version}"
-    echo "You can get version number from https://nginx.org/en/download.html"
-    read -p "Please enter nginx version you want, (example: 1.20.2): " Nginx_Version
+    echo "当前 Nginx 版本：${Cur_Nginx_Version}"
+    echo "可在 https://nginx.org/en/download.html 查看可用版本号。"
+    read -p "请输入目标 Nginx 版本（例如 1.20.2）：" Nginx_Version
     if [ "${Nginx_Version}" = "" ]; then
-        echo "Error: You must enter a nginx version!!"
+        echo "错误：必须输入 Nginx 版本号！"
         exit 1
     fi
-    echo "+---------------------------------------------------------+"
-    echo "|    You will upgrade nginx version to ${Nginx_Version}"
-    echo "+---------------------------------------------------------+"
+    Print_Banner "即将把 Nginx 升级到 ${Nginx_Version}"
 
     Press_Start
 
-    echo "============================check files=================================="
+    echo "============================ 检查文件 ============================"
     cd ${cur_dir}/src
 
     if ! Download_Verified nginx "${Nginx_Version}" \
          "https://nginx.org/download/nginx-${Nginx_Version}.tar.gz" \
          "nginx-${Nginx_Version}.tar.gz"; then
-        echo "You enter Nginx Version was:"${Nginx_Version}
-        Echo_Red "Error! nginx-${Nginx_Version}.tar.gz 下载或签名验证失败。"
+        echo "输入的 Nginx 版本为：${Nginx_Version}"
+        Echo_Red "错误！nginx-${Nginx_Version}.tar.gz 下载或签名验证失败。"
         exit 1
     fi
-    echo "============================check files=================================="
+    echo "============================ 文件检查结束 ========================"
 
     Install_Nginx_Openssl
     Install_Nginx_Lua
@@ -152,9 +150,9 @@ Upgrade_Nginx()
         fi
     fi
 
-    echo "Program will display Nginx Version......"
+    echo "下面显示升级后的 Nginx 版本："
     ${nginx_bin} -v
-    Echo_Green "======== upgrade nginx completed ======"
+    Echo_Green "======== Nginx 升级完成 ======"
     Echo_Green "旧二进制保留在 ${nginx_bak}，确认无误后可自行删除。"
     return 0
 }

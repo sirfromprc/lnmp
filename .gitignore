@@ -16,6 +16,8 @@ src/*.zip
 *~
 .DS_Store
 Thumbs.db
+__pycache__/
+*.pyc
 
 # 运行期产物
 *.log
@@ -24,3 +26,4 @@ dist/
 # 开发期跟踪文件，不随发布包分发
 todo.md
 HANDOVER.md
+tests/

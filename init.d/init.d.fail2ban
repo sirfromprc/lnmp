@@ -38,12 +38,12 @@ do_start()
 	# Assure that /var/run/fail2ban exists
     [ -d /var/run/fail2ban ] || mkdir -p /var/run/fail2ban
 
-    echo -n "Starting fail2ban..."
+    echo -n "正在启动 fail2ban..."
 	$DAEMON -x start > /dev/null
     if [ $? -eq 0 ]; then
-        echo " done"
+        echo " 完成"
     else
-        echo " failed"
+        echo " 失败"
     fi
 }
 
@@ -51,30 +51,30 @@ do_status()
 {
     $DAEMON ping > /dev/null 2>&1
 	if [ $? -eq 0 ]; then
-		echo "fail2ban is running."
+		echo "fail2ban 正在运行。"
 	else
-		echo "fail2ban is stop."
+		echo "fail2ban 已停止。"
 	fi
 }
 
 do_stop()
 {
-    echo -n "Stopping fail2ban..."
+    echo -n "正在停止 fail2ban..."
     $DAEMON stop > /dev/null || return 2
 	if [ $? -eq 0 ]; then
-        echo " done"
+        echo " 完成"
     else
-        echo " failed"
+        echo " 失败"
     fi
 }
 
 do_reload() {
-    echo -n "Reloading fail2ban..."
+    echo -n "正在重载 fail2ban..."
 	$DAEMON reload > /dev/null
 	if [ $? -eq 0 ]; then
-        echo " done"
+        echo " 完成"
     else
-        echo " failed"
+        echo " 失败"
     fi
 }
 
@@ -101,6 +101,6 @@ case "$command" in
         do_status
         ;;
     *)
-        echo "Usage: $SCRIPTNAME {start|force-start|stop|restart|force-reload|status}" >&2
+        echo "用法：$SCRIPTNAME {start|force-start|stop|restart|force-reload|status}" >&2
         ;;
 esac

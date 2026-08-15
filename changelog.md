@@ -7317,3 +7317,1764 @@ phpMyAdmin（经补装路径安装）配置里写的正是 `'port' => '3306'`。
 `t/test_db_port.sh`、`t/test_install_phpmyadmin.sh` 全部返回 0。
 
 - **验证状态**：已实测（Debian 12，2026-08-12）。
+
+# 阶段 34 - redis-cli 未上 PATH、管理命令启停无回显（2026-08-12）
+
+## FIX-REDIS-005 redis-cli 未链接到 /usr/bin，裸命令找不到
+
+**位置**：`include/redis.sh` 的 `Install_Redis`、`Uninstall_Redis`
+
+**问题**：`mysql`、`nginx`、`memcached` 装完都会 `ln -sf` 一份客户端/主程序到
+`/usr/bin`，唯独 Redis 没有。`HowtoGuides.md` 的验证步骤和用户实际操作都是
+裸命令 `redis-cli ping`，装完直接执行报 `redis-cli: command not found`，
+只能用户自己想到用绝对路径 `/usr/local/redis/bin/redis-cli`。
+
+**行为变化**：
+
+- `Install_Redis` 两条分支（首次编译安装、检测到已装过跳过编译）都补上
+  `ln -sf /usr/local/redis/bin/redis-cli /usr/bin/redis-cli`，覆盖“先跑过一次
+  装 redis-server 失败又重跑”和“重复执行 addons.sh install redis”两种情形，
+  保证幂等。
+- `Uninstall_Redis` 对应删除该软链接，避免卸载后残留一个指向已删除文件的
+  失效链接。
+
+**验证**：`bash -n include/redis.sh`；`t/lint.sh` 全部通过；人工核对同一文件里
+`mysql.sh`/`nginx.sh`/`memcached.sh` 的现有 `ln -sf` 写法与新增两处一致。
+
+- **验证状态**：已验证（静态）；未在真机上重新执行 `addons.sh install redis`
+  验证符号链接生效，待人工真机验证。
+
+## FIX-OPS-003 lnmp 管理命令 reload/restart 悄无声息，且每次都打印横幅
+
+**位置**：`conf/lnmp`（顶部横幅、`Svc`/`Svc_Feedback`、`nginx`/`mysql`/
+`mariadb`/`php-fpm`/`pureftpd` 各 case 分支）
+
+**问题**（用户实测反馈）：`lnmp nginx reload`、`lnmp nginx restart`、
+`lnmp php-fpm restart` 执行后没有任何成功/失败提示，屏幕上只有开头固定打印
+的 `Manager for LNMP, Written by Licess` 横幅，看起来像命令什么都没做。
+根因有两处叠加：一是顶部横幅在脚本入口无条件打印，与命令是否成功无关；
+二是 `Svc()` 在 systemd 存在时直接调用 `systemctl <action> <service>.service`，
+这是 systemd 的正常行为——成功不输出任何内容——原实现没有替它补一句人话。
+
+**行为变化**：
+
+- 删掉顶部固定横幅（4 行 `echo`），所有子命令的输出不再被这段与结果无关的
+  内容占用。
+- 新增 `Svc_Feedback <服务> <动作>`：包一层 `Svc`，用已有的 `Echo_Green`/
+  `Echo_Red` 按返回码打印“服务 动作 成功”或“服务 动作 失败（退出码 N）”，
+  `status` 动作跳过（它自己已经打印完整状态，不需要再叠加一句）；返回码原样
+  透传。
+- `nginx`/`mysql`/`mariadb`/`php-fpm`/`pureftpd` 五个 case 分支从直接调用
+  `Svc` 改为调用 `Svc_Feedback`，并显式 `exit $?`，命令行退出码与提示信息
+  一致。
+- `lnmp_start`/`lnmp_stop`/`lnmp_reload`（无参数的 `lnmp restart` 等）内部
+  仍直接调用 `Svc`，不受影响——那几条路径本来就有 `Check_Svc_State` 或
+  自己的 `echo`，不在本次用户反馈范围内，未改动。
+
+**验证**：`bash -n conf/lnmp`；`t/lint.sh` 的 T1 语法检查通过。用假 `id`
+（返回 0 绕过 root 检查）加真实环境跑 `lnmp nginx reload`、
+`lnmp php-fpm restart`、`lnmp nginx status`，确认：横幅不再出现；
+`reload`/`restart` 在 systemd/init.d 都不可用时打印红色失败提示且退出码为
+非零；`status` 不叠加提示。另用桩函数单独跑 `Svc_Feedback` 覆盖成功
+（返回 0，绿色“成功”）、失败（返回 1，红色“失败（退出码 1）”）、
+`status` 跳过三种分支，行为符合预期。未在装有真实 nginx/php-fpm 的机器上
+验证 systemctl 成功路径的输出，待人工真机验证。
+
+- **验证状态**：已验证（静态 + 模拟）；systemctl 成功路径待人工真机验证。
+
+## DOC-701 HowtoGuides 补上 Redis 设密码的具体步骤
+
+**位置**：`HowtoGuides.md` 第三节（安装 Redis）
+
+**问题**：原文只在安全提示里说“必须先设 requirepass”，没给怎么设的具体命令；
+用户看完提示仍然不知道该改哪个文件、改完要不要重启、改完怎么验证生效，
+以及改完之后 WordPress 侧的 `redis-cache` 插件要不要跟着改。
+
+**行为变化**：在原有安全提示后新增一段可直接执行的步骤：
+`openssl rand -base64` 生成随机密码 → 用 `sed` 删除已有的
+`requirepass` 行（不管是默认注释掉的还是之前设过的，用一条正则同时覆盖，
+不依赖不同 Redis 版本注释原文的具体措辞）→ 追加新的 `requirepass` 行 →
+`/etc/init.d/redis restart` → 用 `redis-cli ping`（应被拒绝）和
+`redis-cli -a "$REDISPW" ping`（应返回 PONG）验证生效；并提示同步在
+`wp-config.php` 的 Redis 常量块里加 `WP_REDIS_PASSWORD`，否则插件仍按
+无密码连接，会直接报连接失败。
+
+**验证**：`sed` 删除+追加的写法在沙箱里对模拟的 `redis.conf`（含
+`# requirepass foobared` 注释行）验证过一次替换与二次替换（模拟密码轮换）
+都只留一行 `requirepass`，无重复、无残留注释。文档本身不改代码，无需
+`bash -n`。
+
+- **验证状态**：已验证（静态：sed 命令逻辑经沙箱验证；文档步骤本身未在
+  真实 Redis 实例上走一遍，待人工真机验证）。
+
+## FIX-OPS-004 tools/*.sh 安装后权限未自动补成可执行
+
+**位置**：`include/end.sh` 的 `Install_LNMP_Command`（`Add_LNMP_Startup` /
+`Add_LNMPA_Startup` / `Add_LAMP_Startup` / `Install_Only_Nginx` 共用同一处）
+
+**问题**：`tools/` 目录下除 `lnmp-backup.sh`/`lnmp-tgnotice.sh`/
+`lnmp-phpmyadmin.sh`（这三个会被复制到 `/bin/` 并单独 `chmod +x`）之外的
+运维脚本，在源码树里一直是 644（git 不记录可执行位）。README.md 和
+HowtoGuides.md 里这些脚本都是按 `./tools/xxx.sh` 或
+`/root/lnmp2.3/tools/xxx.sh` 直接调用，装完之后照着文档跑会直接
+`Permission denied`，此前需要用户手工 `chmod +x`。
+
+**行为变化**：`Install_LNMP_Command` 在原有的 `/bin/lnmp*` 复制流程之后，
+新增 `chmod 755 "${cur_dir}"/tools/*.sh`，失败时只打印
+`Echo_Red` 提示（给出手动补权限的命令），不阻断安装——这一步在完整安装
+流程的末尾，前面的服务已经装完并起来了，不应该因为补权限失败就让整个
+安装报错。三个 `Add_*_Startup` 和 `Install_Only_Nginx` 都经同一个
+`Install_LNMP_Command`，改动只有一处，无需在各安装入口分别打补丁。
+
+**验证**：`bash -n include/end.sh`；`t/lint.sh` 的 T1 语法检查通过；
+`t/test_bumpversion.sh` 用 `unshare` 的 mount 命名空间 + overlayfs 隔离
+`/bin`、`/etc`（写入只落在覆盖层，不碰宿主机真实文件），实跑
+`Install_LNMP_Command` 后确认 `tools/*.sh` 全部变成 755，且这一步失败时
+（`grep -q Echo_Red`）会走告警分支而不是静默吞掉。
+
+- **验证状态**：已验证（沙箱内实跑 + 静态检查）。
+
+## DEV-001 新增 bumpversion.sh：开发环境同步已安装的管理命令
+
+**位置**：根目录 `bumpversion.sh`（新增）
+
+**问题**：开发时改了 `conf/lnmp`/`conf/lnmpa`/`conf/lamp` 或
+`tools/lnmp-backup.sh` 等文件后，要验证效果必须手工把它们覆盖到
+`/bin/lnmp`、`/bin/lnmp-backup`、`/bin/lnmp-tgnotice`、
+`/bin/lnmp-phpmyadmin`，且要记得同时补权限，测试环境下重复几次很容易漏做
+或做错。
+
+**行为变化**：新增 `bumpversion.sh`，用法 `./bumpversion.sh [lnmp|lnmpa|lamp]`。
+不复制/重写任何安装逻辑，只是：确认以 root 运行、确认当前目录是 lnmp
+源码树（有 `conf/`、`tools/`、`include/end.sh`）、确认 `/bin/lnmp` 已存在
+（否则提示先跑 `install.sh`），再决定目标栈——带参数则校验后直接用，不带
+参数时用 `/bin/lnmp` 里 `lnmpa_start()`/`lamp_start()` 函数名标记自动识别
+当前装的是哪个栈，识别不出按 `lnmp` 处理——最后 `source`
+`include/main.sh`、`include/end.sh` 并直接调用已有的
+`Install_LNMP_Command`，同步完再检查四个目标文件是否都存在且可执行。
+线上安装、升级流程都不会调用这个脚本。
+
+**验证**：`bash -n bumpversion.sh`；`t/lint.sh` 的 T1 语法检查通过；新增
+`t/test_bumpversion.sh`，在 `unshare` 的 mount 命名空间 + overlayfs 隔离出
+的 `/bin`、`/etc` 里实跑（不影响宿主机真实文件），覆盖：未 root 执行拒绝、
+未安装时拒绝并提示先装、未知栈参数拒绝、无参数默认同步为 `lnmp`
+且内容与 `conf/lnmp` 一致、把 `/bin/lnmp` 换成 lnmpa 内容后无参数能正确
+自动识别为 `lnmpa`（未被误判成默认的 `lnmp`）、显式参数覆盖自动探测、
+连续两次同步同一栈幂等（返回码和内容都不变）。
+
+- **验证状态**：已验证（沙箱内实跑 + 静态检查）。
+
+## SEC-SSH-001 装依赖前自动核对 SSH 端口，默认 22 强制二次确认
+
+**位置**：`include/main.sh`（`Get_Actual_SSH_Port`、`Get_Sshd_Config_Ports`）、
+`include/firewall.sh`（`Check_SSH_Port_Policy`）、`install.sh`
+
+**问题**（用户反馈）：`Add_Iptables_Rules` 只会放行 `lnmp.conf` 里 `SSH_Port`
+这一个端口，而且它跑在安装流程的最后（编译完数据库/PHP/Web 之后）。如果
+用户已经把系统的 SSH 端口改掉、但忘了同步改 `lnmp.conf` 的 `SSH_Port`
+（典型场景：改过 SSH 端口之后想再装个 phpMyAdmin 或补跑一次安装），装完
+防火墙只会放行旧端口，真实在用的 SSH 端口没被放行——轻则新连接进不来，
+重则把自己关在门外；而且这个坑要编译几十分钟到几小时之后才会暴露。
+另外默认的 22 端口本身就是公网扫描器的常年目标，之前没有任何环节提醒
+用户去改。
+
+**行为变化**：
+
+- 新增 `Get_Actual_SSH_Port`：优先用 `ss -tlnp` / `netstat -tlnp` 读取内核
+  当前真实监听的 sshd 端口（不信任配置文件是否与实际生效一致），都不可用
+  时退回解析 `sshd_config`（含 Debian/Ubuntu 默认 `Include` 的
+  `sshd_config.d/*.conf`，用 `Get_Sshd_Config_Ports` 实现）；配置文件存在
+  但没有显式 `Port` 行按 OpenSSH 默认值 22 处理；彻底探测不到时返回失败，
+  交调用方决定怎么处理，不伪造一个可能误导判断的端口号。
+- 新增 `Check_SSH_Port_Policy`，在 `lnmp`/`lnmpa`/`lamp`/`nginx`/`db`
+  五个会调用 `Add_Iptables_Rules` 的入口里、真正开始装依赖之前调用：
+  - 探测到的端口与 `SSH_Port` 不一致 —— 直接拒绝安装，报出两边的值，
+    让用户把 `lnmp.conf` 改对，不去猜哪个是对的；
+  - 一致但仍是默认的 22 —— 打印修改步骤（改 `sshd_config` 的 `Port`、
+    `systemctl restart sshd`、验证新端口能登录后再关旧连接、同步改
+    `lnmp.conf`），并要求显式输入 `y` 才能继续，其它输入直接退出安装；
+  - 一致且已不是 22 —— 只提示即将放行的端口，不阻塞。
+  - 非交互（无终端或 `LNMP_Auto=y`）不做比对和强制二选一，只打印提示后
+    按 `lnmp.conf` 的值继续，不阻断已有自动化脚本/CI。
+- `install.sh` 在 `case "${Stack}"` 分发之前调用，`mphp`/`phpmyadmin` 的
+  `enable`/`disable`/`status` 子命令不碰防火墙，不受影响。
+
+**验证**：`bash -n install.sh include/main.sh include/firewall.sh`；
+`t/lint.sh` 全部通过；新增 `t/test_install_confirm.sh`——`Get_Sshd_Config_Ports`
+用临时 fixture 验证了"无 Port 行按 22 处理""主配置里的 Port""跟随
+Include 的 drop-in 目录"三种解析结果；`Get_Actual_SSH_Port` 在本机做了一次
+真实探测（只读，不改任何东西）；`Check_SSH_Port_Policy` 用桩函数固定探测
+结果，结合 `t/pty_run.py`（用真实伪终端喂输入，因为管道 stdin 下
+`[ -t 0 ]` 恒为假、测不到交互分支）覆盖了一致+22+y、一致+22+非y拒绝、
+一致+非22不强制二选一、不一致直接拒绝、探测彻底失败时的非交互与交互
+两条路径，全部符合预期；也验证了 `LNMP_Auto=y` 下三处新确认都直接放行。
+
+- **验证状态**：已验证（沙箱/伪终端内实跑 + 静态检查）；未在真实改过 SSH
+  端口的服务器上跑一遍完整安装，待人工真机验证。
+
+## UX-INSTALL-001 完整安装选择完毕后打印摘要并显式二次确认
+
+**位置**：`include/main.sh`（`Press_Install`、`Confirm_Start_Install`、
+`Confirm_LNMPConf_Reviewed`、`Print_APP_Ver`）、`install.sh`
+
+**问题**（用户反馈）：`./install.sh lnmp` 选完数据库/PHP/Web/内存分配器之后，
+原来的 `Press_Install` 只是"press any key to install"——按任意键就过，
+等于没有真正的确认；而且当时打印摘要的 `Print_APP_Ver` 实际排在这一步
+**之后**才调用，用户按键提交的时候根本还没看到版本、端口这些信息。装完
+才发现选错版本或者端口不是预期的，只能卸载重装。
+
+**行为变化**：
+
+- `Press_Install` 按 `Stack` 分支：`lnmp`/`lnmpa`/`lamp` 选择完毕后先调用
+  `Print_APP_Ver` 打印完整摘要（版本、编译参数、以及新增的 SSH/数据库
+  端口行，见下），再调用 `Confirm_Start_Install` 要求显式输入 `y` 才真正
+  开始装依赖、编译，其它输入取消安装、不做任何改动；`nginx`/`db`/`mphp`
+  等其它入口保持原来的"press any key"不变，避免无关改动扩大范围。
+- `Print_APP_Ver` 补上两行：`SSH_Port`（即将放行）、`DB_Kind != none` 时
+  的 `DB_Port`/`DB_X_Port`（即将阻断公网新建连接）。
+- 新增 `Confirm_LNMPConf_Reviewed`，在 `lnmp`/`lnmpa`/`lamp`/`nginx`/`db`
+  五个入口最早处调用（选版本之前）：提醒检查 `lnmp.conf` 的端口、目录、
+  `Enable_PhpMyAdmin` 等开关，要求显式输入 `y` 才继续选择版本，避免用户
+  没看过配置就一路按下去。
+- 以上三处确认均遵循仓库既有约定：非交互（无终端或 `LNMP_Auto=y`）打印
+  提示后直接继续，不阻断已有自动化。
+- `install.sh` 的 `Init_Install` 删掉了原来重复的 `Print_APP_Ver` 调用
+  （现在由 `Press_Install` 内部统一打印一次，避免摘要打印两遍）。
+
+**验证**：`bash -n install.sh include/main.sh`；`t/lint.sh` 全部通过；
+`t/test_install_confirm.sh` 静态确认了 `Print_APP_Ver` 不再被重复调用、
+`Press_Install` 对 `lnmp`/`lnmpa`/`lamp` 调用了摘要打印与确认；用
+`t/pty_run.py` 跑了 `Confirm_LNMPConf_Reviewed`/`Confirm_Start_Install`
+的真实 y/非y 两条交互路径，以及 `LNMP_Auto=y` 下的非交互直通路径；另外
+手工拼了一遍 `Confirm_LNMPConf_Reviewed → Check_SSH_Port_Policy →
+Press_Install`（含 `Print_APP_Ver` 摘要与 `Confirm_Start_Install`）的完整
+调用链，逐步喂 `y`，确认摘要文本、端口信息与最终确认提示符合预期。
+
+- **验证状态**：已验证（伪终端内实跑 + 静态检查）。
+
+## FIX-INSTALL-001 Web 服务器菜单中 Nginx 版本号展开为空
+
+**位置**：`install.sh`（组件加载顺序）、`include/main.sh` 的 `Web_Selection`
+（`echo "1: 安装 Nginx ${Nginx_Ver#nginx-}（源码编译，默认）"`）、
+`include/main.sh` 的 `Press_Install`（原 `. include/version.sh` 位置）。
+
+**问题**：`include/version.sh` 只在 `Press_Install` 内部加载，而
+`Dispaly_Selection → Web_Selection` 在此之前执行，`${Nginx_Ver}` 尚未定义。
+Debian 13 上执行 `./install.sh lnmp`，Web 服务器菜单实际打印
+`1: 安装 Nginx （源码编译，默认）`，缺少版本号；同一次运行的安装摘要
+（`Print_APP_Ver`，在 `Press_Install` 内、version.sh 之后）显示 `nginx-1.30.4`
+正常，因此该缺陷只影响选择阶段的菜单。
+
+**行为变化**：`install.sh` 在 `. lnmp.conf` 之后、`. include/main.sh` 之前加载
+`include/version.sh`。菜单打印为 `1: 安装 Nginx 1.30.4（源码编译，默认）`。
+`Press_Install` 内原有的 `. include/version.sh` 保留，重复加载无副作用，
+`include/only.sh` 等先调用 `Press_Install` 的独立安装入口行为不变。
+
+**加载顺序安全性**：`include/version.sh` 全部为组件版本常量赋值，不引用
+`DBSelect`、`PHPSelect`、`WebSelect`、`DB_Kind`、`Stack` 等选择结果；其中
+`OpenResty_Modules_Options="${OpenResty_Modules_Options:-}"` 仍在 `lnmp.conf`
+之后加载，外部传入值不受影响。`upgrade.sh` 原本即在文件头部加载 version.sh。
+
+**验证**：`bash -n install.sh` 通过；定向对比同一表达式在两种加载顺序下的结果，
+旧顺序输出 `1: 安装 Nginx （源码编译，默认）`，新顺序输出
+`1: 安装 Nginx 1.30.4（源码编译，默认）`；`t/lint.sh` 18 项、`t/consistency.sh`
+14 项全部通过。
+
+真机复验：Debian 13 全新执行 `./install.sh lnmp`，Web 服务器菜单实际输出
+`1: 安装 Nginx 1.30.4（源码编译，默认）`，同一次运行的摘要为 `nginx-1.30.4`，两处一致。
+
+- **验证状态**：已实测（Debian 13 复现、本地定向对比、真机菜单复验）。
+
+## AUDIT-INSTALL-001 安装摘要按实际模块开关生成（已实测）
+
+**位置**：`include/main.sh` 的 `Print_APP_Ver`。
+
+**问题**：原实现只打印通常为空的 `Nginx_Modules_Options` 与 `PHP_Modules_Options`，
+默认安装时 `Nginx 附加模块` / `PHP 附加模块` 两行看不到实际启用的模块。
+
+**行为变化**：两行改为按实际模块开关（`Enable_Nginx_Lua`、`Enable_Ngx_Brotli`、
+`Enable_Ngx_CachePurge`、`Enable_Ngx_FancyIndex`、各 `Enable_PHP_*`）与附加参数生成。
+
+**验证**：Debian 13 (trixie) 默认配置执行 `./install.sh lnmp`（nginx-1.30.4、
+php-8.3.33）。摘要输出 `Nginx 附加模块：Lua, Brotli, Cache Purge`、
+`PHP 附加模块：fileinfo, opcache, igbinary, redis, imagick`。
+装完后 `nginx -V` 实际含 `--add-module=…/lua-nginx-module-0.10.31`、
+`…/ngx_brotli-a71f931`、`…/ngx_cache_purge-2.3`（及 lua 依赖 `ngx_devel_kit-0.3.4`），
+未启用的 FancyIndex 不在摘要也不在实际编译参数中；`php -m` 实际含
+`fileinfo`、`Zend OPcache`、`igbinary`、`redis`、`imagick`，摘要未列的
+`exif`、`ldap`、`bz2`、`sodium`、`imap` 实际均未安装。摘要与实际一致。
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-VHOST-001 default 公网兜底站点生成与 IP 命中（已实测）
+
+**位置**：`include/nginx.sh` 的 `Write_Nginx_Default_VHost` / `Install_Nginx`。
+
+**行为变化**：主配置只保留 `127.0.0.1:1008` 管理端口，公网 default 站点由
+共享函数独立生成到 `<conf>/vhost/default.conf`。
+
+**验证**：Debian 13 全新安装后 `/usr/local/nginx/conf/vhost/default.conf` 已生成；
+`nginx -t` 通过；`ss -lnt` 显示 80 监听 `0.0.0.0`、管理端口仅监听 `127.0.0.1:1008`；
+用服务器 IP 访问 `http://<IP>/` 返回 200 且落点为 default 站点内容。
+OpenResty 侧的同一函数复用待 `AUDIT-VHOST-011` 单独验证。
+
+- **验证状态**：已实测（Debian 13，编译 Nginx 路径）。
+
+## AUDIT-VHOST-004 default 根目录静态 PHP 边界（已实测，Nginx 侧）
+
+**位置**：`include/nginx.sh` 的 `Write_Nginx_Default_VHost`。
+
+**行为变化**：未启用 phpMyAdmin 时，default 站点对 PHP 请求返回 404，
+既不执行也不作为静态文件下载。
+
+**验证**：Debian 13，未启用 phpMyAdmin 的 default 根目录放置 `probe.php`，
+`GET /probe.php` 返回 404，响应体不含源码。
+LAMP/LNMPA 的 Apache default 侧仍待验证（见 todo 中同编号条目的剩余范围）。
+
+- **验证状态**：已实测（Debian 13，Nginx 侧）。
+
+## AUDIT-VHOST-005 default ACME 放行与隐藏路径拦截（已实测）
+
+**位置**：`include/nginx.sh` 生成的 default server 块。
+
+**行为变化**：在隐藏路径拒绝规则前加入 `location ^~ /.well-known/ { allow all; }`，
+使 HTTP-01 校验文件可访问，其余隐藏路径仍被拒绝。
+
+**验证**：Debian 13，`GET /.well-known/acme-challenge/token123` 返回 200 且响应体
+与文件内容一致；`GET /.git/config`、`GET /.env` 均返回 403，
+`default.error.log` 记录 `access forbidden by rule`。
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-VHOST-006 default 独立日志与 main 格式（已实测）
+
+**位置**：`conf/nginx.conf`，`include/nginx.sh`，`tools/cut_nginx_logs.sh`。
+
+**行为变化**：主配置统一 `log_format main`；default 站点使用
+`/home/wwwlogs/default.log` 与 `/home/wwwlogs/default.error.log`，并纳入日志切割。
+
+**验证**：Debian 13，产生 200/403/404 三类请求后：
+
+- `default.log` 按 `main` 格式记录，字段顺序为
+  `$time_iso8601 $status "$request_time" $remote_addr $scheme://$http_host "$request" …`，
+  前四个字段定宽靠前，可直接对齐查看。
+- `default.error.log` 独立记录 403 拒绝原因。
+- 执行 `tools/cut_nginx_logs.sh` 返回 0，`default.log` 与管理端口 `access.log`
+  分别归档为 `/home/wwwlogs/2026/08/default_20260813.log`、`access_20260813.log`；
+  脚本内 `nginx -s reload` 后新的访问写入新建的 `default.log`，未继续写入归档文件。
+
+`tools/cut_nginx_logs.sh` 按设计不自动部署，由使用者自行加入 crontab
+（`README.md`、`HowtoGuides.md` 已说明）。
+
+- **验证状态**：已实测（Debian 13）。
+
+## FIX-UNINSTALL-001 数据目录为空时卸载被误判为备份失败而中止
+
+**位置**：`uninstall.sh` 的 `Backup_DB_Data`。
+
+**问题**：`Backup_DB_Data` 先把数据目录 `mv` 到 `/root/databases_backup_<时间戳>`，
+再自检"备份目录存在且非空"以防 `mv` 返回 0 但结果不对。数据目录本身为空时
+（数据库初始化失败、或装完从未启动过的半成品安装），自检必然不成立，卸载以
+`致命错误：备份目录 … 不存在或为空` 中止且不删除任何文件，这类安装无法通过
+`./uninstall.sh` 清理，只能手工删除。Debian 13 上因
+`AUDIT-DB-005` 导致 MySQL 数据目录为空后实际触发。
+
+**行为变化**：`mv` 之前增加判空。源数据目录为空时打印
+`数据目录 … 为空，无需备份。` 并返回 0，由后续 `Remove_DB_Files` 正常删除；
+源目录不存在时的既有跳过分支保持不变；非空数据目录仍然先备份、再执行
+`mv` 结果自检与备份路径检查，失败依旧中止且不删除任何文件。
+
+**验证**：
+
+- 定向测试（函数级）：空目录返回 0 且跳过备份；不存在的目录返回 0 且跳过；
+  非空目录在 `mv` 失败时仍打印致命错误并以非零中止，保护逻辑未被削弱。
+- Debian 13 实测：构造 `/usr/local/mysql/{bin,var}` 且 `var` 为空的安装
+  （`Check_Stack` 识别为 mysql），执行 `./uninstall.sh lnmp` 返回 0，
+  输出 `数据目录 /usr/local/mysql/var 为空，无需备份。`，
+  `/usr/local/mysql`、`/etc/my.cnf`、`/bin/lnmp` 均已删除。
+- 修复前同一环境实测返回 1，日志为 `致命错误：备份目录 … 不存在或为空`，
+  且 `/usr/local/{nginx,mysql,php}`、`/bin/lnmp` 全部保留未删。
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-DB-005 Debian 13 缺 libaio.so.1 导致数据库通用二进制包无法启动
+
+**位置**：`include/dbcommon.sh` 的 `Ensure_Libaio_Compat` 与 `Install_DB_Bin_Tarball`，
+`uninstall.sh` 的 `Remove_DB_Files` / `Remove_Libaio_Compat_Link`。
+
+**问题**：MySQL 与 MariaDB 官方通用二进制按 SONAME `libaio.so.1` 链接。Debian 13
+起 `libaio1` 因 64 位 time_t 转换改名为 `libaio1t64`，只提供 `libaio.so.1t64`；
+依赖清单里的 `libaio-dev` 提供的是无版本号的 `libaio.so`，同样不满足。
+Debian 13 默认配置执行 `./install.sh lnmp` 实测：
+`/usr/local/mysql/bin/mysqld: error while loading shared libraries: libaio.so.1`，
+`--initialize-insecure` 静默失败、数据目录为空，随后 `mysql.service` 反复启动失败。
+Debian 12 提供 `libaio.so.1`，不受影响。
+
+**行为变化**：`Install_DB_Bin_Tarball` 在二进制落地、`bin/` 自检之后调用
+`Ensure_Libaio_Compat`，对 `bin/mariadbd` 或 `bin/mysqld` 按 `ldd` 结果判断：
+
+- 未缺 `libaio.so.1`（Debian 12、RHEL 系）直接返回，不做任何改动。
+- 缺失且架构 time_t 原本即为 64 位（x86_64/aarch64/ppc64le/s390x/riscv64/
+  loongarch64）时，在 `libaio.so.1t64` 所在目录建立同名兼容链接
+  `libaio.so.1`，`ldconfig` 后复验 `ldd`。
+- 缺失但系统没有 `libaio.so.1t64`，或架构不在上述列表，或目标位置已存在同名
+  实体文件时，打印所需软件包并返回非零，安装在解压阶段即中止。
+
+卸载时 `Remove_Libaio_Compat_Link` 只删除"是符号链接且指向 `libaio.so.1t64*`"
+的兼容链接，发行版自带实体库不动。
+
+**链接落点**：兼容链接必须与 `libaio.so.1t64` 同目录，即动态链接器的默认搜索
+目录。放到 `/usr/local/lib` 并写 `/etc/ld.so.conf.d/*.conf` 无效——`ldconfig`
+按库文件自身的 SONAME（`libaio.so.1t64`）建缓存，`libaio.so.1` 这个文件名进不了
+缓存；实测该做法建立链接后 `ldd` 仍报 `libaio.so.1 => not found`。改为落在默认
+搜索目录后，链接器在缓存未命中时按文件名查找即可命中。
+
+**验证**（Debian 13 trixie）：
+
+- 失败分支：临时移走 `/lib/x86_64-linux-gnu/libaio.so.1t64*` 并 `ldconfig` 后执行
+  `./install.sh db`（MySQL 8.4.7 通用二进制），退出码 1，输出
+  `错误：/usr/local/mysql/bin/mysqld 需要 libaio.so.1，但系统里找不到可用的 libaio。`
+  并列出所需软件包，安装在初始化之前中止。
+- 正常分支：恢复 `libaio.so.1t64` 后重新执行，输出
+  `当前发行版只提供 libaio.so.1t64，已建立 /lib/x86_64-linux-gnu/libaio.so.1 -> libaio.so.1t64。`，
+  `--initialize-insecure` 成功产出完整数据目录（`auto.cnf`、证书、InnoDB 文件齐全，
+  日志含 `root@localhost is created with an empty password`），
+  `mysqld --version` 与服务启动均正常。
+
+- **验证状态**：已实测（Debian 13，MySQL 8.4.7 通用二进制两条分支）。
+
+## AUDIT-DB-006 数据库安装失败未中止，返回码被吞
+
+**位置**：`include/mysql.sh` 的 `Install_MySQL_80` / `Install_MySQL_84`，
+`install.sh` 的 `Init_Install`、`LNMP_Stack` / `LNMPA_Stack` / `LAMP_Stack`，
+`include/only.sh` 的 `Install_Only_Database`。
+
+**问题**：两处 `mysqld --initialize-insecure` 未检查返回码（MariaDB 侧原本已有
+`|| return 1`）；且 `Dispatch "${DB_Install}"` 的返回码在 `install.sh` 与
+`only.sh` 两个调用点都未被接收，`Init_Install` 的返回码又由其最后一条命令决定。
+结果是数据库整段安装失败后流程照常继续，入口退出码仍为 0。
+
+**行为变化**：
+
+- MySQL 两处初始化加返回码判断，失败时打印数据目录并 `return 1`。
+- `Init_Install` 内 `Dispatch "${DB_Install}" || return 1`。
+- 三个栈函数改为 `Init_Install || return 1`，`Install_Only_Database` 内
+  `Dispatch "${DB_Install}" || return 1`，非零一路传到入口退出码。
+
+**验证**：
+
+- 定向对照测试（stub 掉除数据库分发外的全部步骤，令 `Dispatch` 返回 1）：
+  修复前 `Init_Install` 与 `LNMP_Stack` 均返回 0，修复后均返回 1。
+- Debian 13 实测前提：`mysqld --initialize-insecure` 指向非空数据目录时退出码为 1，
+  即失败确实以非零返回，判断条件成立。
+- `AUDIT-DB-005` 的失败分支实测中，`./install.sh db` 退出码为 1，
+  确认解压阶段的失败同样传播到入口。
+
+- **验证状态**：已实测（定向对照 + Debian 13）。
+
+## AUDIT-DB-007 残留的 /tmp/mysql.sock 阻断数据库启动
+
+**位置**：`include/dbcommon.sh` 的 `Clean_Stale_DB_Socket`，
+`include/mysql.sh` 的 `MySQL_Sec_Setting`、`include/mariadb.sh` 的
+`Mariadb_Sec_Setting`。
+
+**问题**：数据库进程被 `kill -9`、OOM 杀死或断电后，`/tmp/mysql.sock` 作为陈旧
+文件残留且无进程持有。mysqld/mariadbd 不会覆盖已存在的 socket 文件，而是以
+`Can't start server : Bind on unix socket: Address already in use` 退出。
+Debian 13 实测：数据目录初始化成功，但 `mysql.service` 反复启动失败，
+设置 root 密码、删除匿名用户等初始化步骤随之全部失败，
+手工 `rm -f /tmp/mysql.sock` 后立即可正常启动。
+
+**行为变化**：新增 `Clean_Stale_DB_Socket`，在 MySQL 与 MariaDB 启动数据库之前
+调用。socket 路径取自 `/etc/my.cnf` 的 `[mysqld]` 段（缺省 `/tmp/mysql.sock`）。
+文件不存在时直接返回；`fuser` 或 `ss -lx` 显示仍被进程使用时报错返回非零、
+不删除任何文件；确认无进程持有才删除并打印说明。
+
+**验证**（Debian 13，MySQL 8.4.7）：
+
+- 服务运行中调用：返回 1，打印 `正在被进程使用`，socket 文件保留，实例不受影响。
+- `pkill -9` 模拟异常终止后调用：识别为无进程持有，删除 socket，返回 0。
+- 清理后 `systemctl start mysql` 恢复 `active`。
+- 函数级测试另外覆盖：socket 路径不存在时返回 0；活动 socket 能被
+  `fuser`/`ss -lx` 正确识别为占用。
+
+- **验证状态**：已实测（Debian 13）。
+
+## FIX-UNINSTALL-002 卸载只 disable 服务，systemd unit 文件残留
+
+**位置**：`include/main.sh` 的 `Remove_StartUp`。
+
+**问题**：`Remove_StartUp` 只执行 `systemctl disable`，不删除本包部署到
+`/etc/systemd/system/` 的 unit 文件。卸载后 `nginx.service`、`php-fpm.service`、
+`mysql.service` 等仍留在系统里，`ExecStart` 指向已被删除的
+`/usr/local/nginx/sbin/nginx`、`/usr/local/php/sbin/php-fpm`。
+三份管理脚本的 `Service_Exists` 以 unit 文件存在作为服务已安装的判据，于是
+后续只装数据库的机器上，`lnmp start` 会去启动根本不存在的 nginx 与 php-fpm：
+
+    正在启动 LNMP...
+    Job for nginx.service failed because the control process exited with error code.
+    Job for php-fpm.service failed because the control process exited with error code.
+    警告：以下服务的 systemd 状态不是活动状态（active）： nginx php-fpm
+
+`lnmp status` 同样打印这些已卸载服务的失败状态。Debian 13 实测复现。
+
+**行为变化**：`Remove_StartUp` 在 disable 之后删除本包部署的 unit 并
+`systemctl daemon-reload`。判定"本包部署"看 `ExecStart`：指向 `/usr/local/` 下的
+二进制（nginx、php-fpm、httpd、pureftpd、redis），或包装
+`/etc/init.d/<服务名>`（mysql、mariadb、memcached）。发行版自带的同名 unit 位于
+`/lib/systemd/system`，不受影响。调用点全部为卸载与 mysql→mariadb 迁移场景。
+
+**验证**：
+
+- 匹配规则覆盖检查：`init.d/` 下 8 个 unit 模板（httpd、mariadb、memcached、
+  mysql、nginx、php-fpm、pureftpd、redis）全部命中。
+- 负向检查：`ExecStart=/usr/sbin/nginx`、`ExecStart=/opt/custom/bin/mariadbd`
+  两种外部 unit 均不命中。
+- Debian 13 实测：构造 `ExecStart=/usr/local/faketest/sbin/faketest` 的 unit 与同名
+  init 脚本，`Remove_StartUp faketest` 后 unit 已删除；同时构造
+  `ExecStart=/usr/sbin/extsvc` 的外部 unit，`Remove_StartUp extsvc` 后该 unit 保留。
+- 清除历史残留 unit 后复验：只装 MariaDB 的机器上 `lnmp status|stop|start|restart`
+  均输出 `Nginx: 未检测到已安装服务，跳过 …`、`PHP-FPM: 未检测到已安装服务，跳过 …`，
+  只对 mariadb 生效，返回码 0，服务状态在 inactive/active 间正确切换。
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-STACK-001 补装组件时保留既有管理栈
+
+**位置**：`include/end.sh` 的 `Detect_Installed_LNMP_Command_Stack` /
+`Install_Current_LNMP_Command` / `Install_LNMP_Command`，`include/only.sh` 的独立
+安装入口。
+
+**行为变化**：独立安装先按 `/bin/lnmp` 的内容特征（`lnmpa_start()` /
+`lamp_start()`）识别已有管理栈，按识别结果重新部署同类型脚本；`/bin/lnmp`
+不存在时回退到调用方给出的默认值。
+
+**验证**（Debian 13）：依次把 `conf/lamp`、`conf/lnmpa`、`conf/lnmp` 部署为
+`/bin/lnmp`，每次执行独立安装使用的 `Install_Current_LNMP_Command lnmp`：
+
+| 已有 /bin/lnmp | 识别结果 | 调用后类型 | 与 conf 源文件一致 |
+|---|---|---|---|
+| conf/lamp | lamp | lamp | 是 |
+| conf/lnmpa | lnmpa | lnmpa | 是 |
+| conf/lnmp | lnmp | lnmp | 是 |
+| 不存在 | —（回退） | lnmp | 是 |
+
+即在已有 LAMP / LNMPA 上补装组件不会把管理脚本覆盖成 LNMP。
+补装后的新服务由三份脚本各自的 `Detect_Managed_Services` 纳管，其实现已逐份
+比对一致（均优先 mariadb、回退 mysql，按实际存在的 unit 或 init 脚本判定）；
+LNMP 栈的动态纳管已在 `AUDIT-SERVICE-001` 中实测。
+
+**遗留**：在真实 Apache（LAMP/LNMPA）环境下补装数据库后由原栈整体命令启停的
+端到端验证，需要源码编译 Apache，保留为待人工真机验证。
+
+- **验证状态**：已实测（Debian 13，管理脚本类型保持）；Apache 端到端待人工验证。
+
+## AUDIT-SYSTEMD-001 systemd 实际运行能力判断
+
+**位置**：`include/main.sh` 的 `Systemd_Is_Running`，`include/nginx.sh`。
+
+**行为变化**：删除按环境名称（WSL 等）判断的分支，只依据 `/run/systemd/system`、
+`systemctl` 可用性和实际 unit 文件判断 systemd 能力。
+
+**验证**（Debian 13 完整安装 nginx-1.30.4 + php-8.3.33 + mariadb-11.8.8）：
+`/run/systemd/system` 存在；三个服务均通过 systemd 管理，
+`systemctl is-enabled` 全部为 `enabled`、`is-active` 全部为 `active`；
+`lnmp restart` 返回 0 后三服务同时回到 `active`，站点访问返回 200。
+独立安装阶段（仅 MariaDB、随后补装 Nginx）同样走 systemd 路径。
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-SERVICE-001 分阶段补装后的服务动态纳管
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的 `Detect_Managed_Services`
+及整体启停与状态函数。
+
+**行为变化**：管理脚本每次运行重新检测当前实际存在的服务，未安装项跳过，
+后续补装的服务自动纳入整体命令。
+
+**验证**（Debian 13，按阶段递进）：
+
+| 阶段 | 已装组件 | `lnmp status/start/stop/restart` 实际行为 |
+|---|---|---|
+| A | 仅 MariaDB（`./install.sh db`） | `Nginx: 未检测到已安装服务，跳过 …`、`PHP-FPM: 未检测到已安装服务，跳过 …`，只对 mariadb 生效；stop 后 `inactive`，start 后 `active`，返回码 0 |
+| B | 补装 Nginx（`./install.sh nginx`） | nginx 自动纳入，php-fpm 仍跳过；`lnmp stop` 后 nginx 与 mariadb 同时 `inactive`，`lnmp start` 后同时 `active`，站点恢复 200 |
+| C | 完整安装（nginx+php-fpm+mariadb） | 三个服务全部纳管，`lnmp restart` 返回 0，三者均回到 `active` |
+
+前置修复：阶段 A 最初复现出 `lnmp start` 去启动已卸载的 nginx/php-fpm，
+根因是卸载残留 systemd unit，见 `FIX-UNINSTALL-002`；清除残留后行为如上表。
+
+- **验证状态**：已实测（Debian 13，LNMP 栈三阶段）；LNMPA/LAMP 栈的
+  `Detect_Managed_Services` 实现已逐份比对一致，端到端待 Apache 环境验证。
+
+## AUDIT-COMMAND-001 管理命令双路径与 755 权限
+
+**位置**：`include/end.sh` 的 `Install_LNMP_Command` / `Sync_LNMP_Command_Alias`，
+`include/only.sh` 的独立安装入口，`install.sh` 的入口收尾同步。
+
+**行为变化**：完整安装与独立安装统一部署 `/bin/lnmp` 并同步 `/usr/bin/lnmp`，
+权限固定为 755。
+
+**验证**（Debian 13，三条安装路径）：
+
+| 安装方式 | /bin/lnmp | /usr/bin/lnmp | 权限 | 内容一致 | 子命令 |
+|---|---|---|---|---|---|
+| `./install.sh db`（MariaDB 11.8.8） | 存在 | 存在 | 755 / 755 | md5 相同 | `lnmp status` 返回 0 |
+| `./install.sh nginx`（补装） | 存在 | 存在 | 755 / 755 | md5 相同 | `lnmp status/stop/start` 返回 0 |
+| `./install.sh lnmp`（完整） | 存在 | 存在 | 755 / 755 | md5 相同 | `lnmp restart` 返回 0 |
+
+另外确认：独立安装失败（返回非零）时不部署管理命令，属预期行为——
+`Install_Only_Database` 仅在 `rc=0` 时调用 `Install_Current_LNMP_Command`。
+
+- **验证状态**：已实测（Debian 13）。
+
+## FIX-VHOST-001 管理脚本补建的 default 与安装时生成的不一致
+
+**位置**：`conf/lnmp` 的 `Add_VHost_Default`，对照 `include/nginx.sh` 的
+`Write_Nginx_Default_VHost`。
+
+**问题**：`lnmp vhost add` 输入 `default` 且配置缺失时，由 `conf/lnmp` 内的一份
+独立模板补建。该模板缺少 `Write_Nginx_Default_VHost` 里按内核版本追加
+`reuseport` 的判断，注释也没有同步。Debian 13 实测：安装生成的是
+`listen 80 default_server reuseport;`，补建出来的是 `listen 80 default_server;`，
+两份文件 1143 与 892 字节，同一台机器上 default 站点的监听参数取决于它是
+装出来的还是补建出来的。
+
+**行为变化**：`Add_VHost_Default` 采用与 `Write_Nginx_Default_VHost` 相同的内核
+判断生成 `listen_extra`，注释同步。两处模板文本除网站目录变量外逐字符一致
+（已用脚本比对确认）。
+
+**验证**（Debian 13）：删除 `vhost/default.conf` 后执行 `lnmp vhost add` 输入
+`default`，补建结果与安装时生成的文件 `diff` 无差异，`nginx -t` 通过，
+站点访问 200。
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-VHOST-008 三栈 vhost add 前置 default 提示
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的 `Print_Default_Site_Intro` /
+`Add_VHost`。
+
+**行为变化**：三份 `Add_VHost()` 的首个实际语句统一为 `Print_Default_Site_Intro`，
+在任何域名输入前说明 default 的用途、根目录与 SSL 入口；LNMP 输入 `default`
+后不再重复打印。
+
+**验证**（Debian 13，LNMP 栈）：`lnmp vhost add` 的输出顺序为——先打印
+default 兜底站点说明（保留名、未匹配请求与 IP 直连都会进入、根目录
+`/home/wwwroot/default`、配 SSL 走 `lnmp ssl add` 填 `default`），然后才是
+`请输入域名(示例: www.example.com):`。输入 `default` 时说明只出现一次。
+空输入与 EOF 分别给出 `域名不能为空。` 和明确的 EOF 提示。
+LNMPA / LAMP 两份脚本的同名函数与调用位置已比对一致，端到端待相应栈环境验证。
+
+- **验证状态**：已实测（Debian 13，LNMP 栈）。
+
+## AUDIT-VHOST-009 LNMP 输入 default 的保留站点处理
+
+**位置**：`conf/lnmp` 的 `Add_VHost_Default` / `Add_VHost`。
+
+**行为变化**：检测到域名为 `default` 时只检查内置配置，不按普通域名继续询问
+目录、伪静态和日志；配置存在即返回，缺失时补建，补建后配置测试失败则回滚。
+
+**验证**（Debian 13，三条路径）：
+
+| 场景 | 结果 |
+|---|---|
+| `vhost/default.conf` 已存在 | 直接返回 0，不再询问任何站点选项，文件 md5 未变，未产生重复 server 块 |
+| 配置缺失 | 打印 `未找到 vhost/default.conf，现场补建…`，`nginx -t` 通过后 reload，补建内容与安装时生成的完全一致（见 `FIX-VHOST-001`） |
+| 补建后配置测试失败 | 注入重复 `default_server` 的 vhost 触发 `nginx: [emerg] a duplicate default server`，打印 `已撤销刚补建的默认站点配置。`，`default.conf` 未残留，命令退出码为 1 |
+
+- **验证状态**：已实测（Debian 13）。
+
+## FIX-PMA-009 phpMyAdmin 入口片段带入全站 PHP 规则，突破 default 静态边界
+
+**位置**：`include/php.sh` 的 phpMyAdmin nginx 片段生成（LNMP 与 LNMPA 两个分支），
+`include/nginx.sh` 与 `conf/lnmp` 的 default 模板注释。
+
+**问题**：片段首行是 `include enable-php.conf;`（LNMPA 为
+`include proxy-pass-php.conf;`）。该文件是全站 PHP 执行/反代入口，随片段被
+`include phpmyadmin.*.conf;` 引入 default 后，default 站点根目录下的任意 `.php`
+都会被执行。Debian 13 实测：启用 phpMyAdmin 时向 `/home/wwwroot/default/` 放
+`probe.php`，`GET /probe.php` 返回 200 并输出 `PHP_EXECUTED_8.3.33`；
+禁用后同一请求返回 404。即 default 的静态边界随 phpMyAdmin 开关被打开。
+
+**行为变化**：两个分支都不再 include 全站 PHP 规则。phpMyAdmin 的 PHP 由片段
+内自带的处理完成——LNMP 走内层
+`location ~ ^/<路径>/(.+\.php)$`（已含 `fastcgi_pass`、`fastcgi.conf`、
+`SCRIPT_FILENAME` 与 `open_basedir`），LNMPA 走
+`location ^~ /<路径>/ { proxy_pass … }`。外层 `^~` 前缀匹配优先于 default 中
+拒绝 PHP 的正则，phpMyAdmin 可用性不受影响。
+
+**验证**（Debian 13，LNMP + php-8.3.33）：清理后重新执行
+`./install.sh phpmyadmin`，新片段首行为 `location = /<路径>`，不再有
+`include enable-php.conf`：
+
+| 请求 | 修复前 | 修复后 |
+|---|---|---|
+| `GET /probe.php`（default 根目录，phpMyAdmin 启用） | 200，输出 `PHP_EXECUTED_8.3.33` | 404 |
+| `GET /<pma路径>/` | 200 | 200 |
+| `GET /<pma路径>/index.php` | 命中 phpMyAdmin 页面 | 命中 phpMyAdmin 页面 |
+| `GET /<pma路径>`（无斜杠） | 301 | 301 |
+
+LNMPA 分支为同一处改动的对称修改，待 LNMPA 环境验证。
+
+- **验证状态**：已实测（Debian 13，LNMP 分支）；LNMPA 分支待相应环境验证。
+
+## FIX-PMA-010 安装过程打印冒烟重试中的 404，易被误认为故障
+
+**位置**：`include/php.sh` 的 `Smoke_Test_PhpMyAdmin_HTTP`。
+
+**问题**：该函数最多重试 5 次访问 phpMyAdmin 入口，`curl -fsS` 的 `-S` 让每次
+失败都把错误打到 stderr。配置刚写完、nginx 刚 reload 时首次请求通常还是 404，
+于是安装成功的流程里也会出现一行
+`curl: (22) The requested URL returned error: 404`，与仓库既有约定
+（正常流程不打印会被误认为故障的错误）不一致。
+
+**行为变化**：中间失败的错误先收集，仅在五次全部失败时打印最后一次的原因。
+
+**验证**（Debian 13）：函数级测试——可用 URL 返回 0 且无任何输出；
+不存在的 URL 返回 1 并打印 `curl: (22) The requested URL returned error: 404`。
+重新执行 `./install.sh phpmyadmin` 的完整日志中该行出现次数为 0，安装照常成功。
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-VHOST-003 phpMyAdmin 条件 PHP 入口与回滚
+
+**位置**：`include/php.sh` 的 phpMyAdmin 配置逻辑，`tools/lnmp-phpmyadmin.sh`
+的 `enable|disable|status`。
+
+**行为变化**：phpMyAdmin 入口片段随开关整体挂载或撤下，切换前做配置测试，
+失败恢复原状态。
+
+**验证**（Debian 13，LNMP）：
+
+| 操作 | 结果 |
+|---|---|
+| `lnmp phpmyadmin disable` | 片段改名为 `.phpmyadmin.enable.conf.disabled`，reload 后 pma 入口 404、default 根目录 `.php` 404、首页仍 200；`default.conf` 中的 `include phpmyadmin.*.conf;` 保留，通配符无匹配文件不报错 |
+| `lnmp phpmyadmin enable` | 片段恢复，pma 入口 200，返回码 0 |
+| 注入语法错误的 vhost 后 `disable` | `nginx -t` 失败，打印 `网站配置测试或重载失败，已恢复之前的访问状态。`，退出码 1，片段恢复为启用态；清除注入文件后 `nginx -t` 通过、pma 仍 200 |
+
+补充说明：`enable|disable` 只做片段文件改名，不重新生成内容；片段模板的改动
+需重新执行 `./install.sh phpmyadmin` 才会生效。切换后需等 nginx 完成 reload，
+命令返回后 1 秒内即可观察到新状态（reload 期间旧 worker 仍会服务新连接）。
+
+- **验证状态**：已实测（Debian 13，LNMP 栈）。
+
+## FIX-BK-010 backup init 的定时任务安装失败被忽略，仍报告成功
+
+**位置**：`tools/lnmp-backup.sh` 的 `Write_Systemd_Unit`、`Write_Cron`
+及 `Cmd_Init` 的调用点。
+
+**问题**：`Write_Systemd_Unit` 里两处 `cat > unit 文件` 与 `chmod` 的失败都没有
+判定；`Cmd_Init` 调用 `Write_Systemd_Unit` / `Write_Cron` 时也没有接返回值。
+结果是 unit 写不进去时，`lnmp backup init` 照常打印结尾摘要并返回 0，配置文件
+已写好但定时任务根本没装上——直到需要恢复时才会发现从来没有备份过。
+Debian 13 实测：把 `/etc/systemd/system/lnmp-backup.timer` 预先建成目录使写入
+必然失败，修复前 init 退出码仍为 0，摘要照常打印，全程没有任何相关提示。
+
+**行为变化**：
+
+- `Write_Systemd_Unit`、`Write_Cron` 对每处写文件与 `chmod` 判定成败，
+  失败时打印具体路径并返回非零。
+- `Cmd_Init` 记录定时任务安装结果，失败时在摘要之后追加
+  `配置已写入，但定时任务未能安装，备份不会自动执行。` 与后续处理建议，
+  并以非零退出。
+
+**验证**（Debian 13）：
+
+- 失败注入（timer 路径为目录）：退出码 1，输出上述两行红字提示。
+- 恢复后正常执行：退出码 0，输出 `已启用 systemd timer：每天 3:30 前后执行（带随机延迟）。`，
+  `systemctl is-active lnmp-backup.timer` 为 `active`，unit 中
+  `OnCalendar=*-*-* 3:30:00`。
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-BACKUP-INIT-001 backup init 完整交互流程
+
+**位置**：`tools/lnmp-backup.sh` 的 `Cmd_Init`、`Notice_Review_Conf`。
+
+**验证**（Debian 13，`t/pty_run.py` 提供真实 pty）：完整走通
+确认 → 站点扫描 → 数据库凭据校验 → 备份目录 → 执行时间 → 摘要，退出码 0。
+
+- 开头依次打印配置文件位置、上传功能前置条件、Ctrl+C 修改配置的说明，
+  之后才要求输入 `y`。
+- 站点扫描列出 `_ | /home/wwwroot/default` 与 `site1.test | /home/wwwroot/site1.test`
+  两条，并给出全选、按序号、排除三种选法；回车为全选。
+- 数据库口令不回显，校验通过后写入 `/etc/lnmp/backup-mysql.cnf`（600）。
+- 备份目录回车取默认 `/home/backup`；配置写入 `/etc/lnmp/backup.conf`（600）。
+- 结尾摘要只有配置位置、备份目录和四条常用命令。
+
+- **验证状态**：已实测（Debian 13，真实 pty）。
+
+## AUDIT-BACKUP-INIT-002 backup init 的 systemd timer 安装
+
+**位置**：`tools/lnmp-backup.sh` 的 `Cmd_Init` 与 `Write_Systemd_Unit`。
+
+**验证**（Debian 13）：
+
+| 场景 | 结果 |
+|---|---|
+| 首次安装 | `lnmp-backup.timer` 为 `enabled` + `active`，`systemctl list-timers` 显示次日 03:31 触发（`RandomizedDelaySec=1800` 生效）；unit 含 `Persistent=true`，service 为 `Type=oneshot`、`ExecStart=/bin/lnmp-backup run`、`Nice=10`、`IOSchedulingClass=idle` |
+| 重复初始化选 `n` | 打印 `配置已存在`，保留现有配置，文件 md5 未变，不产生 `.bak` 文件，退出码 0 |
+| 重复初始化选 `y` | 旧配置备份为 `backup.conf.bak.<时间戳>`，沿用已有数据库凭据文件，timer 的 `OnCalendar` 更新为新选择的时间并重新生效 |
+| timer 安装失败 | 见 `FIX-BK-010`：提示明确、退出码 1 |
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-BACKUP-INIT-003 backup init 非交互调用兼容性
+
+**位置**：`tools/lnmp-backup.sh` 的 `Cmd_Init` 确认输入逻辑。
+
+**验证**（Debian 13）：三种非交互输入均立即返回、不等待、不产生任何改动。
+
+| 输入方式 | 结果 |
+|---|---|
+| `< /dev/null`（无 stdin，EOF） | 打印确认提示后输出 `已取消。`，退出码 0 |
+| 管道输入 `n` | `已取消。`，退出码 0 |
+| 管道输入空行 | `已取消。`，退出码 0 |
+
+三种情况均未创建或修改 `/etc/lnmp/backup.conf`、`/etc/lnmp/backup-mysql.cnf`
+与定时任务。
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-BACKUP-001 大库与大站点备份压力
+
+**位置**：`tools/lnmp-backup.sh`。
+
+**验证环境**：Debian 13、8 核 / 5.8G 内存、MariaDB 11.8.8，根分区剩余 24G。
+数据为不可压缩的真随机内容：
+
+- 数据库 `wpbig`：65536 行 × 16KB `LONGBLOB`，表大小 2026MB。
+- 站点 `/home/wwwroot/site1.test`：3.0GB（两个 1.5GB 随机大文件 + 2000 个小文件）。
+
+**实测结果**（`lnmp backup run all`，退出码 0）：
+
+| 指标 | 实测值 |
+|---|---|
+| 总耗时 | 120 秒（库导出约 40 秒，站点打包约 80 秒） |
+| 相关进程 RSS 峰值 | 约 5.0MB（`mariadb-dump`/`tar`/`gzip`/脚本合计，每 3 秒采样 41 次） |
+| 备份期间最低可用磁盘 | 19975MB，全过程无临时空间尖峰 |
+| 备份目录最终占用 | 4050MB |
+| 库产物 | `db-wpbig.sql.gz` 1.1G + `SHA256SUMS` |
+| 站点产物 | `www-site1.test.tar.gz` 3.0G、`www-_.tar.gz` 7.8K + `SHA256SUMS` |
+
+结论：导出与打包全程为流式（`mariadb-dump | gzip`、`tar | gzip` 直接写目标文件），
+不落中间临时文件，因此磁盘需求约等于最终备份体积，内存占用与数据量无关、
+恒定在数 MB 级别。随机数据下库压缩比约 0.54，站点几乎不可压缩，
+实际站点的可压缩内容会显著小于此值。
+
+**遗留**：目标磁盘空间不足时的退出码与残留文件清理未在本轮覆盖，
+保留在 todo 中单列。
+
+- **验证状态**：已实测（Debian 13，2GB 库 + 3GB 站点）。
+
+## FIX-TOOLS-002 tools 脚本在源码目录外执行时静默缺失公共函数
+
+**位置**：`tools/reset_mysql_root_password.sh`、`tools/denyhosts.sh`、
+`tools/fail2ban.sh`、`tools/remove_disable_function.sh`、
+`tools/remove_open_basedir_restriction.sh`。
+
+**问题**：五个脚本都用 `cur_dir=$(cd "$(dirname "$0")/.." && pwd)` 推导源码根目录，
+再 `. "${cur_dir}/include/main.sh"`。脚本被复制到源码目录之外执行时该路径是错的
+（例如放在 `/root` 下推导出 `/`，加载 `//include/main.sh`），而 source 失败没有
+被检查，脚本继续往下跑。Debian 13 实测：从 `/root` 执行密码重置脚本，输出
+`//include/main.sh: No such file or directory` 与 `Print_Banner: command not found`
+后仍继续执行了整个重置流程——本次只是横幅缺失，但 `Echo_Red`、`First_Executable`
+等公共函数同样缺失，任何依赖它们的分支都会静默走偏。
+
+**行为变化**：五个脚本在加载前检查 `${cur_dir}/include/main.sh` 是否存在，
+缺失时打印实际路径与正确用法并以 1 退出。
+
+**验证**（Debian 13）：把脚本复制到 `/root` 执行，输出
+`错误：找不到 //include/main.sh。` 与 `请在 LNMP 源码目录内执行本脚本…`，
+退出码 1，不再继续执行；在源码目录内执行 `./tools/reset_mysql_root_password.sh`
+正常打印横幅并进入 `检测到：mariadb 11.8.8` 流程。
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-DB-004 MariaDB 11.8 新旧客户端命令兼容
+
+**位置**：`include/mariadb.sh`（含新增的 `Rewrite_MariaDB_Initd_Names`）、
+`include/upgrade_mariadb.sh`、`include/upgrade_mysql2mariadb.sh`、
+三份 `conf` 管理脚本、`tools/lnmp-backup.sh`、
+`tools/reset_mysql_root_password.sh`。
+
+**补充修复**：`/etc/init.d/mariadb` 是上游 `support-files/mysql.server` 的原样
+拷贝，内部按 `$bindir/mysqld_safe`、`$bindir/mysqladmin` 调用，直指
+`/usr/local/mariadb/bin`，绕过了 `/usr/bin` 下的新名包装。Debian 13 实测：
+完整安装后每次启动服务都会在 journal 中打印
+`/usr/local/mariadb/bin/mysqld_safe: Deprecated program name. … use 'mariadbd-safe' instead`。
+新增 `Rewrite_MariaDB_Initd_Names`，在安装、升级、MySQL→MariaDB 迁移三个
+拷贝点之后按实际存在的新名改写 init 脚本；对应新名不存在时保留原样，
+函数可重复执行。
+
+**验证**（Debian 13，MariaDB 11.8.8 全新安装）：
+
+| 项目 | 结果 |
+|---|---|
+| `mysql --version` / `mysqldump --version` | 正常输出版本，stderr 无任何弃用提示 |
+| `mariadb --version` | `mariadb from 11.8.8-MariaDB, client 15.2` |
+| init 脚本改写 | `$bindir/mysqld_safe` → `$bindir/mariadbd-safe`、`$bindir/mysqladmin` → `$bindir/mariadb-admin`，重复执行结果不变 |
+| `systemctl restart mariadb` | 服务 `active`，journal 中 `Deprecated program name` 计数为 0，实际进程为 `mariadbd-safe` |
+| `lnmp database list` | 列出全部数据库，stderr 干净 |
+| `lnmp database add` | 建库建用户成功，stderr 干净 |
+| `lnmp database export <库> <文件.sql.gz>` | 导出成功，stderr 干净 |
+| `lnmp database import <库> <文件.sql.gz>` | 导入成功，数据行数与导出前一致，stderr 干净 |
+| `lnmp database edit` | 改密成功，新密码可登录，stderr 干净 |
+| `lnmp database del` | 删库成功，列表中不再出现，stderr 干净 |
+| `lnmp backup run all` | 退出码 0，库与站点均备份成功，stderr 干净 |
+| `tools/reset_mysql_root_password.sh` | 重置成功，优先选用 `mariadbd-safe`，全程无弃用提示，新密码可登录 |
+| MySQL 8.4.7 路径 | 单独安装验证 `mysql --version` 输出正常、stderr 干净，不受本项改动影响 |
+
+- **验证状态**：已实测（Debian 13，MariaDB 11.8.8 + MySQL 8.4.7）。
+
+## AUDIT-VHOST-007 Cloudflare 与反代链真实访问者 IP 日志
+
+**位置**：`conf/nginx.conf`、`conf/nginx_a.conf`、`conf/openresty.conf` 的
+`log_format main` 与可信代理注释示例（`log_client_ip` / `main_proxy`）。
+
+**行为变化**：代理日志示例优先取 `X-Forwarded-For` 逗号列表首项，缺失时降级到
+`X-Real-IP`，再缺失才用连接源地址，并额外保留 `peer=$remote_addr` 以便追查
+代理链。默认仍使用 `main` 格式，直接记录 `$remote_addr`。
+
+**验证**（Debian 13）：按注释启用两段 `map` 与 `main_proxy`，把 default 站点的
+`access_log` 改为 `main_proxy` 后 `nginx -t` 通过并 reload，逐类发送请求：
+
+| 请求头 | 日志客户端 IP 字段 | peer 字段 |
+|---|---|---|
+| `X-Forwarded-For: 203.0.113.7, 198.51.100.9, 10.0.0.1` + `X-Real-IP: 198.51.100.9` | `203.0.113.7`（取首项） | `10.10.10.102` |
+| 仅 `X-Real-IP: 198.51.100.22` | `198.51.100.22` | `10.10.10.102` |
+| 两个头都不带 | `10.10.10.102`（连接源） | `10.10.10.102` |
+| `X-Forwarded-For:   203.0.113.99 , 10.0.0.2`（含前导与列表内空格） | `203.0.113.99` | `10.10.10.102` |
+
+三层降级与空白处理均符合预期，原始 `$http_x_forwarded_for` 始终保留在行尾。
+
+直连场景：恢复默认 `main` 格式后，同一台机器上带
+`X-Forwarded-For: 203.0.113.7`、`X-Real-IP: 198.51.100.9` 的请求，日志客户端字段
+仍为真实连接源 `10.10.10.102`，伪造的头只作为原始字段记录，不参与取值——
+默认配置不会把外部请求头当作可信来源。
+
+- **验证状态**：已实测（Debian 13，编译 Nginx）。
+
+## AUDIT-VHOST-010 default IP 证书申请流程（菜单与前置检查部分）
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的独立 SSL 入口与 default
+SSL/IP 证书处理函数（`Detect_Server_IP`、`Is_Private_IP`、
+`Print_Self_Signed_Hint` 等）。
+
+**行为变化**：`lnmp ssl add` 输入域名后先检查是否已有虚拟主机；不存在则提示先
+执行 `lnmp vhost add` 并退出，不再重复询问目录、伪静态、日志、Pathinfo 和
+IPv6。`default` 只显示自有证书与 Let's Encrypt 两项，并转入服务器 IP 的
+shortlived 证书流程；写入 443 配置前备份现有 vhost，失败时恢复原 HTTP 站点。
+
+**验证**（Debian 13，NAT 环境）：
+
+| 场景 | 结果 |
+|---|---|
+| 输入不存在的域名 `nosuch.example.com` | 打印 `未找到网站 … 的虚拟主机配置。` 与 `请先执行 lnmp vhost add …`，退出码 1，不再询问任何站点选项 |
+| 输入已存在的普通域名 `site1.test` | 显示 4 项证书来源（自有 / Let's Encrypt / BuyPass / ZeroSSL） |
+| 输入 `default` | 只显示 2 项（自有 / Let's Encrypt），符合"IP 证书只有 Let's Encrypt 提供"的限制 |
+| `default` + Let's Encrypt | 打印 default 站点证书说明并自动转入 IP 证书流程；探测到对外 IPv4 后逐条列出 shortlived 限制（7 天有效期、`--days 6` 续期、仅 IPv4、仅 Let's Encrypt、80 端口需公网可达、邮箱不能用保留域名），并针对 NAT 环境额外警告"探测到的是出口地址，未必指向本机"并给出自查方法 |
+| 邮箱填 `test@example.com` | Let's Encrypt 返回 `invalidContact / forbidden domain`，脚本打印 `SSL 证书签发失败。`，退出码 1 |
+| 签发失败后的站点状态 | `vhost/default.conf` 中 `listen 443` / `ssl_certificate` 均为 0 处，`nginx -t` 通过，HTTP 站点仍返回 200，未残留脚本自身的备份文件 |
+
+失败后 `conf/ssl/<IP>_ecc/` 下会留下 acme.sh 自己的 `<IP>.conf`（无证书内容），
+属 acme.sh 的正常产物，重试时复用。
+
+**遗留**：真实 IP 证书的签发、安装到 `ssl/default` 固定路径、续期与 HTTPS 访问，
+需要 80 端口可从公网访问的主机，NAT 测试环境无法完成，保留为待人工真机验证。
+
+- **验证状态**：已实测（Debian 13，菜单与前置检查、失败回滚）；真实签发待人工验证。
+
+## AUDIT-I18N-001 终端中文提示与 banner 对齐
+
+**位置**：顶层安装、升级与卸载脚本，`include/*.sh`，三份管理脚本
+`conf/lnmp`、`conf/lnmpa`、`conf/lamp`，以及 `tools/*.sh`、`init.d/*`
+（不含 `t/` 测试目录）。
+
+**验证方式与结果**：
+
+1. 静态扫描：对上述文件中所有 `echo` / `printf` / `Echo_*` / `Say` / `Err` /
+   `Warn` / `Ok` 输出语句，筛出不含中文且包含三个以上英文单词的行，共 11 处，
+   逐条确认全部属于按约定保留原样的内容——`dnf install brotli-devel` 等安装
+   命令、`table inet lnmp` 等 nftables 配置片段、`systemctl enable --now nftables`
+   等操作命令、Apache `IncludeOptional` 配置行、示例 SQL，以及伪静态规则名
+   列表（wordpress、typecho、discuzx、laravel 等程序名）。没有待翻译的提示句。
+
+2. 实跑覆盖（Debian 13）：本轮实测中经过的全部交互与输出均为中文——
+   完整安装 `./install.sh lnmp`、独立安装 `nginx` / `db` / `phpmyadmin`、
+   `./uninstall.sh lnmp`、`lnmp start|stop|restart|status`、
+   `lnmp database add|list|edit|del|export|import`、`lnmp vhost add`、
+   `lnmp ssl add`（含 default 的 IP 证书说明）、`lnmp phpmyadmin enable|disable`、
+   `lnmp backup init|run`、`tools/reset_mysql_root_password.sh`。
+   交互提示均标注了默认值或留空行为；EOF 与非法输入有明确的中文错误说明。
+   上游程序（nginx、mariadb、acme.sh、curl、systemd）的原始输出保持原样。
+
+3. banner 对齐：以短、中、超长中文标题及中英文数字混排标题调用
+   `Print_Banner`，按 East Asian Width 计算每行显示宽度，边框与内容行均为 74 列，
+   长文本触发边框整体扩展而非撑破。
+
+**边界说明**：`——`、`…` 等 East Asian Width 为 Ambiguous 的字符，其显示宽度取决于
+终端设置，任何静态计算都无法同时适配两种终端。已确认项目现有 banner 文案未使用
+这类字符，新增标题时应同样避免。
+
+- **验证状态**：已实测（Debian 13 + 静态扫描）。
+
+## AUDIT-VHOST-011 编译 Nginx 与 OpenResty default 配置一致性
+
+**位置**：`include/nginx.sh` 的 `Write_Nginx_Default_VHost`，
+`include/openresty.sh` 的 `OpenResty_Post_Install`，
+`conf/lnmp` 的 `Add_VHost_Default`。
+
+**验证环境**：Debian 13 (trixie)，OpenResty 1.31.1.1（`WebSelect=2 ORMode=2`
+源码编译）+ PHP 8.3.33 + MariaDB 11.8.8。
+
+**验证方式与结果**：
+
+1. 配置生成一致性：`Write_Nginx_Default_VHost` 内无 Web 类型分支，
+   仅 `conf_dir`、`Default_Website_Dir` 与内核决定的 `listen_extra` 三个变量。
+   在同一台机器上以编译 Nginx 的路径参数重新调用该函数，渲染结果与 OpenResty
+   实际生成的 `vhost/default.conf` 逐字符一致（md5
+   `bbc16a348691d1a42273d6c2bc635f1a`，1237 字节）。
+   `conf/lnmp` 的 `Add_VHost_Default` 模板正文与之相同。
+
+2. 路径兼容：OpenResty 安装建立软链接 `/usr/local/nginx ->
+   /usr/local/openresty/nginx`，管理命令中按 `/usr/local/nginx/...`
+   硬编码的配置与二进制路径在 OpenResty 环境下全部有效。
+
+3. 运行行为（服务器 IP 直接访问）：根目录 `probe.php` 返回 404 且不吐源码；
+   `/.well-known/acme-challenge/probe.txt` 返回 200 并输出文件内容；
+   `/.git/config` 与 `/.env` 返回 403；`/` 返回 200 命中 default 首页；
+   未知 Host 头同样落到 default。
+
+4. 独立日志：`/home/wwwlogs/default.log` 按 `main` 格式记录（`$time_iso8601`
+   起始，含状态码、请求耗时、来源地址、`$scheme://$http_host`、请求行、
+   响应字节、referer、UA、XFF、remote_user）；403 请求同时写入
+   `/home/wwwlogs/default.error.log`，内容为 `access forbidden by rule`。
+
+**已确认（Debian 13，2026-08）**：OpenResty 官方仓库尚未发布 Debian 13 (trixie)
+的预编译包，`ORMode=1`（pkg 模式）在探测阶段即中止且不留半成品。
+
+- **验证状态**：已实测（Debian 13 + OpenResty 源码编译）。
+
+## AUDIT-VHOST-012 OpenResty phpMyAdmin 集成（LNMP 栈部分）
+
+**位置**：`include/openresty.sh` 的 `OpenResty_Post_Install`，
+`include/php.sh` 的 phpMyAdmin 配置逻辑，`conf/openresty.conf`。
+
+**验证环境**：同 `AUDIT-VHOST-011`，`./install.sh phpmyadmin` 独立安装
+phpMyAdmin 5.2.3。
+
+**验证方式与结果**：
+
+1. 安装流程：源码包 SHA256 校验通过，`nginx -t` 通过后重载，
+   输出随机化的访问地址；生成片段 `conf/phpmyadmin.enable.conf`。
+
+2. `FIX-PMA-009` 复核：片段中已无 `include enable-php.conf;` 与
+   `include proxy-pass-php.conf;`，PHP 处理由内层
+   `location ~ ^/<前缀>_phpmyadmin/(.+\.php)$` 自带的 `fastcgi_pass` 完成。
+
+3. 入口可用性：不带尾斜杠的入口返回 301 到带斜杠地址；入口页面返回 200、
+   18571 字节，响应以 `<!doctype html>` 开头（PHP 已执行，非源码下载）；
+   `index.php` 直接访问返回 200。
+
+4. 边界：启用 phpMyAdmin 后 default 根目录的 `probe.php` 仍返回 404，
+   `^~` 前缀匹配优先于正则的设计成立；片段中的 `open_basedir` 生效，
+   phpMyAdmin 目录内的脚本读取 `/etc/passwd` 被拒绝。
+
+5. 数据库连通：经 phpMyAdmin 入口执行的 mysqli 探针以 root 账号连接成功，
+   返回 `11.8.8-MariaDB-log`；`config.inc.php` 中 `host` 为 `127.0.0.1`
+   （避免 `localhost` 走 socket 绕过自定义端口），`AllowNoPassword` 为 false。
+
+6. 管理端口：仅监听 `127.0.0.1:1008`（`nginx.conf` 中为
+   `listen 127.0.0.1:1008;`），回环访问返回 200，从另一台主机访问同端口
+   连接被拒（curl 退出码 7）。
+
+**未覆盖**：LNMPA 栈的 Apache 反代部分，需额外源码编译 Apache，
+仍留在 todo 中。
+
+- **验证状态**：已实测（Debian 13 + OpenResty 源码编译，LNMP 栈）。
+
+## FIX-VHOST-013 演示页开关在 default 静态边界下失效
+
+**问题**：`Enable_PHPInfo_Page`、`Enable_Redis_Test_Page`、
+`Enable_Memcached_Test_Page` 生成的页面写在 `${Default_Website_Dir}`，
+而 default 站点对 `.php` 一律拒绝——nginx 侧 `location ~ [^/]\.php(/|$)`
+返回 404，Apache 侧 `<FilesMatch "\.php$"> Require all denied`。
+三个开关打开后页面文件存在但访问返回 404，`include/end.sh` 的安装摘要
+仍打印 `phpinfo：http://IP/phpinfo.php`。Debian 13 实测三个页面均为 404。
+
+**修改**：在各栈的 default 站点配置里按固定文件名放行这三个页面，
+不引入随开关启停的配置片段——页面是否存在本身就是开关的结果，
+文件不存在时请求自然按 404 处理。
+
+- `include/nginx.sh` 的 `Write_Nginx_Default_VHost`：在拒绝 PHP 的正则之前
+  插入 `location ~ ^/(phpinfo|redis|memcached)\.php$`。正则 location 按出现
+  顺序匹配，本条在前即生效。LNMP 与 OpenResty 用
+  `try_files $uri =404` + `fastcgi_pass unix:/tmp/php-cgi.sock`；
+  `Stack=lnmpa` 时改为 `proxy_pass http://127.0.0.1:88` + `include proxy.conf`。
+- `conf/lnmp` 的 `Add_VHost_Default`：同步同一段配置，保持补建结果与安装
+  结果逐字符一致（沿用 `FIX-VHOST-001` 的约定）。
+- `conf/httpd-vhosts-lamp.conf`、`conf/httpd-vhosts-lnmpa.conf`：在
+  `<FilesMatch "\.php$"> Require all denied` 之后追加
+  `<FilesMatch "^(phpinfo|redis|memcached)\.php$"> Require all granted`，
+  后出现的 FilesMatch 覆盖前一条。
+- `include/main.sh` 新增 `Warn_Demo_Page_Not_Served`：写入演示页后检查
+  现有 default 站点配置是否含放行规则，缺失时打印中文提示，不改使用者
+  可能已定制的配置，始终返回 0。`include/php.sh`（phpinfo）、
+  `include/redis.sh`、`include/memcached.sh` 三处写入点各调用一次。
+  本次修改之前装好的环境靠这条提示告知页面为何返回 404。
+
+**验证方式与结果**（Debian 13 + OpenResty 1.31.1.1 + PHP 8.3.33）：
+
+1. 复现：修改前把三个页面文件放入 default 根目录，访问全部返回 404。
+2. 渲染分栈：同一函数以 `Stack=lnmp` 渲染出 fastcgi 版放行块，
+   以 `Stack=lnmpa` 渲染出 proxy_pass 版，其余内容不变。
+3. 修改后实测：`phpinfo.php` / `redis.php` / `memcached.php` 均返回 200，
+   phpinfo 页面输出 `PHP Version 8.3.33`（PHP 已执行，非源码下载）。
+4. 边界回归：default 根目录其它 `.php`（`probe.php`）仍返回 404；
+   删除 `redis.php` 后该路径返回 404（`try_files` 生效）；
+   `/sub/phpinfo.php`（`^/` 锚定）、`/phpinfo.php/x.php`（PATH_INFO 伪装）、
+   `/phpinfo.phpx` 均返回 404；phpMyAdmin 入口不受影响，仍返回 200。
+5. 补建路径：删除 `vhost/default.conf` 后执行 `lnmp vhost add` 并输入
+   `default`，补建成功、`nginx -t` 通过，生成内容与安装时的模板逐字符一致。
+6. `Warn_Demo_Page_Not_Served` 定向测试：老配置（无放行规则）打印提示并
+   返回 0；新配置静默返回 0；nginx 与 Apache 配置都不存在时静默返回 0。
+
+**未覆盖**：Apache 侧（LAMP 与 LNMPA 的 `<FilesMatch>` 放行）需要源码编译
+Apache，本轮只做了配置语法确认，实跑留待 LNMPA/LAMP 栈验证时一并覆盖。
+
+- **验证状态**：已实测（Debian 13，Nginx/OpenResty 侧）。
+
+## FIX-BK-011 备份失败留下空批次目录，list 无法区分不完整批次
+
+对应 `RUN-034` 中登记的 `AUDIT-BACKUP-006`（备份目标磁盘不足时的退出码
+与残留清理）。
+
+**位置**：`tools/lnmp-backup.sh` 的 `Run_Db`、`Run_Web`、`Cmd_List`。
+
+**问题**：批次内所有产物都失败时（例如目标磁盘写满），`.part` 临时文件已被
+删除、退出码也正确返回 1，但先前 `mkdir -p` 建出的批次目录留在原地。
+`lnmp backup list` 会把它列成一个 `0 个文件` 的批次，并一直占着保留期。
+`n=0`（没有站点配库或目录）的分支本就调用了 `rmdir`，失败分支漏了同一处理。
+另外 list 只打印文件个数，中途失败的批次与完整批次在输出里没有区别。
+
+**修改**：
+
+- `Run_Db` 与 `Run_Web` 的失败分支各加一次 `rmdir "${dir}" 2>/dev/null`。
+  `rmdir` 只删空目录：部分成功时目录非空，已产出的文件按现有约定保留，
+  批次仍标记为不完整。
+- `Cmd_List` 按 `SHA256SUMS` 是否存在给批次加 `[不完整：缺校验清单]` 标注。
+  该清单只在批次全部产出成功后才写入，是现成的完整性判据。
+
+**验证方式与结果**（Debian 13，20MB / 5MB tmpfs 作备份目标）：
+
+1. 数据库全部失败：20000 行 BLOB 库导出到 20MB tmpfs，
+   日志为 `gzip: stdout: No space left on device` 与
+   `导出数据库 bktest 失败 (mysqldump=0 gzip=1)`，退出码 1；
+   修改前留下空批次目录且 list 显示 `0 个文件`，修改后备份根目录下
+   只剩类型目录、list 为空。
+2. 数据库部分成功：小库先成功、大库写满失败，退出码 1；
+   已产出的 `db-bksmall.sql.gz` 保留，批次在 list 中显示
+   `1 个文件  [不完整：缺校验清单]`。
+3. 完全成功：批次含产物与 `SHA256SUMS`，退出码 0，list 无标注。
+4. 网站备份路径同样覆盖：20MB 随机数据打包到 5MB tmpfs，
+   日志为 `打包 /home/wwwroot/bk.test 失败 (tar=141 gzip=1)`，退出码 1，
+   空批次目录已清理、list 为空。
+
+- **验证状态**：已实测（Debian 13）。
+
+## FIX-UNINSTALL-003 卸载不清理 /etc/lnmp，残留含数据库口令的凭据文件
+
+**位置**：`uninstall.sh` 新增 `Remove_Lnmp_Conf_Dir`，在
+`Uninstall_LNMP` / `Uninstall_LNMPA` / `Uninstall_LAMP` 三处收尾各调用一次。
+
+**问题**：`lnmp backup init` 在 `/etc/lnmp/` 下生成 `backup.conf` 与
+`backup-mysql.cnf`，后者以 0600 保存数据库 root 口令。卸载会删掉
+`/bin/lnmp-backup`，但整个目录原样保留。Debian 13 实测：完整卸载并重装后，
+上一套环境的 `/etc/lnmp/backup-mysql.cnf` 仍在，其中的口令对应已被删除的
+数据库实例，且会被误当成新实例的凭据。
+
+**修改**：`Remove_Lnmp_Conf_Dir` 删除 `backup-mysql.cnf`（口令对应的实例已
+不存在，留下只剩风险），其余文件按数据目录的既有约定搬到
+`/root/lnmp_conf_backup_<时间戳>` 并打印去向，目录清空后 `rmdir`。
+转移失败时打印保留位置与检查提示，不中止卸载——此时程序文件与数据库
+已删完，中止没有意义，因此始终返回 0。
+
+**验证方式与结果**（Debian 13，OpenResty + PHP 8.3.33 + MariaDB 11.8.8）：
+
+1. 卸载前 `/etc/lnmp/` 含 `backup.conf`、`backup-mysql.cnf`、
+   `openresty-build.conf` 三个 0600 文件。
+2. `./uninstall.sh lnmp` 输出
+   `已删除含数据库口令的 /etc/lnmp/backup-mysql.cnf。` 与
+   `/etc/lnmp 下的其余配置已移到 /root/lnmp_conf_backup_20260815081426`。
+3. 卸载后 `/etc/lnmp` 目录已不存在；全盘 `find / -name backup-mysql.cnf`
+   无结果；转移目录内 `backup.conf` 与 `openresty-build.conf` 权限仍为 0600。
+4. 重复执行卸载不报错，且因目录已不存在而直接返回，
+   不会新建空的 `lnmp_conf_backup_*` 目录（实测仍为 1 个）。
+
+- **验证状态**：已实测（Debian 13，LNMP 栈；LNMPA/LAMP 为同一函数的相同调用）。
+
+## AUDIT-VHOST-002 禁用 Nginx Lua 后的管理端口配置
+
+**位置**：`include/nginx.sh` 的 `Install_Nginx`。
+
+**触发与影响**：`Enable_Nginx_Lua=n` 时若仍保留 `/lua` 指令，未编译 ngx_lua 的
+Nginx 会因未知指令导致配置检查失败。
+
+**当前实现**：禁用 Lua 时只删除本机管理端口中的 `/lua` location，保留
+`nginx_status` 和其它管理配置。
+
+**验证方式与结果**（Debian 13，`DBSelect=5 WebSelect=1 Enable_Nginx_Lua=n`
+完整安装，nginx 1.30.4 + PHP 8.3.33 + MariaDB 11.8.8）：
+
+1. 编译产物：`nginx -V` 的参数中无任何 lua 相关模块。
+2. 配置：`nginx -t` 通过；`conf/` 下 `grep` 不到 `location /lua`、
+   `content_by_lua`、`lua_package` 任何一处残留；管理端口块中
+   `nginx_status`（`allow 127.0.0.1` / `allow ::1` / `deny all` /
+   `stub_status on` / `access_log off`）完整保留。
+3. 运行：回环访问 `127.0.0.1:1008/nginx_status` 返回 stub_status 计数；
+   `127.0.0.1:1008/lua` 返回 404；从另一台主机访问 1008 端口连接被拒。
+4. 站点回归：default 首页 200；`.git/config` 403；
+   根目录其它 `.php` 404。
+
+**同批复核**：本次以 `Enable_PHPInfo_Page=y` 安装，`FIX-VHOST-013` 在编译
+Nginx 的完整安装路径下同样成立——`phpinfo.php` 返回 200 且输出
+`PHP Version 8.3.33`，同目录下其它 `.php` 仍返回 404。
+
+- **验证状态**：已实测（Debian 13）。
+
+## FIX-SERVICE-003 卸载不停 systemd unit，重装后服务不会真正启动
+
+**位置**：`include/main.sh` 的 `Remove_StartUp`。
+
+**问题**：只装 init 脚本的组件（例如 OpenResty 只写 `/etc/init.d/nginx`，
+不部署原生 unit），systemd 会用 sysv-generator 生成一个 unit，开机启动后
+状态为 `active (exited)`。`lnmp stop` 与 init 脚本停服务时 systemd 并不知情，
+该状态一直留着；`Remove_StartUp` 在这种情况下走的是 `update-rc.d` 分支，
+从不调用 `systemctl stop`，卸载删掉文件也不会清除这个状态。
+重装写入新 unit 并 `daemon-reload` 同样不重置已有的 active 状态，
+随后的 `systemctl start` 认为服务已在运行、直接返回成功，服务实际从未启动。
+
+Debian 13 实测复现：OpenResty 环境卸载后以 `WebSelect=1` 重装，安装脚本
+输出"安装完成"，`systemctl is-active nginx` 为 `active`，
+但 `pgrep -x nginx` 为 0、80 与 1008 端口都没有监听；
+`systemctl show nginx -p ActiveEnterTimestamp` 指向的是开机那一刻（07:47），
+而非本次安装时间。`lnmp status` 显示的也是这条陈旧记录，掩盖了未启动的事实。
+
+**修改**：`Remove_StartUp` 在 disable 之前先按 systemd 停一次，且不再以
+`Use_Systemd_Unit`（只认本包部署的 unit 文件）为前提——只要 systemd 在运行
+就执行 `systemctl stop` 与 `systemctl reset-failed`，让 sysv-generator 生成的
+unit 状态也回到 inactive。
+
+**验证方式与结果**（Debian 13）：
+
+1. 定向测试：在故障状态（unit `active`、nginx 进程数 0、
+   `ActiveEnterTimestamp` 为开机时刻）下调用修改后的 `Remove_StartUp nginx`，
+   之后 `systemctl is-active nginx` 变为 `inactive`（返回码 3）。
+2. 状态清除后按安装流程的 `StartUp` + `StartOrStop start` 启动，
+   nginx 真正拉起：9 个进程，80 与 127.0.0.1:1008 均在监听。
+3. 完整回归：`./uninstall.sh lnmp` 后以
+   `DBSelect=5 WebSelect=1 Enable_Nginx_Lua=n` 完整重装，安装结束时
+   nginx / php-fpm / mariadb 三个 unit 的 `ActiveEnterTimestamp` 全部指向
+   本次安装时间（08:38:21 / 08:38:24 / 08:38:24），不再是开机时刻；
+   nginx 进程真实存在，80、127.0.0.1:1008、127.0.0.1:3306 均在监听，
+   default 站点返回 200。
+4. 幂等：`/etc/lnmp` 已在上一次卸载中处理掉，本次卸载时目录不存在，
+   `Remove_Lnmp_Conf_Dir` 直接返回且无输出。
+
+**调用点影响**：`Remove_StartUp` 的全部调用点（`uninstall.sh` 三份卸载路径、
+多版本 PHP 清理、`include/redis.sh`、`include/memcached.sh`、`pureftpd.sh`、
+`include/upgrade_mysql2mariadb.sh`）都是卸载或迁移场景，服务本就应当停止，
+新增的 stop 不改变预期行为。
+
+- **验证状态**：已实测（Debian 13，定向测试 + 卸载到重装完整回归）。
+
+## AUDIT-BACKUP-003 age 加密备份到恢复全流程
+
+**位置**：`tools/lnmp-backup.sh` 的 `Encrypt_File`、`Decrypt_File`。
+
+**验证环境**：Debian 13，age 1.2.1，MariaDB 11.8.8。
+`Enable_Encrypt=1`、`Encrypt_Tool="age"`，recipient 与 identity 由
+`age-keygen` 现场生成。
+
+**验证方式与结果**：
+
+1. 备份：`lnmp backup run` 退出码 0，产物为 `db-<库>.sql.gz.enc` 与
+   `www-<域名>.tar.gz.enc`，`file` 识别为
+   `age encrypted file, X25519 recipient`；明文 `.gz` 已删除，
+   `gzip -t` 无法识别密文。
+2. 校验清单：`SHA256SUMS` 记录的是 `.enc` 文件。
+3. `lnmp backup test`：SHA256 校验通过，解密后试恢复通过（1 张表），退出码 0。
+4. `lnmp backup restore db <库>`：先删掉一行并改坏另一行，恢复后两行
+   内容与原始数据一致，退出码 0。
+5. 错误 identity：换成另一把 age 私钥，`age: error: no identity matched any
+   of the recipients`，脚本输出"解密失败。"，退出码 1。
+6. identity 文件不存在：输出"找不到解密私钥：<路径>"，退出码 1。
+7. 无临时明文残留。
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-BACKUP-004 GPG 加密备份到恢复全流程
+
+**位置**：`tools/lnmp-backup.sh` 的 `Encrypt_File`、`Decrypt_File`。
+
+**验证环境**：Debian 13，GnuPG，`Encrypt_Tool="gpg"`，
+收件人为现场生成的 cv25519 密钥（`--quick-generate-key`，空口令）。
+
+**验证方式与结果**：
+
+1. 备份：退出码 0，产物为 `.enc`；`gpg --list-packets` 确认为
+   `encrypted with cv25519 key`，对应生成的收件人。
+2. `lnmp backup test`：SHA256 校验通过，解密后试恢复通过（1 张表），退出码 0。
+3. `lnmp backup restore db <库>`：`TRUNCATE` 清空表后恢复，两行数据完整还原。
+4. 缺失私钥：删除 secret key 后 `test` 报
+   `gpg: decryption failed: No secret key`，脚本输出"解密失败。"，退出码 1。
+5. 错误收件人：`Encrypt_Recipient` 设为不存在的地址，备份失败、
+   批次标记为不完整，退出码 1。
+
+- **验证状态**：已实测（Debian 13）。
+
+## FIX-BK-012 加密失败时未加密的明文留在备份目录
+
+**位置**：`tools/lnmp-backup.sh` 的 `Encrypt_File`。
+
+**问题**：`Encrypt_File` 失败时只删除输出的 `.enc`，输入的明文 `.gz` 原样留在
+批次目录里。调用方 `Run_Db` / `Run_Web` 收到非零返回后只把批次标记为不完整，
+并按"存在失败项就跳过清理"的策略保留整个目录，于是在使用者明确
+`Enable_Encrypt=1` 的前提下，未加密的数据库转储与网站打包一直躺在磁盘上。
+`Encrypt_Recipient` 为空、找不到 age/gpg 命令、`Encrypt_Tool` 取值非法这三条
+提前返回的路径同样如此。
+
+Debian 13 实测复现：`Encrypt_Recipient` 置空或填无效 age recipient 后执行
+`lnmp backup run db`，退出码为 1，但 `/home/backup/db/<批次>/db-<库>.sql.gz`
+仍在。
+
+**修改**：`Encrypt_File` 的每一条失败路径都连同输入的明文一起删除。
+批次本来就要重做，保留一份未加密的转储没有价值，只有风险。
+
+**验证方式与结果**（Debian 13）：
+
+1. 无效 recipient：退出码 1，批次目录下无 `.gz` 与 `.part`；
+   空批次目录也被 `FIX-BK-011` 的清理一并删除。
+2. `Encrypt_Recipient` 为空：退出码 1，同样无明文残留。
+3. GPG 分支的错误收件人：退出码 1，无明文残留。
+4. 成功路径不受影响：恢复正确 recipient 后备份退出码 0，
+   产物为 `.enc` 与 `SHA256SUMS`。
+
+- **验证状态**：已实测（Debian 13，age 与 gpg 两个分支）。
+
+## FIX-BK-013 SFTP 上传后大小核对永远判定"远端缺少文件"
+
+**位置**：`tools/lnmp-backup.sh` 的 `Upload_Batch_Sftp`。
+
+**问题**：上传完成后用 `ls -l <staging>` 的输出逐个核对远端文件大小，
+匹配条件写的是 `$NF == <basename>`。但 sftp 的 `ls -l` 最后一列打印的是
+传给 `ls` 的路径拼上文件名，例如
+`backup/.incoming/20260815-084453-db/SHA256SUMS`，不是裸文件名，
+比对必然不成立。结果是：文件其实已经传上去了，却被判成"远端缺少文件"，
+批次卡在 `.incoming` 下不改名，`lnmp backup run` 返回 1。
+异地备份因此从未真正提交过。
+
+Debian 13 实测复现（受限 `internal-sftp` 账号，chroot + `ForceCommand`）：
+远端 `.incoming/<批次>-db/` 下两个文件都在，日志却是
+`远端缺少文件：db-sftptest.sql.gz` 与 `远端缺少文件：SHA256SUMS`，
+随后 `远端核对未通过，保留 .incoming 供排查，不改名。`
+
+**修改**：核对时取 `$NF` 的 basename 再比对。
+
+**验证方式与结果**（Debian 13，受限 internal-sftp 账号）：
+
+1. 正常上传：退出码 0，日志 `远端已提交：db/<批次>` 与
+   `远端已提交：www/<批次>`；远端 `backup/db/<批次>/` 与
+   `backup/www/<批次>/` 下文件齐全，`.incoming` 已清空。
+2. 远端空间不足（备份目录挂 64K tmpfs）：`put` 失败，sftp 退出码 1，
+   走"上传失败"分支并原文打印远端错误，保留 `.incoming` 不改名，退出码 1。
+3. 目录改名失败：预置同名远端批次目录并在其中放一个子目录，
+   `-rm` 通配删不掉目录、`-rmdir` 失败、`rename` 失败，
+   脚本报"远端改名失败"，保留 `.incoming`，不破坏已有目录，退出码 1。
+4. 覆盖同名批次（可清理）：远端同名批次里的旧文件被清掉后 `rename` 成功，
+   退出码 0。
+
+- **验证状态**：已实测（Debian 13）。
+
+## FIX-BK-014 远端批次列表混入 sftp 回显，且目录不存在被当成错误
+
+**位置**：`tools/lnmp-backup.sh` 的 `List_Remote_Batches`、`Cmd_List`。
+
+**问题**：三处。
+
+1. sftp 的 `sftp> ...` 命令回显走 stdout，与 `ls -1` 的结果混在一起。
+   后续 `sed 's#.*/##'` 会把 `sftp> ls -1 backup/db` 截成 `db`、
+   把 `sftp> bye` 原样留下，两者都被当成批次名打印出来。
+2. 远端还没有 `db` 或 `www` 目录时（只上传过另一类，或该类批次已被保留
+   策略清空），OpenSSH 报 `Can't ls: "<路径>" not found` 并返回非零，
+   `Cmd_List` 把它当成失败，打印"无法列出远端 <类型> 批次。"并 `return 1`。
+3. `Enable_Remote_Backup=1` 但远端配置不全时，
+   `if ... && Check_Remote_Conf` 让整个远端分支被跳过，
+   `Cmd_List` 仍返回 0——远端根本没查成，定时任务却看不出来。
+
+**修改**：stderr 单独收下用于判别错误类型，输出侧过滤掉 `^sftp>` 行；
+错误信息匹配 `Can't ls:.*not found` 时按"0 个批次"返回 0；
+`Check_Remote_Conf` 改为独立判断并 `return 1`。
+
+**验证方式与结果**（Debian 13）：
+
+1. 两类批次都存在：远端列表只打印批次名，无 `db` / `sftp> bye` 之类的
+   杂项，退出码 0。
+2. 远端删掉 `db` 目录：远端 db 一节为空，不再报错，退出码 0，
+   www 一节正常打印。
+3. 远端配置有误（`Remote_SSH_Key` 指向不存在的文件）：打印
+   `缺少 SSH 私钥：<路径>`，退出码 1。
+4. `Enable_Remote_Backup=0`：只打印本地批次，退出码 0，行为不变。
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-BACKUP-002 真实 SFTP 批次上传与目录改名
+
+**位置**：`tools/lnmp-backup.sh` 的 `Upload_Batch_Sftp`。
+
+**验证环境**：Debian 13，受限 `internal-sftp` 账号——`useradd -M -s
+/usr/sbin/nologin`，sshd 侧 `Match User` 段设 `ChrootDirectory` 与
+`ForceCommand internal-sftp`，密钥登录，`Remote_Known_Hosts` 由
+`ssh-keyscan` 预置、`StrictHostKeyChecking=yes`。
+
+**验证结论**：`.incoming` 暂存上传、逐文件大小核对、整目录 `rename` 提交
+这一套流程在受限账号下可用。四个场景（成功提交、上传失败、改名失败、
+覆盖同名批次）的结果见 `FIX-BK-013` 条目——本次验证同时发现并修复了
+大小核对的路径比对缺陷，修复前该流程从未成功提交过。
+
+- **验证状态**：已实测（Debian 13）。
+
+## AUDIT-BACKUP-005 SFTP 远端只能做大小核对
+
+**位置**：`tools/lnmp-backup.sh` 的 `Upload_Batch`。
+
+**限制说明**：受限的 `internal-sftp` 账号不能在远端执行命令，上传后只能逐个
+比对文件大小，可以发现截断和缺失，发现不了内容被改写。内容级校验只能靠
+随批次一起上传的 `SHA256SUMS`，而核对这份清单需要在备份服务器侧另行安排。
+
+**实证**（Debian 13）：把远端已提交批次里的 `www-*.tar.gz` 用等长随机数据
+整体改写（字节数保持 500370 不变），备份流程没有任何异常——大小核对只在
+上传当时进行，已提交批次不会被回头复查；在远端目录直接执行
+`sha256sum -c SHA256SUMS` 则报 `FAILED`，说明清单本身可以发现内容改写，
+缺的是执行它的通道。
+
+**可选方案**（均涉及备份服务器侧配置，不属于本包能单独完成的部分）：
+在备份服务器上放一个定期核对 `SHA256SUMS` 的任务，或改用允许受限命令
+执行的通道。
+
+- **验证状态**：已实测（Debian 13，限制描述与实际行为一致）。
+
+## FIX-BK-015 FTP 远端大小核对永远取不到 Content-Length
+
+**位置**：`tools/lnmp-backup.sh` 的 `Ftp_Remote_Size`。
+
+**问题**：读远端文件大小时给 curl 加了 `output = "/dev/null"`。FTP 下的
+`--head` 只发 SIZE/MDTM，不取文件体，它拼出来的
+`Last-Modified` / `Content-Length` / `Accept-ranges` 几行本身就走 stdout，
+`-o` 会把这几行一起丢掉。结果 `Ftp_Remote_Size` 永远返回空，
+`Upload_Batch_Ftp` 判定"远端缺少文件或取不到大小"，批次卡在 `.incoming`
+不改名，FTP/FTPS 异地备份从未成功提交过（与 `FIX-BK-013` 的 SFTP 侧同类）。
+
+Debian 13 实测复现：文件已在远端 `.incoming/<批次>-db/` 下，日志却是
+`远端缺少文件或取不到大小：db-ftptest.sql.gz`；手工执行
+`curl --head` 去掉 `-o /dev/null` 后可读到 `Content-Length: 84`。
+
+**修改**：去掉 `output = "/dev/null"`。
+
+**验证方式与结果**（Debian 13，pyftpdlib 2.0.1 作服务端，被动端口
+30000-30010）：
+
+1. 明文 FTP：上传、SIZE 核对、`RNFR`/`RNTO` 目录改名全部成功，
+   退出码 0，远端 `backup/db/<批次>/` 与 `backup/www/<批次>/` 文件齐全，
+   `.incoming` 已清空；日志按预期打印明文 FTP 的两条告警。
+2. FTPS（`ssl-reqd` + 自签 CA，`Remote_Ftp_Verify=1`）：同样全部成功，
+   退出码 0。
+
+- **验证状态**：已实测（Debian 13，FTP 与 FTPS 两种协议）。
+
+## AUDIT-BACKUP-FTP-001 FTP/FTPS 目录改名
+
+**位置**：`tools/lnmp-backup.sh` 的 `Upload_Batch_Ftp`。
+
+**验证环境**：Debian 13，pyftpdlib 2.0.1（`perm="elradfmwMT"`），
+明文 FTP 与显式 FTPS（`AUTH TLS`，自签证书）各跑一轮。
+
+**验证方式与结果**：
+
+1. 目录改名可用：`RNFR <staging>` / `RNTO <正式目录>` 对目录生效，
+   `.incoming/<批次>-<类型>` 整体切换为 `backup/<类型>/<批次>`，
+   两种协议都成功，`.incoming` 随之清空。
+2. 改名失败路径：预置同名远端批次目录并在其中放一个子目录，
+   `*RMD` 删不掉非空目录，`RNTO` 随之失败，curl 退出码 21，
+   脚本打印"远端改名失败（curl 退出码 21）"，保留 `.incoming` 不动
+   已有目录，`lnmp backup run` 退出码 1。
+
+**服务端差异说明**：本轮服务端支持目录改名。若目标服务器只允许文件改名，
+表现即为上述第 2 条的失败路径——退出非零、`.incoming` 保留，
+不会出现半提交状态。
+
+- **验证状态**：已实测（Debian 13，FTP 与 FTPS）。
+
+## AUDIT-BACKUP-FTP-002 FTP/FTPS SIZE 与 Content-Length 核对
+
+**位置**：`tools/lnmp-backup.sh` 的 `Upload_Batch_Ftp`、`Ftp_Remote_Size`。
+
+**验证方式与结果**（Debian 13）：
+
+1. 正常返回：服务端支持 SIZE，`curl --head` 返回 `Content-Length`，
+   逐文件大小核对通过后才改名。修复前该路径完全不通，见 `FIX-BK-015`。
+2. 取不到大小：`Ftp_Remote_Size` 返回空时报
+   "远端缺少文件或取不到大小：<文件名>"，批次标记不完整、
+   保留 `.incoming` 不改名，退出码 1——不会误报上传成功。
+3. 上传阶段异常（TLS 证书校验失败）：`curl: (60) SSL certificate problem:
+   self-signed certificate`，脚本报"上传失败：<文件名>"，退出码 1，
+   远端无残留。`Remote_Ftp_Verify=0` 后同一配置上传成功，退出码 0。
+
+- **验证状态**：已实测（Debian 13，FTP 与 FTPS）。
+
+## AUDIT-BACKUP-FTP-003 FTP/FTPS 被动模式与防火墙
+
+**位置**：`tools/lnmp-backup.sh` 的 FTP/FTPS curl 调用。
+
+**验证方式与结果**（Debian 13，服务端被动端口 30000-30010）：
+
+1. 被动端口通畅：控制连接与数据连接均正常，上传成功，退出码 0。
+2. 被动端口被拦（nftables 对 30000-30010 加 drop 规则）：
+   控制连接建立成功（登录、`MKD` 都走控制连接），数据连接卡住，
+   在 `connect-timeout = 30` 后失败，curl 报 `(28) Connection time-out`，
+   脚本报"上传失败：<文件名>"，退出码 1，远端无残留文件。
+3. 移除拦截规则后同一配置立即恢复成功，退出码 0。
+
+**结论**：控制连接成功而数据传输失败这一场景由 `connect-timeout` 兜住，
+不会无限期挂起，也不会把失败当成成功。
+
+- **验证状态**：已实测（Debian 13）。
+
+## FIX-BK-016 FTP 远端类型目录不存在时 list 整体失败
+
+**位置**：`tools/lnmp-backup.sh` 的 `List_Remote_Batches` 的 ftp/ftps 分支。
+
+**问题**：与 `FIX-BK-014` 的 sftp 侧同类。远端还没有 `db` 或 `www` 目录时，
+curl 报 `(9) Server denied you to change to the given directory` 并返回 9，
+`Cmd_List` 把它当成失败，打印"无法列出远端 <类型> 批次。"并返回 1。
+
+**修改**：curl 退出码 9 按"0 个批次"处理并返回 0。FTP 协议下区分不了
+"目录不存在"与"没有权限"，后者会在上传阶段明确报错，不依赖 list 发现。
+
+**验证方式与结果**（Debian 13）：
+
+1. 远端删掉 `www` 目录：www 一节为空、不报错，db 一节正常，退出码 0。
+2. 重新上传 www 后列表恢复，退出码 0。
+3. 真实错误（口令改错）：仍打印"无法列出远端 db 批次。"，退出码 1。
+
+- **验证状态**：已实测（Debian 13）。
+
+## FIX-TEST-003 t/test_bumpversion.sh 的沙箱构造在任何环境下都跑不通
+
+**位置**：`t/test_bumpversion.sh`。
+
+**问题**：该测试用 `unshare --mount --map-root-user` + overlayfs 隔离
+`/bin` 与 `/etc` 做功能测试，但 `--map-root-user` 建出来的 user namespace
+只映射当前一个 uid，namespace 内的 root 对其它属主的文件没有权限。
+由此在两种环境下各卡在不同位置，都无法通过：
+
+- 以普通用户运行：`Install_Tgnotice_Profile` 写
+  `/etc/profile.d/lnmp-tgnotice.sh` 报 `Permission denied`。
+  `/etc` 本身是挂载点可以直接写，但往它的子目录里新建文件要先把该子目录
+  copy-up 到 upperdir，copy-up 保留原属主，在 user namespace 里设不了 root 属主。
+- 以 root 运行：源码目录属主往往不是 root（解包保留原属主），
+  `Install_LNMP_Command` 末尾的 `chmod 755 tools/*.sh` 报 EPERM。
+  同时"未加 root 权限执行应失败"这组用例因为本来就是 root 而必然失败。
+
+两种情况都表现为产品代码被判成同步失败（`默认（无参数）同步成功` 等 4 项
+FAIL），而实际手工执行 `bumpversion.sh` 是成功的——故障在测试脚本，
+报错却指向被测代码。
+
+另有两处次要问题：静态检查断言 `[ -x bumpversion.sh ]` 与仓库现状冲突
+（仓库里的 `.sh` 一律 644，`install.sh` 等入口脚本也一样，
+`HowtoGuides.md` 让使用者自行 `chmod +x`）；宿主机装过 LNMP 时
+lowerdir 会把真实的 `/bin/lnmp` 带进沙箱，"尚未安装"的场景构造不出来。
+
+**修改**：
+
+- `--map-root-user` 改为只在非 root 时加，root 下直接用真实权限挂 overlay。
+- 挂完 `/etc` 的 overlay 后给 `/etc/profile.d` 单独盖一层 tmpfs，绕开 copy-up；
+  测试只关心能否写入，不需要原有内容。
+- "未加 root 权限执行应失败"这组按实际身份分支：以 root 运行时明确跳过
+  并说明原因，不制造假的通过（没有可用的降权目标——源码目录常在 `/root` 下，
+  换成 nobody 连读都读不到，构造出的失败原因就不是"非 root"了）。
+- 沙箱内先 `rm -f /bin/lnmp /usr/bin/lnmp`，只产生 whiteout，宿主机不受影响。
+- 静态断言从"可执行"改为"有 bash shebang"。
+
+**验证方式与结果**：
+
+1. 本机（WSL Ubuntu 24.04，普通用户）：全部通过。
+2. Debian 13 测试机（真 root，且宿主机已装 LNMP）：全部通过，
+   "未加 root 权限执行"这组按预期打印跳过说明。
+3. 沙箱隔离有效：测试跑完后宿主机 `/bin/lnmp` 仍在、`lnmp status` 正常。
+4. 真机复核 `bumpversion.sh` 本身：在 Debian 13 上执行后退出码 0，
+   `/bin/lnmp` 与 `conf/lnmp`、`/bin/lnmp-backup` 与 `tools/lnmp-backup.sh`
+   逐字节一致，`/usr/bin/lnmp` 别名同步到位，`lnmp backup list` 可正常执行。
+5. `t/test_bump.sh`（自动升版的跨文件同步回归，与本条无关的另一套）
+   同样全部通过，13 项。
+
+- **验证状态**：已实测（WSL 普通用户 + Debian 13 真 root）。
+
+## FIX-UI-001 vhost/ssl 交互输出的三处文案问题
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp`；`HowtoGuides.md` 4.1、4.2。
+
+**问题与修改**：
+
+1. **整行提示缺换行**。`Echo_Yellow` 用 `echo -n`，是交互提示专用（让输入紧跟
+   提示），但被用于不接受输入的整行提示，输出会和下一条粘在一行。典型现象：
+   `lnmp ssl add` 输入不存在的域名后，`请先执行 lnmp vhost add 创建网站，
+   再执行 lnmp ssl add 添加证书。` 后面直接跟 shell 提示符。
+   在这些整行提示后各补一行 `echo`：ssl add 的站点缺失与重复 SSL 提示、
+   default 证书说明、数据库导入覆盖警告、LNMPA/LAMP 的 IP 证书说明等。
+   原本后面已跟 `echo` 的调用点不动。
+2. **`lnmp vhost add` 输入 `default` 无输出**。LNMP 侧走 `Add_VHost_Default`，
+   配置已存在时静默返回；LNMPA/LAMP 侧 `default` 通不过域名格式校验，循环重问。
+   三处统一为：不重复建站，打印
+   `default 站已安装，是默认兜底站，如需为其配置 SSL 证书，请执行 lnmp ssl add`
+   并返回 0。LNMP 保留缺失时的补建，补建失败返回 1。
+3. **站点信息里的 `伪静态规则：none`**。`none` 是内部值（配置生成按它判断），
+   面向用户的三处输出改为显示"无"，变量取值与配置生成不变。
+
+**文档**：`HowtoGuides.md` 4.1 的 15 步交互表换成程序实际输出的中文提示，
+建库成功提示更正为 `数据库创建成功。`；4.2 补明只有域名、数据库 root 密码、
+数据库名、库用户密码四项走 `Read_Input`/`Read_Secret`，少喂会 EOF 快速失败，
+其余选项少喂按默认值处理。
+
+**验证**：`bash tests/test_vhost_prompt_output.sh`（15 项，覆盖三个文件的
+换行行为、ssl add 缺失站点的两行提示与返回码、`vhost add` 输入 default 的
+提示与返回码、`none` 的显示）；`t/lint.sh` 18 项、`t/consistency.sh` 14 项通过。
+
+- **验证状态**：已验证（静态与定向测试），交互输出待真机复核。
+
+## FIX-TEST-004 开发期定向测试从 t/ 分出到 tests/，不入库不进发布包
+
+**位置**：`t/` → `tests/`，`.gitignore`，`.github/workflows/release.yml`。
+
+**问题**：`t/` 按项目约定放的是"本项目必须用的检查脚本"，实际混进了只在本地
+跑的开发期定向测试。18 个文件里有 5 个既不被任何 GitHub Actions 工作流调用，
+也不被产品代码调用，只在 `t/` 内部互相引用；而 `t/` 会随发布包分发给最终用户。
+
+产品代码对 `t/` 无任何运行时依赖：`install.sh`、`include/*.sh`、
+`conf/lnmp(a)/lamp`、`tools/*.sh`、`uninstall.sh`、`upgrade.sh`、`addons.sh`
+中没有一处调用，只有 `include/version.sh` 与 `include/profile.sh` 的注释
+提到它们作为维护提示。
+
+**修改**：
+
+- 新建 `tests/`，迁入 5 个文件：`test_bumpversion.sh`、
+  `test_install_confirm.sh`、`test_install_phpmyadmin.sh`、`test_db_port.sh`、
+  `pty_run.py`。后两个分别只被前两个调用，属同一依赖闭包。
+- 修正迁移后的内部路径：`test_install_confirm.sh` 对 `pty_run.py` 的 4 处调用、
+  `test_install_phpmyadmin.sh` 对 `test_db_port.sh` 的 1 处调用，以及文件头
+  注释里的自身路径。三个脚本的 `cd "$(dirname "$0")/.."` 仍指向仓库根，无需改动。
+- `.gitignore` 增加 `tests/`，并注明它与 `t/` 的分工——`t/` 是 Actions 必须
+  调用的检查脚本，不能忽略。
+- `release.yml` 打包增加 `--exclude='./tests'`。该目录已被 gitignore、
+  CI 检出时本就不存在，这条是防御性的。
+
+**保留在 t/ 的 13 个**（GitHub Actions 直接调用，删除会导致 CI / 发布 /
+上游检查失败）：`lint.sh`、`consistency.sh`、`test_profile.sh`、
+`test_dispatch.sh`、`test_audit_fixes.sh`、`test_upstream.sh`、`test_bump.sh`
+（`ci.yml` / `release.yml`）；`check_upstream.sh`、`bump_version.sh`、
+`gen_checksums.sh`、`refresh_checksums.sh`（`upstream-check.yml`）；
+`probe_urls.sh`（`url-health.yml`、`upstream-check.yml`）；
+`build_test.sh`（`build-test.yml`）。
+
+**验证方式与结果**：
+
+1. 名单双向复核：13 个逐个确认在工作流中被点名调用；5 个逐个确认不出现在
+   任何工作流里。`ci.yml` 的 shellcheck 用 `t/*.sh` 通配，迁移后自动适应。
+2. 迁移后 5 个脚本全部实跑通过，退出码均为 0，含跨脚本调用
+   （`test_install_phpmyadmin.sh` → `tests/test_db_port.sh`）与
+   pty 交互分支（`test_install_confirm.sh` → `tests/pty_run.py`）。
+3. 模拟发布打包：包内无 `tests/`，`t/` 保留 13 个，`install.sh` 等入口齐全。
+
+**附带修正一处过时断言**：`tests/test_install_phpmyadmin.sh` 的
+"默认站点模板/生成逻辑都带 phpMyAdmin 入口钩子"检查的是
+`Install_Nginx()` 函数体与 `conf/nginx_a.conf`、`conf/openresty.conf`，
+三处均已不成立——公网 default 站点早已改为由
+`Write_Nginx_Default_VHost()` 现场生成到 `vhost/default.conf`，
+那两个主配置里 `server_name _` 的块是仅本机可访问的管理端口
+（`127.0.0.1:1008`），本就不该带 phpMyAdmin 钩子。断言当时只改了注释、
+没改代码，而该脚本不在 CI 里，一直没被发现。现改为检查
+`Write_Nginx_Default_VHost()` 与 `conf/lnmp` 的 `Add_VHost_Default`
+两处生成逻辑，加上两个 Apache 配置的 `IncludeOptional`。
+
+**连带修复 t/consistency.sh 的 V7**：该检查在 git 环境用 `git ls-files` 枚举
+文件，非 git 环境退回 `find`。`tests/pty_run.py` 跑过一次 `py_compile` 后，
+`tests/__pycache__/*.pyc` 会被 find 分支扫到，二进制字节序列里的 `\r`
+被判成 CRLF，V7 失败。git 环境不会遇到（未跟踪），但本地开发会。
+现在排除 `*.pyc` 与 `*/__pycache__/*`，`.gitignore` 也补上这两条。
+构造场景复验：故意生成 pyc 后 V7 仍通过，14 项全过。
+
+- **验证状态**：已实测（本机 WSL Ubuntu 24.04）。
+
+## RUN-035 Debian 13 真机验证批次（第二轮）
+
+**环境**：Debian 13 (trixie)、NAT 网络。本轮先后经过三套环境：
+OpenResty 1.31.1.1（源码编译）→ 卸载 → nginx 1.30.4（编译版，
+`Enable_Nginx_Lua=n`）→ 卸载 → 同一配置重装做回归。
+组件：PHP 8.3.33、MariaDB 11.8.8、phpMyAdmin 5.2.3。
+外部服务用本机搭建：受限 `internal-sftp` 账号（chroot + `ForceCommand`）、
+pyftpdlib 2.0.1（FTP 与显式 FTPS）、age 1.2.1、GnuPG。
+
+**静态检查**：每次代码改动后 `bash -n` + `t/lint.sh` 18 项 + `t/consistency.sh`
+14 项，全部通过。
+
+**本轮实测通过并归档的审计项**：AUDIT-VHOST-011、AUDIT-VHOST-012（LNMP 栈）、
+AUDIT-VHOST-002、AUDIT-BACKUP-003（age）、AUDIT-BACKUP-004（GPG）、
+AUDIT-BACKUP-002（SFTP）、AUDIT-BACKUP-005、AUDIT-BACKUP-FTP-001、
+AUDIT-BACKUP-FTP-002、AUDIT-BACKUP-FTP-003。
+
+**本轮新发现并修复**：FIX-VHOST-013、FIX-UNINSTALL-003、FIX-SERVICE-003、
+FIX-BK-011、FIX-BK-012、FIX-BK-013、FIX-BK-014、FIX-BK-015、FIX-BK-016、
+FIX-TEST-003。
+其中三项属于"功能从未成功过"：`FIX-BK-013`（SFTP 上传的大小核对拿 basename
+比对完整路径）、`FIX-BK-015`（FTP 的 `--head` 输出被 `-o /dev/null` 丢掉）、
+`FIX-SERVICE-003`（卸载不 stop unit，重装后服务实际未启动而 status 显示正常）。
+
+**本轮新登记待处理**：AUDIT-VHOST-013-APACHE（演示页放行规则的 Apache 侧）。
+
+**未覆盖**：Telegram 三项（需真实 bot token 与 chat id）、
+Apache 五项（AUDIT-INITD-003、AUDIT-SERVICE-002、AUDIT-PMA-001、
+AUDIT-VHOST-013-APACHE、AUDIT-VHOST-012 的 LNMPA 反代部分，
+需要 LAMP 与 LNMPA 各完整安装一次）、AUDIT-VHOST-010（需公网入站）。
+
+- **验证状态**：已实测（Debian 13）。
+
+## RUN-034 Debian 13 真机验证批次（第一轮）
+
+**环境**：Debian 13 (trixie)、8 核 / 5.8G 内存、NAT 网络。
+组件：nginx-1.30.4、php-8.3.33、MariaDB 11.8.8、MySQL 8.4.7、phpMyAdmin 5.2.3。
+
+**静态检查**：全部脚本 `bash -n` 通过；`t/lint.sh` 18 项通过；
+`t/consistency.sh` 14 项通过（每次代码改动后重跑）。
+
+**本轮实测通过并归档的审计项**：AUDIT-I18N-001、AUDIT-INSTALL-001、
+AUDIT-SYSTEMD-001、AUDIT-COMMAND-001、AUDIT-SERVICE-001、AUDIT-STACK-001、
+AUDIT-DB-004、AUDIT-VHOST-001、AUDIT-VHOST-003、AUDIT-VHOST-004（Nginx 侧）、
+AUDIT-VHOST-005、AUDIT-VHOST-006、AUDIT-VHOST-007、AUDIT-VHOST-008、
+AUDIT-VHOST-009、AUDIT-VHOST-010（菜单与前置检查）、AUDIT-BACKUP-001、
+AUDIT-BACKUP-INIT-001/002/003。
+
+**本轮新发现并修复**：FIX-INSTALL-001、AUDIT-DB-005、AUDIT-DB-006、
+AUDIT-DB-007、FIX-UNINSTALL-001、FIX-UNINSTALL-002、FIX-VHOST-001、
+FIX-PMA-009、FIX-PMA-010、FIX-BK-010、FIX-TOOLS-002，以及 AUDIT-DB-004 中
+init 脚本仍用旧程序名的补充修复。
+
+**本轮新登记待处理**：AUDIT-VHOST-013（根目录 PHP 演示页与 default 静态边界
+冲突）、AUDIT-UNINSTALL-003（卸载不清理 `/etc/lnmp` 的凭据文件）、
+AUDIT-BACKUP-006（备份目标磁盘不足时的退出码与残留清理）。
+
+**未覆盖**：OpenResty 相关（`AUDIT-VHOST-011/012`，官方仓库无 Debian 13 包，
+需源码编译）、`AUDIT-VHOST-002`（`Enable_Nginx_Lua=n` 需另装一次）、
+以及 todo 中标记为待人工真机验证的外部服务与 Apache 相关项。
+
+- **验证状态**：已实测（Debian 13）。

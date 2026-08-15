@@ -3,13 +3,21 @@ export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~
 
 # Check if user is root
 if [ $(id -u) != "0" ]; then
-    echo "Error: You must be root to run this script, please use root to install lnmp"
+    echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
 fi
 
 # cur_dir 必须设，理由同 tools/denyhosts.sh：Download_Files 的校验会读
 # ${cur_dir}/src/checksums.sha256，没设时解析成 /src/... 直接 fail-closed 退出。
 cur_dir=$(cd "$(dirname "$0")/.." && pwd)
+
+# 脚本被复制到源码目录之外执行时，上面推导出的 cur_dir 是错的，加载会失败。
+# 不检查的话后面每个公共函数都会 command not found，却还继续往下跑。
+if [ ! -f "${cur_dir}/include/main.sh" ]; then
+    echo "错误：找不到 ${cur_dir}/include/main.sh。"
+    echo "请在 LNMP 源码目录内执行本脚本，例如 ./tools/$(basename "$0")。"
+    exit 1
+fi
 
 . "${cur_dir}/lnmp.conf"
 . "${cur_dir}/include/main.sh"
@@ -34,15 +42,15 @@ elif [ "${PM}" = "apt" ]; then
     fi
 fi
 
-echo "Downloading..."
+echo "正在下载 fail2ban..."
 cd "${cur_dir}/src"
 Download_Files https://github.com/fail2ban/fail2ban/archive/refs/tags/1.1.0.tar.gz fail2ban-1.1.0.tar.gz
 Require_File "fail2ban-1.1.0.tar.gz" "fail2ban"
 tar zxf fail2ban-1.1.0.tar.gz && cd fail2ban-1.1.0
-echo "Installing fail2ban..."
+echo "正在安装 fail2ban..."
 python3 setup.py install
 
-echo "Copy configure file..."
+echo "正在复制 fail2ban 配置文件..."
 \cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
 sed -i '/^#mode   = normal/a \
 enabled  = true\
@@ -65,7 +73,7 @@ else
     Echo_Red "未找到 action.d/nftables.conf，fail2ban 仍会尝试用 iptables 封禁。"
 fi
 
-echo "Copy init files..."
+echo "正在复制 fail2ban 服务脚本..."
 if [ ! -d /var/run/fail2ban ];then
     mkdir /var/run/fail2ban
 fi
@@ -86,5 +94,5 @@ rm -rf fail2ban-1.1.0
 
 StartUp fail2ban
 
-echo "Start fail2ban..."
+echo "正在启动 fail2ban..."
 /etc/init.d/fail2ban start

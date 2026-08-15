@@ -24,6 +24,7 @@ MySQL_Sec_Setting()
     if command -v systemctl >/dev/null 2>&1; then
         systemctl enable mysql.service
     fi
+    Clean_Stale_DB_Socket || return 1
     /etc/init.d/mysql start
 
     ln -sf /usr/local/mysql/bin/mysql /usr/bin/mysql
@@ -59,7 +60,7 @@ EOF
         )
         if /usr/local/mysql/bin/mysql --defaults-file="${HOME}/.emptymy.cnf" \
              -e "SET PASSWORD FOR 'root'@'localhost' = '$(SQL_Escape "${DB_Root_Password}")';"; then
-            echo "Set password Sucessfully."
+            echo "root 密码设置成功。"
         else
             Echo_Red "root 密码设置失败，两种方式均未成功。"
             Echo_Red "mysqladmin 的报错：${first_error}"
@@ -74,17 +75,17 @@ EOF
     Make_TempMycnf "${DB_Root_Password}"
     Do_Query ""
     if [ $? -eq 0 ]; then
-        echo "OK, MySQL root password correct."
+        echo "MySQL root 密码验证通过。"
     fi
-    DB_Init_Step "Update root password" \
+    DB_Init_Step "更新 root 密码" \
         "SET PASSWORD FOR 'root'@'localhost' = '$(SQL_Escape "${DB_Root_Password}")';"
-    DB_Init_Step "Remove anonymous users" \
+    DB_Init_Step "删除匿名用户" \
         "DELETE FROM mysql.user WHERE User='';"
-    DB_Init_Step "Disallow root login remotely" \
+    DB_Init_Step "禁止 root 远程登录" \
         "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
-    DB_Init_Step "Remove test database" \
+    DB_Init_Step "删除测试数据库" \
         "DROP DATABASE IF EXISTS test;"
-    DB_Init_Step "Reload privilege tables" \
+    DB_Init_Step "刷新权限表" \
         "FLUSH PRIVILEGES;"
 
     /etc/init.d/mysql restart
@@ -228,10 +229,10 @@ Install_MySQL_80()
 {
     rm -f /etc/my.cnf
     if [ "${Bin}" = "y" ]; then
-        Echo_Blue "[+] Installing ${Mysql_Ver} Using Generic Binaries..."
+        Echo_Blue "[+] 正在使用官方通用二进制包安装 ${Mysql_Ver}..."
         Install_DB_Bin_Tarball "${DB_Bin_Tarball}" /usr/local/mysql
     else
-        Echo_Blue "[+] Installing ${Mysql_Ver} Using Source code..."
+        Echo_Blue "[+] 正在使用源码安装 ${Mysql_Ver}..."
         Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
         Install_Boost
         # Install_Boost 下载外部 Boost 时会回到 src/，这里显式回到 MySQL 源码树。
@@ -334,7 +335,13 @@ EOF
     MySQL_Deprecated_Opt
     Check_MySQL_Data_Dir
     chown -R mysql:mysql /usr/local/mysql
-    /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql
+    # 初始化失败时数据目录是空的，后面的启动、设密码、安全设置全部没有意义，
+    # 继续往下走只会刷屏并把一次失败的安装报告成部分成功。MariaDB 侧同理。
+    if ! /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql; then
+        Echo_Red "MySQL 数据目录初始化失败：${MySQL_Data_Dir}"
+        Echo_Red "请根据上面 mysqld 的报错处理后重新安装。"
+        return 1
+    fi
     chown -R mysql:mysql ${MySQL_Data_Dir}
     \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
     \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service
@@ -354,10 +361,10 @@ Install_MySQL_84()
 {
     rm -f /etc/my.cnf
     if [ "${Bin}" = "y" ]; then
-        Echo_Blue "[+] Installing ${Mysql_Ver} Using Generic Binaries..."
+        Echo_Blue "[+] 正在使用官方通用二进制包安装 ${Mysql_Ver}..."
         Install_DB_Bin_Tarball "${DB_Bin_Tarball}" /usr/local/mysql
     else
-        Echo_Blue "[+] Installing ${Mysql_Ver} Using Source code..."
+        Echo_Blue "[+] 正在使用源码安装 ${Mysql_Ver}..."
         Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
         Install_Boost
         # Install_Boost 下载外部 Boost 时会回到 src/，这里显式回到 MySQL 源码树。
@@ -460,7 +467,13 @@ EOF
     MySQL_Deprecated_Opt
     Check_MySQL_Data_Dir
     chown -R mysql:mysql /usr/local/mysql
-    /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql
+    # 初始化失败时数据目录是空的，后面的启动、设密码、安全设置全部没有意义，
+    # 继续往下走只会刷屏并把一次失败的安装报告成部分成功。MariaDB 侧同理。
+    if ! /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql; then
+        Echo_Red "MySQL 数据目录初始化失败：${MySQL_Data_Dir}"
+        Echo_Red "请根据上面 mysqld 的报错处理后重新安装。"
+        return 1
+    fi
     chown -R mysql:mysql ${MySQL_Data_Dir}
     \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
     \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service

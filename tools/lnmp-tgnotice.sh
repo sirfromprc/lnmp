@@ -172,13 +172,13 @@ tgnotice()
 _tgnotice_usage()
 {
     cat <<'EOF'
-Usage:
+用法：
   lnmp-tgnotice "文本"          发送通知（默认 HTML 格式）
   lnmp-tgnotice "文本" md       用 MarkdownV2 格式
   lnmp-tgnotice "文本" text     纯文本，不做格式解析
   lnmp-tgnotice --init          交互式写入 /etc/lnmp/notify.conf
   lnmp-tgnotice --test          发送一条测试消息
-  lnmp-tgnotice --status        显示当前配置（不显示完整 token）
+  lnmp-tgnotice --status        显示当前配置（不显示完整令牌）
 
 在脚本里用（推荐）：
   tgnotice "备份失败：wpdemo"
@@ -198,7 +198,7 @@ _tgnotice_init()
 
     if [ -f "${TG_Conf_File}" ]; then
         _tg_warn "配置已存在：${TG_Conf_File}"
-        printf '覆盖？(y/N) '
+        printf '是否覆盖 [y/N]（默认 n）：'
         if ! read -r ans; then
             echo
             _tg_err "读取覆盖确认时遇到 EOF。"
@@ -207,25 +207,25 @@ _tgnotice_init()
         [ "${ans}" = "y" ] || { echo "保留现有配置。"; return 0; }
     fi
 
-    echo "在 Telegram 里找 @BotFather 创建 bot，拿到 token；"
-    echo "把 bot 拉进目标群或私聊后发一条消息，再访问"
+    echo "在 Telegram 里通过 @BotFather 创建机器人并取得令牌；"
+    echo "把机器人加入目标群或私聊后发送一条消息，再访问"
     echo "  https://api.telegram.org/bot<TOKEN>/getUpdates"
-    echo "就能看到 chat id（群是负数）。"
+    echo "即可查看会话 ID（群组 ID 为负数）。"
     echo ""
-    printf 'Bot Token: '
+    printf '机器人令牌：'
     if ! read -r -s token; then
         echo
-        _tg_err "读取 Bot Token 时遇到 EOF。"
+        _tg_err "读取机器人令牌时遇到 EOF。"
         return 1
     fi
     echo
-    printf 'Chat ID: '
+    printf '会话 ID：'
     if ! read -r chat; then
         echo
-        _tg_err "读取 Chat ID 时遇到 EOF。"
+        _tg_err "读取会话 ID 时遇到 EOF。"
         return 1
     fi
-    printf '默认格式 [HTML/MarkdownV2]（回车用 HTML）: '
+    printf '默认格式 [HTML/MarkdownV2]（默认 HTML）：'
     if ! read -r mode; then
         echo
         _tg_err "读取默认格式时遇到 EOF。"
@@ -236,13 +236,13 @@ _tgnotice_init()
         *) mode="HTML" ;;
     esac
     if [ -z "${token}" ] || [ -z "${chat}" ]; then
-        _tg_err "token 和 chat id 都不能为空。"
+        _tg_err "机器人令牌和会话 ID 都不能为空。"
         return 1
     fi
 
     ( umask 077; cat > "${TG_Conf_File}" <<EOF
 # LNMP 通知配置 —— 由 lnmp-tgnotice --init 生成
-# 权限必须是 600：这里的 token 等同于 bot 的完整控制权。
+# 权限必须是 600：这里的令牌等同于机器人的完整控制权。
 
 TG_Enable=1
 TG_Bot_Token="${token}"
@@ -275,11 +275,11 @@ _tgnotice_status()
     fi
     echo "启用    ：$([ "${TG_Enable}" = "1" ] && echo 是 || echo 否)"
     if [ -n "${TG_Bot_Token}" ]; then
-        echo "Bot Token：${TG_Bot_Token%%:*}:****（只显示前段）"
+        echo "机器人令牌：${TG_Bot_Token%%:*}:****（只显示前段）"
     else
-        echo "Bot Token：未设置"
+        echo "机器人令牌：未设置"
     fi
-    echo "Chat ID ：${TG_Chat_Id:-未设置}"
+    echo "会话 ID：${TG_Chat_Id:-未设置}"
     echo "默认格式：${TG_Parse_Mode}"
     echo "超时/重试：${TG_Timeout}s / ${TG_Retry} 次"
     return 0

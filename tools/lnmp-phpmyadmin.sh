@@ -15,7 +15,7 @@ web_test()
     lnmp) /usr/local/nginx/sbin/nginx -t ;;
     lnmpa) /usr/local/nginx/sbin/nginx -t && /usr/local/apache/bin/httpd -t ;;
     lamp) /usr/local/apache/bin/httpd -t ;;
-    *) echo "Unknown installed stack: ${stack}" >&2; return 1 ;;
+    *) echo "无法识别已安装的架构：${stack}" >&2; return 1 ;;
     esac
 }
 
@@ -48,18 +48,18 @@ show_status()
     lamp) [ -s "${apache_live}" ] || enabled='n' ;;
     esac
     if [ "${enabled}" = 'y' ]; then
-        echo "phpMyAdmin access is enabled: http://<server-ip>/$(cat "${pma_url_file}")/"
+        echo "phpMyAdmin 访问已启用：http://<服务器IP>/$(cat "${pma_url_file}")/"
     else
-        echo "phpMyAdmin access is disabled; program and configuration are retained."
+        echo "phpMyAdmin 访问已禁用；程序和配置仍保留。"
     fi
 }
 
 if [ "$(id -u)" != '0' ]; then
-    echo 'Error: root is required.' >&2
+    echo '错误：必须使用 root 用户运行。' >&2
     exit 1
 fi
 if [ ! -s "${pma_dir}/index.php" ] || [ ! -s "${pma_url_file}" ]; then
-    echo 'phpMyAdmin is not installed.' >&2
+    echo 'phpMyAdmin 尚未安装。' >&2
     exit 1
 fi
 
@@ -73,7 +73,7 @@ status)
 disable)
     if { [ -e "${nginx_live}" ] && [ -e "${nginx_saved}" ]; } ||
        { [ -e "${apache_live}" ] && [ -e "${apache_saved}" ]; }; then
-        echo 'Both enabled and disabled access files exist; inspect them manually.' >&2
+        echo '启用和禁用状态的访问配置同时存在，请手动检查。' >&2
         exit 1
     fi
     if [ "${stack}" = 'lnmp' ] || [ "${stack}" = 'lnmpa' ]; then
@@ -93,19 +93,19 @@ disable)
 enable)
     if { [ -e "${nginx_live}" ] && [ -e "${nginx_saved}" ]; } ||
        { [ -e "${apache_live}" ] && [ -e "${apache_saved}" ]; }; then
-        echo 'Both enabled and disabled access files exist; inspect them manually.' >&2
+        echo '启用和禁用状态的访问配置同时存在，请手动检查。' >&2
         exit 1
     fi
     if [ "${stack}" = 'lnmp' ] || [ "${stack}" = 'lnmpa' ]; then
         [ -e "${nginx_live}" ] || {
-            [ -s "${nginx_saved}" ] || { echo 'Disabled Nginx access file not found.' >&2; exit 1; }
+            [ -s "${nginx_saved}" ] || { echo '未找到已禁用的 Nginx 访问配置。' >&2; exit 1; }
             mv "${nginx_saved}" "${nginx_live}" || exit 1; nginx_moved='y'; }
     fi
     if [ "${stack}" = 'lamp' ] || [ "${stack}" = 'lnmpa' ]; then
         if [ ! -e "${apache_live}" ]; then
             if [ ! -s "${apache_saved}" ] || ! mv "${apache_saved}" "${apache_live}"; then
                 [ "${nginx_moved}" = 'y' ] && mv "${nginx_live}" "${nginx_saved}"
-                echo 'Disabled Apache access file not found or cannot be restored.' >&2
+                echo '未找到已禁用的 Apache 访问配置，或配置无法恢复。' >&2
                 exit 1
             fi
             apache_moved='y'
@@ -113,7 +113,7 @@ enable)
     fi
     ;;
 *)
-    echo 'Usage: lnmp phpmyadmin {enable|disable|status}' >&2
+    echo '用法：lnmp phpmyadmin {enable|disable|status}' >&2
     exit 1
     ;;
 esac
@@ -132,7 +132,7 @@ if ! web_test || ! web_reload; then
         [ "${apache_moved}" = 'y' ] && mv "${apache_live}" "${apache_saved}"
     fi
     web_test >/dev/null 2>&1 && web_reload >/dev/null 2>&1 || true
-    echo 'Web configuration test or reload failed; previous access state was restored.' >&2
+    echo '网站配置测试或重载失败，已恢复之前的访问状态。' >&2
     exit 1
 fi
 

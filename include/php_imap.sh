@@ -3,7 +3,7 @@
 Install_PHP_Imap()
 {
     cd ${cur_dir}/src
-    echo "====== Installing PHP Imap ======"
+    echo "====== 正在安装 PHP IMAP 扩展 ======"
     Press_Start
 
     Addons_Get_PHP_Ext_Dir
@@ -11,7 +11,7 @@ Install_PHP_Imap()
 
     ${PHP_Path}/bin/php -m|grep imap
     if [ $? -eq 0 ]; then
-        Echo_Red "PHP Module 'imap' already loaded!"
+        Echo_Red "PHP 模块 imap 已加载！"
         return 1
     fi
 
@@ -29,8 +29,8 @@ Install_PHP_Imap()
                 if [ -s "${cur_dir}/src/libc-client-2007f-24.el9.${ARCH}.rpm" ]; then
                     rpm -ivh ${cur_dir}/src/libc-client-2007f-24.el9.${ARCH}.rpm ${cur_dir}/src/uw-imap-devel-2007f-24.el9.${ARCH}.rpm
                 else
-                    Echo_Red "uw-imap rpm not found in src/. IMAP support may fail to build."
-                    Echo_Red "Place libc-client-2007f-24.el9.${ARCH}.rpm and uw-imap-devel-2007f-24.el9.${ARCH}.rpm into src/ manually."
+                    Echo_Red "src/ 中未找到 uw-imap RPM，IMAP 支持可能编译失败。"
+                    Echo_Red "请手动将 libc-client-2007f-24.el9.${ARCH}.rpm 和 uw-imap-devel-2007f-24.el9.${ARCH}.rpm 放入 src/。"
                 fi
             fi
         fi
@@ -54,21 +54,21 @@ EOF
 
     Restart_PHP
     if [ -s "${zend_ext}" ]; then
-        Echo_Green "====== PHP Imap install completed ======"
-        Echo_Green "PHP Imap installed successfully, enjoy it!"
+        Echo_Green "====== PHP IMAP 扩展安装完成 ======"
+        Echo_Green "PHP IMAP 扩展安装成功。"
         return 0
     else
         rm -f ${PHP_Path}/conf.d/009-imap.ini
-        Echo_Red "PHP Imap install failed!"
+        Echo_Red "PHP IMAP 扩展安装失败！"
         return 1
     fi
 }
 
 Uninstall_PHP_Imap()
 {
-    echo "You will uninstall PHP Imap..."
+    echo "即将卸载 PHP IMAP 扩展..."
     Press_Start
     rm -f ${PHP_Path}/conf.d/009-imap.ini
     Restart_PHP
-    Echo_Green "Uninstall PHP Imap completed."
+    Echo_Green "PHP IMAP 扩展卸载完成。"
 }

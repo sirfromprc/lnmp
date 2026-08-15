@@ -209,7 +209,7 @@ Install_OpenResty_Source()
             return 1
         fi
     else
-        echo "${tarball} [found]"
+        echo "${tarball} [已找到]"
     fi
 
     # OpenResty 不提供 sha256 校验文件，只提供 PGP 签名，
@@ -265,7 +265,7 @@ Install_OpenResty_Source()
 # ---------------------------------------------------------------------------
 Install_OpenResty()
 {
-    Echo_Blue "[+] Installing OpenResty (${OpenResty_Install_Mode}) ..."
+    Echo_Blue "[+] 正在安装 OpenResty（${OpenResty_Install_Mode}）..."
 
     Check_WebServer_Conflict openresty || exit 1
 
@@ -314,7 +314,13 @@ OpenResty_Post_Install()
     \cp "${cur_dir}/conf/pathinfo.conf" "${ordir}/conf/pathinfo.conf"
     \cp "${cur_dir}/conf/enable-php.conf" "${ordir}/conf/enable-php.conf"
     \cp "${cur_dir}/conf/enable-php-pathinfo.conf" "${ordir}/conf/enable-php-pathinfo.conf"
+    if [ "${Stack}" = 'lnmpa' ]; then
+        \cp "${cur_dir}/conf/proxy.conf" "${ordir}/conf/proxy.conf"
+        \cp "${cur_dir}/conf/proxy-pass-php.conf" "${ordir}/conf/proxy-pass-php.conf"
+    fi
     \cp -ra "${cur_dir}/conf/example" "${ordir}/conf/example" 2>/dev/null
+
+    Write_Nginx_Default_VHost "${ordir}/conf" || exit 1
 
     # 关键软链：让所有引用 /usr/local/nginx 的既有代码继续工作
     if [ -e /usr/local/nginx ] && [ ! -L /usr/local/nginx ]; then
@@ -337,6 +343,7 @@ OpenResty_Post_Install()
     fi
 
     chown -R www:www "${Default_Website_Dir}" 2>/dev/null
+    chown root:root /home/wwwlogs
     chmod 755 /home/wwwlogs
 
     # 动态模块的 load_module 与 Lua 搜索路径由 lnmp 生成，nginx.conf 会 include 它们。

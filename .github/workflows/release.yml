@@ -102,11 +102,15 @@ jobs:
           mkdir -p dist "/tmp/${PKG}"
           # 排除开发期产物：用户拿到的包里不该有 CI 配置、交接文档、待办清单。
           # t/ 保留 —— probe_urls.sh 这类脚本对使用者排查下载失败很有用。
+          # tests/ 排除 —— 那里放的是只在本地跑的定向测试，产品代码不依赖，
+          # 对使用者没有意义。它已在 .gitignore 里，CI 检出时本就不存在，
+          # 这条 exclude 是防御性的：即使将来取消忽略也不会混进发布包。
           tar --exclude-vcs \
               --exclude='./.github' \
               --exclude='./.claude' \
               --exclude='./.upstream' \
               --exclude='./dist' \
+              --exclude='./tests' \
               --exclude='./HANDOVER.md' \
               --exclude='./todo*.md' \
               --exclude='./src/*.tar.*' \

@@ -2,7 +2,7 @@
 
 Install_Apcu()
 {
-    echo "====== Installing apcu ======"
+    echo "====== 正在安装 APCu ======"
     Press_Start
 
     rm -f ${PHP_Path}/conf.d/009-apcu.ini
@@ -40,22 +40,22 @@ EOF
 
     if [ -s "${zend_ext}" ]; then
         Restart_PHP
-        Echo_Green "======== apcu install completed ======"
-        Echo_Green "apcu installed successfully, enjoy it!"
+        Echo_Green "======== APCu 安装完成 ======"
+        Echo_Green "APCu 安装成功。"
         return 0
     fi
     rm -f ${PHP_Path}/conf.d/009-apcu.ini
-    Echo_Red "apcu install failed!"
+    Echo_Red "APCu 安装失败！"
     return 1
 }
 
 Uninstall_Apcu()
 {
-    echo "You will uninstall apcu..."
+    echo "即将卸载 APCu..."
     Press_Start
     rm -f ${PHP_Path}/conf.d/009-apcu.ini
-    echo "Delete apcu files..."
+    echo "正在删除 APCu 文件..."
     rm -f "${zend_ext}"
     Restart_PHP
-    Echo_Green "Uninstall apcu completed."
+    Echo_Green "APCu 卸载完成。"
 }

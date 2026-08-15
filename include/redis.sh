@@ -2,8 +2,8 @@
 
 Install_Redis()
 {
-    echo "====== Installing Redis ======"
-    echo "Install ${Redis_Stable_Ver} Stable Version..."
+    echo "====== 正在安装 Redis ======"
+    echo "正在安装稳定版 ${Redis_Stable_Ver}..."
     Press_Start
 
     # 清掉所有旧的 phpredis 配置，不只是本脚本自己写过的那个。
@@ -19,7 +19,8 @@ Install_Redis()
 
     cd ${cur_dir}/src
     if [ -s /usr/local/redis/bin/redis-server ]; then
-        echo "Redis server already exists."
+        echo "Redis 服务端已存在。"
+        ln -sf /usr/local/redis/bin/redis-cli /usr/bin/redis-cli
     else
 
         Download_Files https://download.redis.io/releases/${Redis_Stable_Ver}.tar.gz ${Redis_Stable_Ver}.tar.gz
@@ -35,6 +36,7 @@ Install_Redis()
         else
             make CFLAGS="-march=i686" PREFIX=/usr/local/redis install
         fi
+        ln -sf /usr/local/redis/bin/redis-cli /usr/bin/redis-cli
         mkdir -p /usr/local/redis/etc/
         \cp redis.conf  /usr/local/redis/etc/
 
@@ -128,7 +130,7 @@ EOF
     Check_Conf_Applied /etc/init.d/redis "^REDISPORT=${Redis_Port}\$"         "Redis init 脚本端口 ${Redis_Port}" || return 1
     \cp ${cur_dir}/init.d/redis.service /etc/systemd/system/redis.service
     chmod +x /etc/init.d/redis
-    echo "Add to auto startup..."
+    echo "正在加入开机自启..."
     StartUp redis
     Restart_PHP
     StartOrStop start redis
@@ -138,23 +140,24 @@ EOF
     # 它无鉴权、回显 Redis 版本号（便于攻击者匹配已知漏洞），
     # 且每次访问都会对生产 Redis 做一次 set/del 写操作。
     if [ "${Enable_Redis_Test_Page}" = "y" ]; then
-        echo "Copy Redis PHP Test file..."
+        echo "正在复制 Redis PHP 测试文件..."
         \cp ${cur_dir}/conf/redis.php ${Default_Website_Dir}/redis.php
         sed -i "s/', 6379)/', ${Redis_Port})/" ${Default_Website_Dir}/redis.php
+        Warn_Demo_Page_Not_Served redis.php
     else
-        echo "Redis test page not deployed (Enable_Redis_Test_Page='n')."
+        echo "未部署 Redis 测试页面（Enable_Redis_Test_Page='n'）。"
         echo "如需自测：cp conf/redis.php ${Default_Website_Dir}/redis.php"
     fi
 
     if [ ! -s "${zend_ext}" ] || [ ! -s /usr/local/redis/bin/redis-server ]; then
         rm -f ${PHP_Path}/conf.d/*redis.ini
-        Echo_Red "Redis install failed!（扩展或服务端二进制未生成）"
+        Echo_Red "Redis 安装失败！（扩展或服务端二进制未生成）"
         return 1
     fi
 
     if /etc/init.d/redis status >/dev/null 2>&1; then
-        Echo_Green "====== Redis install completed ======"
-        Echo_Green "Redis installed successfully, enjoy it!"
+        Echo_Green "====== Redis 安装完成 ======"
+        Echo_Green "Redis 安装成功。"
         return 0
     fi
 
@@ -171,16 +174,17 @@ EOF
 
 Uninstall_Redis()
 {
-    echo "You will uninstall Redis..."
+    echo "即将卸载 Redis..."
     Press_Start
 
     rm -f ${PHP_Path}/conf.d/*redis.ini
     Restart_PHP
     Remove_StartUp redis
-    echo "Delete Redis files..."
+    echo "正在删除 Redis 文件..."
     rm -rf /usr/local/redis
     rm -rf /etc/init.d/redis
+    rm -f /usr/bin/redis-cli
     Firewall_Unblock tcp "${Redis_Port}"
     Firewall_Save
-    Echo_Green "Uninstall Redis completed."
+    Echo_Green "Redis 卸载完成。"
 }

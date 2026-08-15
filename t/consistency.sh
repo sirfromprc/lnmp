@@ -182,6 +182,10 @@ check_v7()
     while IFS= read -r f; do
         case "${f}" in
             *.gif|*.png|*.jpg|*.jpeg|*.ico|*.pdf|*.tar.*|*.tgz|*.zip) continue ;;
+            # python 编译产物是二进制，字节序列里出现 \r 属正常。git 环境走
+            # git ls-files 不会遇到（未跟踪），但本地非 git 环境的 find 分支
+            # 会扫到，跑过一次 py_compile 就误报 CRLF。
+            *.pyc|*/__pycache__/*) continue ;;
         esac
         # grep 可直接检查短文件中的 \r
         if LC_ALL=C grep -qU $'\r' "${f}" 2>/dev/null; then

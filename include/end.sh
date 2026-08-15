@@ -2,7 +2,7 @@
 
 Add_Iptables_Rules()
 {
-    echo "Configuring firewall..."
+    echo "正在配置防火墙..."
 
     if ! Firewall_Init; then
         Echo_Red "防火墙未配置成功，请自行确认 ${DB_Port} 等端口没有暴露在公网。"
@@ -23,19 +23,96 @@ Add_Iptables_Rules()
     Firewall_Save
 }
 
+# 保证两个常用绝对路径指向相同内容且权限固定为 755。
+# /bin 与 /usr/bin 在 merged-/usr 系统上是同一目录，在旧布局上则不是。
+Sync_LNMP_Command_Alias()
+{
+    local tmp
+
+    if ! chmod 755 /bin/lnmp; then
+        Echo_Red "/bin/lnmp 不可执行。"
+        return 1
+    fi
+    if [ ! /bin/lnmp -ef /usr/bin/lnmp ] 2>/dev/null; then
+        tmp=$(mktemp /usr/bin/.lnmp.XXXXXXXX) || return 1
+        if ! \cp /bin/lnmp "${tmp}" || ! chmod 755 "${tmp}" || \
+           ! mv -f "${tmp}" /usr/bin/lnmp; then
+            rm -f "${tmp}"
+            Echo_Red "同步 /usr/bin/lnmp 失败。"
+            return 1
+        fi
+    fi
+    if ! chmod 755 /usr/bin/lnmp || [ ! -x /usr/bin/lnmp ]; then
+        Echo_Red "/usr/bin/lnmp 不可执行。"
+        return 1
+    fi
+    return 0
+}
+
+Detect_Installed_LNMP_Command_Stack()
+{
+    local manager=${1:-/bin/lnmp}
+
+    if [ ! -s "${manager}" ]; then
+        return 1
+    fi
+    if grep -q '^lnmpa_start()' "${manager}"; then
+        printf '%s\n' lnmpa
+    elif grep -q '^lamp_start()' "${manager}"; then
+        printf '%s\n' lamp
+    else
+        printf '%s\n' lnmp
+    fi
+}
+
+Install_Current_LNMP_Command()
+{
+    local fallback=${1:-lnmp} installed_stack
+
+    installed_stack=$(Detect_Installed_LNMP_Command_Stack /bin/lnmp 2>/dev/null) || \
+        installed_stack=${fallback}
+    Install_LNMP_Command "${installed_stack}"
+}
+
 # 管理命令和备份实现要一起安装：lnmp backup 子命令调用 /bin/lnmp-backup，
 # 只更新其中一个会让新版 lnmp 调到旧版或根本不存在的备份脚本。
 Install_LNMP_Command()
 {
-    \cp ${cur_dir}/conf/$1 /bin/lnmp
-    chmod +x /bin/lnmp
-    \cp ${cur_dir}/tools/lnmp-backup.sh /bin/lnmp-backup
-    chmod +x /bin/lnmp-backup
-    \cp ${cur_dir}/tools/lnmp-tgnotice.sh /bin/lnmp-tgnotice
-    chmod +x /bin/lnmp-tgnotice
-    \cp ${cur_dir}/tools/lnmp-phpmyadmin.sh /bin/lnmp-phpmyadmin
-    chmod +x /bin/lnmp-phpmyadmin
-    Install_Tgnotice_Profile
+    local stack=$1 source target
+
+    case "${stack}" in lnmp|lnmpa|lamp) ;; *)
+        Echo_Red "未知管理脚本类型：${stack}"
+        return 1
+        ;;
+    esac
+
+    for source in \
+        "${cur_dir}/conf/${stack}:/bin/lnmp" \
+        "${cur_dir}/tools/lnmp-backup.sh:/bin/lnmp-backup" \
+        "${cur_dir}/tools/lnmp-tgnotice.sh:/bin/lnmp-tgnotice" \
+        "${cur_dir}/tools/lnmp-phpmyadmin.sh:/bin/lnmp-phpmyadmin"
+    do
+        target=${source#*:}
+        source=${source%%:*}
+        if [ ! -s "${source}" ] || ! \cp "${source}" "${target}" || \
+           ! chmod 755 "${target}" || [ ! -x "${target}" ]; then
+            Echo_Red "安装管理命令失败：${source} -> ${target}"
+            return 1
+        fi
+    done
+
+    # /bin 在主流发行版通常与 /usr/bin 合并，但不能依赖这一点。用户直接执行
+    # /usr/bin/lnmp 时也必须得到同一个、权限正确的管理命令。
+    Sync_LNMP_Command_Alias || return 1
+
+    Install_Tgnotice_Profile || return 1
+    # tools/ 目录下的脚本在仓库里是 644（git 不记录可执行位），README/HowtoGuides
+    # 里都是 ./tools/xxx.sh 直接调用；不补权限会导致装完之后直接 Permission denied。
+    if ! chmod 755 "${cur_dir}"/tools/*.sh 2>/dev/null; then
+        Echo_Red "设置 tools/ 目录脚本权限失败，请手动执行: chmod 755 ${cur_dir}/tools/*.sh"
+        return 1
+    fi
+    return 0
 }
 
 # 让 tgnotice 函数在登录 shell 里直接可用，脚本里写 tgnotice "..." 即可。
@@ -56,88 +133,90 @@ PROFILE_EOF
 
 Add_LNMP_Startup()
 {
-    echo "Add Startup and Starting LNMP..."
-    Install_LNMP_Command lnmp
+    echo "正在设置开机启动并启动 LNMP..."
+    Install_LNMP_Command lnmp || return 1
     StartUp nginx
     StartOrStop start nginx
-    Startup_DB
+    Startup_DB || return 1
     StartUp php-fpm
     StartOrStop start php-fpm
     if [ "${PHP_Branch}" = "5.2" ]; then
         sed -i 's#/usr/local/php/var/run/php-fpm.pid#/usr/local/php/logs/php-fpm.pid#' /bin/lnmp
+        Sync_LNMP_Command_Alias || return 1
     fi
 }
 
 # 三个 Add_*_Startup 原本各有一份逐字相同的数据库启动块，现合并。
-# DB_Service 由 Set_DB_Profile 派生，消除了 mysql/mariadb 字面量与编号集合。
-#
-# 三个管理脚本（conf/lnmp、conf/lnmpa、conf/lamp）里数据库服务名收敛成了
-# 一个 DB_SERVICE 变量，这里只改那一行；原先是逐条替换 /etc/init.d/mysql
-# 字面量，改用 Svc 之后那种替换方式已不适用。
+# 管理脚本不再固化 mysql/mariadb；每次执行时按现有 unit/init 脚本检测。
 Startup_DB()
 {
     if [ "${DB_Kind}" = "none" ]; then
-        sed -i 's#^DB_SERVICE=mysql$#DB_SERVICE=#' /bin/lnmp
         return 0
     fi
     StartUp "${DB_Service}"
     StartOrStop start "${DB_Service}"
-    if [ "${DB_Kind}" = "mariadb" ]; then
-        sed -i 's#^DB_SERVICE=mysql$#DB_SERVICE=mariadb#' /bin/lnmp
-    fi
 }
 
 Add_LNMPA_Startup()
 {
-    echo "Add Startup and Starting LNMPA..."
-    Install_LNMP_Command lnmpa
+    echo "正在设置开机启动并启动 LNMPA..."
+    Install_LNMP_Command lnmpa || return 1
     StartUp nginx
     StartOrStop start nginx
-    Startup_DB
+    Startup_DB || return 1
     StartUp httpd
     StartOrStop start httpd
 }
 
 Add_LAMP_Startup()
 {
-    echo "Add Startup and Starting LAMP..."
-    Install_LNMP_Command lamp
+    echo "正在设置开机启动并启动 LAMP..."
+    Install_LNMP_Command lamp || return 1
     StartUp httpd
     StartOrStop start httpd
-    Startup_DB
+    Startup_DB || return 1
 }
 
 Check_Nginx_Files()
 {
     isNginx=""
-    echo "============================== Check install =============================="
-    echo "Checking ..."
+    echo "============================== 检查安装结果 =============================="
+    echo "正在检查..."
     if [[ -s /usr/local/nginx/conf/nginx.conf && -s /usr/local/nginx/sbin/nginx ]]; then
-        Echo_Green "Nginx: OK"
+        Echo_Green "Nginx：正常"
         isNginx="ok"
     else
-        Echo_Red "Error: Nginx install failed."
+        Echo_Red "错误：Nginx 安装失败。"
     fi
 }
 
 Check_DB_Files()
 {
+    local db_client db_safe
+
     isDB=""
     if [ "${DB_Kind}" = "none" ]; then
-        Echo_Green "Do not install MySQL/MariaDB."
+        Echo_Green "未安装 MySQL/MariaDB。"
         isDB="ok"
-    elif [[ -s ${MySQL_Dir}/bin/mysql && -s ${MySQL_Dir}/bin/mysqld_safe && -s /etc/my.cnf ]]; then
-        if [ "${DB_Kind}" = "mariadb" ]; then
-            Echo_Green "MariaDB: OK"
+    elif [ "${DB_Kind}" = "mariadb" ]; then
+        db_client=$(First_Executable "${MySQL_Dir}/bin/mariadb" "${MySQL_Dir}/bin/mysql")
+        db_safe=$(First_Executable "${MySQL_Dir}/bin/mariadbd-safe" "${MySQL_Dir}/bin/mysqld_safe")
+        if [ -n "${db_client}" ] && [ -n "${db_safe}" ] && [ -s /etc/my.cnf ]; then
+            MySQL_Bin="${db_client}"
+            Echo_Green "MariaDB：正常"
+            isDB="ok"
         else
-            Echo_Green "MySQL: OK"
+            Echo_Red "错误：MariaDB 安装失败。"
         fi
+    elif [[ -s ${MySQL_Dir}/bin/mysql && -s ${MySQL_Dir}/bin/mysqld_safe && -s /etc/my.cnf ]]; then
+        MySQL_Bin="${MySQL_Dir}/bin/mysql"
+        Echo_Green "MySQL：正常"
         isDB="ok"
     else
         if [ "${DB_Kind}" = "mariadb" ]; then
-            Echo_Red "Error: MariaDB install failed."
+            Echo_Red "错误：MariaDB 安装失败。"
         else
-            Echo_Red "Error: MySQL install failed."
+            Echo_Red "错误：MySQL 安装失败。"
         fi
     fi
 }
@@ -147,18 +226,18 @@ Check_PHP_Files()
     isPHP=""
     if [ "${Stack}" = "lnmp" ]; then
         if [[ -s /usr/local/php/sbin/php-fpm && -s /usr/local/php/etc/php.ini && -s /usr/local/php/bin/php ]]; then
-            Echo_Green "PHP: OK"
-            Echo_Green "PHP-FPM: OK"
+            Echo_Green "PHP：正常"
+            Echo_Green "PHP-FPM：正常"
             isPHP="ok"
         else
-            Echo_Red "Error: PHP install failed."
+            Echo_Red "错误：PHP 安装失败。"
         fi
     else
         if [[ -s /usr/local/php/bin/php && -s /usr/local/php/etc/php.ini ]]; then
-            Echo_Green "PHP: OK"
+            Echo_Green "PHP：正常"
             isPHP="ok"
         else
-            Echo_Red "Error: PHP install failed."
+            Echo_Red "错误：PHP 安装失败。"
         fi
     fi
 }
@@ -167,16 +246,16 @@ Check_Apache_Files()
 {
     isApache=""
     if [[ -s /usr/local/apache/bin/httpd && -s /usr/local/apache/modules/${PHP_Apache_Module} && -s /usr/local/apache/conf/httpd.conf ]]; then
-        Echo_Green "Apache: OK"
+        Echo_Green "Apache：正常"
         isApache="ok"
     else
-        Echo_Red "Error: Apache install failed."
+        Echo_Red "错误：Apache 安装失败。"
     fi
 }
 
 Clean_DB_Src_Dir()
 {
-    echo "Clean database src directory..."
+    echo "正在清理数据库源码目录..."
     [ "${DB_Kind}" = "none" ] && return 0
     [ -n "${DB_Ver}" ] && rm -rf ${cur_dir}/src/${DB_Ver}
 
@@ -193,13 +272,13 @@ Clean_DB_Src_Dir()
 
 Clean_PHP_Src_Dir()
 {
-    echo "Clean PHP src directory..."
+    echo "正在清理 PHP 源码目录..."
     rm -rf ${cur_dir}/src/${Php_Ver}
 }
 
 Clean_Web_Src_Dir()
 {
-    echo "Clean Web Server src directory..."
+    echo "正在清理 Web 服务器源码目录..."
     if [ "${Stack}" = "lnmp" ]; then
         rm -rf ${cur_dir}/src/${Nginx_Ver}*
     elif [ "${Stack}" = "lnmpa" ]; then
@@ -224,43 +303,35 @@ Print_DB_Password_Notice()
     if [ "${DB_Root_Password_Random}" = "y" ]; then
         ( umask 077; printf '%s\n' "${DB_Root_Password}" > "${pass_file}" )
         chmod 600 "${pass_file}" 2>/dev/null
-        echo "|  数据库 root 密码为随机生成，已写入 ${pass_file}"
-        echo "|  查看：cat ${pass_file}   （请尽快记录并删除该文件）"
+        Print_Banner \
+            "数据库 root 密码为随机生成，已写入 ${pass_file}" \
+            "查看：cat ${pass_file}（请尽快记录并删除该文件）"
     else
-        echo "|  数据库 root 密码：即你安装时输入的那个，脚本不再回显。"
+        Print_Banner "数据库 root 密码：即你安装时输入的那个，脚本不再回显。"
     fi
-    echo "|  （密码不再打印到屏幕与安装日志，见 changelog SEC-CRED-001）"
+    Print_Banner "密码不再打印到屏幕与安装日志，见 changelog SEC-CRED-001。"
 }
 
 Print_Sucess_Info()
 {
     Clean_Web_Src_Dir
-    echo "+------------------------------------------------------------------------+"
-    echo "|          LNMP V${LNMP_Ver} for ${DISTRO} Linux Server, Written by Licess          |"
-    echo "+------------------------------------------------------------------------+"
-    echo "|          Upstream-official sources only, checksums enforced             |"
-    echo "+------------------------------------------------------------------------+"
-    echo "|    lnmp status manage: lnmp {start|stop|reload|restart|kill|status}    |"
-    echo "+------------------------------------------------------------------------+"
-    # 这三项现在都是可选的（p.php 探针已彻底移除），按实际部署情况提示。
-    if [ "${Enable_PhpMyAdmin}" = "y" ] || [ "${Enable_PHPInfo_Page}" = "y" ]; then
-        if [ "${Enable_PhpMyAdmin}" = "y" ]; then
-            # 访问路径每次安装随机生成，这里打印实际值。忘记了可以随时用
-            # lnmp status 查看，或直接读 ${PhpMyAdmin_Url_File}。
-            echo "|  phpMyAdmin: http://IP/$(cat ${PhpMyAdmin_Url_File} 2>/dev/null)/"
-            echo "|  上面这个路径是随机生成的，请自行记录；忘记可执行 lnmp status 查看。"
-        fi
-        [ "${Enable_PHPInfo_Page}" = "y" ] && echo "|  phpinfo: http://IP/phpinfo.php                                        |"
-        echo "+------------------------------------------------------------------------+"
+    Print_Banner \
+        "LNMP V${LNMP_Ver} 安装完成" \
+        "运行 lnmp {start|stop|reload|restart|kill|status} 管理服务" \
+        "仅使用上游官方源码，并强制校验完整性"
+    # 统一用 Print_Banner 输出安装摘要，中文与英文混排时也能保持边框对齐。
+    local summary_lines=()
+    if [ "${Enable_PhpMyAdmin}" = "y" ]; then
+        summary_lines+=("phpMyAdmin：http://IP/$(cat ${PhpMyAdmin_Url_File} 2>/dev/null)/")
+        summary_lines+=("上面这个路径是随机生成的，请自行记录；忘记可执行 lnmp status 查看。")
     fi
-    echo "|  Add VirtualHost: lnmp vhost add                                       |"
-    echo "+------------------------------------------------------------------------+"
-    echo "|  Default directory: ${Default_Website_Dir}                              |"
+    [ "${Enable_PHPInfo_Page}" = "y" ] && summary_lines+=("phpinfo：http://IP/phpinfo.php")
+    summary_lines+=("添加虚拟主机：lnmp vhost add")
+    summary_lines+=("默认网站目录：${Default_Website_Dir}")
+    Print_Banner "${summary_lines[@]}"
     if [ "${DB_Kind}" != "none" ]; then
-        echo "+------------------------------------------------------------------------+"
         Print_DB_Password_Notice
     fi
-    echo "+------------------------------------------------------------------------+"
     lnmp status
     if command -v ss >/dev/null 2>&1; then
         ss -ntl
@@ -268,8 +339,8 @@ Print_Sucess_Info()
         netstat -ntl
     fi
     stop_time=$(date +%s)
-    echo "Install lnmp takes $(((stop_time-start_time)/60)) minutes."
-    Echo_Green "Install lnmp V${LNMP_Ver} completed! enjoy it."
+    echo "LNMP 安装耗时 $(((stop_time-start_time)/60)) 分钟。"
+    Echo_Green "LNMP V${LNMP_Ver} 安装完成。"
 
     # 校验被关掉时，在最后再说一次。
     # 安装过程刷屏几千行，开头的警告早滚没了；而这句话决定了这台机器上的
@@ -292,8 +363,8 @@ Print_Failed_Info()
     if [ -s /bin/lnmp ]; then
         rm -f /bin/lnmp
     fi
-    Echo_Red "Sorry, Failed to install LNMP!"
-    Echo_Red "Check the install log for details: /root/lnmp-install.log"
+    Echo_Red "LNMP 安装失败。"
+    Echo_Red "请查看安装日志了解详情：/root/lnmp-install.log"
     Echo_Red "注意：该日志可能含数据库 root 密码等敏感信息，外发前请先清理。"
     return 1
 }
@@ -332,7 +403,7 @@ Check_Firewall_Result()
 # ---------------------------------------------------------------------------
 # Check_DB_Init_Result — 数据库初始化 SQL 是否真的执行成功。
 #
-# Check_DB_Files 只看 ${MySQL_Dir}/bin/mysql 和 /etc/my.cnf 在不在，
+# Check_DB_Files 只看数据库客户端、safe 启动器和 /etc/my.cnf 在不在，
 # 那只能说明「装上了」。初始化 SQL 失败时（典型是客户端缺运行库跑不起来），
 # 匿名账号、test 库、远程 root 授权是否被清掉完全没有依据 ——
 # 恰好干净不等于处理正确。
@@ -350,9 +421,9 @@ Check_DB_Init_Result()
     echo
     Echo_Yellow "这意味着匿名账号、test 库、远程 root 授权是否已清理无法确认。"
     Echo_Yellow "请先确认数据库客户端可用，再手工核对："
-    echo "  ${MySQL_Dir}/bin/mysql --version"
-    echo "  ${MySQL_Dir}/bin/mysql -u root -p -e \"SELECT User,Host FROM mysql.user;\""
-    echo "  ${MySQL_Dir}/bin/mysql -u root -p -e \"SHOW DATABASES;\"   # 不应有 test"
+    echo "  ${MySQL_Bin} --version"
+    echo "  ${MySQL_Bin} -u root -p -e \"SELECT User,Host FROM mysql.user;\""
+    echo "  ${MySQL_Bin} -u root -p -e \"SHOW DATABASES;\"   # 不应有 test"
     Echo_Red "════════════════════════════════════════════════════════"
     return 1
 }

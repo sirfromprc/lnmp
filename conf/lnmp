@@ -3,7 +3,7 @@ export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~
 
 # Check if user is root
 if [ $(id -u) != "0" ]; then
-    echo "Error: You must be root to run this script!"
+    echo "错误：必须使用 root 用户运行此命令。"
     exit 1
 else
     if env |grep -q SUDO; then
@@ -11,23 +11,46 @@ else
     fi
 fi
 
-echo "+-------------------------------------------+"
-echo "|    Manager for LNMP, Written by Licess    |"
-echo "+-------------------------------------------+"
-echo "|              https://lnmp.org             |"
-echo "+-------------------------------------------+"
-
 PHPFPMPIDFILE=/usr/local/php/var/run/php-fpm.pid
+WEB_SERVICE=
+PHP_SERVICE=
 
-# 数据库服务名。安装 MariaDB 时由 include/end.sh 的 Startup_DB 改成 mariadb，
-# 不装数据库时改成空值（Svc 遇到空服务名直接跳过）。
-DB_SERVICE=mysql
+# 服务名由 Detect_Managed_Services 在每次执行时按当前系统重新确定。
+DB_SERVICE=
 
 arg1=$1
 arg2=$2
 # database export/import 需要库名和文件名两个附加参数
 arg3=$3
 arg4=$4
+
+Text_Display_Width()
+{
+    local text="$1" bytes ascii_bytes wide_chars
+    bytes=$(printf '%s' "${text}" | LC_ALL=C wc -c)
+    ascii_bytes=$(printf '%s' "${text}" | LC_ALL=C tr -cd '\000-\177' | wc -c)
+    wide_chars=$(( (bytes - ascii_bytes) / 3 ))
+    printf '%d' $((ascii_bytes + wide_chars * 2))
+}
+
+Print_Banner()
+{
+    local width=72 border text text_width padding left right
+    for text in "$@"; do
+        text_width=$(Text_Display_Width "${text}")
+        [ "${text_width}" -gt "${width}" ] && width=${text_width}
+    done
+    border=$(printf '%*s' "${width}" '' | tr ' ' '-')
+    printf '+%s+\n' "${border}"
+    for text in "$@"; do
+        text_width=$(Text_Display_Width "${text}")
+        padding=$((width - text_width))
+        left=$((padding / 2))
+        right=$((padding - left))
+        printf '|%*s%s%*s|\n' "${left}" '' "${text}" "${right}" ''
+    done
+    printf '+%s+\n' "${border}"
+}
 
 # 通知函数：安装时与 lnmp 一起装到 /bin/lnmp-tgnotice。
 # source 进来之后，本脚本任何位置都可以直接写 tgnotice "文本" [md]。
@@ -46,6 +69,38 @@ arg4=$4
 # 现在有 systemd 且本包装过对应 unit 时走 systemctl，否则才退回 SysV 脚本。
 # configtest / force-quit / kill 这些 systemd 里没有的动作始终走 SysV 脚本。
 # ---------------------------------------------------------------------------
+Systemd_Service_Exists()
+{
+    local service="$1"
+    [ -s "/etc/systemd/system/${service}.service" ] || \
+    [ -s "/lib/systemd/system/${service}.service" ] || \
+    [ -s "/usr/lib/systemd/system/${service}.service" ]
+}
+
+Service_Exists()
+{
+    local service="$1"
+    Systemd_Service_Exists "${service}" || [ -x "/etc/init.d/${service}" ]
+}
+
+# 每次执行管理命令都按当前系统重新检测，不能把首次安装时的组件集合写死。
+# 这样先装静态 Nginx、以后补装 PHP/数据库时，下一次 lnmp restart 会自动
+# 把新出现的服务纳入；未安装的服务则明确跳过。
+Detect_Managed_Services()
+{
+    WEB_SERVICE=
+    PHP_SERVICE=
+    DB_SERVICE=
+
+    Service_Exists nginx && WEB_SERVICE=nginx
+    Service_Exists php-fpm && PHP_SERVICE=php-fpm
+    if Service_Exists mariadb; then
+        DB_SERVICE=mariadb
+    elif Service_Exists mysql; then
+        DB_SERVICE=mysql
+    fi
+}
+
 Svc()
 {
     local service="$1" action="$2"
@@ -55,19 +110,55 @@ Svc()
     case "${action}" in
     start|stop|restart|reload|status)
         if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1 \
-           && [ -s "/etc/systemd/system/${service}.service" ]; then
-            systemctl --no-pager ${action} ${service}.service
+           && Systemd_Service_Exists "${service}"; then
+            systemctl --no-pager "${action}" "${service}.service"
             return $?
         fi
         ;;
     esac
 
     if [ -x "/etc/init.d/${service}" ]; then
-        /etc/init.d/${service} ${action}
+        "/etc/init.d/${service}" "${action}"
         return $?
     fi
     echo "${service}: 既没有 systemd unit 也没有 /etc/init.d 脚本，跳过。"
     return 1
+}
+
+Svc_If_Installed()
+{
+    local label="$1" service="$2" action="$3"
+    if [ -z "${service}" ]; then
+        echo "${label}: 未检测到已安装服务，跳过 ${action}。"
+        return 0
+    fi
+    Svc "${service}" "${action}"
+}
+
+# 直接执行 `lnmp <服务> <动作>` 时用它包一层：systemctl 动作成功时不打印
+# 任何内容（这是 systemd 的正常行为，不是 bug），用户只会看到命令悄无声息地
+# 退出，分不清是成功了还是卡住了。这里补一条明确的成功/失败提示。
+# status 动作本身就会打印完整状态，不需要再叠加提示。
+Svc_Feedback()
+{
+    local service="$1" action="$2" rc
+
+    Svc "${service}" "${action}"
+    rc=$?
+
+    case "${action}" in
+    ''|status)
+        ;;
+    *)
+        if [ ${rc} -eq 0 ]; then
+            Echo_Green "${service} ${action} 成功"
+        else
+            Echo_Red "${service} ${action} 失败（退出码 ${rc}）"
+        fi
+        ;;
+    esac
+
+    return ${rc}
 }
 
 # 启停结束后核对 unit 状态。命令自己返回 0 不代表 systemd 那边也对得上，
@@ -81,12 +172,12 @@ Check_Svc_State()
 
     for service in "$@"; do
         [ -z "${service}" ] && continue
-        [ -s "/etc/systemd/system/${service}.service" ] || continue
-        systemctl is-active --quiet ${service}.service || failed="${failed} ${service}"
+        Systemd_Service_Exists "${service}" || continue
+        systemctl is-active --quiet "${service}.service" || failed="${failed} ${service}"
     done
 
     [ -z "${failed}" ] && return 0
-    echo "警告：以下服务的 systemd 状态不是 active：${failed}"
+    echo "警告：以下服务的 systemd 状态不是活动状态（active）：${failed}"
     echo "      若进程其实还在跑，说明它被 systemd 之外的方式启动过；"
     echo "      执行 lnmp kill 后再 lnmp start，可让两边重新对齐。"
     return 1
@@ -94,25 +185,25 @@ Check_Svc_State()
 
 lnmp_start()
 {
-    echo "Starting LNMP..."
-    Svc nginx start
-    Svc "${DB_SERVICE}" start
-    Svc php-fpm start
+    echo "正在启动 LNMP..."
+    Svc_If_Installed Nginx "${WEB_SERVICE}" start
+    Svc_If_Installed Database "${DB_SERVICE}" start
+    Svc_If_Installed PHP-FPM "${PHP_SERVICE}" start
     for mphpfpm in /etc/init.d/php-fpm[5,7,8].[0-9]
     do
         if [ -f ${mphpfpm} ]; then
             ${mphpfpm} start
         fi
     done
-    Check_Svc_State nginx "${DB_SERVICE}" php-fpm
+    Check_Svc_State "${WEB_SERVICE}" "${DB_SERVICE}" "${PHP_SERVICE}"
 }
 
 lnmp_stop()
 {
-    echo "Stoping LNMP..."
-    Svc nginx stop
-    Svc "${DB_SERVICE}" stop
-    Svc php-fpm stop
+    echo "正在停止 LNMP..."
+    Svc_If_Installed Nginx "${WEB_SERVICE}" stop
+    Svc_If_Installed Database "${DB_SERVICE}" stop
+    Svc_If_Installed PHP-FPM "${PHP_SERVICE}" stop
     for mphpfpm in /etc/init.d/php-fpm[5,7,8].[0-9]
     do
         if [ -f ${mphpfpm} ]; then
@@ -123,10 +214,10 @@ lnmp_stop()
 
 lnmp_reload()
 {
-    echo "Reload LNMP..."
-    Svc nginx reload
-    Svc "${DB_SERVICE}" reload
-    Svc php-fpm reload
+    echo "正在重载 LNMP..."
+    Svc_If_Installed Nginx "${WEB_SERVICE}" reload
+    Svc_If_Installed Database "${DB_SERVICE}" reload
+    Svc_If_Installed PHP-FPM "${PHP_SERVICE}" reload
     for mphpfpm in /etc/init.d/php-fpm[5,7,8].[0-9]
     do
         if [ -f ${mphpfpm} ]; then
@@ -137,30 +228,26 @@ lnmp_reload()
 
 lnmp_kill()
 {
-    echo "Kill nginx,php-fpm,mysql process..."
+    echo "正在终止 Nginx、PHP-FPM 和数据库进程..."
     killall nginx
     killall mysqld
     killall php-fpm
     killall php-cgi
-    echo "done."
+    echo "完成。"
 }
 
 lnmp_status()
 {
-    Svc nginx status
-    if [ -f $PHPFPMPIDFILE ]; then
-        echo "php-fpm is runing!"
-    else
-        echo "php-fpm is stop!"
-    fi
-    Svc "${DB_SERVICE}" status
+    Svc_If_Installed Nginx "${WEB_SERVICE}" status
+    Svc_If_Installed PHP-FPM "${PHP_SERVICE}" status
+    Svc_If_Installed Database "${DB_SERVICE}" status
 
     # phpMyAdmin 的访问路径是安装时随机生成的，在这里回显，省得去翻安装日志
     if [ -s /usr/local/phpmyadmin/.access_url ] &&
        [ -s /usr/local/nginx/conf/phpmyadmin.enable.conf ]; then
         echo "phpMyAdmin: http://<服务器IP>/$(cat /usr/local/phpmyadmin/.access_url)/"
     elif [ -s /usr/local/phpmyadmin/.access_url ]; then
-        echo "phpMyAdmin: access disabled (program retained)"
+        echo "phpMyAdmin：访问已禁用（程序和配置仍保留）"
     fi
 }
 
@@ -180,7 +267,7 @@ Function_Vhost()
             exit 1
             ;;
         *)
-            echo "Usage: lnmp vhost {add|list|del}"
+            echo "用法：lnmp vhost {add|list|del}"
             exit 1
             ;;
     esac
@@ -211,9 +298,9 @@ Function_Database()
             return 1
             ;;
         *)
-            echo "Usage: lnmp database {add|list|edit|del}"
-            echo "Usage: lnmp database export <数据库名> <文件.sql.gz>"
-            echo "Usage: lnmp database import <数据库名> <文件.sql.gz>"
+            echo "用法：lnmp database {add|list|edit|del}"
+            echo "用法：lnmp database export <数据库名> <文件.sql.gz>"
+            echo "用法：lnmp database import <数据库名> <文件.sql.gz>"
             return 1
             ;;
     esac
@@ -254,7 +341,7 @@ Function_Ftp()
             Show_Ftp
             ;;
         *)
-            echo "Usage: lnmp ftp {add|list|edit|del|show}"
+            echo "用法：lnmp ftp {add|list|edit|del|show}"
             return 1
             ;;
     esac
@@ -263,11 +350,11 @@ Function_Ftp()
 Add_VHost_Config()
 {
     if [ ! -f /usr/local/nginx/conf/rewrite/${rewrite}.conf ]; then
-        echo "Create Virtul Host Rewrite file......"
+        echo "正在创建虚拟主机伪静态规则文件......"
         touch /usr/local/nginx/conf/rewrite/${rewrite}.conf
-        echo "Create rewirte file successful,You can add rewrite rule into /usr/local/nginx/conf/rewrite/${rewrite}.conf."
+        echo "伪静态规则文件创建成功，可编辑 /usr/local/nginx/conf/rewrite/${rewrite}.conf 添加规则。"
     else
-        echo "You select the exist rewrite rule:/usr/local/nginx/conf/rewrite/${rewrite}.conf"
+        echo "使用已有伪静态规则：/usr/local/nginx/conf/rewrite/${rewrite}.conf"
     fi
     cat >"/usr/local/nginx/conf/vhost/${domain}.conf"<<EOF
 server {
@@ -309,13 +396,13 @@ EOF
         sed -i 's/#listen \[::\]:80;/listen \[::\]:80;/g' /usr/local/nginx/conf/vhost/${domain}.conf
     fi
 
-    echo "Test Nginx configure file......"
+    echo "正在检查 Nginx 配置..."
     if ! /usr/local/nginx/sbin/nginx -t; then
-        Echo_Red "Nginx 配置测试未通过，已撤销本次新增的虚拟主机配置。"
+        Echo_Red "Nginx 配置测试未通过，已恢复添加 SSL 前的虚拟主机配置。"
         rm -f "/usr/local/nginx/conf/vhost/${domain}.conf"
         exit 1
     fi
-    echo "Reload Nginx......"
+    echo "正在重载 Nginx..."
     /usr/local/nginx/sbin/nginx -s reload
 }
 
@@ -328,62 +415,62 @@ Multiple_PHP_Select()
             include_enable_php="include enable-php.conf;"
         fi
     else
-        echo "Multiple PHP version found, Please select the PHP version."
+        echo "检测到多个 PHP 版本，请选择要使用的版本。"
         Cur_PHP_Version="`/usr/local/php/bin/php-config --version`"
-        Echo_Green "1: Default Main PHP ${Cur_PHP_Version}"
+        Echo_Green "1: 默认主 PHP ${Cur_PHP_Version}"
         if [[ -s /usr/local/php5.2/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.2.conf && -s /etc/init.d/php-fpm5.2 ]]; then
-            Echo_Green "2: PHP 5.2 [found]"
+            Echo_Green "2: PHP 5.2 [已安装]"
         fi
         if [[ -s /usr/local/php5.3/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.3.conf && -s /etc/init.d/php-fpm5.3 ]]; then
-            Echo_Green "3: PHP 5.3 [found]"
+            Echo_Green "3: PHP 5.3 [已安装]"
         fi
         if [[ -s /usr/local/php5.4/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.4.conf && -s /etc/init.d/php-fpm5.4 ]]; then
-            Echo_Green "4: PHP 5.4 [found]"
+            Echo_Green "4: PHP 5.4 [已安装]"
         fi
         if [[ -s /usr/local/php5.5/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.5.conf && -s /etc/init.d/php-fpm5.5 ]]; then
-            Echo_Green "5: PHP 5.5 [found]"
+            Echo_Green "5: PHP 5.5 [已安装]"
         fi
         if [[ -s /usr/local/php5.6/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.6.conf && -s /etc/init.d/php-fpm5.6 ]]; then
-            Echo_Green "6: PHP 5.6 [found]"
+            Echo_Green "6: PHP 5.6 [已安装]"
         fi
         if [[ -s /usr/local/php7.0/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.0.conf && -s /etc/init.d/php-fpm7.0 ]]; then
-            Echo_Green "7: PHP 7.0 [found]"
+            Echo_Green "7: PHP 7.0 [已安装]"
         fi
         if [[ -s /usr/local/php7.1/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.1.conf && -s /etc/init.d/php-fpm7.1 ]]; then
-            Echo_Green "8: PHP 7.1 [found]"
+            Echo_Green "8: PHP 7.1 [已安装]"
         fi
         if [[ -s /usr/local/php7.2/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.2.conf && -s /etc/init.d/php-fpm7.2 ]]; then
-            Echo_Green "9: PHP 7.2 [found]"
+            Echo_Green "9: PHP 7.2 [已安装]"
         fi
         if [[ -s /usr/local/php7.3/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.3.conf && -s /etc/init.d/php-fpm7.3 ]]; then
-            Echo_Green "10: PHP 7.3 [found]"
+            Echo_Green "10: PHP 7.3 [已安装]"
         fi
         if [[ -s /usr/local/php7.4/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.4.conf && -s /etc/init.d/php-fpm7.4 ]]; then
-            Echo_Green "11: PHP 7.4 [found]"
+            Echo_Green "11: PHP 7.4 [已安装]"
         fi
         if [[ -s /usr/local/php8.0/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.0.conf && -s /etc/init.d/php-fpm8.0 ]]; then
-            Echo_Green "12: PHP 8.0 [found]"
+            Echo_Green "12: PHP 8.0 [已安装]"
         fi
         if [[ -s /usr/local/php8.1/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.1.conf && -s /etc/init.d/php-fpm8.1 ]]; then
-            Echo_Green "13: PHP 8.1 [found]"
+            Echo_Green "13: PHP 8.1 [已安装]"
         fi
         if [[ -s /usr/local/php8.2/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.2.conf && -s /etc/init.d/php-fpm8.2 ]]; then
-            Echo_Green "14: PHP 8.2 [found]"
+            Echo_Green "14: PHP 8.2 [已安装]"
         fi
         if [[ -s /usr/local/php8.3/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.3.conf && -s /etc/init.d/php-fpm8.3 ]]; then
-            Echo_Green "15: PHP 8.3 [found]"
+            Echo_Green "15: PHP 8.3 [已安装]"
         fi
         if [[ -s /usr/local/php8.4/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.4.conf && -s /etc/init.d/php-fpm8.4 ]]; then
-            Echo_Green "16: PHP 8.4 [found]"
+            Echo_Green "16: PHP 8.4 [已安装]"
         fi
         if [[ -s /usr/local/php8.5/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.5.conf && -s /etc/init.d/php-fpm8.5 ]]; then
-            Echo_Green "17: PHP 8.5 [found]"
+            Echo_Green "17: PHP 8.5 [已安装]"
         fi
-        Echo_Yellow "Enter your choice (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 or 17): "
+        Echo_Yellow "请选择 [1-17]（默认 1，主 PHP）："
         read php_select
         case "${php_select}" in
             1)
-                echo "Current selection: PHP ${Cur_PHP_Version}"
+                echo "当前选择：PHP ${Cur_PHP_Version}"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php-pathinfo.conf;"
                 else
@@ -391,7 +478,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             2)
-                echo "Current selection: PHP `/usr/local/php5.2/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php5.2/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php5.2-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php5.2-pathinfo.conf ]; then
@@ -403,7 +490,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             3)
-                echo "Current selection: PHP `/usr/local/php5.3/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php5.3/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php5.3-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php5.3-pathinfo.conf ]; then
@@ -415,7 +502,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             4)
-                echo "Current selection: PHP `/usr/local/php5.4/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php5.4/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php5.4-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php5.4-pathinfo.conf ]; then
@@ -427,7 +514,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             5)
-                echo "Current selection: PHP `/usr/local/php5.5/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php5.5/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php5.5-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php5.5-pathinfo.conf ]; then
@@ -439,7 +526,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             6)
-                echo "Current selection: PHP `/usr/local/php5.6/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php5.6/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php5.6-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php5.6-pathinfo.conf ]; then
@@ -451,7 +538,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             7)
-                echo "Current selection:: PHP `/usr/local/php7.0/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php7.0/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php7.0-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php7.0-pathinfo.conf ]; then
@@ -463,7 +550,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             8)
-                echo "Current selection:: PHP `/usr/local/php7.1/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php7.1/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php7.1-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php7.1-pathinfo.conf ]; then
@@ -475,7 +562,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             9)
-                echo "Current selection:: PHP `/usr/local/php7.2/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php7.2/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php7.2-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php7.2-pathinfo.conf ]; then
@@ -487,7 +574,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             10)
-                echo "Current selection:: PHP `/usr/local/php7.3/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php7.3/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php7.3-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php7.3-pathinfo.conf ]; then
@@ -499,7 +586,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             11)
-                echo "Current selection:: PHP `/usr/local/php7.4/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php7.4/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php7.4-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php7.4-pathinfo.conf ]; then
@@ -511,7 +598,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             12)
-                echo "Current selection:: PHP `/usr/local/php8.0/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php8.0/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php8.0-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php8.0-pathinfo.conf ]; then
@@ -523,7 +610,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             13)
-                echo "Current selection:: PHP `/usr/local/php8.1/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php8.1/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php8.1-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php8.1-pathinfo.conf ]; then
@@ -535,7 +622,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             14)
-                echo "Current selection:: PHP `/usr/local/php8.2/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php8.2/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php8.2-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php8.2-pathinfo.conf ]; then
@@ -547,7 +634,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             15)
-                echo "Current selection:: PHP `/usr/local/php8.3/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php8.3/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php8.3-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php8.3-pathinfo.conf ]; then
@@ -559,7 +646,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             16)
-                echo "Current selection:: PHP `/usr/local/php8.4/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php8.4/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php8.4-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php8.4-pathinfo.conf ]; then
@@ -571,7 +658,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             17)
-                echo "Current selection:: PHP `/usr/local/php8.5/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php8.5/bin/php-config --version`"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php8.5-pathinfo.conf;"
                     if [ ! -s /usr/local/nginx/conf/enable-php8.5-pathinfo.conf ]; then
@@ -583,7 +670,7 @@ Multiple_PHP_Select()
                 fi
                 ;;
             *)
-                echo "Default,Current selection: PHP ${Cur_PHP_Version}"
+                echo "未输入，默认选择主 PHP ${Cur_PHP_Version}。"
                 php_select="1"
                 if [ "${enable_pathinfo}" == "y" ]; then
                     include_enable_php="include enable-php-pathinfo.conf;"
@@ -595,42 +682,142 @@ Multiple_PHP_Select()
     fi
 }
 
+# default 兜底站点：接收匹配不上其它域名的访问，包括直接用服务器 IP 访问。
+# Add_VHost 会在询问域名前统一打印说明；用户随后输入 default 时，这里只负责
+# 检查内置站点是否存在。找不到该文件时才现场补建一次（老环境升级、或文件被误删）。
+Print_Default_Site_Intro()
+{
+    Echo_Green "===================================================================="
+    Echo_Green " 欢迎使用添加域名站点功能！"
+    Echo_Green " 本包已内置 default「兜底站点」保留名，请勿将 default 用作普通站点域名。"
+    Echo_Green " 所有未匹配到其它站点的访问请求（包括直接通过服务器 IP 访问）都会进入此站点，"
+    Echo_Green " 根目录为 /home/wwwroot/default，无需重复配置目录、伪静态及日志等选项。"
+    Echo_Green " 如需为其配置 SSL 证书，请执行 lnmp ssl add，域名填写 default，系统会自动进入 IP 证书流程。"
+    Echo_Green "===================================================================="
+}
+
+Add_VHost_Default()
+{
+    local listen_extra='' uname_r
+
+    if [ -s /usr/local/nginx/conf/vhost/default.conf ]; then
+        return 0
+    fi
+
+    # 与 include/nginx.sh 的 Write_Nginx_Default_VHost 保持一致：内核支持时
+    # 加 reuseport。两处内容不同的话，补建出来的 default 会和安装时生成的
+    # 不是同一份配置。
+    uname_r=$(uname -r)
+    if echo "${uname_r}" | grep -Eq '^3\.(9|1[0-9])|^[4-9]\.'; then
+        listen_extra=' reuseport'
+    fi
+
+    Echo_Yellow " 未找到 vhost/default.conf，现场补建 default 兜底站点..."
+
+    echo
+    mkdir -p /home/wwwroot/default
+    chown -R www:www /home/wwwroot/default
+    chmod 755 /home/wwwroot/default
+    cat >/usr/local/nginx/conf/vhost/default.conf<<EOF
+server {
+        listen 80 default_server${listen_extra};
+        #listen [::]:80 default_server ipv6only=on;
+        server_name _;
+        index index.html index.htm;
+        root  /home/wwwroot/default;
+
+        #error_page   404   /404.html;
+
+        # phpMyAdmin 的访问入口。该片段由安装脚本按开关生成或删除，
+        # 开启时片段会同时带入 PHP/反代配置；关闭时 default 保持静态。
+        include phpmyadmin.*.conf;
+
+        # phpinfo / redis / memcached 三个演示页由 Enable_PHPInfo_Page、
+        # Enable_Redis_Test_Page、Enable_Memcached_Test_Page 决定是否写入本目录，
+        # 默认都不写。正则 location 按出现顺序匹配，本条在下面拒绝 PHP 的规则
+        # 之前，因此这三个固定文件名可执行；开关关闭时文件不存在，请求按 404
+        # 处理，不需要按开关改配置。
+        location ~ ^/(phpinfo|redis|memcached)\.php\$ {
+            try_files \$uri =404;
+            fastcgi_pass  unix:/tmp/php-cgi.sock;
+            fastcgi_index index.php;
+            include fastcgi.conf;
+        }
+
+        # default 是静态兜底站点，除上面三个演示页外一律不执行 PHP，
+        # 避免源码被当作静态文件下载。phpMyAdmin 片段用 ^~ 前缀 location
+        # 自带 PHP 处理，前缀匹配优先于本正则，因此启用 phpMyAdmin 不会让
+        # 根目录下的其它 .php 变得可执行。
+        location ~ [^/]\.php(/|\$) {
+            return 404;
+        }
+
+        location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)\$ {
+            expires      30d;
+        }
+
+        location ~ .*\.(js|css)\$ {
+            expires      12h;
+        }
+
+        location ^~ /.well-known/ {
+            allow all;
+        }
+
+        location ~ /\. {
+            deny all;
+        }
+
+        access_log  /home/wwwlogs/default.log main;
+        error_log   /home/wwwlogs/default.error.log;
+    }
+EOF
+    echo "正在检查 Nginx 配置..."
+    if ! /usr/local/nginx/sbin/nginx -t; then
+        Echo_Red "Nginx 配置测试未通过，已撤销刚补建的默认站点配置。"
+        rm -f /usr/local/nginx/conf/vhost/default.conf
+        return 1
+    fi
+    /usr/local/nginx/sbin/nginx -s reload
+    Echo_Green " 已补建 default 兜底站点。"
+    return 0
+}
+
 Add_VHost()
 {
+    Print_Default_Site_Intro
     domain=""
     while :;do
-        Echo_Yellow "Please enter domain(example: www.example.com): "
+        Echo_Yellow "请输入域名(示例: www.example.com): "
         Read_Input domain "域名"
         Check_Domain_Name "${domain}" || continue
         if [ "${domain}" = "default" ]; then
-            # default 是默认站点的保留名，不建独立 vhost 配置。
-            # 这里明确它意味着什么，避免用户以为自己建了个叫 default 的域名站点。
-            Echo_Yellow " 'default' 是默认站点的保留名：根目录 /home/wwwroot/default，"
-            Echo_Yellow " 通过服务器 IP 直接访问，没有域名。"
-            Echo_Yellow " 稍后若选择添加 SSL 证书，会自动转为 **IP 地址证书** 流程"
-            Echo_Yellow " （Let's Encrypt 的 shortlived profile，有效期约 6 天，依赖自动续期）。"
-            Echo_Yellow " 如果你其实是想建一个有域名的站点，请按 Ctrl+C 退出后重新输入域名。"
+            # default 是内置兜底站点，vhost add 不重复建站，只在缺失时补建配置。
+            Add_VHost_Default || return 1
+            Echo_Green " default 站已安装，是默认兜底站，如需为其配置 SSL 证书，请执行 lnmp ssl add"
+            return 0
         fi
         if [ -f "/usr/local/nginx/conf/vhost/${domain}.conf" ]; then
-            Echo_Red " ${domain} is exist,please check!"
+            Echo_Red "域名 ${domain} 已存在，请检查！"
             exit 1
         fi
-        echo " Your domain: ${domain}"
+        echo "您的域名：${domain}"
         break
     done
 
+    moredomain=""
     while :;do
-        Echo_Yellow "Enter more domain name(example: example.com sub.example.com): "
+        Echo_Yellow "请输入更多域名(示例: example.com sub.example.com，直接回车跳过): "
         read moredomain
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" && break
     done
-    echo " domain list: ${domain} ${moredomain}"
+    echo "域名列表：${domain} ${moredomain}"
 
     while :;do
-        Echo_Yellow "Please enter the directory for the domain: $domain"
+        Echo_Yellow "请输入网站目录: $domain"
         echo
-        Echo_Yellow "Default directory: /home/wwwroot/${domain}: "
+        Echo_Yellow "默认目录(直接回车使用): /home/wwwroot/${domain}"
         read vhostdir
         if [ "${vhostdir}" == "" ]; then
             vhostdir="/home/wwwroot/${domain}"
@@ -640,66 +827,66 @@ Add_VHost()
         # Check_Vhost_Dir 通过时会把规范化后的路径写回 vhostdir
         Check_Vhost_Dir "${vhostdir}" && break
     done
-    echo "Virtual Host Directory: ${vhostdir}"
+    echo "虚拟主机目录：${vhostdir}"
 
-    Echo_Yellow "Allow Rewrite rule? (y/n) "
+    Echo_Yellow "是否开启伪静态规则? (y/n，默认 n) "
     read allow_rewrite
     if [[ "${allow_rewrite}" == "n" || "${allow_rewrite}" == "" ]]; then
         rewrite="none"
     elif [ "${allow_rewrite}" == "y" ]; then
         rewrite="other"
-        echo "Please enter the rewrite of programme, "
+        echo "请输入程序对应的伪静态规则名，"
         echo "已内置的伪静态规则（直接输名字即可）："
         echo "  wordpress  wp2  typecho  typecho2  discuzx  dedecms  ecshop"
         echo "  drupal  joomla  thinkphp  laravel  codeigniter  yii2  zblog"
         echo "输入其它名字会在 /usr/local/nginx/conf/rewrite/ 下建一个空文件，规则需自己填。"
-        Echo_Yellow "(Default rewrite: other): "
+        Echo_Yellow "(默认 other，直接回车使用): "
         read rewrite
         if [ "${rewrite}" == "" ]; then
             rewrite="other"
         fi
     fi
-    echo "You choose rewrite: ${rewrite}"
+    echo "已选择伪静态规则：$([ "${rewrite}" = "none" ] && echo "无" || echo "${rewrite}")"
 
-    Echo_Yellow "Enable PHP Pathinfo? (y/n) "
+    Echo_Yellow "是否开启 PHP Pathinfo? (y/n，默认 n) "
     read enable_pathinfo
     if [[ "${enable_pathinfo}" == "n" || "${enable_pathinfo}" == "" ]]; then
-        echo "Disable pathinfo."
+        echo "已禁用 PHP Pathinfo。"
         enable_pathinfo="n"
     elif [ "${enable_pathinfo}" == "y" ]; then
-        echo "Enable pathinfo."
+        echo "已启用 PHP Pathinfo。"
         enable_pathinfo="y"
     fi
 
-    Echo_Yellow "Allow access log? (y/n) "
+    Echo_Yellow "是否开启访问日志? (y/n，默认 n) "
     read access_log
     if [[ "${access_log}" == "n" || "${access_log}" == "" ]]; then
-        echo "Disable access log."
+        echo "已禁用访问日志。"
         al="access_log off;"
     else
-        Echo_Yellow "Enter access log filename(Default:${domain}.log): "
+        Echo_Yellow "请输入访问日志文件名(默认: ${domain}.log，直接回车使用): "
         read al_name
         if [ "${al_name}" == "" ]; then
             al_name="${domain}"
         fi
-        al="access_log  /home/wwwlogs/${al_name}.log;"
-        echo "You access log filename: ${al_name}.log"
+        al="access_log  /home/wwwlogs/${al_name}.log main;"
+        echo "访问日志文件名：${al_name}.log"
     fi
 
-    Echo_Yellow "Enable IPv6? (y/n) "
+    Echo_Yellow "是否开启 IPv6? (y/n，默认 n) "
     read enable_ipv6
     if [[ "${enable_ipv6}" == "n" || "${enable_ipv6}" == "" ]]; then
-        echo "Disabled IPv6 Support in current Virtualhost."
+        echo "当前虚拟主机已禁用 IPv6。"
         enable_ipv6="n"
     else
-        echo "Enabled IPv6 Support in current Virtualhost."
+        echo "当前虚拟主机已启用 IPv6。"
         enable_ipv6="y"
     fi
 
     Multiple_PHP_Select
 
-    if [[ -s /usr/local/mysql/bin/mysql || -s /usr/local/mariadb/bin/mysql ]]; then
-        Echo_Yellow "Create database and MySQL user with same name (y/n) "
+    if [[ -x /usr/local/mysql/bin/mysql || -x /usr/local/mariadb/bin/mariadb || -x /usr/local/mariadb/bin/mysql ]]; then
+        Echo_Yellow "是否创建同名数据库和 MySQL 用户? (y/n，默认 n) "
         read create_database
 
         if [ "${create_database}" == "y" ]; then
@@ -709,7 +896,7 @@ Add_VHost()
     fi
 
     if [ -s /usr/local/pureftpd/sbin/pure-ftpd ]; then
-        Echo_Yellow "Create ftp account (y/n) "
+        Echo_Yellow "是否创建 FTP 账号? (y/n，默认 n) "
         read create_ftp
 
         if [ "${create_ftp}" == "y" ]; then
@@ -717,29 +904,36 @@ Add_VHost()
         fi
     fi
 
-    Echo_Yellow "Add SSL Certificate (y/n) "
+    Echo_Yellow "是否添加 SSL 证书? (y/n，默认 n) "
     read create_ssl
     if [ "${create_ssl}" == "y" ]; then
         Add_SSL_Menu
     fi
 
     echo ""
-    echo "Press any key to start create virtul host..."
+    echo "按任意键开始创建虚拟主机，或按 Ctrl+C 取消..."
     OLDCONFIG=`stty -g`
     stty -icanon -echo min 1 time 0
     dd count=1 2>/dev/null
     stty ${OLDCONFIG}
 
-    echo "Create Virtul Host directory......"
+    echo "正在创建虚拟主机目录..."
     mkdir -p "${vhostdir}"
     if [ "${access_log}" == "y" ]; then
         touch /home/wwwlogs/${al_name}.log
     fi
-    echo "set permissions of Virtual Host directory......"
+    echo "正在设置虚拟主机目录权限..."
     chmod -R 755 "${vhostdir}"
     chown -R www:www "${vhostdir}"
 
-    Add_VHost_Config
+    # default 站点的 80 端口已经由 nginx.conf 里内置的 default_server 块
+    # 处理（server_name _;，接收所有未匹配到其它 vhost 的请求），不需要、
+    # 也不应该再建一个 vhost/default.conf 去重复监听 80。该文件只在后面
+    # 选择加 SSL 证书时才会由 Create_SSL_Config 生成，只装 443 那个 server
+    # 块。Add_SSL 里对同一情况的判断（"${domain}" != "default"）与此一致。
+    if [ "${domain}" != "default" ]; then
+        Add_VHost_Config
+    fi
 
     # 重建同名站点时旧的 .user.ini 可能还在，且带着 immutable 属性。
     # 不先解除，下面的重定向会以 "Operation not permitted" 失败，
@@ -771,43 +965,45 @@ EOF
     fi
 
     Echo_Green "================================================"
-    echo "Virtualhost infomation:"
-    echo "Your domain: ${domain}"
-    echo "Home Directory: ${vhostdir}"
-    echo "Rewrite: ${rewrite}"
+    echo "虚拟主机信息："
+    echo "域名：${domain}"
+    echo "网站目录：${vhostdir}"
+    echo "伪静态规则：$([ "${rewrite}" = "none" ] && echo "无" || echo "${rewrite}")"
     if [ "${access_log}" == "n" ]; then
-        echo "Enable log: no"
+        echo "访问日志：未启用"
     else
-        echo "Enable log: yes"
+        echo "访问日志：已启用"
     fi
 
     if [ "${create_database}" == "y" ]; then
         if [ "${database_add_rc:-1}" -eq 0 ]; then
-            echo "Database username: ${database_name}"
-            echo "Database Name: ${database_name}"
-            echo "Database userpassword: (你刚输入的那个，不回显)"
+            echo "数据库用户名：${database_name}"
+            echo "数据库名：${database_name}"
+            echo "数据库密码：刚才输入的密码（不回显）"
         else
             Echo_Red "Database: 创建失败，站点本身已建好。"
             Echo_Red "可稍后执行 lnmp database add 单独重试建库。"
         fi
     else
-        echo "Create database: no"
+        echo "创建数据库：否"
     fi
     if [ "${create_ftp}" == "y" ]; then
         if [ "${ftp_add_rc:-1}" -eq 0 ]; then
-            echo "FTP account name: ${ftp_account_name}"
-            echo "FTP account password: (你刚输入的那个，不回显)"
+            echo "FTP 账号：${ftp_account_name}"
+            echo "FTP 密码：刚才输入的密码（不回显）"
         else
             Echo_Red "FTP: 账号创建失败，站点本身已建好。"
             Echo_Red "可稍后执行 lnmp ftp add 单独重试。"
         fi
-    else
-        echo "Create ftp account: no"
+    elif [ -s /usr/local/pureftpd/sbin/pure-ftpd ]; then
+        # 只有装了 pure-ftpd 才会问“是否创建 FTP 账号”，未装时这里不该
+        # 冒出一行没问过的“no”，对没装 FTP 的用户没有意义。
+        echo "创建 FTP 账号：否"
     fi
     if [ "${create_ssl}" == "y" ]; then
-        echo "Enable SSL: yes"
+        echo "SSL：已启用"
         if [ "${ssl_choice}" == "1" ]; then
-            echo "  =>Certificate file"
+            echo "  =>自有证书文件"
         elif [ "${ssl_choice}" == "2" ]; then
             echo "  =>Let's Encrypt"
         elif [ "${ssl_choice}" == "3" ]; then
@@ -817,28 +1013,28 @@ EOF
         fi
     fi
     if [ "${enable_ipv6}" == "y" ]; then
-        echo "IPv6 Support: Enabled"
+        echo "IPv6：已启用"
     else
-        echo "IPv6 Support: Disabled"
+        echo "IPv6：未启用"
     fi
     Echo_Green "================================================"
 }
 
 List_VHost()
 {
-    echo "Nginx Virtualhost list:"
+    echo "Nginx 虚拟主机列表："
     ls /usr/local/nginx/conf/vhost/ | grep ".conf$" | sed 's/.conf//g'
 }
 
 Del_VHost()
 {
     echo "======================================="
-    echo "Current Virtualhost:"
+    echo "当前虚拟主机："
     List_VHost
     echo "======================================="
     domain=""
     while :;do
-        Echo_Yellow "Please enter domain you want to delete: "
+        Echo_Yellow "请输入要删除的域名: "
         Read_Input domain "域名"
         # 这个值会拼成 .../vhost/<域名>.conf 并被 rm 掉，同样要先约束字符集
         Check_Domain_Name "${domain}" || continue
@@ -846,7 +1042,7 @@ Del_VHost()
     done
     if [ ! -f "/usr/local/nginx/conf/vhost/${domain}.conf" ]; then
         echo "=========================================="
-        echo "Domain: ${domain} was not exist!"
+        echo "域名 ${domain} 不存在。"
         echo "=========================================="
         exit 1
     else
@@ -867,9 +1063,9 @@ Del_VHost()
         Del_VHost_Reload_Nginx || exit 1
 
         echo "========================================================"
-        echo "Domain: ${domain} has been deleted."
-        echo "Website files will not be deleted for security reasons."
-        echo "You need to manually delete the website files."
+        echo "域名 ${domain} 已删除。"
+        echo "为安全起见，网站文件不会被自动删除。"
+        echo "如需清理，请手动删除对应网站文件。"
         echo "========================================================"
     fi
 }
@@ -881,14 +1077,14 @@ Del_VHost_Reload_Nginx()
         return 0
     fi
 
-    echo "Test Nginx configure file......"
+    echo "正在检查 Nginx 配置......"
     if ! /usr/local/nginx/sbin/nginx -t; then
         Echo_Red "Nginx 配置测试未通过，未执行 reload。"
         Echo_Red "站点配置文件已删除，但运行中的 Nginx 仍在提供该站点。"
         Echo_Red "请修复配置后执行：lnmp nginx reload"
         return 1
     fi
-    echo "Reload Nginx......"
+    echo "正在重载 Nginx......"
     if ! /usr/local/nginx/sbin/nginx -s reload; then
         Echo_Red "Nginx reload 失败，运行中的 Nginx 仍在提供该站点，请手工处理。"
         return 1
@@ -896,14 +1092,32 @@ Del_VHost_Reload_Nginx()
     return 0
 }
 
+First_Executable()
+{
+    local candidate
+
+    for candidate in "$@"; do
+        if [ -x "${candidate}" ]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
 Check_DB()
 {
-    if [[ -s /usr/local/mariadb/bin/mysql && -s /usr/local/mariadb/bin/mysqld_safe && -s /etc/my.cnf ]]; then
-        MySQL_Bin="/usr/local/mariadb/bin/mysql"
-        MySQL_Ver=`/usr/local/mariadb/bin/mysql_config --version`
+    local mariadb_client mariadb_config mariadb_safe
+
+    if mariadb_client=$(First_Executable /usr/local/mariadb/bin/mariadb /usr/local/mariadb/bin/mysql) \
+        && mariadb_config=$(First_Executable /usr/local/mariadb/bin/mariadb_config /usr/local/mariadb/bin/mysql_config) \
+        && mariadb_safe=$(First_Executable /usr/local/mariadb/bin/mariadbd-safe /usr/local/mariadb/bin/mysqld_safe) \
+        && [ -s /etc/my.cnf ]; then
+        MySQL_Bin="${mariadb_client}"
+        MySQL_Ver=$("${mariadb_config}" --version)
     elif [[ -s /usr/local/mysql/bin/mysql && -s /usr/local/mysql/bin/mysqld_safe && -s /etc/my.cnf ]]; then
         MySQL_Bin="/usr/local/mysql/bin/mysql"
-        MySQL_Ver=`/usr/local/mysql/bin/mysql_config --version`
+        MySQL_Ver=$(/usr/local/mysql/bin/mysql_config --version)
     else
         MySQL_Bin="None"
     fi
@@ -941,12 +1155,12 @@ Verify_DB_Password()
     Check_DB
     while [ ${attempt} -lt ${max_attempt} ]; do
         attempt=$((attempt + 1))
-        Echo_Yellow "Enter current root password of Database (Password will not shown): "
+        Echo_Yellow "请输入当前数据库 root 密码（输入不回显）: "
         Read_Secret DB_Root_Password "数据库 root 密码"
         echo
         Make_TempMycnf "${DB_Root_Password}"
         if Do_Query ""; then
-            echo "OK, MySQL root password correct."
+            echo "数据库 root 密码验证通过。"
             return 0
         fi
         Echo_Red "数据库 root 密码校验失败（第 ${attempt}/${max_attempt} 次）。"
@@ -1245,11 +1459,11 @@ TempMycnf_Clean()
 Enter_Database_Name()
 {
     while :;do
-        Echo_Yellow "Enter database name (只允许字母/数字/下划线): "
+        Echo_Yellow "请输入数据库名（只允许字母、数字和下划线）: "
         Read_Input database_name "数据库名"
         Check_DB_Identifier "${database_name}" || continue
         if [ "${database_name}" == "" ]; then
-            Echo_Red "Database Name can't be empty!"
+            Echo_Red "数据库名不能为空。"
         else
             break
         fi
@@ -1259,8 +1473,8 @@ Enter_Database_Name()
 Add_Database_Menu()
 {
     Enter_Database_Name
-    echo "Your will create a database and MySQL user with same name: ${database_name}"
-    Echo_Yellow "Please enter password for mysql user ${database_name} (输入不回显): "
+    echo "将创建数据库及同名数据库用户：${database_name}"
+    Echo_Yellow "请输入数据库用户 ${database_name} 的密码（输入不回显）: "
     Read_Secret mysql_password "数据库用户密码"
     echo
     if [ -z "${mysql_password}" ]; then
@@ -1295,10 +1509,10 @@ EOF
     rc=$?
     rm -f "${sql_file}"
     if [ ${rc} -ne 0 ]; then
-        Echo_Red "Add database failed!"
+        Echo_Red "数据库创建失败。"
         return ${rc}
     fi
-    echo "Add database Sucessfully."
+    echo "数据库创建成功。"
     return 0
 }
 
@@ -1308,10 +1522,10 @@ List_Database()
     ${MySQL_Bin} --defaults-file=~/.my.cnf -e "SHOW DATABASES;"
     rc=$?
     if [ ${rc} -ne 0 ]; then
-        Echo_Red "List all databases failed!"
+        Echo_Red "数据库列表读取失败。"
         return ${rc}
     fi
-    echo "List all databases Sucessfully."
+    echo "数据库列表读取成功。"
     return 0
 }
 
@@ -1319,17 +1533,17 @@ Edit_Database()
 {
     local pass_q
     while :;do
-        Echo_Yellow "Enter database username (只允许字母/数字/下划线): "
+        Echo_Yellow "请输入数据库用户名（只允许字母、数字和下划线）: "
         Read_Input database_username "数据库用户名"
         Check_DB_Identifier "${database_username}" || continue
         break
     done
     while :;do
-        Echo_Yellow "Enter NEW Password (输入不回显): "
+        Echo_Yellow "请输入新密码（输入不回显）: "
         Read_Secret database_username_passwd "新密码"
         echo
         if [ "${database_username_passwd}" == "" ]; then
-            Echo_Red "Database Password can't be empty!"
+            Echo_Red "数据库密码不能为空。"
         else
             break
         fi
@@ -1341,10 +1555,10 @@ Edit_Database()
     if ! Do_Query "ALTER USER '${database_username}'@'localhost' IDENTIFIED BY '${pass_q}';
 ALTER USER '${database_username}'@'127.0.0.1' IDENTIFIED BY '${pass_q}';
 FLUSH PRIVILEGES;"; then
-        Echo_Red "Edit user password failed!"
+        Echo_Red "数据库用户密码修改失败。"
         return 1
     fi
-    echo "Edit user password Sucessfully."
+    echo "数据库用户密码修改成功。"
     return 0
 }
 
@@ -1354,7 +1568,7 @@ Del_Database()
     List_Database || return 1
     Enter_Database_Name
     if [[ "${database_name}" == "information_schema" || "${database_name}" == "mysql" || "${database_name}" == "performance_schema" ]]; then
-        Echo_Red "MySQL System Database can't be delete!"
+        Echo_Red "MySQL 系统数据库不能删除。"
         return 1
     fi
     Check_DB_Identifier "${database_name}" || return 1
@@ -1364,8 +1578,8 @@ Del_Database()
         Echo_Red "数据库不存在：${database_name}"
         return 1
     fi
-    echo "Your will delete database and MySQL user with same name: ${database_name}"
-    echo "Sleep 10s, Press ctrl+c to cancel..."
+    echo "将删除数据库及同名数据库用户：${database_name}"
+    echo "10 秒后继续，按 Ctrl+C 可取消..."
     Sleep_Sec 10
     LNMP_Tmp_Init || return 1
     del_sql_file=$(LNMP_Mktemp del_db) || return 1
@@ -1380,10 +1594,10 @@ EOF
     rc=$?
     rm -f "${del_sql_file}"
     if [ ${rc} -ne 0 ]; then
-        Echo_Red "Delete database: ${database_name} failed!"
+        Echo_Red "数据库 ${database_name} 删除失败。"
         return ${rc}
     fi
-    echo "Delete database: ${database_name} Sucessfully."
+    echo "数据库 ${database_name} 删除成功。"
     return 0
 }
 
@@ -1398,7 +1612,7 @@ EOF
 # 恢复到另一个库名，也不会误写到别的库上。
 # ---------------------------------------------------------------------------
 
-# 与 mysql 客户端同目录的 mysqldump。
+# 与数据库客户端同目录选择导出程序；MariaDB 优先使用无弃用提示的新名称。
 MySQL_Dump_Bin=""
 Check_Dump_Bin()
 {
@@ -1406,9 +1620,11 @@ Check_Dump_Bin()
         Echo_Red "未检测到已安装的 MySQL/MariaDB。"
         return 1
     fi
-    MySQL_Dump_Bin="$(dirname "${MySQL_Bin}")/mysqldump"
-    if [ ! -x "${MySQL_Dump_Bin}" ]; then
-        Echo_Red "找不到可执行的 mysqldump：${MySQL_Dump_Bin}"
+    MySQL_Dump_Bin=$(First_Executable \
+        "$(dirname "${MySQL_Bin}")/mariadb-dump" \
+        "$(dirname "${MySQL_Bin}")/mysqldump")
+    if [ -z "${MySQL_Dump_Bin}" ]; then
+        Echo_Red "找不到可执行的数据库导出程序。"
         return 1
     fi
     return 0
@@ -1456,7 +1672,7 @@ Export_Database()
     local database_name="$1" out_file="$2" tmp_file dump_rc gzip_rc pipe_st
 
     if [ -z "$1" ] || [ -z "$2" ]; then
-        echo "Usage: lnmp database export <数据库名> <文件.sql.gz>"
+        echo "用法：lnmp database export <数据库名> <文件.sql.gz>"
         return 1
     fi
     Check_DB_Identifier "${database_name}" || return 1
@@ -1478,7 +1694,7 @@ Export_Database()
         Echo_Red "无法在目标目录创建临时文件：${out_file}"
         return 1
     }
-    echo "Exporting database ${database_name} ..."
+    echo "正在导出数据库 ${database_name} ..."
     ${MySQL_Dump_Bin} --defaults-file=~/.my.cnf \
         --single-transaction --quick --routines --triggers --events \
         --default-character-set=utf8mb4 \
@@ -1492,7 +1708,7 @@ Export_Database()
     gzip_rc=${pipe_st[1]}
     if [ "${dump_rc}" -ne 0 ] || [ "${gzip_rc}" -ne 0 ]; then
         rm -f "${tmp_file}"
-        Echo_Red "Export database: ${database_name} failed! (mysqldump=${dump_rc} gzip=${gzip_rc})"
+        Echo_Red "数据库 ${database_name} 导出失败（mysqldump=${dump_rc}，gzip=${gzip_rc}）。"
         return 1
     fi
     if ! mv -f "${tmp_file}" "${out_file}"; then
@@ -1501,8 +1717,8 @@ Export_Database()
         return 1
     fi
     chmod 600 "${out_file}"
-    echo "Export database: ${database_name} Sucessfully."
-    echo "Backup file: ${out_file}"
+    echo "数据库 ${database_name} 导出成功。"
+    echo "备份文件：${out_file}"
     return 0
 }
 
@@ -1511,7 +1727,7 @@ Import_Database()
     local database_name="$1" in_file="$2" rc gz_rc mysql_rc pipe_st
 
     if [ -z "$1" ] || [ -z "$2" ]; then
-        echo "Usage: lnmp database import <数据库名> <文件.sql.gz>"
+        echo "用法：lnmp database import <数据库名> <文件.sql.gz>"
         return 1
     fi
     Check_DB_Identifier "${database_name}" || return 1
@@ -1532,10 +1748,12 @@ Import_Database()
     fi
 
     Echo_Yellow "导入会覆盖数据库 ${database_name} 中的同名表，且无法撤销。"
-    echo "Sleep 10s, Press ctrl+c to cancel..."
+
+    echo
+    echo "10 秒后继续，按 Ctrl+C 可取消..."
     Sleep_Sec 10
 
-    echo "Importing into database ${database_name} ..."
+    echo "正在导入数据库 ${database_name} ..."
     # 按文件内容判断是否压缩，不按扩展名：直接给未压缩的 .sql 也能导入。
     if gzip -t "${in_file}" 2>/dev/null; then
         gzip -dc "${in_file}" | ${MySQL_Bin} --defaults-file=~/.my.cnf \
@@ -1552,17 +1770,17 @@ Import_Database()
         rc=$?
     fi
     if [ "${rc}" -ne 0 ]; then
-        Echo_Red "Import database: ${database_name} failed!"
+        Echo_Red "数据库 ${database_name} 导入失败。"
         return 1
     fi
-    echo "Import database: ${database_name} Sucessfully."
+    echo "数据库 ${database_name} 导入成功。"
     return 0
 }
 
 Enter_Ftp_Name()
 {
     while :;do
-        Echo_Yellow "Enter ftp account name (只允许字母/数字/下划线): "
+        Echo_Yellow "请输入 FTP 账号名（只允许字母、数字和下划线）: "
         Read_Input ftp_account_name "FTP 账号名"
         # 账号名会被拼进 /tmp 路径和 pure-pw 的参数，必须先约束字符集
         if ! Check_DB_Identifier "${ftp_account_name}"; then
@@ -1577,18 +1795,18 @@ Add_Ftp_Menu()
 {
     Enter_Ftp_Name
     while :;do
-        Echo_Yellow "Enter password for ftp account ${ftp_account_name} (输入不回显): "
+        Echo_Yellow "请输入 FTP 账号 ${ftp_account_name} 的密码（输入不回显）: "
         Read_Secret ftp_account_password "FTP 密码"
         echo
         if [ "${ftp_account_password}" == "" ]; then
-            Echo_Red "FTP password can't be empty!"
+            Echo_Red "FTP 密码不能为空。"
         else
             break
         fi
     done
     if [ "${vhostdir}" == "" ]; then
         while :;do
-            Echo_Yellow "Enter directory for ftp account ${ftp_account_name}: "
+            Echo_Yellow "请输入 FTP 账号 ${ftp_account_name} 的目录: "
             Read_Input vhostdir "FTP 目录"
             # 复用站点目录校验。该目录随后会被 mkdir -p 与 chown -R www:www，
             # 并作为 FTP 根目录传给 pure-pw：填 / 或 /etc 时前者不可逆，
@@ -1604,7 +1822,7 @@ Add_Ftp_Menu()
 Check_Pureftpd()
 {
     if [ ! -f /usr/local/pureftpd/sbin/pure-ftpd ]; then
-        Echo_Red "Pureftpd was not installed!"
+        Echo_Red "未检测到已安装的 Pure-FTPd。"
         exit 1
     fi
 }
@@ -1635,12 +1853,12 @@ EOF
     rc=$?
     rm -f "${ftp_pass_file}"
     if [ ${rc} -ne 0 ]; then
-        Echo_Red "Create FTP User: ${ftp_account_name} failed! (pure-pw 返回 ${rc})"
+        Echo_Red "FTP 账号 ${ftp_account_name} 创建失败（pure-pw 返回 ${rc}）。"
         Echo_Red "常见原因：同名账号已存在，或密码库 /usr/local/pureftpd/etc/pureftpd.passwd 不可写。"
         Echo_Red "先用 lnmp ftp list 确认账号是否已经存在。"
         return ${rc}
     fi
-    echo "Created FTP User: ${ftp_account_name} Sucessfully."
+    echo "FTP 账号 ${ftp_account_name} 创建成功。"
     return 0
 }
 
@@ -1650,10 +1868,10 @@ List_Ftp()
     /usr/local/pureftpd/bin/pure-pw list -f /usr/local/pureftpd/etc/pureftpd.passwd
     rc=$?
     if [ ${rc} -ne 0 ]; then
-        Echo_Red "List FTP User failed! (pure-pw 返回 ${rc})"
+        Echo_Red "FTP 账号列表读取失败（pure-pw 返回 ${rc}）。"
         return ${rc}
     fi
-    echo "List FTP User Sucessfully."
+    echo "FTP 账号列表读取成功。"
     return 0
 }
 
@@ -1663,7 +1881,7 @@ Edit_Ftp()
     # 这里不因 List_Ftp 失败而中止：列表只是给用户看的参考
     List_Ftp
     Enter_Ftp_Name
-    Echo_Yellow "Enter password for ftp account ${ftp_account_name} (输入不回显，留空则不改): "
+    Echo_Yellow "请输入 FTP 账号 ${ftp_account_name} 的新密码（输入不回显，留空则不修改）: "
     read -r -s ftp_account_password
     echo
     if [ "${ftp_account_password}" != "" ]; then
@@ -1678,14 +1896,14 @@ EOF
         pass_rc=$?
         rm -f "${ftp_pass_file}"
         if [ ${pass_rc} -ne 0 ]; then
-            Echo_Red "FTP User: ${ftp_account_name} change password failed! (pure-pw 返回 ${pass_rc}，账号可能不存在)"
+            Echo_Red "FTP 账号 ${ftp_account_name} 的密码修改失败（pure-pw 返回 ${pass_rc}，账号可能不存在）。"
         else
-            echo "FTP User: ${ftp_account_name} change password Sucessfully."
+            echo "FTP 账号 ${ftp_account_name} 的密码修改成功。"
         fi
     else
-        echo "FTP password will not change."
+        echo "FTP 密码保持不变。"
     fi
-    Echo_Yellow "Enter directory for ftp account ${ftp_account_name} (留空则不改): "
+    Echo_Yellow "请输入 FTP 账号 ${ftp_account_name} 的新目录（留空则不修改）: "
     Read_Input vhostdir "FTP 目录"
     if [ "${vhostdir}" != "" ]; then
         # 留空表示不修改，因此只在确实填了新值时校验。约束同 Add_Ftp_Menu。
@@ -1702,12 +1920,12 @@ EOF
         /usr/local/pureftpd/bin/pure-pw usermod "${ftp_account_name}" -f /usr/local/pureftpd/etc/pureftpd.passwd -u "${www_uid}" -g "${www_gid}" -d "${vhostdir}" -m
         dir_rc=$?
         if [ ${dir_rc} -ne 0 ]; then
-            Echo_Red "FTP User: ${ftp_account_name} change directory failed! (pure-pw 返回 ${dir_rc}，账号可能不存在)"
+            Echo_Red "FTP 账号 ${ftp_account_name} 的目录修改失败（pure-pw 返回 ${dir_rc}，账号可能不存在）。"
         else
-            echo "FTP User: ${ftp_account_name} change diretcory Sucessfully."
+            echo "FTP 账号 ${ftp_account_name} 的目录修改成功。"
         fi
     else
-        echo "Directory will not change."
+        echo "FTP 目录保持不变。"
     fi
     # 改密码和改目录是两件独立的事，任一失败都要让整体返回非 0
     if [ ${pass_rc} -ne 0 ] || [ ${dir_rc} -ne 0 ]; then
@@ -1721,16 +1939,16 @@ Del_Ftp()
     local rc
     List_Ftp
     Enter_Ftp_Name
-    echo "Your will delete ftp user ${ftp_account_name}"
-    echo "Sleep 3s,Press ctrl+c to cancel..."
+    echo "将删除 FTP 账号 ${ftp_account_name}。"
+    echo "3 秒后继续，按 Ctrl+C 可取消..."
     Sleep_Sec 3
     /usr/local/pureftpd/bin/pure-pw userdel "${ftp_account_name}" -f /usr/local/pureftpd/etc/pureftpd.passwd -m
     rc=$?
     if [ ${rc} -ne 0 ]; then
-        Echo_Red "FTP User: ${ftp_account_name} delete failed! (pure-pw 返回 ${rc}，账号可能不存在)"
+        Echo_Red "FTP 账号 ${ftp_account_name} 删除失败（pure-pw 返回 ${rc}，账号可能不存在）。"
         return ${rc}
     fi
-    echo "FTP User: ${ftp_account_name} deleted Sucessfully."
+    echo "FTP 账号 ${ftp_account_name} 删除成功。"
     return 0
 }
 
@@ -1739,14 +1957,14 @@ Show_Ftp()
     local rc
     List_Ftp
     Enter_Ftp_Name
-    echo "Your ftp account ${ftp_account_name} details:"
+    echo "FTP 账号 ${ftp_account_name} 的详细信息："
     /usr/local/pureftpd/bin/pure-pw show "${ftp_account_name}"
     rc=$?
     if [ ${rc} -ne 0 ]; then
-        Echo_Red "Show FTP User: ${ftp_account_name} failed! (pure-pw 返回 ${rc}，账号可能不存在)"
+        Echo_Red "无法读取 FTP 账号 ${ftp_account_name}（pure-pw 返回 ${rc}，账号可能不存在）。"
         return ${rc}
     fi
-    echo "Ok."
+    echo "完成。"
     return 0
 }
 
@@ -1754,102 +1972,167 @@ Add_SSL_Info_Menu()
 {
     domain=""
     while :;do
-        Echo_Yellow "Please enter domain(example: www.example.com): "
+        Echo_Yellow "请输入域名（示例：www.example.com）: "
         Read_Input domain "域名"
         Check_Domain_Name "${domain}" || continue
-        echo " Your domain: ${domain}"
+        echo "您的域名：${domain}"
         break
     done
 
     while :;do
-        Echo_Yellow "Enter more domain name(example: example.com sub.example.com): "
+        Echo_Yellow "请输入更多域名（示例：example.com sub.example.com，留空跳过）: "
         read moredomain
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" && break
     done
     if [ "${moredomain}" != "" ]; then
-        echo " domain list: ${moredomain}"
+        echo "附加域名：${moredomain}"
     fi
 
-    Echo_Yellow "Please enter the directory for the domain: $domain"
+    Echo_Yellow "请输入域名 $domain 的网站目录: "
     echo
-    echo "Default directory: /home/wwwroot/${domain}: "
+    echo "默认目录：/home/wwwroot/${domain}"
     read vhostdir
     if [ "${vhostdir}" == "" ]; then
         vhostdir="/home/wwwroot/${domain}"
     fi
     # 目录随后会交给 mkdir -p / chown -R，先规范化并限制在允许的站点根下
     Check_Vhost_Dir "${vhostdir}" || exit 1
-    echo "Virtual Host Directory: ${vhostdir}"
+    echo "虚拟主机目录：${vhostdir}"
 
-    Echo_Yellow "Allow Rewrite rule? (y/n) "
+    Echo_Yellow "是否启用伪静态规则 [y/N]（默认 n）: "
     read allow_rewrite
     if [[ "${allow_rewrite}" == "n" || "${allow_rewrite}" == "" ]]; then
         rewrite="none"
     elif [ "${allow_rewrite}" == "y" ]; then
         rewrite="other"
-        echo "Please enter the rewrite of programme, "
+        echo "请输入程序对应的伪静态规则名："
         echo "已内置的伪静态规则（直接输名字即可）："
         echo "  wordpress  wp2  typecho  typecho2  discuzx  dedecms  ecshop"
         echo "  drupal  joomla  thinkphp  laravel  codeigniter  yii2  zblog"
         echo "输入其它名字会在 /usr/local/nginx/conf/rewrite/ 下建一个空文件，规则需自己填。"
-        Echo_Yellow "(Default rewrite: other): "
+        Echo_Yellow "规则名（默认 other）: "
         read rewrite
         if [ "${rewrite}" == "" ]; then
             rewrite="other"
         fi
     fi
-    echo "You choose rewrite: ${rewrite}"
+    echo "选择的伪静态规则：$([ "${rewrite}" = "none" ] && echo "无" || echo "${rewrite}")"
 
-    Echo_Yellow "Allow access log? (y/n) "
+    Echo_Yellow "是否启用访问日志 [y/N]（默认 n）: "
     read access_log
     if [[ "${access_log}" == "n" || "${access_log}" == "" ]]; then
-        echo "Disable access log."
+        echo "已禁用访问日志。"
         al="access_log off;"
     else
-        Echo_Yellow "Enter access log filename(Default:${domain}.log): "
+        Echo_Yellow "访问日志文件名（默认 ${domain}.log）: "
         read al_name
         if [ "${al_name}" == "" ]; then
             al_name="${domain}"
         fi
-        al="access_log  /home/wwwlogs/${al_name}.log;"
-        echo "You access log filename: ${al_name}.log"
+        al="access_log  /home/wwwlogs/${al_name}.log main;"
+        echo "访问日志文件名：${al_name}.log"
     fi
 
-    Echo_Yellow "Enable PHP Pathinfo? (y/n) "
+    Echo_Yellow "是否启用 PHP Pathinfo [y/N]（默认 n）: "
     read enable_pathinfo
     if [[ "${enable_pathinfo}" == "n" || "${enable_pathinfo}" == "" ]]; then
-        echo "Disable pathinfo."
+        echo "已禁用 Pathinfo。"
     elif [ "${allow_rewrite}" == "y" ]; then
-        echo "Enable pathinfo."
+        echo "已启用 Pathinfo。"
         enable_pathinfo="y"
     fi
 
-    Echo_Yellow "Enable IPv6? (y/n) "
+    Echo_Yellow "是否启用 IPv6 [y/N]（默认 n）: "
     read enable_ipv6
     if [[ "${enable_ipv6}" == "n" || "${enable_ipv6}" == "" ]]; then
-        echo "Disabled IPv6 Support in current Virtualhost."
+        echo "当前虚拟主机已禁用 IPv6。"
         enable_ipv6="n"
     else
-        echo "Enabled IPv6 Support in current Virtualhost."
+        echo "当前虚拟主机已启用 IPv6。"
         enable_ipv6="y"
     fi
 
     Multiple_PHP_Select
 }
 
+# lnmp ssl add 只给已经存在的虚拟主机添加证书。站点参数从现有配置读取，
+# 不再重复询问目录、伪静态、日志、Pathinfo 和 IPv6 等建站选项。
+Add_SSL_Only_Info_Menu()
+{
+    local vhost_conf
+
+    domain=""
+    while :;do
+        Echo_Yellow "请输入域名（示例：www.example.com）: "
+        Read_Input domain "域名"
+        Check_Domain_Name "${domain}" || continue
+        echo "您的域名：${domain}"
+        break
+    done
+
+    vhost_conf="/usr/local/nginx/conf/vhost/${domain}.conf"
+    if [ ! -s "${vhost_conf}" ]; then
+        Echo_Red "未找到网站 ${domain} 的虚拟主机配置。"
+        Echo_Yellow "请先执行 lnmp vhost add 创建网站，再执行 lnmp ssl add 添加证书。"
+        echo
+        return 1
+    fi
+    if grep -Eq '^[[:space:]]*listen[[:space:]][^;]*443[^;]*ssl' "${vhost_conf}"; then
+        Echo_Red "网站 ${domain} 已存在 HTTPS/443 配置，不能重复执行 ssl add。"
+        Echo_Yellow "如需更换证书，请先检查并处理现有 SSL 配置。"
+        echo
+        return 1
+    fi
+
+    vhostdir=$(awk '$1 == "root" { value=$2; sub(/;$/, "", value); print value; exit }' "${vhost_conf}")
+    if [ -z "${vhostdir}" ] || [ ! -d "${vhostdir}" ]; then
+        Echo_Red "网站 ${domain} 的根目录不存在或无法从 ${vhost_conf} 读取。"
+        return 1
+    fi
+
+    moredomain=$(awk -v primary="${domain}" '
+        $1 == "server_name" {
+            out=""
+            for (i=2; i<=NF; i++) {
+                value=$i
+                sub(/;$/, "", value)
+                if (value != primary && value != "_") {
+                    if (out != "") out=out " "
+                    out=out value
+                }
+            }
+            print out
+            exit
+        }
+    ' "${vhost_conf}")
+
+    rewrite=$(awk '$1 == "include" && $2 ~ /^rewrite\/[^;]+\.conf;$/ { value=$2; sub(/^rewrite\//, "", value); sub(/\.conf;$/, "", value); print value; exit }' "${vhost_conf}")
+    rewrite="${rewrite:-none}"
+    include_enable_php=$(awk '$1 == "include" && $2 ~ /^enable-php[^;]*\.conf;$/ { print "include " $2; exit }' "${vhost_conf}")
+    al=$(awk '$1 == "access_log" { sub(/^[[:space:]]*/, ""); print; exit }' "${vhost_conf}")
+    al="${al:-access_log off;}"
+    if grep -Eq '^[[:space:]]*listen[[:space:]]+\[::\]:80' "${vhost_conf}"; then
+        enable_ipv6="y"
+    else
+        enable_ipv6="n"
+    fi
+
+    return 0
+}
+
 Check_Acme_EMail()
 {
     if [ ! -s /usr/local/acme.sh/account.conf ] || ! cat /usr/local/acme.sh/account.conf | grep -Eq "^ACCOUNT_EMAIL="; then
         while :;do
-            Echo_Yellow "Please enter your email address: "
+            Echo_Yellow "请输入证书账户邮箱: "
             Read_Input email_address "邮箱地址"
 
             if [[ "${email_address}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$ ]]; then
-                echo "Email address ${email_address} is valid."
+                echo "邮箱地址 ${email_address} 格式有效。"
                 break
             else
-                echo "Email address ${email_address} is invalid! Please re-enter."
+                echo "邮箱地址 ${email_address} 格式无效，请重新输入。"
             fi
         done
     fi
@@ -1857,27 +2140,27 @@ Check_Acme_EMail()
 
 Return_301_Menu()
 {
-    Echo_Yellow "Using 301 to Redirect HTTP to HTTPS? (y/n) "
+    Echo_Yellow "是否将 HTTP 301 跳转到 HTTPS [y/N]（默认 n）: "
     read using_301
     if [[ "${using_301}" == "n" || "${using_301}" == "" ]]; then
-        echo "DO not setting 301 Redirect."
+        echo "不设置 301 跳转。"
     elif [ "${using_301}" == "y" ]; then
-        echo "Redirect http://${domain} to https://${domain} "
+        echo "将 http://${domain} 跳转到 https://${domain}。"
     fi
 }
 
 Add_DNS_SSL_Select_Menu()
 {
-    echo "1: Use Let's Encrypt to create SSL Certificate and Key"
-    echo "2: Use ZeroSSL to create SSL Certificate and Key"
+    echo "1: 使用 Let's Encrypt 签发 SSL 证书"
+    echo "2: 使用 ZeroSSL 签发 SSL 证书"
         while :;do
-        Echo_Yellow "Enter 1 or 2: "
+        Echo_Yellow "请选择 [1-2]："
         Read_Input dns_ssl_choice "证书来源选项"
         if [[ "${dns_ssl_choice}" =~ ^1|2$ ]]; then
             Check_Acme_EMail
             break
         else
-            Echo_Red "Please Enter 1 or 2!"
+            Echo_Red "请输入 1 或 2。"
         fi
     done
 }
@@ -1888,61 +2171,74 @@ Add_DNS_SSL_Only_Info_Menu()
 
     domain=""
     while :;do
-        Echo_Yellow "Please enter domain(example: www.example.com): "
+        Echo_Yellow "请输入域名（示例：www.example.com）: "
         Read_Input domain "域名"
         Check_Domain_Name "${domain}" || continue
-        echo " Your domain: ${domain}"
+        echo "您的域名：${domain}"
         break
     done
 
     while :;do
-        Echo_Yellow "Enter more domain name(example: example.com sub.example.com): "
+        Echo_Yellow "请输入更多域名（示例：example.com sub.example.com，留空跳过）: "
         read moredomain
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" && break
     done
     if [ "${moredomain}" != "" ]; then
-        echo " domain list: ${moredomain}"
+        echo "附加域名：${moredomain}"
     fi
 }
 
 Add_SSL_Menu()
 {
-    if [ "${info}" == "n" ]; then
-        Add_SSL_Info_Menu
+    if [ "${info:-}" == "n" ]; then
+        Add_SSL_Only_Info_Menu || return 1
     fi
-    echo "1: Use your own SSL Certificate and Key"
-    echo "2: Use Let's Encrypt to create SSL Certificate and Key"
-    echo "3: Use BuyPass to create SSL Certificate and Key"
-    echo "4: Use ZeroSSL to create SSL Certificate and Key"
+    echo "1: 使用自有 SSL 证书和私钥"
+    echo "2: 使用 Let's Encrypt 签发 SSL 证书"
+    if [ "${domain}" != "default" ]; then
+        echo "3: 使用 BuyPass 签发 SSL 证书"
+        echo "4: 使用 ZeroSSL 签发 SSL 证书"
+    fi
     while :;do
-        Echo_Yellow "Enter 1, 2, 3 or 4: "
+        if [ "${domain}" = "default" ]; then
+            Echo_Yellow "请选择 [1-2]："
+        else
+            Echo_Yellow "请选择 [1-4]："
+        fi
         Read_Input ssl_choice "证书来源选项"
         if [ "${ssl_choice}" == "1" ]; then
             while :;do
-                Echo_Yellow "Please enter full path to SSL Certificate file: "
-                read ssl_certificate
+                Echo_Yellow "请输入 SSL 证书文件的完整路径: "
+                Read_Input ssl_certificate "SSL 证书路径"
                 if [ "${ssl_certificate}" == "" ]; then
-                    Echo_Red "SSL Certificate file cannot be empty!"
+                    Echo_Red "SSL 证书文件路径不能为空。"
                 else
                     break
                 fi
             done
             while :;do
-                Echo_Yellow "Please enter full path to SSL Certificate Key file: "
-                read ssl_certificate_key
+                Echo_Yellow "请输入 SSL 私钥文件的完整路径: "
+                Read_Input ssl_certificate_key "SSL 私钥路径"
                 if [ "${ssl_certificate_key}" == "" ]; then
-                    Echo_Red "SSL Certificate Key file cannot be empty!"
+                    Echo_Red "SSL 私钥文件路径不能为空。"
                 else
                     break
                 fi
             done
             break
-        elif [[ "${ssl_choice}" =~ ^2|3|4$ ]]; then
+        elif [ "${ssl_choice}" == "2" ]; then
+            Check_Acme_EMail
+            break
+        elif [[ "${domain}" != "default" && "${ssl_choice}" =~ ^(3|4)$ ]]; then
             Check_Acme_EMail
             break
         else
-            Echo_Red "Please Enter 1, 2, 3 or 4!"
+            if [ "${domain}" = "default" ]; then
+                Echo_Red "default 站点只支持自有证书或 Let's Encrypt IP 证书，请输入 1 或 2！"
+            else
+                Echo_Red "请输入 1、2、3 或 4。"
+            fi
         fi
     done
 
@@ -1960,7 +2256,7 @@ Install_Check_Acme.sh()
     local tmpdir tarball srcdir actual
 
     if [ -s /usr/local/acme.sh/acme.sh ]; then
-        echo "/usr/local/acme.sh/acme.sh [found]"
+        echo "/usr/local/acme.sh/acme.sh [已存在]"
         if ! grep -Eq "^ACCOUNT_EMAIL=" /usr/local/acme.sh/account.conf 2>/dev/null; then
             /usr/local/acme.sh/acme.sh --register-account -m ${email_address} || return 1
         fi
@@ -1978,7 +2274,7 @@ Install_Check_Acme.sh()
     tarball="${tmpdir}/acme.sh-${Acme_Sh_Ver}.tar.gz"
     srcdir="${tmpdir}/acme.sh-${Acme_Sh_Ver}"
 
-    echo "Downloading acme.sh ${Acme_Sh_Ver} from github.com/acmesh-official ..."
+    echo "正在从 github.com/acmesh-official 下载 acme.sh ${Acme_Sh_Ver} ..."
     if ! wget --prefer-family=IPv4 --max-redirect=5 -O "${tarball}" \
          "https://github.com/acmesh-official/acme.sh/archive/refs/tags/${Acme_Sh_Ver}.tar.gz"; then
         Echo_Red "acme.sh 下载失败，未做任何修改。"
@@ -1990,8 +2286,8 @@ Install_Check_Acme.sh()
     actual=$(sha256sum "${tarball}" | awk '{print $1}')
     if [ "${actual}" != "${Acme_Sh_SHA256}" ]; then
         Echo_Red "acme.sh 安装包 SHA256 不匹配，拒绝执行。"
-        Echo_Red "  expected: ${Acme_Sh_SHA256}"
-        Echo_Red "  actual:   ${actual}"
+        Echo_Red "  期望值：${Acme_Sh_SHA256}"
+        Echo_Red "  实际值：${actual}"
         rm -rf "${tmpdir}"
         return 1
     fi
@@ -2064,20 +2360,50 @@ EOF
 
 Create_SSL_Config()
 {
-    if [ ! -s /usr/local/nginx/conf/ssl/dhparam.pem ]; then
-        echo "Create dhparam.pem..."
-        mkdir -p /usr/local/nginx/conf/ssl/
-        openssl dhparam -out /usr/local/nginx/conf/ssl/dhparam.pem 2048
+    local vhost_conf="/usr/local/nginx/conf/vhost/${domain}.conf" backup
+    local ssl_listen='listen 443 ssl;' ssl_ipv6_listen='#listen [::]:443 ssl;'
+    local ssl_server_name="${domain} ${moredomain}" ssl_rewrite_line ssl_php_block
+
+    ssl_rewrite_line="include rewrite/${rewrite}.conf;"
+    ssl_php_block="${include_enable_php}"
+    if [ "${domain}" = "default" ]; then
+        ssl_listen='listen 443 ssl default_server;'
+        ssl_ipv6_listen='#listen [::]:443 ssl default_server ipv6only=on;'
+        ssl_server_name='_'
+        ssl_rewrite_line=''
+        ssl_php_block='include phpmyadmin.*.conf;
+
+        location ~ [^/]\.php(/|$) {
+            return 404;
+        }'
     fi
-    cat >>"/usr/local/nginx/conf/vhost/${domain}.conf"<<EOF
+    if [ "${enable_ipv6}" = "y" ]; then
+        if [ "${domain}" = "default" ]; then
+            ssl_ipv6_listen='listen [::]:443 ssl default_server ipv6only=on;'
+        else
+            ssl_ipv6_listen='listen [::]:443 ssl;'
+        fi
+    fi
+
+    backup=$(mktemp /tmp/lnmp-ssl-vhost.XXXXXXXX) || return 1
+    \cp -p "${vhost_conf}" "${backup}" || { rm -f "${backup}"; return 1; }
+    if [ ! -s /usr/local/nginx/conf/ssl/dhparam.pem ]; then
+        echo "正在创建 dhparam.pem..."
+        mkdir -p /usr/local/nginx/conf/ssl/
+        openssl dhparam -out /usr/local/nginx/conf/ssl/dhparam.pem 2048 || {
+            rm -f "${backup}"
+            return 1
+        }
+    fi
+    cat >>"${vhost_conf}"<<EOF
 
 server {
-        listen 443 ssl;
-        #listen [::]:443 ssl;
+        ${ssl_listen}
+        ${ssl_ipv6_listen}
         # nginx 1.25.1 起 HTTP/2 用独立的 http2 指令开启，
         # 写在 listen 后面的 http2 参数会被警告为已废弃。
         http2 on;
-        server_name ${domain} ${moredomain};
+        server_name ${ssl_server_name};
         index index.html index.htm index.php default.html default.htm default.php;
         root  ${vhostdir};
 
@@ -2109,13 +2435,13 @@ server {
         # 配错会导致整站在有效期内都打不开。确认无误后再取消注释。
         #add_header Strict-Transport-Security "max-age=31536000" always;
 
-        include rewrite/${rewrite}.conf;
+        ${ssl_rewrite_line}
         #error_page   404   /404.html;
 
         # Deny access to PHP files in specific directory
         #location ~ /(wp-content|uploads|wp-includes|images)/.*\.php$ { deny all; }
 
-        ${include_enable_php}
+        ${ssl_php_block}
 
         location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)$ {
             expires      30d;
@@ -2142,18 +2468,23 @@ EOF
         sed -i "0,/include rewrite\/${rewrite}.conf;/s//#include rewrite\/${rewrite}.conf;/" /usr/local/nginx/conf/vhost/${domain}.conf
     fi
 
-    if [ "${enable_ipv6}" == "y" ]; then
-        sed -i 's/#listen \[::\]:443 ssl;/listen \[::\]:443 ssl;/g' /usr/local/nginx/conf/vhost/${domain}.conf
-    fi
-
-    echo "Test Nginx configure file......"
+    echo "正在检查 Nginx 配置......"
     if ! /usr/local/nginx/sbin/nginx -t; then
         Echo_Red "Nginx 配置测试未通过，已撤销本次新增的虚拟主机配置。"
-        rm -f "/usr/local/nginx/conf/vhost/${domain}.conf"
-        exit 1
+        \cp -p "${backup}" "${vhost_conf}"
+        rm -f "${backup}"
+        return 1
     fi
-    echo "Reload Nginx......"
-    /usr/local/nginx/sbin/nginx -s reload
+    echo "正在重载 Nginx......"
+    if ! /usr/local/nginx/sbin/nginx -s reload; then
+        Echo_Red "Nginx 重载失败，已恢复添加 SSL 前的虚拟主机配置。"
+        \cp -p "${backup}" "${vhost_conf}"
+        /usr/local/nginx/sbin/nginx -s reload
+        rm -f "${backup}"
+        return 1
+    fi
+    rm -f "${backup}"
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -2205,6 +2536,7 @@ Prepare_Default_Site_IP_Cert()
     local ip
     echo
     Echo_Yellow "================= default 站点的证书说明 ================="
+    echo
     echo "当前站点是 default —— 本包的默认站点，根目录 /home/wwwroot/default，"
     echo "通过**服务器 IP 直接访问**，它没有域名。"
     echo
@@ -2252,6 +2584,7 @@ Prepare_Default_Site_IP_Cert()
     echo "    （报 invalidContact / forbidden domain）。请填真实可收信的邮箱。"
     echo
     Echo_Yellow "  ⚠ 如果这台机器在 NAT 后面（内网地址 + 公网出口）："
+    echo
     echo "    上面这个 IP 是**出口地址**，未必指向本机。除非你已经把该 IP 的"
     echo "    80 端口转发到这台机器，否则 HTTP-01 验证会失败。"
     echo "    可先自查：从外网访问 http://${ip}/ 看是否能打开本站。"
@@ -2277,6 +2610,7 @@ Prepare_Default_Site_IP_Cert()
     # BuyPass / ZeroSSL 不支持 IP，强制回落到 Let's Encrypt
     if [ "${ssl_choice}" != "2" ]; then
         Echo_Yellow "已自动改用 Let's Encrypt（原选择不支持 IP 证书）。"
+        echo
         ssl_choice="2"
     fi
     return 0
@@ -2304,8 +2638,25 @@ Print_Self_Signed_Hint()
 
 Add_SSL()
 {
+    local vhost_conf="/usr/local/nginx/conf/vhost/${domain}.conf"
+
+    if [ ! -s "${vhost_conf}" ]; then
+        Echo_Red "未找到网站 ${domain} 的虚拟主机配置。"
+        Echo_Yellow "请先执行 lnmp vhost add 创建网站，再执行 lnmp ssl add 添加证书。"
+        echo
+        return 1
+    fi
+    if [ -z "${vhostdir:-}" ] || [ ! -d "${vhostdir}" ]; then
+        Echo_Red "网站 ${domain} 的根目录不存在，无法添加证书。"
+        return 1
+    fi
+    if [[ "${domain}" = "default" && ! "${ssl_choice}" =~ ^(1|2)$ ]]; then
+        Echo_Red "default 站点只支持自有证书或 Let's Encrypt IP 证书。"
+        return 1
+    fi
+
     if [ "${ssl_choice}" == "1" ]; then
-        Create_SSL_Config
+        Create_SSL_Config || return 1
     elif echo "${ssl_choice}" | grep -Eqi "^[2-4]$"; then
         letsdomain=""
         cert_profile_opt=""
@@ -2324,51 +2675,53 @@ Add_SSL()
             Prepare_Default_Site_IP_Cert || return 1
         fi
 
-        if [ "${domain}" != "default" ] && [ ! -s "/usr/local/nginx/conf/vhost/${domain}.conf" ]; then
-            Add_VHost_Config
-        fi
-        if [ ! -d "${vhostdir}" ]; then
-            mkdir -p "${vhostdir}"
-        fi
-
         if [[ "${vhostdir}" == "" || "${letsdomain}" == "" ]]; then
-            Echo_Red "Two parameters are needed!"
-            exit 1
-        fi
-        if [ ! -d "${vhostdir}" ]; then
-            Echo_Red "${vhostdir} does not exist or is not a directory!"
-            exit
+            Echo_Red "缺少必要参数：网站目录和证书申请目标不能为空。"
+            return 1
         fi
 
         Install_Check_Acme.sh || exit 1
 
         if [ -s /usr/local/nginx/conf/ssl/${domain}/fullchain.cer ]; then
-            echo "Removing exist domain certificate..."
+            echo "正在删除已有域名证书..."
             rm -rf /usr/local/nginx/conf/ssl/${domain}
         fi
 
         if [ "${ssl_choice}" == "2" ]; then
-            echo "Generate ssl certificate using Let's Encrypt..."
+            echo "正在使用 Let's Encrypt 签发 SSL 证书..."
 
             /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server letsencrypt --issue ${letsdomain} -w ${vhostdir} ${cert_profile_opt} --reloadcmd "/etc/init.d/nginx reload"
         elif [ "${ssl_choice}" == "3" ]; then
-            echo "Generate ssl certificate using BuyPass..."
+            echo "正在使用 BuyPass 签发 SSL 证书..."
             /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server buypass --issue ${letsdomain} -w ${vhostdir} --days 170 --reloadcmd "/etc/init.d/nginx reload"
         elif [ "${ssl_choice}" == "4" ]; then
-            echo "Generate ssl certificate using ZeroSSL..."
+            echo "正在使用 ZeroSSL 签发 SSL 证书..."
             /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server zerossl --issue ${letsdomain} -w ${vhostdir} --reloadcmd "/etc/init.d/nginx reload"
         fi
         lets_status=$?
 
+        if [ "${lets_status}" = 0 ]; then
+            cert_install_domain="${domain}"
+            [ "${domain}" = "default" ] && cert_install_domain="${default_site_ip}"
+            mkdir -p "/usr/local/nginx/conf/ssl/${domain}" || return 1
+            /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --install-cert -d "${cert_install_domain}" --ecc \
+                --key-file "/usr/local/nginx/conf/ssl/${domain}/${domain}.key" \
+                --fullchain-file "/usr/local/nginx/conf/ssl/${domain}/fullchain.cer" \
+                --reloadcmd "/etc/init.d/nginx reload"
+            lets_status=$?
+        fi
+
         ssl_certificate="/usr/local/nginx/conf/ssl/${domain}/fullchain.cer"
         ssl_certificate_key="/usr/local/nginx/conf/ssl/${domain}/${domain}.key"
         if [ "${lets_status}" = 0 ]; then
-            Create_SSL_Config
-            Echo_Green " Generate SSL Certificate successfully."
+            Create_SSL_Config || return 1
+            Echo_Green "SSL 证书签发成功。"
         else
-            Echo_Red " Generate SSL Certificate failed!"
+            Echo_Red "SSL 证书签发失败。"
+            return 1
         fi
     fi
+    return 0
 }
 
 Add_Dns_SSL()
@@ -2377,7 +2730,7 @@ Add_Dns_SSL()
     if [ "${provider}" != "" ]; then
         dns_provider="dns_${provider}"
     else
-        Echo_Red "The dns manual mode can not renew automatically, you must renew it manually."
+        Echo_Red "DNS 手工验证模式无法自动续期，证书到期前必须手动续期。"
     fi
 
     Add_SSL_Info_Menu
@@ -2386,12 +2739,12 @@ Add_Dns_SSL()
     Install_Check_Acme.sh || exit 1
 
     if [[ ! -s /usr/local/acme.sh/dnsapi/dns_${provider}.sh && "${provider}" != "" ]]; then
-        echo "DNS Provider: ${provider} not found."
+        echo "未找到 DNS 服务商插件：${provider}。"
         exit 1
     fi
 
     if [ -s /usr/local/nginx/conf/ssl/${domain}/fullchain.cer ]; then
-        echo "Removing exist domain certificate..."
+        echo "正在删除已有域名证书..."
         rm -rf /usr/local/nginx/conf/ssl/${domain}
     fi
 
@@ -2406,7 +2759,7 @@ Add_Dns_SSL()
     fi
 
     if echo "${letsdomain}" | grep -q '\*\.' && echo "${letsdomain}" | grep -qi 'www\.'; then
-        Echo_Red "wildcard SSL certificate DO NOT allow add www. subdomain."
+        Echo_Red "泛域名证书不能同时添加 www 子域名。"
         exit 1
     fi
 
@@ -2416,13 +2769,13 @@ Add_Dns_SSL()
         ca_server="zerossl"
     fi
 
-    echo "Generate ssl certificate using ${ca_server}..."
+    echo "正在使用 ${ca_server} 签发 SSL 证书..."
     if [ "${provider}" != "" ]; then
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} --dns ${dns_provider} --reloadcmd "/etc/init.d/nginx reload"
         lets_status=$?
     else
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
-        Echo_Yellow "Please add the above TXT record to the domain in 120 seconds!!!"
+        Echo_Yellow "请在 120 秒内为域名添加上方显示的 TXT 记录。"
         echo
         Sleep_Sec 120
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --renew ${letsdomain} --yes-I-know-dns-manual-mode-enough-go-ahead-please
@@ -2430,9 +2783,9 @@ Add_Dns_SSL()
     fi
     if [ "${lets_status}" = 0 ] || [[ "${provider}" = "" && "${lets_status}" = 1 && -s "/usr/local/nginx/conf/ssl/${domain}/fullchain.cer" ]]; then
         if [ ! -d "${vhostdir}" ]; then
-            echo "Create Virtul Host directory......"
+            echo "正在创建虚拟主机目录......"
             mkdir -p "${vhostdir}"
-            echo "set permissions of Virtual Host directory......"
+            echo "正在设置虚拟主机目录权限......"
             chmod -R 755 "${vhostdir}"
             chown -R www:www "${vhostdir}"
         fi
@@ -2443,14 +2796,14 @@ Add_Dns_SSL()
         ssl_certificate="/usr/local/nginx/conf/ssl/${domain}/fullchain.cer"
         ssl_certificate_key="/usr/local/nginx/conf/ssl/${domain}/${domain}.key"
         Create_SSL_Config
-        Echo_Blue "------------------ SSL Certificate information as follows ------------------"
-        Echo_Blue "| Domain: ${domain} ${moredomain}"
-        Echo_Blue "| SSL Certificate: /usr/local/nginx/conf/ssl/${domain}/fullchain.cer"
-        Echo_Blue "| SSL Certificate Key: /usr/local/nginx/conf/ssl/${domain}/${domain}.key"
-        Echo_Blue "------------------------------------ ---------------------------------------"
-        Echo_Green " Generate SSL Certificate successfully."
+        Print_Banner \
+            "SSL 证书信息" \
+            "域名：${domain} ${moredomain}" \
+            "证书：/usr/local/nginx/conf/ssl/${domain}/fullchain.cer" \
+            "私钥：/usr/local/nginx/conf/ssl/${domain}/${domain}.key"
+        Echo_Green "SSL 证书签发成功。"
     else
-        Echo_Red " Generate SSL Certificate failed!"
+        Echo_Red "SSL 证书签发失败。"
     fi
 }
 
@@ -2460,19 +2813,19 @@ Add_Dns_SSL_Only()
     if [ "${provider}" != "" ]; then
         dns_provider="dns_${provider}"
     else
-        Echo_Red "The dns manual mode can not renew automatically, you must renew it manually."
+        Echo_Red "DNS 手工验证模式无法自动续期，证书到期前必须手动续期。"
     fi
 
     Add_DNS_SSL_Only_Info_Menu
     Install_Check_Acme.sh || exit 1
 
     if [[ ! -s /usr/local/acme.sh/dnsapi/dns_${provider}.sh && "${provider}" != "" ]]; then
-        echo "DNS Provider: ${provider} not found."
+        echo "未找到 DNS 服务商插件：${provider}。"
         exit 1
     fi
 
     if [ -s /usr/local/nginx/conf/ssl/${domain}/fullchain.cer ]; then
-        echo "Removing exist domain certificate..."
+        echo "正在删除已有域名证书..."
         rm -rf /usr/local/nginx/conf/ssl/${domain}
     fi
 
@@ -2487,7 +2840,7 @@ Add_Dns_SSL_Only()
     fi
 
     if echo "${letsdomain}" | grep -q '\*\.' && echo "${letsdomain}" | grep -qi 'www\.'; then
-        Echo_Red "wildcard SSL certificate DO NOT allow add www. subdomain."
+        Echo_Red "泛域名证书不能同时添加 www 子域名。"
         exit 1
     fi
 
@@ -2497,27 +2850,27 @@ Add_Dns_SSL_Only()
         ca_server="zerossl"
     fi
 
-    echo "Starting create SSL Certificate use ${ca_server}..."
+    echo "正在使用 ${ca_server} 签发 SSL 证书..."
     if [ "${provider}" != "" ]; then
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} --dns ${dns_provider} --reloadcmd "/etc/init.d/nginx reload"
         lets_status=$?
     else
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
-        Echo_Yellow "Please add the above TXT record to the domain in 120 seconds!!!"
+        Echo_Yellow "请在 120 秒内为域名添加上方显示的 TXT 记录。"
         echo
         Sleep_Sec 120
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --renew ${letsdomain} --yes-I-know-dns-manual-mode-enough-go-ahead-please
         lets_status=$?
     fi
     if [ "${lets_status}" = 0 ] || [[ "${provider}" = "" && "${lets_status}" = 1 && -s "/usr/local/nginx/conf/ssl/${domain}/fullchain.cer" ]]; then
-        Echo_Blue "------------------ SSL Certificate information as follows ------------------"
-        Echo_Blue "| Domain: ${domain} ${moredomain}"
-        Echo_Blue "| SSL Certificate: /usr/local/nginx/conf/ssl/${domain}/fullchain.cer"
-        Echo_Blue "| SSL Certificate Key: /usr/local/nginx/conf/ssl/${domain}/${domain}.key"
-        Echo_Blue "------------------------------------ ---------------------------------------"
-        Echo_Green " Generate SSL Certificate successfully."
+        Print_Banner \
+            "SSL 证书信息" \
+            "域名：${domain} ${moredomain}" \
+            "证书：/usr/local/nginx/conf/ssl/${domain}/fullchain.cer" \
+            "私钥：/usr/local/nginx/conf/ssl/${domain}/${domain}.key"
+        Echo_Green "SSL 证书签发成功。"
     else
-        Echo_Red " Generate SSL Certificate failed!"
+        Echo_Red "SSL 证书签发失败。"
     fi
 }
 
@@ -2558,6 +2911,7 @@ Sleep_Sec()
     echo -ne "\r"
 }
 
+Detect_Managed_Services
 Check_DB
 
 case "${arg1}" in
@@ -2581,19 +2935,24 @@ case "${arg1}" in
         lnmp_status
         ;;
     nginx)
-        Svc nginx ${arg2}
+        Svc_Feedback nginx ${arg2}
+        exit $?
         ;;
     mysql)
-        Svc mysql ${arg2}
+        Svc_Feedback mysql ${arg2}
+        exit $?
         ;;
     mariadb)
-        Svc mariadb ${arg2}
+        Svc_Feedback mariadb ${arg2}
+        exit $?
         ;;
     php-fpm)
-        Svc php-fpm ${arg2}
+        Svc_Feedback php-fpm ${arg2}
+        exit $?
         ;;
     pureftpd)
-        Svc pureftpd ${arg2}
+        Svc_Feedback pureftpd ${arg2}
+        exit $?
         ;;
     vhost)
         Function_Vhost ${arg2}
@@ -2632,8 +2991,8 @@ case "${arg1}" in
         ;;
     ssl)
         info="n"
-        Add_SSL_Menu
-        Add_SSL
+        Add_SSL_Menu || exit $?
+        Add_SSL || exit $?
         ;;
     dnsssl|dns)
         Add_Dns_SSL ${arg2}
@@ -2642,20 +3001,20 @@ case "${arg1}" in
         Add_Dns_SSL_Only ${arg2}
         ;;
     *)
-        echo "Usage: lnmp {start|stop|reload|restart|kill|status}"
-        echo "Usage: lnmp {nginx|mysql|mariadb|php-fpm|pureftpd} {start|stop|reload|restart|kill|status}"
-        echo "Usage: lnmp vhost {add|list|del}"
-        echo "Usage: lnmp database {add|list|edit|del}"
-        echo "Usage: lnmp database export <数据库名> <文件.sql.gz>"
-        echo "Usage: lnmp database import <数据库名> <文件.sql.gz>"
-        echo "Usage: lnmp ftp {add|list|edit|del|show}"
-        echo "Usage: lnmp backup {init|run|status|list|restore|test}"
-        echo "Usage: lnmp backup run [db|web|all] [域名...]"
-        echo "Usage: lnmp tgnotice {--init|--test|--status} | lnmp tgnotice \"文本\" [md]"
-        echo "Usage: lnmp phpmyadmin {enable|disable|status}"
-        echo "Usage: lnmp ssl add"
-        echo "Usage: lnmp {dnsssl|dns} {cx|ali|cf|dp|he|gd|aws}"
-        echo "Usage: lnmp onlyssl {cx|ali|cf|dp|he|gd|aws}"
+        echo "用法：lnmp {start|stop|reload|restart|kill|status}"
+        echo "用法：lnmp {nginx|mysql|mariadb|php-fpm|pureftpd} {start|stop|reload|restart|kill|status}"
+        echo "用法：lnmp vhost {add|list|del}"
+        echo "用法：lnmp database {add|list|edit|del}"
+        echo "用法：lnmp database export <数据库名> <文件.sql.gz>"
+        echo "用法：lnmp database import <数据库名> <文件.sql.gz>"
+        echo "用法：lnmp ftp {add|list|edit|del|show}"
+        echo "用法：lnmp backup {init|run|status|list|restore|test}"
+        echo "用法：lnmp backup run [db|web|all] [域名...]"
+        echo "用法：lnmp tgnotice {--init|--test|--status} | lnmp tgnotice \"文本\" [md]"
+        echo "用法：lnmp phpmyadmin {enable|disable|status}"
+        echo "用法：lnmp ssl add"
+        echo "用法：lnmp {dnsssl|dns} {cx|ali|cf|dp|he|gd|aws}"
+        echo "用法：lnmp onlyssl {cx|ali|cf|dp|he|gd|aws}"
         ;;
 esac
 exit

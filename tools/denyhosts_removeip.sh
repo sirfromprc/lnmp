@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Remove an IP from DenyHosts blocklist
+# 从 DenyHosts 阻止列表中移除 IP
 
 HOST=$1
 if [ -z "${HOST}" ]; then
-    echo "Usage:$0 IP"
+    echo "用法：$0 IP"
     exit 1
 fi
 
-echo "Remove IP:${HOST} from denyhosts..."
+echo "正在从 DenyHosts 中移除 IP：${HOST}..."
 /etc/init.d/denyhosts stop
 echo '
 /etc/hosts.deny
@@ -22,5 +22,5 @@ echo '
 # 若该 IP 另外被 fail2ban 用 nftables 封过，需要单独解封，例如：
 #   fail2ban-client set sshd unbanip ${HOST}
 # 手工加过的 nft 规则可用 `nft -a list ruleset` 查 handle 后删除。
-echo " done"
+echo " 完成"
 /etc/init.d/denyhosts start

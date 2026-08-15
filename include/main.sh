@@ -76,19 +76,19 @@ Database_Selection()
 #which MySQL Version do you want to install?
     if [ -z "${DBSelect}" ]; then
         Print_DB_Menu
-        read -p "Enter your choice (1 - ${DB_Count}, or 0): " DBSelect
+        read -p "请选择数据库版本（1-${DB_Count}，0 表示不安装，默认 ${DB_Default}）: " DBSelect
     fi
 
     # 编号通过 profile.sh 映射为版本、架构和默认策略。
     # 仅空输入使用默认值；非法编号必须终止安装。
     if [ -z "${DBSelect}" ]; then
         DBSelect="${DB_Default}"
-        echo "No input, you will install ${DB_Info[$((DB_Default-1))]}"
+        echo "未输入，默认安装 ${DB_Info[$((DB_Default-1))]}。"
     fi
     Set_DB_Profile "${DBSelect}" || Invalid_Selection DB "${DBSelect}"
 
     if [ "${DB_Kind}" = "none" ]; then
-        echo "Do not install MySQL/MariaDB!"
+        echo "不安装 MySQL/MariaDB。"
     else
         Select_DB_Bin
     fi
@@ -102,11 +102,11 @@ Database_Selection()
         DB_Root_Password_Random='n'
         if [ -z "${DB_Root_Password}" ]; then
             echo "==========================="
-            Echo_Yellow "Please setup root password of MySQL (输入不回显)."
-            read -r -s -p "Please enter: " DB_Root_Password
+            Echo_Yellow "请设置 MySQL/MariaDB 的 root 密码（输入不回显）。"
+            read -r -s -p "请输入密码（留空则随机生成）: " DB_Root_Password
             echo
             if [ "${DB_Root_Password}" = "" ]; then
-                echo "NO input, password will be generated randomly."
+                echo "未输入密码，将随机生成。"
                 DB_Root_Password="$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
                 DB_Root_Password_Random='y'
             fi
@@ -117,21 +117,21 @@ Database_Selection()
 
         if [ -z ${InstallInnodb} ]; then
             InstallInnodb="y"
-            Echo_Yellow "Do you want to enable or disable the InnoDB Storage Engine?"
-            read -p "Default enable,Enter your choice [Y/n]: " InstallInnodb
+            Echo_Yellow "是否启用 InnoDB 存储引擎？"
+            read -p "请输入 [Y/n]（默认 y，启用）: " InstallInnodb
         fi
 
         case "${InstallInnodb}" in
         [yY][eE][sS]|[yY])
-            echo "You will enable the InnoDB Storage Engine"
+            echo "将启用 InnoDB 存储引擎。"
             InstallInnodb="y"
             ;;
         [nN][oO]|[nN])
-            echo "You will disable the InnoDB Storage Engine!"
+            echo "将禁用 InnoDB 存储引擎。"
             InstallInnodb="n"
             ;;
         *)
-            echo "No input,The InnoDB Storage Engine will enable."
+            echo "输入无效，按默认设置启用 InnoDB 存储引擎。"
             InstallInnodb="y"
         esac
     fi
@@ -144,19 +144,19 @@ PHP_Selection()
         echo "==========================="
 
         Print_PHP_Menu
-        read -p "Enter your choice (1 - ${PHP_Count}): " PHPSelect
+        read -p "请选择 PHP 版本（1-${PHP_Count}，默认 ${PHP_Default}）: " PHPSelect
     fi
 
     # PHP 版本属性由 profile.sh 提供；空输入与非法输入分别处理。
     if [ -z "${PHPSelect}" ]; then
         PHPSelect="${PHP_Default}"
-        echo "No input, you will install ${PHP_Info[$((PHP_Default-1))]}"
+        echo "未输入，默认安装 ${PHP_Info[$((PHP_Default-1))]}。"
     fi
     Set_PHP_Profile "${PHPSelect}" || Invalid_Selection PHP "${PHPSelect}"
-    echo "You will install ${PHP_Info[$((PHPSelect-1))]}"
+    echo "将安装 ${PHP_Info[$((PHPSelect-1))]}。"
 
     if [ "${PHP_Needs_DB}" = "y" ] && [ "${DBSelect}" = "0" ]; then
-        echo "You didn't select MySQL/MariaDB can't select ${PHP_Info[$((PHPSelect-1))]}!"
+        echo "未选择 MySQL/MariaDB，不能安装 ${PHP_Info[$((PHPSelect-1))]}。"
         exit 1
     fi
 }
@@ -168,25 +168,25 @@ MemoryAllocator_Selection()
         echo "==========================="
 
         SelectMalloc="1"
-        Echo_Yellow "You have 3 options for your Memory Allocator install."
-        echo "1: Don't install Memory Allocator. (Default)"
-        echo "2: Install Jemalloc"
-        echo "3: Install TCMalloc"
-        read -p "Enter your choice (1, 2 or 3): " SelectMalloc
+        Echo_Yellow "内存分配器有 3 个选项："
+        echo "1: 不安装内存分配器（默认）"
+        echo "2: 安装 Jemalloc"
+        echo "3: 安装 TCMalloc"
+        read -p "请选择 [1-3]（默认 1，不安装）: " SelectMalloc
     fi
 
     case "${SelectMalloc}" in
     1)
-        echo "You will install not install Memory Allocator."
+        echo "不安装内存分配器。"
         ;;
     2)
-        echo "You will install JeMalloc"
+        echo "将安装 Jemalloc。"
         ;;
     3)
-        echo "You will Install TCMalloc"
+        echo "将安装 TCMalloc。"
         ;;
     *)
-        echo "No input,You will not install Memory Allocator."
+        echo "输入无效，按默认设置不安装内存分配器。"
         SelectMalloc="1"
     esac
 
@@ -233,21 +233,21 @@ Web_Selection()
 
     if [ -z "${WebSelect}" ]; then
         echo "==========================="
-        Echo_Yellow "You have 2 options for your Web Server install."
-        echo "1: Install Nginx ${Nginx_Ver#nginx-} (源码编译，默认)"
-        echo "2: Install OpenResty (自带 LuaJIT 与 lua-resty-* 全家桶)"
-        read -p "Enter your choice (1 or 2): " WebSelect
+        Echo_Yellow "Web 服务器有 2 个选项："
+        echo "1: 安装 Nginx ${Nginx_Ver#nginx-}（源码编译，默认）"
+        echo "2: 安装 OpenResty（自带 LuaJIT 与 lua-resty-* 组件）"
+        read -p "请选择 [1-2]（默认 1，Nginx）: " WebSelect
     fi
 
     case "${WebSelect}" in
     2|[oO][pP][eE][nN][rR][eE][sS][tT][yY])
         WebServer='openresty'
-        echo "You will install OpenResty."
+        echo "将安装 OpenResty。"
         ;;
     *)
         WebServer='nginx'
-        [ -z "${WebSelect}" ] && echo "No input, you will install Nginx." \
-                              || echo "You will install Nginx."
+        [ -z "${WebSelect}" ] && echo "未输入选项，使用默认项 Nginx。" \
+                              || echo "已选择安装 Nginx。"
         # 互斥是双向的：机器上已经有 OpenResty 时也不能再装 nginx
         Check_WebServer_Conflict nginx || exit 1
         return 0
@@ -260,17 +260,17 @@ Web_Selection()
         Echo_Yellow "OpenResty 有两种安装方式："
         echo "1: 官方软件仓库的预编译包（**不编译**，快；需要上游提供当前发行版的包）"
         echo "2: 官方源码编译（慢，但不挑发行版；用 PGP 签名校验）"
-        read -p "Enter your choice (1 or 2): " ORMode
+        read -p "请选择 [1-2]（默认 1，官方软件包）: " ORMode
     fi
 
     case "${ORMode}" in
     2|[sS][oO][uU][rR][cC][eE])
         OpenResty_Install_Mode='source'
-        echo "You will install OpenResty ${OpenResty_Ver#openresty-} from source."
+        echo "将从源码编译安装 OpenResty ${OpenResty_Ver#openresty-}。"
         ;;
     *)
         OpenResty_Install_Mode='pkg'
-        echo "You will install OpenResty from official package repository."
+        echo "将从官方软件仓库安装 OpenResty。"
         ;;
     esac
 
@@ -293,14 +293,14 @@ Apache_Selection()
     #set Server Administrator Email Address
     if [ -z ${ServerAdmin} ]; then
         ServerAdmin=""
-        read -p "Please enter Administrator Email Address: " ServerAdmin
+        read -p "请输入服务器管理员邮箱（默认 webmaster@example.com）: " ServerAdmin
     fi
     if [ "${ServerAdmin}" == "" ]; then
-        echo "Administrator Email Address will set to webmaster@example.com!"
+        echo "未输入，服务器管理员邮箱将设为 webmaster@example.com。"
         ServerAdmin="webmaster@example.com"
     else
         echo "==========================="
-        echo Server Administrator Email: "${ServerAdmin}"
+        echo "服务器管理员邮箱：${ServerAdmin}"
         echo "==========================="
     fi
     echo "==========================="
@@ -308,7 +308,7 @@ Apache_Selection()
     # Apache 仅支持 2.4；保留 ApacheSelect 以兼容命令行参数。
     [ -z "${ApacheSelect}" ] && ApacheSelect="${Apache_Default}"
     Set_Apache_Profile "${ApacheSelect}" || Invalid_Selection Apache "${ApacheSelect}"
-    echo "You will install ${Apache_Info[$((ApacheSelect-1))]}"
+    echo "将安装 ${Apache_Info[$((ApacheSelect-1))]}。"
 }
 
 # ---------------------------------------------------------------------------
@@ -376,17 +376,54 @@ Kill_PM()
 
 Press_Install()
 {
-    if [ -z ${LNMP_Auto} ]; then
-        echo ""
-        Echo_Green "Press any key to install...or Press Ctrl+c to cancel"
-        OLDCONFIG=`stty -g`
-        stty -icanon -echo min 1 time 0
-        dd count=1 2>/dev/null
-        stty ${OLDCONFIG}
-    fi
     . include/version.sh
     Set_Profiles
+
+    case "${Stack}" in
+    lnmp|lnmpa|lamp)
+        # 完整安装：选择做完之后，把版本、端口这些会真正影响系统的信息摆
+        # 出来，用户看完再决定是否继续——原来的"press any key"敲任意键都
+        # 能过，等于没有确认。
+        Echo_Yellow "=========================================================================="
+        Echo_Yellow "您即将安装/编译以下模块，请确认！" 
+        Print_APP_Ver
+        Confirm_Start_Install || exit 1
+        ;;
+    *)
+        if [ -z ${LNMP_Auto} ]; then
+            echo ""
+            Echo_Green "按任意键开始安装，或按 Ctrl+C 取消。"
+            OLDCONFIG=`stty -g`
+            stty -icanon -echo min 1 time 0
+            dd count=1 2>/dev/null
+            stty ${OLDCONFIG}
+        fi
+        ;;
+    esac
+
     Kill_PM
+}
+
+# lnmp/lnmpa/lamp 完整安装在真正开始装依赖、编译前的最后一道确认。
+# 非交互（无终端或 LNMP_Auto=y）不阻断，打印提示后直接继续。
+Confirm_Start_Install()
+{
+    local ans
+
+    if [ ! -t 0 ] || [ "${LNMP_Auto}" = "y" ]; then
+        Echo_Yellow "当前为非交互执行，按以上信息直接开始安装。"
+        return 0
+    fi
+
+    echo ""
+    read -r -p "确认以上信息，开始安装请输入 y，其它输入一律取消： " ans
+    case "${ans}" in
+        [yY]) return 0 ;;
+        *)
+            Echo_Yellow "已取消安装。"
+            return 1
+            ;;
+    esac
 }
 
 # 菜单选择完成后，把编号翻译成语义变量。必须在 version.sh 之后调用，
@@ -408,16 +445,16 @@ Set_Profiles()
 # 非法编号必须显式报错，禁止静默回退到默认版本。
 Invalid_Selection()
 {
-    Echo_Red "FATAL: invalid ${1}Select value: '${2}'"
+    Echo_Red "致命错误：${1}Select 的值无效：'${2}'"
     case "$1" in
     DB)
-        Echo_Red "Valid values: 0 (skip), 1..${DB_Count}"
+        Echo_Red "有效值：0（跳过），1-${DB_Count}"
         ;;
     PHP)
-        Echo_Red "Valid values: 1..${PHP_Count}"
+        Echo_Red "有效值：1-${PHP_Count}"
         ;;
     Apache)
-        Echo_Red "Valid values: 1..${Apache_Count}"
+        Echo_Red "有效值：1-${Apache_Count}"
         ;;
     esac
     exit 1
@@ -426,7 +463,7 @@ Invalid_Selection()
 Press_Start()
 {
     echo ""
-    Echo_Green "Press any key to start...or Press Ctrl+c to cancel"
+    Echo_Green "按任意键开始，或按 Ctrl+C 取消。"
     OLDCONFIG=`stty -g`
     stty -icanon -echo min 1 time 0
     dd count=1 2>/dev/null
@@ -435,7 +472,7 @@ Press_Start()
 
 Install_LSB()
 {
-    echo "[+] Installing lsb..."
+    echo "[+] 正在安装 lsb..."
     if [ "$PM" = "yum" ]; then
         yum -y install redhat-lsb
     elif [ "$PM" = "apt" ]; then
@@ -554,22 +591,22 @@ Get_RHEL_Version()
     Get_Dist_Name
     if [ "${DISTRO}" = "RHEL" ]; then
         if grep -Eqi "release 5." /etc/redhat-release; then
-            echo "Current Version: RHEL Ver 5"
+            echo "当前版本：RHEL 5"
             RHEL_Ver='5'
         elif grep -Eqi "release 6." /etc/redhat-release; then
-            echo "Current Version: RHEL Ver 6"
+            echo "当前版本：RHEL 6"
             RHEL_Ver='6'
         elif grep -Eqi "release 7." /etc/redhat-release; then
-            echo "Current Version: RHEL Ver 7"
+            echo "当前版本：RHEL 7"
             RHEL_Ver='7'
         elif grep -Eqi "release 8." /etc/redhat-release; then
-            echo "Current Version: RHEL Ver 8"
+            echo "当前版本：RHEL 8"
             RHEL_Ver='8'
         elif grep -Eqi "release 9." /etc/redhat-release; then
-            echo "Current Version: RHEL Ver 9"
+            echo "当前版本：RHEL 9"
             RHEL_Ver='9'
         elif grep -Eqi "release 10." /etc/redhat-release; then
-            echo "Current Version: RHEL Ver 10"
+            echo "当前版本：RHEL 10"
             RHEL_Ver='10'
         fi
         RHEL_Version="$(cat /etc/redhat-release | sed 's/.*release\ //' | sed 's/\ .*//')"
@@ -620,17 +657,17 @@ Verify_Download_File()
     fi
 
     if [ ! -s "${Checksum_File}" ]; then
-        Echo_Red "FATAL: checksum manifest not found: ${Checksum_File}"
-        Echo_Red "Integrity verification is mandatory. Refuse to use ${FileName}."
-        Echo_Red "Set Enable_Download_Checksum='n' in lnmp.conf to bypass (NOT recommended)."
+        Echo_Red "致命错误：找不到校验清单 ${Checksum_File}"
+        Echo_Red "完整性校验是强制要求，拒绝使用 ${FileName}。"
+        Echo_Red "仅排查问题时可在 lnmp.conf 设置 Enable_Download_Checksum='n' 跳过（不推荐）。"
         rm -f "${FileName}"
         exit 1
     fi
 
     Expected_SHA256=$(awk -v file="${FileName}" '$1 !~ /^#/ && $2 == file {print $1; exit}' "${Checksum_File}")
     if [ "${Expected_SHA256}" = "" ]; then
-        Echo_Red "FATAL: no checksum entry for ${FileName} in ${Checksum_File}"
-        Echo_Red "An unlisted file will not be used. Add its SHA256 to the manifest first."
+        Echo_Red "致命错误：${Checksum_File} 中没有 ${FileName} 的校验值。"
+        Echo_Red "未登记的文件不会被使用，请先将其 SHA256 写入校验清单。"
         rm -f "${FileName}"
         exit 1
     fi
@@ -640,19 +677,19 @@ Verify_Download_File()
     elif command -v shasum >/dev/null 2>&1; then
         Actual_SHA256=$(shasum -a 256 "${FileName}" | awk '{print $1}')
     else
-        Echo_Red "FATAL: neither sha256sum nor shasum is available, cannot verify ${FileName}."
+        Echo_Red "致命错误：系统没有 sha256sum 或 shasum，无法校验 ${FileName}。"
         exit 1
     fi
 
     if [ "${Actual_SHA256}" != "${Expected_SHA256}" ]; then
-        Echo_Red "FATAL: SHA256 mismatch for ${FileName}"
-        Echo_Red "  expected: ${Expected_SHA256}"
-        Echo_Red "  actual:   ${Actual_SHA256}"
-        Echo_Red "The file has been removed. This may indicate a tampered download."
+        Echo_Red "致命错误：${FileName} 的 SHA256 不匹配。"
+        Echo_Red "  期望值：${Expected_SHA256}"
+        Echo_Red "  实际值：${Actual_SHA256}"
+        Echo_Red "该文件已删除；下载内容可能被篡改。"
         rm -f "${FileName}"
         exit 1
     fi
-    Echo_Green "${FileName} SHA256 checksum ok."
+    Echo_Green "${FileName} 的 SHA256 校验通过。"
     return 0
 }
 
@@ -665,8 +702,8 @@ Verify_Download_File()
 Require_File()
 {
     if [ ! -s "$1" ]; then
-        Echo_Red "Error! Unable to download $2."
-        Echo_Red "Please download it to the src directory manually: $1"
+        Echo_Red "错误：无法下载 $2。"
+        Echo_Red "请手动下载到 src 目录：$1"
         sleep 5
         exit 1
     fi
@@ -682,15 +719,15 @@ Download_Files()
     [ "${FileName}" = "" ] && FileName="${URL##*/}"
 
     if [ -s "${FileName}" ]; then
-        echo "${FileName} [found]"
+        echo "${FileName} [已存在]"
         Verify_Download_File "${FileName}"
         return $?
     fi
 
-    echo "Notice: ${FileName} not found!!!download now..."
+    echo "提示：未找到 ${FileName}，现在开始下载..."
     if [ "${Download_Insecure}" = "y" ]; then
         # 仅用于证书故障诊断；该模式不验证 TLS 证书。
-        Echo_Red "WARNING: Download_Insecure='y' disables TLS certificate verification."
+        Echo_Red "警告：Download_Insecure='y' 会关闭 TLS 证书校验。"
         wget -c --progress=dot -e dotbytes=20M --prefer-family=IPv4 \
              --max-redirect=${DL_MAX_REDIRECT:-5} --no-check-certificate \
              "${URL}" -O "${FileName}" || return 1
@@ -778,6 +815,75 @@ Get_Actual_DB_Port()
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# Get_Actual_SSH_Port — 探测系统当前实际监听的 SSH 端口
+#
+# 不能只信 lnmp.conf 里的 SSH_Port：sshd_config 改了没重启、或者用
+# ExecStart 的 -o Port= 覆盖过，配置文件里的值和真实监听端口会对不上。
+# 优先看真实监听的 socket（ss/netstat 能看到内核当前的状态），
+# 两者都不可用时才退回解析 sshd_config（含 Debian/Ubuntu 默认
+# Include 的 /etc/ssh/sshd_config.d/*.conf）；配置文件存在但没有
+# 显式 Port 行，按 OpenSSH 的默认值处理，即 22。
+#
+# 输出：每行一个端口号，按数字升序去重。彻底探测不到（没有 ss/netstat，
+# 也找不到 sshd_config）时不输出、返回 1，交调用方决定怎么处理。
+# ---------------------------------------------------------------------------
+Get_Actual_SSH_Port()
+{
+    local port
+    local -a ports=()
+
+    if command -v ss >/dev/null 2>&1; then
+        while read -r port; do
+            case "${port}" in ''|*[!0-9]*) continue ;; esac
+            ports+=("${port}")
+        done < <(ss -Htlnp 2>/dev/null | grep -F 'sshd' | awk '{print $4}' | sed -E 's/.*://')
+    fi
+
+    if [ ${#ports[@]} -eq 0 ] && command -v netstat >/dev/null 2>&1; then
+        while read -r port; do
+            case "${port}" in ''|*[!0-9]*) continue ;; esac
+            ports+=("${port}")
+        done < <(netstat -tlnp 2>/dev/null | grep -F 'sshd' | awk '{print $4}' | sed -E 's/.*://')
+    fi
+
+    if [ ${#ports[@]} -eq 0 ] && [ -s /etc/ssh/sshd_config ]; then
+        while read -r port; do
+            case "${port}" in ''|*[!0-9]*) continue ;; esac
+            ports+=("${port}")
+        done < <(Get_Sshd_Config_Ports)
+        [ ${#ports[@]} -eq 0 ] && ports=(22)
+    fi
+
+    if [ ${#ports[@]} -eq 0 ]; then
+        return 1
+    fi
+    printf '%s\n' "${ports[@]}" | sort -un
+    return 0
+}
+
+# Get_Sshd_Config_Ports [sshd_config 路径]
+#
+# 解析 sshd_config 里的 Port 指令，跟随 Debian/Ubuntu 默认的
+# `Include /etc/ssh/sshd_config.d/*.conf`（取主配置所在目录下的
+# sshd_config.d/*.conf）。只覆盖这一种固定的 Include 布局，不做通用
+# Include 解析——本包主线是 Debian 12。
+# 参数只为定向测试传入替身配置，实际调用一律用默认的 /etc/ssh/sshd_config。
+Get_Sshd_Config_Ports()
+{
+    local conf="${1:-/etc/ssh/sshd_config}"
+    local conf_dir f
+    local -a files
+
+    conf_dir=$(dirname "${conf}")
+    files=("${conf}" "${conf_dir}/sshd_config.d/"*.conf)
+
+    for f in "${files[@]}"; do
+        [ -s "${f}" ] || continue
+        grep -Eio '^[[:space:]]*Port[[:space:]]+[0-9]+' "${f}" 2>/dev/null | awk '{print $2}'
+    done
+}
+
 # 在任何安装动作前统一校验端口。变量会进入配置、sed 和防火墙命令，
 # 非数字、越界或互相冲突都应在下载、停服务或改系统之前直接拒绝。
 Validate_Service_Ports()
@@ -844,29 +950,29 @@ Tar_Cd()
     local extension=${FileName##*.}
 
     if ! cd "${cur_dir}/src"; then
-        Echo_Red "FATAL: cannot cd to ${cur_dir}/src"
+        Echo_Red "致命错误：无法进入目录 ${cur_dir}/src"
         exit 1
     fi
     [[ -d "${DirName}" ]] && rm -rf "${DirName}"
-    echo "Uncompress ${FileName}..."
+    echo "正在解压 ${FileName}..."
     case "${extension}" in
     gz|tgz) tar zxf "${FileName}" ;;
     bz2)    tar jxf "${FileName}" ;;
     xz)     tar Jxf "${FileName}" ;;
     *)
-        Echo_Red "FATAL: unknown archive extension '${extension}' for ${FileName}"
+        Echo_Red "致命错误：${FileName} 使用了未知的归档扩展名 '${extension}'。"
         exit 1
         ;;
     esac
     if [ $? -ne 0 ]; then
-        Echo_Red "FATAL: failed to uncompress ${FileName}"
+        Echo_Red "致命错误：${FileName} 解压失败。"
         exit 1
     fi
 
     if [ -n "${DirName}" ]; then
-        echo "cd ${DirName}..."
+        echo "正在进入目录 ${DirName}..."
         if ! cd "${DirName}"; then
-            Echo_Red "FATAL: ${FileName} 解压后没有预期的目录 ${DirName}"
+            Echo_Red "致命错误：${FileName} 解压后没有预期的目录 ${DirName}。"
             Echo_Red "归档结构与预期不符，拒绝在错误的目录里继续编译。"
             exit 1
         fi
@@ -876,22 +982,60 @@ Tar_Cd()
 Check_LNMPConf()
 {
     if [ ! -s "${cur_dir}/lnmp.conf" ]; then
-        Echo_Red "lnmp.conf was not exsit!"
+        Echo_Red "lnmp.conf 不存在。"
         exit 1
     fi
     if [[ "${MySQL_Data_Dir}" = "" || "${MariaDB_Data_Dir}" = "" || "${Default_Website_Dir}" = "" ]]; then
-        Echo_Red "Can't get values from lnmp.conf!"
+        Echo_Red "无法从 lnmp.conf 读取必要配置。"
         exit 1
     fi
     if [[ "${MySQL_Data_Dir}" = "/" || "${MariaDB_Data_Dir}" = "/" || "${Default_Website_Dir}" = "/" ]]; then
-        Echo_Red "Can't set MySQL/MariaDB/Website Directory to / !"
+        Echo_Red "MySQL、MariaDB 或网站目录不能设置为根目录 /。"
         exit 1
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Confirm_LNMPConf_Reviewed — 正式开始选择版本前提醒检查 lnmp.conf
+#
+# 典型事故：SSH 端口已经在系统里改过、但 lnmp.conf 的 SSH_Port 还是默认值，
+# 装完防火墙只放行旧端口，等于把当前的登录方式关在门外；数据库目录、
+# 网站目录、是否开 phpMyAdmin 同理，装完再改往往比装之前改麻烦得多。
+#
+# 非交互（无终端或 LNMP_Auto=y）打印提示后继续，不阻断已有自动化。
+# ---------------------------------------------------------------------------
+Confirm_LNMPConf_Reviewed()
+{
+    local ans
+
+    Echo_Yellow "=========================================================================="
+    Echo_Yellow "开始安装前，请根据实际需求检查并确认 ${cur_dir}/lnmp.conf 中的配置："
+    Echo_Yellow "  - SSH_Port 等端口是否与系统实际配置一致；已经改过 SSH 端口的话，这里必须"
+    Echo_Yellow "    跟着改，否则装完防火墙会把当前的 SSH 连接方式关在门外。"
+    Echo_Yellow "  - Default_Website_Dir / MySQL_Data_Dir 等目录是否符合预期。"
+    Echo_Yellow "  - Enable_PhpMyAdmin 等开关是否需要现在就打开。"
+    Echo_Yellow "=========================================================================="
+
+    if [ ! -t 0 ] || [ "${LNMP_Auto}" = "y" ]; then
+        Echo_Yellow "当前为非交互执行，按 lnmp.conf 现有配置继续。"
+        return 0
+    fi
+
+    read -r -p "已检查/确认无需修改，继续安装请输入 y。需要修改 lnmp.conf 请输入其它任意键退出： " ans
+    case "${ans}" in
+        [yY]) return 0 ;;
+        *)
+            Echo_Red "已退出。请改好 ${cur_dir}/lnmp.conf 后重新执行本命令。"
+            exit 1
+            ;;
+    esac
+}
+
 Print_APP_Ver()
 {
-    echo "You will install ${Stack} stack."
+    local nginx_modules='' php_modules=''
+
+    echo "将安装 ${Stack} 技术栈。"
     if [ "${Stack}" != "lamp" ]; then
         if [ "${WebServer}" = "openresty" ]; then
             if [ "${OpenResty_Install_Mode}" = "source" ]; then
@@ -905,7 +1049,7 @@ Print_APP_Ver()
     fi
 
     if [ "${DB_Kind}" = "none" ]; then
-        echo "Do not install MySQL/MariaDB!"
+        echo "不安装 MySQL/MariaDB。"
     else
         echo "${DB_Ver}"
     fi
@@ -921,50 +1065,83 @@ Print_APP_Ver()
     elif [ "${SelectMalloc}" = "3" ]; then
         echo "${TCMalloc_Ver}"
     fi
-    echo "Enable InnoDB: ${InstallInnodb}"
-    echo "Print lnmp.conf infomation..."
-    echo "Download Source: upstream official only"
-    echo "Checksum Verify: ${Enable_Download_Checksum}"
-    echo "Nginx Additional Modules: ${Nginx_Modules_Options}"
-    echo "PHP Additional Modules: ${PHP_Modules_Options}"
-    if [ "${Enable_PHP_Fileinfo}" = "y" ]; then
-        echo "enable PHP fileinfo."
-    fi
-    if [ "${Enable_Nginx_Lua}" = "y" ]; then
-        echo "enable Nginx Lua."
-    fi
-    if [ "${DB_Kind}" = "none" ]; then
-        echo "Do not install MySQL/MariaDB!"
+    echo "启用 InnoDB：${InstallInnodb}"
+    echo "lnmp.conf 配置信息："
+    echo "下载来源：仅限上游官方来源"
+    echo "完整性校验：${Enable_Download_Checksum}"
+
+    if [ "${Stack}" = "lamp" ]; then
+        nginx_modules='未安装'
+    elif [ "${WebServer}" = "openresty" ]; then
+        nginx_modules='OpenResty 内置 LuaJIT/lua-resty 模块'
+        [ -n "${OpenResty_Modules_Options}" ] && \
+            nginx_modules="${nginx_modules}；自定义选项：${OpenResty_Modules_Options}"
+        [ "${#OpenResty_Custom_Modules[@]}" -gt 0 ] && \
+            nginx_modules="${nginx_modules}；自定义源码模块：${#OpenResty_Custom_Modules[@]} 个"
     else
-        echo "Database Directory: ${DB_Data_Dir}"
+        [ "${Enable_Nginx_Lua}" = "y" ] && nginx_modules='Lua'
+        if [ "${Enable_Ngx_Brotli}" = "y" ]; then
+            nginx_modules="${nginx_modules}${nginx_modules:+, }Brotli"
+        fi
+        if [ "${Enable_Ngx_CachePurge}" = "y" ]; then
+            nginx_modules="${nginx_modules}${nginx_modules:+, }Cache Purge"
+        fi
+        if [ "${Enable_Ngx_FancyIndex}" = "y" ]; then
+            nginx_modules="${nginx_modules}${nginx_modules:+, }FancyIndex"
+        fi
+        [ -n "${Nginx_Modules_Options}" ] && \
+            nginx_modules="${nginx_modules}${nginx_modules:+；}自定义选项：${Nginx_Modules_Options}"
+        [ -n "${nginx_modules}" ] || nginx_modules='无'
     fi
-    echo "Default Website Directory: ${Default_Website_Dir}"
+
+    [ "${Enable_PHP_Fileinfo}" = "y" ] && php_modules='fileinfo'
+    [ "${Enable_PHP_Exif}" = "y" ] && php_modules="${php_modules}${php_modules:+, }exif"
+    [ "${Enable_PHP_Ldap}" = "y" ] && php_modules="${php_modules}${php_modules:+, }ldap"
+    [ "${Enable_PHP_Bz2}" = "y" ] && php_modules="${php_modules}${php_modules:+, }bz2"
+    [ "${Enable_PHP_Sodium}" = "y" ] && php_modules="${php_modules}${php_modules:+, }sodium"
+    [ "${Enable_PHP_Imap}" = "y" ] && php_modules="${php_modules}${php_modules:+, }imap"
+    [ "${Enable_PHP_Default_Opcache}" = "y" ] && php_modules="${php_modules}${php_modules:+, }opcache"
+    [ "${Enable_PHP_Default_Igbinary}" = "y" ] && php_modules="${php_modules}${php_modules:+, }igbinary"
+    [ "${Enable_PHP_Default_Redis}" = "y" ] && php_modules="${php_modules}${php_modules:+, }redis"
+    [ "${Enable_PHP_Default_Imagick}" = "y" ] && php_modules="${php_modules}${php_modules:+, }imagick"
+    [ -n "${PHP_Modules_Options}" ] && \
+        php_modules="${php_modules}${php_modules:+；}自定义选项：${PHP_Modules_Options}"
+    [ -n "${php_modules}" ] || php_modules='无'
+
+    echo "Nginx 附加模块：${nginx_modules}"
+    echo "PHP 附加模块：${php_modules}"
+    if [ "${DB_Kind}" = "none" ]; then
+        echo "不安装 MySQL/MariaDB。"
+    else
+        echo "数据库目录：${DB_Data_Dir}"
+    fi
+    echo "默认网站目录：${Default_Website_Dir}"
+    echo "SSH 端口（防火墙将放行）：${SSH_Port}"
+    if [ "${DB_Kind}" != "none" ]; then
+        echo "数据库端口（防火墙将阻止公网访问）：${DB_Port} / ${DB_X_Port}"
+    fi
 }
 
 Print_Sys_Info()
 {
-    echo "LNMP Version: ${LNMP_Ver}"
+    echo "LNMP 版本：${LNMP_Ver}"
     eval echo "${DISTRO} \${${DISTRO}_Version}"
     cat /etc/issue
     cat /etc/*-release
     uname -a
     MemTotal=$(awk '/MemTotal/ {printf( "%d\n", $2 / 1024 )}' /proc/meminfo)
-    echo "Memory is: ${MemTotal} MB "
+    echo "内存：${MemTotal} MB"
     df -h
     Check_Openssl
-    Check_WSL
-    Check_Docker
 }
 
 StartUp()
 {
-    init_name=$1
-    echo "Add ${init_name} service at system startup..."
-    [[ "${isWSL}" = "" ]] && Check_WSL
-    [[ "${isDocker}" = "" ]] && Check_Docker
-    if [ "${isWSL}" = "n" ] && [ "${isDocker}" = "n" ] && command -v systemctl >/dev/null 2>&1 && [[ -s /etc/systemd/system/${init_name}.service || -s /lib/systemd/system/${init_name}.service || -s /usr/lib/systemd/system/${init_name}.service ]]; then
+    local init_name=$1
+    echo "正在将 ${init_name} 服务设为开机启动..."
+    if Use_Systemd_Unit "${init_name}"; then
         systemctl daemon-reload
-        systemctl enable ${init_name}.service
+        systemctl enable "${init_name}.service"
     else
         if [ "$PM" = "yum" ]; then
             chkconfig --add ${init_name}
@@ -977,12 +1154,25 @@ StartUp()
 
 Remove_StartUp()
 {
-    init_name=$1
-    echo "Removing ${init_name} service at system startup..."
-    [[ "${isWSL}" = "" ]] && Check_WSL
-    [[ "${isDocker}" = "" ]] && Check_Docker
-    if [ "${isWSL}" = "n" ] && [ "${isDocker}" = "n" ] && command -v systemctl >/dev/null 2>&1 && [[ -s /etc/systemd/system/${init_name}.service || -s /lib/systemd/system/${init_name}.service || -s /usr/lib/systemd/system/${init_name}.service ]]; then
-        systemctl disable ${init_name}.service
+    local init_name=$1
+    local unit="/etc/systemd/system/${init_name}.service"
+
+    echo "正在取消 ${init_name} 服务的开机启动..."
+
+    # 先按 systemd 停一次，且不看 unit 是不是本包部署的。
+    # 只装 init 脚本时（例如 OpenResty 只写 /etc/init.d/nginx），systemd 会用
+    # sysv-generator 生成一个 unit，开机启动后状态是 active (exited)。
+    # 用 lnmp stop 或 init 脚本停服务，systemd 并不知道，该状态会一直留着；
+    # 卸载删掉文件也不清除它。重装写入新 unit 并 daemon-reload 同样不会重置
+    # 已有的 active 状态，于是随后的 systemctl start 认为服务已在运行、直接
+    # 返回成功，服务实际从未被启动，而 lnmp status 显示的是上一次的 active。
+    if Systemd_Is_Running; then
+        systemctl stop "${init_name}.service" 2>/dev/null
+        systemctl reset-failed "${init_name}.service" 2>/dev/null
+    fi
+
+    if Use_Systemd_Unit "${init_name}"; then
+        systemctl disable "${init_name}.service"
     else
         if [ "$PM" = "yum" ]; then
             chkconfig ${init_name} off
@@ -990,6 +1180,21 @@ Remove_StartUp()
         elif [ "$PM" = "apt" ]; then
             update-rc.d -f ${init_name} remove
         fi
+    fi
+
+    # 本包部署的 unit 必须随之删除。只 disable 会把 ExecStart 指向已删除二进制的
+    # unit 留在系统里，后续 Service_Exists 仍判定该服务存在，管理脚本的整体启停
+    # 会去启动一个根本不存在的服务并报错。
+    # 判定"本包部署"看 ExecStart：nginx/php-fpm/httpd/pureftpd/redis 指向
+    # /usr/local/ 下的二进制，mysql/mariadb/memcached 的 unit 则包装
+    # /etc/init.d/<服务名>。发行版自带的同名 unit 在 /lib/systemd/system，
+    # 不在这里，不会被误删。
+    local esc_name=${init_name//./\\.}
+    if [ -f "${unit}" ] && grep -qE \
+        "^ExecStart=[^[:space:]]*(/usr/local/|/etc/init\.d/${esc_name}([[:space:]]|$))" \
+        "${unit}"; then
+        rm -f "${unit}"
+        systemctl daemon-reload 2>/dev/null
     fi
 }
 
@@ -1036,21 +1241,21 @@ Check_CMPT()
     # MySQL 8.x 源码编译需要较新的发行版
     if [ "${DB_Kind}" = "mysql" ] && [ "${Bin}" != "y" ] && Version_GE "${DB_Branch}" 8.0; then
         if echo "${Ubuntu_Version}" | grep -Eqi "^1[0-7]\." || echo "${Debian_Version}" | grep -Eqi "^[4-8]" || echo "${Raspbian_Version}" | grep -Eqi "^[4-8]" || echo "${CentOS_Version}" | grep -Eqi "^[4-7]"  || echo "${RHEL_Version}" | grep -Eqi "^[4-7]" || echo "${Fedora_Version}" | grep -Eqi "^2[0-3]"; then
-            Echo_Red "MySQL 8.* please use latest linux distributions!"
+            Echo_Red "MySQL 8.* 需要较新的 Linux 发行版。"
             exit 1
         fi
     fi
     # PHP 7.4 及以上需要较新的发行版
     if Version_GE "${PHP_Branch}" 7.4; then
         if echo "${Ubuntu_Version}" | grep -Eqi "^1[0-7]\." || echo "${Debian_Version}" | grep -Eqi "^[4-8]" || echo "${Raspbian_Version}" | grep -Eqi "^[4-8]" || echo "${CentOS_Version}" | grep -Eqi "^[4-6]"  || echo "${RHEL_Version}" | grep -Eqi "^[4-6]" || echo "${Fedora_Version}" | grep -Eqi "^2[0-3]"; then
-            Echo_Red "PHP 7.4 and PHP 8.* please use latest linux distributions!"
+            Echo_Red "PHP 7.4 和 PHP 8.* 需要较新的 Linux 发行版。"
             exit 1
         fi
     fi
     # PHP 5.2 在过新的发行版上无法编译
     if [ "${PHP_Branch}" = "5.2" ]; then
         if echo "${Ubuntu_Version}" | grep -Eqi "^19|2[0-7]\." || echo "${Debian_Version}" | grep -Eqi "^1[0-9]" || echo "${Raspbian_Version}" | grep -Eqi "^1[0-9]" || echo "${Deepin_Version}" | grep -Eqi "^2[0-9]" || echo "${UOS_Version}" | grep -Eqi "^2[0-9]" || echo "${Fedora_Version}" | grep -Eqi "^29|3[0-9]"; then
-            Echo_Red "PHP 5.2 is not supported on very new linux versions such as Ubuntu 19+, Debian 10, Deepin 20+, Fedora 29+ etc."
+            Echo_Red "PHP 5.2 不支持 Ubuntu 19+、Debian 10、Deepin 20+、Fedora 29+ 等较新的 Linux 发行版。"
             exit 1
         fi
     fi
@@ -1120,11 +1325,34 @@ Check_Stack()
     fi
 }
 
+# First_Executable <候选路径...> — 返回第一个可执行文件。
+#
+# MariaDB 11.x 已把 mysql、mysqldump 等旧程序名标记为弃用，但不同版本和
+# 安装形态提供的新旧名称不完全相同。调用点统一按文件能力优先新名称，
+# 缺失时回退旧名称，不按版本号猜测实际包布局。
+First_Executable()
+{
+    local candidate
+
+    for candidate in "$@"; do
+        if [ -x "${candidate}" ]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
 Check_DB()
 {
-    if [[ -s /usr/local/mariadb/bin/mysql && -s /usr/local/mariadb/bin/mysqld_safe && -s /etc/my.cnf ]]; then
-        MySQL_Bin="/usr/local/mariadb/bin/mysql"
-        MySQL_Config="/usr/local/mariadb/bin/mysql_config"
+    local mariadb_client mariadb_config mariadb_safe
+
+    if mariadb_client=$(First_Executable /usr/local/mariadb/bin/mariadb /usr/local/mariadb/bin/mysql) \
+        && mariadb_config=$(First_Executable /usr/local/mariadb/bin/mariadb_config /usr/local/mariadb/bin/mysql_config) \
+        && mariadb_safe=$(First_Executable /usr/local/mariadb/bin/mariadbd-safe /usr/local/mariadb/bin/mysqld_safe) \
+        && [ -s /etc/my.cnf ]; then
+        MySQL_Bin="${mariadb_client}"
+        MySQL_Config="${mariadb_config}"
         MySQL_Dir="/usr/local/mariadb"
         Is_MySQL="n"
         DB_Name="mariadb"
@@ -1188,12 +1416,12 @@ Verify_DB_Password()
     Check_DB
     status=1
     while [ $status -eq 1 ]; do
-        read -s -p "Enter current root password of Database (Password will not shown): " DB_Root_Password
+        read -s -p "请输入当前数据库 root 密码（输入不回显）: " DB_Root_Password
         Make_TempMycnf "${DB_Root_Password}"
         Do_Query ""
         status=$?
     done
-    echo "OK, MySQL root password correct."
+    echo "数据库 root 密码验证通过。"
 }
 
 TempMycnf_Clean()
@@ -1207,17 +1435,29 @@ TempMycnf_Clean()
     rm -f /tmp/.mysql.tmp
 }
 
+# 只按实际运行能力判断 systemd，不再把 WSL 等开发环境名称当作能力。
+# WSL 可以启用 systemd，普通服务器也可能没有运行 systemd；检查环境名字会
+# 同时产生误判和漏判。/run/systemd/system 是 systemd 启动后创建的运行标志。
+Systemd_Is_Running()
+{
+    [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1
+}
+
+Systemd_Unit_Exists()
+{
+    local service=$1
+    [ -s "/etc/systemd/system/${service}.service" ] || \
+    [ -s "/lib/systemd/system/${service}.service" ] || \
+    [ -s "/usr/lib/systemd/system/${service}.service" ]
+}
+
 # 这次启动到底走不走 systemd，判断只留一份。
 # 安装收尾要在启动后核对服务状态，核对方式取决于走了哪条分支：
 # 各自再写一遍条件，迟早出现「用 systemctl 启动、用 pid 文件判断」这类错配。
 Use_Systemd_Unit()
 {
     local service=$1
-    [[ "${isWSL}" = "" ]] && Check_WSL
-    [[ "${isDocker}" = "" ]] && Check_Docker
-    [ "${isWSL}" = "n" ] && [ "${isDocker}" = "n" ] \
-        && command -v systemctl >/dev/null 2>&1 \
-        && [ -s "/etc/systemd/system/${service}.service" ]
+    Systemd_Is_Running && Systemd_Unit_Exists "${service}"
 }
 
 StartOrStop()
@@ -1231,34 +1471,10 @@ StartOrStop()
     fi
 }
 
-Check_WSL() {
-    if [[ "$(< /proc/sys/kernel/osrelease)" == *[Mm]icrosoft* ]]; then
-        echo "running on WSL"
-        isWSL="y"
-    else
-        isWSL="n"
-    fi
-}
-
-Check_Docker() {
-    if [ -f /.dockerenv ]; then
-        echo "running on Docker"
-        isDocker="y"
-    elif [ -f /proc/1/cgroup ] && grep -q docker /proc/1/cgroup; then
-        echo "running on Docker"
-        isDocker="y"
-    elif [ -f /proc/self/cgroup ] && grep -q docker /proc/self/cgroup; then
-        echo "running on Docker"
-        isDocker="y"
-    else
-        isDocker="n"
-    fi
-}
-
 Check_Openssl()
 {
     if ! command -v openssl >/dev/null 2>&1; then
-        Echo_Blue "[+] Installing openssl..."
+        Echo_Blue "[+] 正在安装 OpenSSL..."
         if [ "${PM}" = "yum" ]; then
             yum install -y openssl
         elif [ "${PM}" = "apt" ]; then
@@ -1271,4 +1487,66 @@ Check_Openssl()
     if openssl version | grep -Eqi "OpenSSL 3.*"; then
         isOpenSSL3='y'
     fi
+}
+# 计算 UTF-8 文本在常见终端中的显示宽度：ASCII 占 1 列，三字节中日韩字符占 2 列。
+# 本项目的 banner 文案只使用这两类字符，借此保证中文框线可以稳定对齐。
+Text_Display_Width()
+{
+    local text="$1" bytes ascii_bytes wide_chars
+    bytes=$(printf '%s' "${text}" | LC_ALL=C wc -c)
+    ascii_bytes=$(printf '%s' "${text}" | LC_ALL=C tr -cd '\000-\177' | wc -c)
+    wide_chars=$(( (bytes - ascii_bytes) / 3 ))
+    printf '%d' $((ascii_bytes + wide_chars * 2))
+}
+
+# Warn_Demo_Page_Not_Served — 演示页写入 default 根目录后核对 Web 配置是否放行
+#
+# default 站点默认拒绝执行 PHP。新装环境的配置模板已按固定文件名放行
+# phpinfo / redis / memcached 三个演示页；在此之前装好的环境没有这段规则，
+# 页面文件写进去了也只会返回 404。这里只做检查和提示，不去改使用者可能
+# 已经定制过的站点配置。始终返回 0，不影响调用方的安装结果。
+Warn_Demo_Page_Not_Served()
+{
+    local page="$1"
+    # nginx 与 Apache 两份模板里放行规则的写法不同，但都含这段固定的文件名
+    # 分支，用固定串匹配，免去两套正则转义。
+    local pattern='(phpinfo|redis|memcached)'
+    local ngx_default='/usr/local/nginx/conf/vhost/default.conf'
+    local apache_vhosts='/usr/local/apache/conf/extra/httpd-vhosts.conf'
+    local missing='' conf
+
+    if [ -s "${ngx_default}" ] && ! grep -qF "${pattern}" "${ngx_default}"; then
+        missing="${missing} ${ngx_default}"
+    fi
+    if [ -s "${apache_vhosts}" ] && ! grep -qF "${pattern}" "${apache_vhosts}"; then
+        missing="${missing} ${apache_vhosts}"
+    fi
+    [ -z "${missing}" ] && return 0
+
+    Echo_Yellow " ${page} 已写入 ${Default_Website_Dir}，但以下配置未放行该文件："
+    for conf in ${missing}; do
+        echo "   ${conf}"
+    done
+    echo " default 站点默认拒绝执行 PHP，现在访问该页面会返回 404。"
+    echo " 需要时参照 conf/lnmp 中 default 站点的写法补上放行规则，再重载 Web 服务。"
+    return 0
+}
+
+Print_Banner()
+{
+    local width=72 border text text_width padding left right
+    for text in "$@"; do
+        text_width=$(Text_Display_Width "${text}")
+        [ "${text_width}" -gt "${width}" ] && width=${text_width}
+    done
+    border=$(printf '%*s' "${width}" '' | tr ' ' '-')
+    printf '+%s+\n' "${border}"
+    for text in "$@"; do
+        text_width=$(Text_Display_Width "${text}")
+        padding=$((width - text_width))
+        left=$((padding / 2))
+        right=$((padding - left))
+        printf '|%*s%s%*s|\n' "${left}" '' "${text}" "${right}" ''
+    done
+    printf '+%s+\n' "${border}"
 }

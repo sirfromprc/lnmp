@@ -2,13 +2,13 @@
 
 Backup_MySQL2()
 {
-    echo "Starting backup all databases..."
-    echo "If the database is large, the backup time will be longer."
+    echo "正在备份全部数据库..."
+    echo "数据库较大时，备份所需时间会更长。"
     /usr/local/mysql/bin/mysqldump --defaults-file=~/.my.cnf --all-databases > /root/mysql_all_backup${Upgrade_Date}.sql
     if [ $? -eq 0 ]; then
-        echo "MySQL databases backup successfully.";
+        echo "MySQL 数据库备份成功。";
     else
-        echo "MySQL databases backup failed,Please backup databases manually!"
+        echo "MySQL 数据库备份失败，请手动备份数据库！"
         exit 1
     fi
     # 退出码为 0 不代表备份完整，另需确认结束标记；
@@ -16,7 +16,7 @@ Backup_MySQL2()
     Check_DB_Backup "/root/mysql_all_backup${Upgrade_Date}.sql" || exit 1
     Snapshot_DB_List /usr/local/mysql/bin/mysql "${DB_List_Before}" || exit 1
     lnmp stop
-    echo "Remove autostart..."
+    echo "正在移除旧数据库的开机自启..."
     Remove_StartUp mysql
     mv /usr/local/mysql /usr/local/mysql2mariadb${Upgrade_Date}
     mv /etc/init.d/mysql /usr/local/mysql2mariadb${Upgrade_Date}/init.dmysql2mariadb.bak.${Upgrade_Date}
@@ -29,21 +29,23 @@ Backup_MySQL2()
 
 Upgrade_MySQL2MariaDB()
 {
+    local install_db client_bin upgrade_bin safe_bin
+
     Check_DB
     if [ "${Is_MySQL}" = "n" ]; then
-        Echo_Red "Current database was MariaDB, Can't run MySQL2MariaDB upgrade script."
+        Echo_Red "当前数据库已经是 MariaDB，不能运行 MySQL 到 MariaDB 的迁移脚本。"
         exit 1
     fi
     Verify_DB_Password
 
     cur_mysql_version=`/usr/local/mysql/bin/mysql_config --version`
     mariadb_version=""
-    echo "Current MySQL Version:${cur_mysql_version}"
-    echo "You can get version number from https://downloads.mariadb.org/"
-    Echo_Yellow "Please enter MariaDB Version you want (10.11.x / 11.4.x / 11.8.x)."
-    read -p "(example: 11.8.8 ): " mariadb_version
+    echo "当前 MySQL 版本：${cur_mysql_version}"
+    echo "可在 https://downloads.mariadb.org/ 查看可用版本号。"
+    Echo_Yellow "请输入目标 MariaDB 版本（10.11.x / 11.4.x / 11.8.x）。"
+    read -p "版本号（例如 11.8.8）：" mariadb_version
     if [ "${mariadb_version}" = "" ]; then
-        echo "Error: You must input MariaDB Version!!"
+        echo "错误：必须输入 MariaDB 版本号！"
         exit 1
     fi
 
@@ -64,14 +66,14 @@ Upgrade_MySQL2MariaDB()
     esac
 
     if [[ "${DB_ARCH}" = "x86_64" || "${DB_ARCH}" = "aarch64" ]]; then
-        read -p "Using Generic Binaries [y/n]: " Bin
+        read -p "是否使用官方通用二进制包 [Y/n]（默认 y，推荐）：" Bin
         case "${Bin}" in
         [nN][oO]|[nN])
-            echo "You will install mariadb-${mariadb_version} from Source."
+            echo "将使用源码安装 MariaDB ${mariadb_version}。"
             Bin="n"
             ;;
         *)
-            echo "You will install mariadb-${mariadb_version} Using Generic Binaries."
+            echo "将使用官方通用二进制包安装 MariaDB ${mariadb_version}。"
             Bin="y"
             ;;
         esac
@@ -83,25 +85,25 @@ Upgrade_MySQL2MariaDB()
     echo "==========================="
 
     InstallInnodb="y"
-    Echo_Yellow "Do you want to install the InnoDB Storage Engine?"
-    read -p "(Default yes, if you want please enter: y , if not please enter: n): " InstallInnodb
+    Echo_Yellow "是否启用 InnoDB 存储引擎？"
+    read -p "请输入 y 或 n [默认 y]：" InstallInnodb
 
     case "${InstallInnodb}" in
     [yY][eE][sS]|[yY])
-        echo "You will install the InnoDB Storage Engine"
+        echo "将启用 InnoDB 存储引擎。"
         InstallInnodb="y"
         ;;
     [nN][oO]|[nN])
-        echo "You will NOT install the InnoDB Storage Engine!"
+        echo "将不启用 InnoDB 存储引擎！"
         InstallInnodb="n"
         ;;
     *)
-        echo "No input, The InnoDB Storage Engine will enable."
+        echo "使用默认项：启用 InnoDB 存储引擎。"
         InstallInnodb="y"
     esac
 
     echo "====================================================================="
-    echo "You will upgrade MySQL V${cur_mysql_version} to MariaDB V${mariadb_version}"
+    echo "即将把 MySQL ${cur_mysql_version} 迁移到 MariaDB ${mariadb_version}"
     echo "====================================================================="
 
     if [ -s /usr/local/include/jemalloc/jemalloc.h ] && lsof -n|grep "libjemalloc.so"|grep -q "mysqld"; then
@@ -114,7 +116,7 @@ Upgrade_MySQL2MariaDB()
 
     Press_Start
 
-    echo "============================check files=================================="
+    echo "============================ 检查文件 ============================"
     cd ${cur_dir}/src
     if [ "${Bin}" = "y" ]; then
         MariaDB_FileName="mariadb-${mariadb_version}-linux-systemd-${DB_ARCH}"
@@ -129,24 +131,24 @@ Upgrade_MySQL2MariaDB()
         "https://downloads.mariadb.org/rest-api/mariadb/${mariadb_version}/${MariaDB_FileName}.tar.gz" \
         "${MariaDB_FileName}.tar.gz"
     if [ $? -eq 0 ]; then
-        echo "Download ${MariaDB_FileName}.tar.gz successfully!"
+        echo "${MariaDB_FileName}.tar.gz 下载成功！"
     else
-        echo "You enter MariaDB Version was:"${mariadb_version}
-        Echo_Red "Error! You entered a wrong version number or can't download from mariadb mirror, please check!"
+        echo "输入的 MariaDB 版本为：${mariadb_version}"
+        Echo_Red "错误！版本号不正确或无法从 MariaDB 镜像下载，请检查！"
         sleep 5
         exit 1
     fi
-    echo "============================check files=================================="
+    echo "============================ 文件检查结束 ========================"
 
     Backup_MySQL2
 
     if [ "${Bin}" = "y" ]; then
-        Echo_Blue "[+] Starting upgrade mariadb-${Mariadb_Ver} Using Generic Binaries..."
+        Echo_Blue "[+] 正在使用官方通用二进制包安装 ${Mariadb_Ver}..."
         Tar_Cd ${MariaDB_FileName}.tar.gz
         mkdir /usr/local/mariadb
         mv ${MariaDB_FileName}/* /usr/local/mariadb/
     else
-        Echo_Blue "[+] Starting upgrade ${Mariadb_Ver} Using Source code..."
+        Echo_Blue "[+] 正在使用源码安装 ${Mariadb_Ver}..."
         Tar_Cd mariadb-${mariadb_version}.tar.gz mariadb-${mariadb_version}
         MariaDB_WITHSSL
 
@@ -250,36 +252,46 @@ EOF
         mkdir -p ${MariaDB_Data_Dir}
     fi
     chown -R mariadb:mariadb /usr/local/mariadb
-    /usr/local/mariadb/scripts/mysql_install_db --defaults-file=/etc/my.cnf --basedir=/usr/local/mariadb --datadir=${MariaDB_Data_Dir} --user=mariadb
+    install_db=$(First_Executable \
+        /usr/local/mariadb/scripts/mariadb-install-db /usr/local/mariadb/scripts/mysql_install_db \
+        /usr/local/mariadb/bin/mariadb-install-db /usr/local/mariadb/bin/mysql_install_db) || exit 1
+    "${install_db}" --defaults-file=/etc/my.cnf --basedir=/usr/local/mariadb \
+        --datadir="${MariaDB_Data_Dir}" --user=mariadb || exit 1
     chown -R mariadb:mariadb ${MariaDB_Data_Dir}
     \cp /usr/local/mariadb/support-files/mysql.server /etc/init.d/mariadb
     \cp ${cur_dir}/init.d/mariadb.service /etc/systemd/system/mariadb.service
     chmod 755 /etc/init.d/mariadb
+    Rewrite_MariaDB_Initd_Names /etc/init.d/mariadb /usr/local/mariadb/bin
 
     Mariadb_Sec_Setting
     /etc/init.d/mariadb start
 
-    echo "Restore backup databases..."
+    client_bin=$(First_Executable /usr/local/mariadb/bin/mariadb /usr/local/mariadb/bin/mysql) || exit 1
+    upgrade_bin=$(First_Executable /usr/local/mariadb/bin/mariadb-upgrade /usr/local/mariadb/bin/mysql_upgrade) || exit 1
+    safe_bin=$(First_Executable /usr/local/mariadb/bin/mariadbd-safe /usr/local/mariadb/bin/mysqld_safe) || exit 1
+    echo "正在导入数据库备份..."
     # 原实现在导入失败时只打印一行提示便继续往下跑，最终仍会输出
     # 「upgrade completed」。跨引擎迁移一旦导入不完整，后续步骤都建立在
     # 残缺数据之上，因此改为立即中止并保留 MySQL 原实例。
-    if ! /usr/local/mariadb/bin/mysql --defaults-file=~/.my.cnf < /root/mysql_all_backup${Upgrade_Date}.sql; then
+    if ! "${client_bin}" --defaults-file=~/.my.cnf < /root/mysql_all_backup${Upgrade_Date}.sql; then
         Echo_Red "备份导入失败，数据未完整迁移到 MariaDB。"
+        Restore_MySQL_Command_Links "/usr/local/mysql2mariadb${Upgrade_Date}"
         DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/mysql2mariadb${Upgrade_Date}"
         exit 1
     fi
-    echo "MariaDB databases import successfully."
+    echo "MariaDB 数据库导入成功。"
 
-    echo "Repair databases..."
-    if ! /usr/local/mariadb/bin/mysql_upgrade --defaults-file=~/.my.cnf; then
-        Echo_Red "mysql_upgrade 执行失败。"
+    echo "正在检查并修复数据库..."
+    if ! "${upgrade_bin}" --defaults-file=~/.my.cnf; then
+        Echo_Red "MariaDB 升级程序执行失败。"
+        Restore_MySQL_Command_Links "/usr/local/mysql2mariadb${Upgrade_Date}"
         DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/mysql2mariadb${Upgrade_Date}"
         exit 1
     fi
 
-    echo "Add to autostart..."
+    echo "正在加入开机自启..."
     StartUp mariadb
-    echo "Stopping MariaDB..."
+    echo "正在停止 MariaDB..."
     /etc/init.d/mariadb stop
     TempMycnf_Clean
     cd ${cur_dir} && rm -rf ${cur_dir}/src/mariadb-${mariadb_version}
@@ -292,14 +304,37 @@ EOF
     lnmp start
     # 成功判定不能只看文件是否存在：还须确认服务可连接、库列表无缺失、
     # 本地监听基线未被重写的 /etc/my.cnf 撤销。
-    if [[ -s /usr/local/mariadb/bin/mysql && -s /usr/local/mariadb/bin/mysqld_safe && -s /etc/my.cnf ]] \
-        && Verify_DB_Upgraded /usr/local/mariadb/bin/mysql "${DB_List_Before}" "${DB_Port}"; then
-        Echo_Green "======== upgrade MySQL to MariaDB completed ======"
+    if [[ -x "${client_bin}" && -x "${safe_bin}" && -s /etc/my.cnf ]] \
+        && Verify_DB_Upgraded "${client_bin}" "${DB_List_Before}" "${DB_Port}"; then
+        Echo_Green "======== MySQL 迁移到 MariaDB 完成 ======"
         rm -f "${DB_List_Before}"
     else
-        Echo_Red "======== upgrade MySQL to MariaDB failed ======"
-        Echo_Red "upgrade MariaDB log: /root/upgrade_mysql2mariadb${Upgrade_Date}.log"
+        Echo_Red "======== MySQL 迁移到 MariaDB 失败 ======"
+        Echo_Red "迁移日志：/root/upgrade_mysql2mariadb${Upgrade_Date}.log"
+        Restore_MySQL_Command_Links "/usr/local/mysql2mariadb${Upgrade_Date}"
         DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/mysql2mariadb${Upgrade_Date}"
         exit 1
     fi
+}
+
+# 跨引擎迁移调用 DB_Upgrade_Abort 后，原 MySQL 目录仍保留在备份路径中；
+# MariaDB 安装阶段已经改写了 /usr/bin/mysql 等入口，失败现场需要把这些入口
+# 重新指回原 MySQL，避免用户按提示回滚服务后命令仍调用失败的 MariaDB。
+Restore_MySQL_Command_Links()
+{
+    local old_dir="$1" command path target
+
+    for command in mariadb mariadb-dump mariadb-admin mariadb-check mariadb-upgrade mariadbd-safe; do
+        path="/usr/bin/${command}"
+        [ -L "${path}" ] || continue
+        target=$(readlink "${path}" 2>/dev/null)
+        case "${target}" in
+            /usr/local/mariadb/*) rm -f "${path}" ;;
+        esac
+    done
+
+    for command in mysql mysqldump mysqladmin mysqlcheck mysql_upgrade mysqld_safe myisamchk; do
+        [ -x "${old_dir}/bin/${command}" ] || continue
+        ln -sfn "/usr/local/mysql/bin/${command}" "/usr/bin/${command}" || return 1
+    done
 }

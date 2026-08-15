@@ -85,7 +85,7 @@ Discover_Sites() { return 0; }
 Find_Mysql_Client() { printf '%s' "${tmp}/mysql"; }
 Write_Systemd_Unit() { : > "${Systemd_Timer}"; }
 
-if printf 'bad\n3\n' | Cmd_Init >/dev/null 2>&1; then
+if printf 'y\nbad\n3\n' | Cmd_Init >/dev/null 2>&1; then
     bad "错误数据库凭据必须让 backup init 返回失败"
 elif [ -e "${Conf_File}" ] || [ -e "${My_Cnf}" ] || [ -e "${Systemd_Timer}" ]; then
     bad "错误数据库凭据不得留下配置或 timer"

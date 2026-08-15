@@ -57,6 +57,10 @@
 - 数据库 root 随机密码改用 `/dev/urandom` 生成，**不再打印到屏幕和安装日志**，
   写入 `/root/.lnmp_db_root_password`（0600）。
 - 默认**不部署** phpinfo、phpMyAdmin、探针等页面，需要时在 `lnmp.conf` 里开启。
+- default 兜底站点不执行 PHP：只放行 `phpinfo.php`、`redis.php`、
+  `memcached.php` 三个固定文件名和 phpMyAdmin 入口，其余 `.php` 一律返回 404
+  （Apache 系为 403），避免源码被当作静态文件下载。放行的三个文件只有对应
+  开关打开时才会写进去，没写就还是 404。
 - phpMyAdmin 开启后装在 `/usr/local/phpmyadmin`（网站根目录之外），
   访问路径随机生成（形如 `49763abb_phpmyadmin`），可用 `lnmp status` 查看；
   关闭时脚本会自动撤掉 Web 服务器上的映射。
@@ -78,7 +82,12 @@
 > - **已在 Debian 12 实测**：`install.sh lnmp` 完整安装（Nginx + MySQL 8.4 + PHP 8.3）、
 >   WordPress 主线、`install.sh db`、`pureftpd.sh`、`addons.sh` 的 Redis/Memcached、
 >   OpenResty 官方包安装、自定义端口、数据库升级、phpMyAdmin 升级、备份与恢复。
-> - **未实测**：LNMPA / LAMP（Apache 系）、CentOS/RHEL 系、非 x86_64 架构。
+> - **已在 Debian 13 实测**：完整安装与独立安装入口、卸载与重装回归、
+>   OpenResty 源码编译（官方仓库尚无 trixie 包，只能走 `ORMode=2`）、
+>   `Enable_Nginx_Lua=n` 的编译版 Nginx、default 站点与 phpMyAdmin 的访问边界、
+>   `lnmp backup` 的本地备份与恢复、age 与 GPG 加密、SFTP 与 FTP/FTPS 异地上传。
+> - **未实测**：LNMPA / LAMP（Apache 系）、CentOS/RHEL 系、非 x86_64 架构、
+>   Telegram 通知的真实 API 链路、公网环境下的 IP 证书签发。
 >
 > 无论哪种情况，部署到生产环境前都请先在测试机走一遍。
 
@@ -109,11 +118,11 @@
 ```bash
 # 方式一：clone（方便后续 git pull 更新）
 yum install -y git || apt-get install -y git
-git clone https://github.com/sirfromprc/lnmp.git lnmp
+git clone https://github.com/123456/lnmp.git lnmp
 cd lnmp
 
 # 方式二：下载 release 压缩包
-wget https://github.com/sirfromprc/lnmp/archive/refs/tags/v2.3.tar.gz
+wget https://github.com/123456/lnmp/archive/refs/tags/v2.3.tar.gz
 tar zxf v2.3.tar.gz
 cd lnmp-2.3
 ```
@@ -173,6 +182,13 @@ DB_Root_Password='改成你的密码' ./install.sh lnmp
 
 建议先 `screen -S lnmp`，SSH 断线后用 `screen -r lnmp` 接回，避免编译中断。
 安装前确认已装 `wget`。
+
+`uninstall.sh` 不会静默丢数据：数据库数据目录整体搬到
+`/root/databases_backup_<时间戳>`，搬不动就中止卸载、不删任何文件；
+`/etc/lnmp/` 下的备份配置搬到 `/root/lnmp_conf_backup_<时间戳>`，
+其中存放数据库口令的 `backup-mysql.cnf` 直接删除——它对应的实例已经没了，
+留着只会在重装后被当成新实例的凭据。网站文件与 `conf/vhost/` 下的站点配置
+不在自动保留范围内，请自行备份。
 
 **安装前可先编辑 `lnmp.conf`**：网站目录、数据库目录、Nginx 模块、PHP 编译参数、
 各种开关都在里面，每一项都写了用途。文件里所有变量都可以用环境变量覆盖，例如：
@@ -285,6 +301,11 @@ Pureftpd_Port=2121 Redis_Port=6380 ./install.sh lnmp
 > `sshd_config`。如果你已经把 SSH 换到别的端口，这里必须跟着改，
 > 否则装完防火墙只放行 22，你会被关在门外。
 >
+> `./install.sh lnmp|lnmpa|lamp|nginx|db` 在装依赖前会自动探测系统实际
+> 监听的 SSH 端口，和这里的 `SSH_Port` 对不上会直接拒绝安装；一致但仍是
+> 默认的 22 时会提示改端口的具体步骤，并要求显式确认才继续（交互式）。
+> `LNMP_Auto=y` 或无终端执行时跳过这一步，按 `SSH_Port` 的值直接放行。
+>
 > nginx 的 80/443 不在其中 —— 那两个端口散落在 nginx.conf、每个站点配置和
 > SSL 签发流程里，不是一个变量能覆盖的。
 
@@ -294,12 +315,18 @@ Pureftpd_Port=2121 Redis_Port=6380 ./install.sh lnmp
 
 | 路径 | 用途 |
 |---|---|
-| `/usr/local/nginx/conf/nginx.conf` | 主配置 |
+| `/usr/local/nginx/conf/nginx.conf` | 主配置；内置的 `listen 127.0.0.1:1008` server 是仅本机可访问的管理端口 |
 | `/usr/local/nginx/conf/vhost/` | 各站点配置，一个域名一个 `.conf` |
+| `/usr/local/nginx/conf/vhost/default.conf` | 静态兜底站点：`server_name _;`，接收匹配不上其它站点的请求（含直接用 IP 访问），装 nginx 时自动生成 |
 | `/usr/local/nginx/conf/rewrite/` | 伪静态规则 |
 | `/usr/local/nginx/conf/enable-php.conf` | PHP 处理（默认版本） |
 | `/usr/local/nginx/conf/enable-php8.4.conf` | 多版本 PHP 时按版本选用 |
 | `/home/wwwlogs/` | 访问与错误日志 |
+
+default 站点默认不加载 PHP，`.php` 请求返回 404；`/.well-known/` 使用高优先级
+规则放行 ACME HTTP-01 验证。启用 phpMyAdmin 后，访问片段才会带入 PHP 处理配置；
+关闭入口时两者一并撤下。默认访问与错误日志分别是
+`/home/wwwlogs/default.log`、`/home/wwwlogs/default.error.log`。
 
 **日常命令**
 
@@ -324,10 +351,17 @@ lnmp vhost del     # 删除站点（只删配置，不删网站文件）
 `/usr/local/nginx/conf/vhost/<域名>.conf`。**配置语法检查不通过会自动删除并报错退出**，
 不会留下一个起不来的 Nginx。
 
-**修改默认站点域名**：编辑 `/usr/local/nginx/conf/nginx.conf` 找到 `server_name`，
-改为实际域名（多个域名用空格分隔），然后执行 `/usr/local/nginx/sbin/nginx -s reload`。
+**修改默认站点域名**：编辑 `/usr/local/nginx/conf/vhost/default.conf` 找到
+`server_name _;`，改为实际域名（多个域名用空格分隔），然后执行
+`/usr/local/nginx/sbin/nginx -s reload`。一般不需要改。
 
-**日志切割**：`tools/cut_nginx_logs.sh`，可加进 crontab 每天执行。
+**default 兜底站点**：`lnmp vhost add` 输入 `default` 不会再走一遍完整问答——
+装 nginx 时已经自动建好了 `vhost/default.conf`，直接提示说明并告诉你申请
+IP 证书用 `lnmp ssl add`（域名填 `default`），详见 3.7。
+
+**日志格式与切割**：主配置定义 `main` 格式，新建站点和 default 站点显式使用；
+Cloudflare/反向代理取真实访客 IP 的配置示例见 `HowtoGuides.md`。日志切割使用
+`tools/cut_nginx_logs.sh`，可加进 crontab 每天执行。
 
 ### 3.2.1 OpenResty（Nginx 的可选替代）
 
@@ -368,6 +402,9 @@ configure 参数、自己的 Lua 库目录，以及 opm / luarocks 包。模块�
 数据目录可在 `lnmp.conf` 里用 `MySQL_Data_Dir` / `MariaDB_Data_Dir` 改；
 装完之后再改要按 5.x「如何更改网站目录和数据库数据目录」的步骤搬。
 下文命令一律以 MySQL 为例，MariaDB 把路径里的 `mysql` 换成 `mariadb` 即可。
+MariaDB 安装会优先使用 `mariadb`、`mariadb-dump` 等新程序名，同时保留
+`mysql`、`mysqldump` 等旧入口作为兼容包装器；已有脚本无需立即改名，且
+MariaDB 11.8 不会再因为旧入口打印 `Deprecated program name`。
 
 **日常命令**
 
@@ -497,6 +534,10 @@ lnmp dnsssl {cx|ali|cf|dp|he|gd|aws}          # DNS 验证，支持泛域名
 lnmp onlyssl {cx|ali|cf|dp|he|gd|aws}         # 只签证书，不改 Nginx 配置
 ```
 
+`lnmp ssl add` 只处理已有虚拟主机：输入域名后先检查站点配置，不存在则提示先执行
+`lnmp vhost add`，不会再次进入目录、伪静态、日志、Pathinfo 或 IPv6 等建站问答。
+站点目录和附加域名直接从现有配置读取。
+
 底层用 acme.sh，证书放在 `/usr/local/nginx/conf/ssl/`，会自动加续期任务。
 密钥类型使用 acme.sh 默认的 **EC-256**。
 
@@ -506,6 +547,9 @@ lnmp onlyssl {cx|ali|cf|dp|he|gd|aws}         # 只签证书，不改 Nginx 配�
 - 只有 Let's Encrypt 提供 IP 证书，且必须用 shortlived profile；
 - **有效期只有 7 天**，必须依赖自动续期，续期一断证书立刻过期；
 - 仅支持 IPv4，且必须是公网可达的地址，私有地址签不了。
+
+`default` 的证书来源菜单只显示 `1`（自有证书）和 `2`（Let's Encrypt），不显示
+不支持 IP 证书的 BuyPass 与 ZeroSSL。
 
 有域名就用域名，IP 证书只适合临时用。完整限制清单、NAT 环境的注意事项和
 私有 IP 的替代方案见 `HowtoGuides.md` 的 7.2。
@@ -561,10 +605,21 @@ lnmp backup restore web <域名> [批次]
 `run` 不带站点参数时按配置整体执行；带域名时只备份指定站点，此类部分备份不会推进
 网站备份周期、也不会清理任何旧批次，适合临时给某个站点补一份。
 
+`list` 会对缺少 `SHA256SUMS` 的批次标 `[不完整：缺校验清单]` —— 该清单只在批次内
+全部产物都成功后才写入，挑批次恢复时以它为准，不要只看文件个数。全部产物都失败
+（例如磁盘写满）时批次目录会被删掉，不会留下 0 个文件的空批次。
+
 `init` 之后本地备份就已经由 systemd timer 自动执行。异地上传默认关闭，
 开启需要一台独立的备份服务器并在两侧各配一次 ——
 备份账号、chroot、专用密钥、主机指纹核对和排查表都写在
 `HowtoGuides.md` 的「8.5 异地备份（SFTP）」，照着做即可。
+只有 FTP 服务器可用时改 `Remote_Protocol` 为 `ftps`（或明文 `ftp`），见 8.5.6。
+
+备份加密同样默认关闭，支持 age 与 GPG（`Enable_Encrypt`、`Encrypt_Tool`、
+`Encrypt_Recipient`、`Encrypt_Identity`）。加密在压缩之后、上传之前做，
+校验清单针对加密后的文件计算，`restore` 与 `test` 会自动解密。
+备份要送到自己控制不了的机器上时才需要开，具体步骤见
+`HowtoGuides.md` 的「8.5.7 备份加密（age 或 GPG）」。
 
 ### 3.11 防火墙
 
@@ -634,7 +689,8 @@ tgnotice "原样文本 < & >" text       # 不做格式解析
 ./install.sh phpmyadmin
 ```
 
-安装后可随时关闭或重新开启公网入口，程序、配置和随机访问路径不会删除：
+安装后可随时关闭或重新开启公网入口，程序、配置和随机访问路径不会删除。
+关闭时 default 站点同时撤下 PHP 处理配置，恢复为静态兜底站点：
 
 ```bash
 lnmp phpmyadmin disable
@@ -765,9 +821,19 @@ lnmp vhost del     # 删除（只删配置，网站文件保留）
 
 ### 如何修改默认虚拟主机的域名？
 
-编辑 `/usr/local/nginx/conf/nginx.conf`，找到 `server_name`，
-改为实际域名（多个域名用空格分隔），保存后执行
-`/usr/local/nginx/sbin/nginx -s reload`。
+默认（兜底）站点的配置在 `/usr/local/nginx/conf/vhost/default.conf`
+（不是 `nginx.conf` 本体——那里现在是仅本机可访问的管理端口，见下一条），
+找到 `server_name _;` 改为实际域名（多个域名用空格分隔），保存后执行
+`/usr/local/nginx/sbin/nginx -s reload`。一般不需要改：匹配不上其它
+已建站点的请求（含直接用 IP 访问）本来就该落到这里，这也是 `lnmp vhost add`
+输入 `default` 时看到的那个站点。
+
+### `/usr/local/nginx/conf/nginx.conf` 里 `listen 127.0.0.1:1008` 那个 server 是干什么的？
+
+本机专用的管理端口，只能从 `127.0.0.1` 访问，外部连不进来：内置一个
+`/lua` 示例接口（`Enable_Nginx_Lua=n` 时装的时候会自动去掉，因为编译出来
+的 nginx 没有对应模块），以及 `/nginx_status`（Nginx 连接数等运行状态）。
+公网站点、phpMyAdmin 都不挂在这个端口上，改错了也不会影响对外访问。
 
 ### 如何启动/停止 Nginx、PHP-FPM、MySQL？
 
@@ -1051,6 +1117,20 @@ lnmp ftp show      # 查看用户详情
 多半是绕过 `lnmp` 直接用 `/etc/init.d/xxx start` 启的。用 `lnmp xxx restart`
 重启一次即可让 systemd 重新接管。日常运维请统一用 `lnmp`。
 
+### 反过来：`systemctl` 显示 active，但端口没监听、进程也不在？
+
+看一眼 `systemctl show nginx -p ActiveEnterTimestamp`，如果时间停在上一次
+开机而不是最近一次安装，那是 systemd 里留着的陈旧状态：服务被 `lnmp stop`
+或 init 脚本停掉时 systemd 并不知情，unit 会一直停在 `active (exited)`，
+之后的 `systemctl start` 认为已经在跑就直接跳过。手工恢复：
+
+```bash
+systemctl stop nginx && systemctl reset-failed nginx
+systemctl start nginx && systemctl is-active nginx
+```
+
+卸载流程现在会先按 systemd 停一次再取消开机启动，新装环境不会再出现这种状态。
+
 ### 备份能只备数据库不备网站吗？
 
 可以。`/etc/lnmp/backup.conf` 里站点条目的数据库名留空就只备文件，
@@ -1065,7 +1145,8 @@ lnmp ftp show      # 查看用户详情
 2. 确认云服务器安全组放行了 80/443；
 3. `lnmp backup init` 把备份配起来，并验证一次 `lnmp backup test`；
 4. 有域名就 `lnmp vhost add` 建站并签证书，别长期用默认站点；
-5. 如果 SSH 不在 22 端口，**装之前**就要在 `lnmp.conf` 里改 `SSH_Port`。
+5. 如果 SSH 不在 22 端口，**装之前**就要在 `lnmp.conf` 里改 `SSH_Port`——
+   交互式安装时脚本会自动核对，对不上会直接拒绝安装。
 
 ### 性能优化从哪里入手？
 

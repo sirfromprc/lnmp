@@ -2,13 +2,13 @@
 
 Backup_MySQL()
 {
-    echo "Starting backup all databases..."
-    echo "If the database is large, the backup time will be longer."
+    echo "正在备份全部数据库..."
+    echo "数据库较大时，备份所需时间会更长。"
     /usr/local/mysql/bin/mysqldump --defaults-file=~/.my.cnf --all-databases > /root/mysql_all_backup${Upgrade_Date}.sql
     if [ $? -eq 0 ]; then
-        echo "MySQL databases backup successfully.";
+        echo "MySQL 数据库备份成功。";
     else
-        echo "MySQL databases backup failed,Please backup databases manually!"
+        echo "MySQL 数据库备份失败，请手动备份数据库！"
         exit 1
     fi
     # 退出码为 0 不代表备份完整，另需确认结束标记；
@@ -29,12 +29,12 @@ Backup_MySQL()
 Upgrade_MySQL80()
 {
     if [ "${Bin}" = "y" ]; then
-        Echo_Blue "Starting upgrade MySQL ${mysql_version} Using Generic Binaries..."
+        Echo_Blue "正在使用官方通用二进制包升级 MySQL ${mysql_version}..."
         Tar_Cd ${mysql_src}
         mkdir /usr/local/mysql
         mv mysql-${mysql_version}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}/* /usr/local/mysql/
     else
-        Echo_Blue "Starting upgrade MySQL ${mysql_version} Using Source code..."
+        Echo_Blue "正在使用源码升级 MySQL ${mysql_version}..."
         Tar_Cd ${mysql_src} mysql-${mysql_version}
         Install_Boost
         mkdir build && cd build
@@ -151,12 +151,12 @@ EOF
 Upgrade_MySQL84()
 {
     if [ "${Bin}" = "y" ]; then
-        Echo_Blue "Starting upgrade MySQL ${mysql_version} Using Generic Binaries..."
+        Echo_Blue "正在使用官方通用二进制包升级 MySQL ${mysql_version}..."
         Tar_Cd ${mysql_src}
         mkdir /usr/local/mysql
         mv mysql-${mysql_version}-linux-glibc2.17-${DB_ARCH}/* /usr/local/mysql/
     else
-        Echo_Blue "Starting upgrade MySQL ${mysql_version} Using Source code..."
+        Echo_Blue "正在使用源码升级 MySQL ${mysql_version}..."
         Tar_Cd ${mysql_src} mysql-${mysql_version}
         Install_Boost
         mkdir build && cd build
@@ -281,20 +281,20 @@ Restore_Start_MySQL()
     MySQL_Sec_Setting
     /etc/init.d/mysql start
 
-    echo "Restore backup databases..."
+    echo "正在恢复数据库备份..."
     if ! /usr/local/mysql/bin/mysql --defaults-file=~/.my.cnf < /root/mysql_all_backup${Upgrade_Date}.sql; then
         Echo_Red "备份导入失败，数据未完整恢复。"
         DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/oldmysql${Upgrade_Date}"
         exit 1
     fi
-    echo "Repair databases..."
+    echo "正在检查并修复数据库..."
     MySQL_Ver_Com=$(Version_Compare 8.0.16 ${mysql_version})
     if [ "${MySQL_Ver_Com}" != "1" ]; then
         /etc/init.d/mysql stop
-        echo "Upgring MySQL..."
+        echo "正在升级 MySQL 系统表..."
         /usr/local/mysql/bin/mysqld --user=mysql --upgrade=FORCE &
         mysqld_pid=$!
-        echo "Waiting for upgrade to complete..."
+        echo "正在等待升级完成..."
         # --upgrade=FORCE 先完成升级再开始对外服务，因此 ping 成功即表示升级结束。
         #
         # 原实现固定 sleep 180 后直接 shutdown：大库可能尚未升完就被中断，
@@ -332,11 +332,11 @@ Restore_Start_MySQL()
     # 本地监听基线未被重写的 /etc/my.cnf 撤销。
     if [[ -s /usr/local/mysql/bin/mysql && -s /usr/local/mysql/bin/mysqld_safe && -s /etc/my.cnf ]] \
         && Verify_DB_Upgraded /usr/local/mysql/bin/mysql "${DB_List_Before}" "${DB_Port}" "${DB_X_Port}"; then
-        Echo_Green "======== upgrade MySQL completed ======"
+        Echo_Green "======== MySQL 升级完成 ======"
         rm -f "${DB_List_Before}"
     else
-        Echo_Red "======== upgrade MySQL failed ======"
-        Echo_Red "upgrade MySQL log: /root/upgrade_mysq${Upgrade_Date}.log"
+        Echo_Red "======== MySQL 升级失败 ======"
+        Echo_Red "MySQL 升级日志：/root/upgrade_mysq${Upgrade_Date}.log"
         DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/oldmysql${Upgrade_Date}"
         exit 1
     fi
@@ -346,7 +346,7 @@ Upgrade_MySQL()
 {
     Check_DB
     if [ "${Is_MySQL}" = "n" ]; then
-        Echo_Red "Current database was MariaDB, Can't run MySQL upgrade script."
+        Echo_Red "当前数据库是 MariaDB，不能运行 MySQL 升级脚本。"
         exit 1
     fi
 
@@ -354,17 +354,17 @@ Upgrade_MySQL()
 
     cur_mysql_version=`/usr/local/mysql/bin/mysql_config --version`
     mysql_version=""
-    echo "Current MYSQL Version:${cur_mysql_version}"
-    echo "You can get version number from https://dev.mysql.com/downloads/mysql/"
-    Echo_Yellow "Please input MySQL Version you want (8.0.x or 8.4.x only)."
-    read -p "(example: 8.4.7 ): " mysql_version
+    echo "当前 MySQL 版本：${cur_mysql_version}"
+    echo "可在 https://dev.mysql.com/downloads/mysql/ 查看可用版本号。"
+    Echo_Yellow "请输入目标 MySQL 版本（仅支持 8.0.x 或 8.4.x）。"
+    read -p "版本号（例如 8.4.7）：" mysql_version
     if [ "${mysql_version}" = "" ]; then
-        echo "Error: You must input MySQL Version!!"
+        echo "错误：必须输入 MySQL 版本号！"
         exit 1
     fi
 
     if [ "${mysql_version}" == "${cur_mysql_version}" ]; then
-        echo "Error: The upgrade MYSQL Version is the same as the old Version!!"
+        echo "错误：目标 MySQL 版本与当前版本相同！"
         exit 1
     fi
 
@@ -378,18 +378,18 @@ Upgrade_MySQL()
     fi
 
     if [[ "${DB_ARCH}" = "x86_64" || "${DB_ARCH}" = "aarch64" ]]; then
-        read -p "Using Generic Binaries [y/n]: " Bin
+        read -p "是否使用官方通用二进制包 [Y/n]（默认 y，推荐）：" Bin
         case "${Bin}" in
         [yY][eE][sS]|[yY])
-            echo "You will install MySQL ${mysql_version} Using Generic Binaries."
+            echo "将使用官方通用二进制包安装 MySQL ${mysql_version}。"
             Bin="y"
             ;;
         [nN][oO]|[nN])
-            echo "You will install MySQL ${mysql_version} Source code."
+            echo "将使用源码安装 MySQL ${mysql_version}。"
             Bin="n"
             ;;
         *)
-            echo "Default install MySQL ${mysql_version} Using Generic Binaries."
+            echo "使用默认项：官方通用二进制包安装 MySQL ${mysql_version}。"
             Bin="y"
             ;;
         esac
@@ -401,20 +401,20 @@ Upgrade_MySQL()
     echo "==========================="
 
     InstallInnodb="y"
-    Echo_Yellow "Do you want to install the InnoDB Storage Engine?"
-    read -p "(Default yes,if you want please enter: y , if not please enter: n): " InstallInnodb
+    Echo_Yellow "是否启用 InnoDB 存储引擎？"
+    read -p "请输入 y 或 n [默认 y]：" InstallInnodb
 
     case "${InstallInnodb}" in
     [yY][eE][sS]|[yY])
-        echo "You will install the InnoDB Storage Engine"
+        echo "将启用 InnoDB 存储引擎。"
         InstallInnodb="y"
         ;;
     [nN][oO]|[nN])
-        echo "You will NOT install the InnoDB Storage Engine!"
+        echo "将不启用 InnoDB 存储引擎！"
         InstallInnodb="n"
         ;;
     *)
-        echo "No input, The InnoDB Storage Engine will enable."
+        echo "使用默认项：启用 InnoDB 存储引擎。"
         InstallInnodb="y"
         ;;
     esac
@@ -422,12 +422,12 @@ Upgrade_MySQL()
     # mysql_short_version 已在前面的版本校验处求过，此处不再重复计算
 
     echo "=================================================="
-    echo "You will upgrade MySQL Version to ${mysql_version}"
+    echo "即将把 MySQL 升级到 ${mysql_version}"
     echo "=================================================="
 
     Press_Start
 
-    echo "============================check files=================================="
+    echo "============================ 检查文件 ============================"
     cd ${cur_dir}/src
 
     if [[ "${Bin}" = "y" && "${mysql_short_version}" = "8.0" ]]; then
@@ -452,24 +452,24 @@ Upgrade_MySQL()
     Download_Verified mysql "${mysql_version}" \
         "https://cdn.mysql.com/Downloads/MySQL-${mysql_short_version}/${mysql_src}" "${mysql_src}"
     if [ $? -eq 0 ]; then
-        echo "${mysql_src} ok"
+        echo "${mysql_src} 检查通过"
     else
         Download_Verified mysql "${mysql_version}" \
             "https://cdn.mysql.com/archives/mysql-${mysql_short_version}/${mysql_src}" "${mysql_src}"
         if [ $? -ne 0 ]; then
-            echo "You enter MySQL Version was: ${mysql_version}"
-            Echo_Red "Error! MySQL ${mysql_version} 下载或校验失败。"
+            echo "输入的 MySQL 版本为：${mysql_version}"
+            Echo_Red "错误！MySQL ${mysql_version} 下载或校验失败。"
             sleep 5
             exit 1
         fi
     fi
     Check_Openssl
     if [ "${Bin}" != "y" ]; then
-        Echo_Blue "Install dependent packages..."
+        Echo_Blue "正在安装依赖包..."
         . ${cur_dir}/include/only.sh
         DB_Dependent
     fi
-    echo "============================check files=================================="
+    echo "============================ 文件检查结束 ========================"
 
     Backup_MySQL
     if [ "${mysql_short_version}" = "8.0" ]; then

@@ -1,7 +1,7 @@
 # LNMP 2.3 从零搭建 WordPress 生产环境
 
-> 本文的每一条命令都在 **Debian 12 (bookworm) / x86_64 / 6G 内存 / 4 核** 上真实执行过，
-> 输出为实际回显（涉及真实地址的部分已脱敏）。
+> 本文的每一条命令都在 **Debian 12、Debian 13 / x86_64 / 6G 内存 / 4 核** 上真实执行过，
+> 输出为实际回显。
 > 环境组合：nginx 1.30.4 + PHP 8.3.33 + MySQL 8.4.7（官方通用二进制）
 > + Redis 8.10.0 + phpMyAdmin 5.2.3 + WordPress 7.0.3。
 >
@@ -33,10 +33,10 @@
 |---|---|---|
 | 系统 | Debian 12 / 13，Ubuntu 18.04+，EL 8+ | 主要验证目标是 Debian 系 |
 | 架构 | x86_64 | 官方 MySQL 通用二进制只提供 x86_64；其他架构会回退到源码编译 |
-| 内存 | **≥ 4G** | 编译 nginx（含 Lua/Brotli/OpenSSL）与 PHP 很吃内存。2G 会 OOM |
+| 内存 | **≥ 2G** | 编译 nginx（含 Lua/Brotli/OpenSSL）与 PHP 很吃内存。过小内存编译可能会失败 |
 | 磁盘 | ≥ 10G 可用 | 源码包 + 编译产物；仅 MySQL 二进制包就有 912M |
 | 机器状态 | **必须是干净机器** | 安装会卸载系统自带的 nginx/php/apache/mysql 并接管防火墙 |
-| 网络 | 能访问 nginx.org / php.net / cdn.mysql.com / github.com | 全部走上游官方源 |
+| 网络 | 能访问 nginx.org / php.net / cdn.mysql.com / github.com | 全部走上游官方源，不考虑国内能否访问问题 |
 
 > 注意：**不要在已有业务的服务器上直接跑。** 脚本会移除系统包管理器装的
 > Web/DB 组件，并写入 nftables 规则。
@@ -44,7 +44,7 @@
 ### 1.2 编译耗时参考
 
 4 核 6G 的机器上，从零完整安装约 **9 分钟**（MySQL 走二进制不编译）。
-如果选择源码编译 MySQL，再加 30-60 分钟。
+如果选择源码编译 MySQL，再加 30-60 分钟，且有可能失败。
 
 ### 1.3 获取代码
 
@@ -67,10 +67,16 @@ chmod +x install.sh addons.sh uninstall.sh upgrade.sh
 ./install.sh lnmp
 ```
 
-依次会问：数据库版本 → 是否用通用二进制 → 数据库 root 密码 →
-是否启用 InnoDB → PHP 版本 → 内存分配器。
+先提醒检查 `lnmp.conf`（端口、目录等）并要求输入 `y` 才继续，然后自动探测
+系统实际监听的 SSH 端口：和 `lnmp.conf` 的 `SSH_Port` 对不上会直接拒绝；
+一致但仍是默认的 22 会提示改端口的步骤并要求再输入一次 `y`。
+之后依次会问：数据库版本 → 是否用通用二进制 → 数据库 root 密码 →
+是否启用 InnoDB → PHP 版本 → 内存分配器。选完会打印一份完整摘要（版本、
+编译参数、即将放行/阻断的端口），要求输入 `y` 确认后才真正开始装依赖、
+编译——这一步之前如果要改选择，Ctrl+C 退出重新执行即可，还没有任何改动
+落到系统上。
 
-### 2.2 非交互安装（推荐用于自动化）
+### 2.2 非交互安装（站群自动部署）
 
 全部选项都可以用环境变量传入，一条命令跑完：
 
@@ -90,7 +96,7 @@ DB_Root_Password='换成你自己的强密码' \
 
 | 变量 | 值 | 含义 |
 |---|---|---|
-| `LNMP_Auto` | `y` | 跳过"按任意键继续" |
+| `LNMP_Auto` | `y` | 跳过安装前的所有交互确认（检查 lnmp.conf、SSH 端口核对、最终摘要确认） |
 | `DBSelect` | `1`~`5` | 1=MySQL8.0 **2=MySQL8.4(默认)** 3=MariaDB10.11 4=MariaDB11.4 5=MariaDB11.8 |
 | `Bin` | `y`/`n` | `y`=下载官方通用二进制（快，几分钟）；`n`=源码编译（慢，30-60 分钟） |
 | `PHPSelect` | `1`~`6` | 1=8.0 2=8.1 3=8.2 **4=8.3(默认)** 5=8.4 6=8.5 |
@@ -267,7 +273,7 @@ nginx -V 2>&1 | tr ' ' '\n' | grep -E "lua|brotli|cache_purge|http_v2|http_v3|op
 验证 Lua 确实能在真实 worker 里跑（不是只看模块编进去了）：
 
 ```bash
-curl http://127.0.0.1/lua
+curl http://127.0.0.1:1008/lua
 # hello world
 ```
 
@@ -334,6 +340,37 @@ Redis 的安全默认值（本包已配好，不要随意放开）：
 > 另外：**只要暴露到回环以外的任何网卡，必须先设 `requirepass`** ：
 > 历史上未授权 Redis 被用来写 SSH 公钥的案例非常多。
 
+即使只回环监听，多站点同机或者不放心的话也建议直接设密码，步骤如下：
+
+```bash
+# 1. 生成一个随机密码，写入 requirepass（配置文件属主是 root:redis，权限 640）。
+#    先删掉已有的 requirepass 行（不管是注释掉的默认值还是之前设过的密码）
+#    再追加一行，不依赖不同 Redis 版本默认注释的具体措辞，重复执行也安全。
+REDISPW=$(openssl rand -base64 24)
+sed -i '/^[[:space:]]*#\?[[:space:]]*requirepass[[:space:]]/d' /usr/local/redis/etc/redis.conf
+echo "requirepass ${REDISPW}" >> /usr/local/redis/etc/redis.conf
+echo "记下这个密码，后面 wp-config.php 要用：${REDISPW}"
+
+# 2. 重启使配置生效
+/etc/init.d/redis restart
+
+# 3. 验证：不带密码应该被拒绝，带密码才能执行命令
+redis-cli ping
+# (error) NOAUTH Authentication required.
+redis-cli -a "${REDISPW}" ping
+# Warning: Using a password with '-a' option on the command line interface can be insecure.
+# PONG
+```
+
+设了密码之后，WordPress 那边的 redis-cache 插件也要同步改，
+在 [5.3 生成 wp-config.php](#53-生成-wp-configphp) 的 Redis 常量块里加一行：
+
+```php
+define( 'WP_REDIS_PASSWORD', '上面生成的密码' );
+```
+
+不改这一行的话，插件仍按无密码连接，会直接报连接失败。
+
 ---
 
 ## 四、创建站点
@@ -348,21 +385,24 @@ lnmp vhost add
 
 | # | 提示 | WordPress 场景填什么 |
 |---|---|---|
-| 1 | `Please enter domain` | `wp.example.com` |
-| 2 | `Enter more domain name` | 回车跳过，或填 `example.com` |
-| 3 | `Please enter the directory` | 回车用默认 `/home/wwwroot/<域名>` |
-| 4 | `Allow Rewrite rule? (y/n)` | **`y`** |
-| 5 | `Please enter the rewrite of programme` | **`wordpress`** |
-| 6 | `Enable PHP Pathinfo? (y/n)` | `n`（WordPress 不需要） |
-| 7 | `Allow access log? (y/n)` | `y` |
-| 8 | `Enter access log filename` | 回车用默认 |
-| 9 | `Enable IPv6? (y/n)` | 有 IPv6 就 `y` |
-| 10 | `Create database and MySQL user` | **`y`** |
-| 11 | `Enter current root password` | 数据库 root 密码（不回显） |
-| 12 | `Enter database name` | `wpdemo`（库名与用户名相同） |
-| 13 | `Please enter password for mysql user` | 库用户密码（不回显） |
-| 14 | `Add SSL Certificate (y/n)` | 先 `n`，第七章单独做 |
-| 15 | `Press any key to start` | 任意键 |
+| 1 | `请输入域名(示例: www.example.com):` | `wp.example.com` |
+| 2 | `请输入更多域名(示例: example.com sub.example.com，直接回车跳过):` | 回车跳过，或填 `example.com` |
+| 3 | `默认目录(直接回车使用): /home/wwwroot/<域名>` | 回车用默认 `/home/wwwroot/<域名>` |
+| 4 | `是否开启伪静态规则? (y/n，默认 n)` | **`y`** |
+| 5 | `(默认 other，直接回车使用):` | **`wordpress`** |
+| 6 | `是否开启 PHP Pathinfo? (y/n，默认 n)` | `n`（WordPress 不需要） |
+| 7 | `是否开启访问日志? (y/n，默认 n)` | `y` |
+| 8 | `请输入访问日志文件名(默认: <域名>.log，直接回车使用):` | 回车用默认 |
+| 9 | `是否开启 IPv6? (y/n，默认 n)` | 有 IPv6 就 `y` |
+| 10 | `是否创建同名数据库和 MySQL 用户? (y/n，默认 n)` | **`y`** |
+| 11 | `请输入当前数据库 root 密码（输入不回显）:` | 数据库 root 密码（不回显） |
+| 12 | `请输入数据库名（只允许字母、数字和下划线）:` | `wpdemo`（库名与用户名相同） |
+| 13 | `请输入数据库用户 <库名> 的密码（输入不回显）:` | 库用户密码（不回显） |
+| 14 | `是否添加 SSL 证书? (y/n，默认 n)` | 先 `n`，第七章单独做 |
+| 15 | `按任意键开始创建虚拟主机，或按 Ctrl+C 取消...` | 任意键 |
+
+第 5 步之前会先列出已内置的伪静态规则名（`wordpress`、`typecho`、`discuzx` 等），
+第 8 步只在第 7 步选了 `y` 时出现；第 11–13 步只在第 10 步选了 `y` 时出现。
 
 > **第 5 步的 `wordpress` 是关键。** 它会引用内置的
 > `/usr/local/nginx/conf/rewrite/wordpress.conf`：
@@ -372,7 +412,7 @@ lnmp vhost add
 > ```
 > 这正是 WordPress 官方推荐的 nginx 伪静态写法。
 
-成功后会打印站点信息，并且能看到 `Add database Sucessfully.`。
+成功后会打印站点信息，并且能看到 `数据库创建成功。`。
 
 ### 4.2 非交互创建
 
@@ -381,9 +421,10 @@ printf 'wp.example.com\n\n\ny\nwordpress\nn\ny\n\nn\ny\n数据库root密码\nwpd
   | lnmp vhost add
 ```
 
-> 注意：**输入项数量必须精确**。少喂一项会在读取时报
-> "遇到 EOF：标准输入已经没有内容了" 并退出（这是有意的快速失败，
-> 早期版本在这里会无限刷屏）。
+> 注意：**输入项数量必须精确**。域名、数据库 root 密码、数据库名、库用户密码
+> 这四项少喂时会报 `读取<项目>时遇到 EOF —— 标准输入已经没有内容了。` 并退出
+> （这是有意的快速失败，早期版本在这里会无限刷屏）；其余选项少喂时按默认值处理，
+> 不会报错，得到的站点配置与预期不符。
 >
 > 注意：**装了多个 PHP 版本时会多一步**（第 9 步后会问选哪个 PHP），
 > 序列要相应调整。单版本时不会问。
@@ -759,8 +800,12 @@ define( 'DISABLE_WP_CRON', true );
 lnmp ssl add
 ```
 
-交互顺序（共 9 步）：域名 → 附加域名 → 目录 → 允许 rewrite → 访问日志 →
-pathinfo → IPv6 → **证书来源(1-4)** → 是否 301 跳转。
+`ssl add` 只给**已经存在的站点**添加证书。输入域名后会先检查对应虚拟主机配置；
+不存在就提示先执行 `lnmp vhost add` 并退出，不会在证书流程中创建网站或重新询问
+目录、rewrite、日志、Pathinfo、IPv6。现有站点的目录和附加域名会从配置中读取。
+
+交互顺序：域名 → **证书来源(1-4)** → 是否 301 跳转。选择自有证书时会继续询问
+证书和私钥路径；选择 CA 时按需询问账户邮箱。
 
 证书来源：`1`=用自己的证书 `2`=Let's Encrypt `3`=BuyPass `4`=ZeroSSL。
 选 2-4 时会要一个邮箱（**不能用 `example.com` 这类保留域名**，
@@ -800,7 +845,8 @@ Let's Encrypt 会直接拒绝并报 `invalidContact`）。
 
 ### 7.2 没有域名，仅使用 IP 的 `default` 站点
 
-在域名处输入 **`default`**，本包会自动转为 **IP 地址证书**流程，
+在域名处输入 **`default`**，菜单只显示自有证书和 Let's Encrypt 两项；选择
+Let's Encrypt 后，本包会自动转为 **IP 地址证书**流程，
 并打印完整说明。该方式存在以下硬性限制，**申请前必须确认**：
 
 | 限制 | 说明 |
@@ -808,7 +854,7 @@ Let's Encrypt 会直接拒绝并报 `invalidContact`）。
 | **有效期只有 7 天** | Let's Encrypt 的 shortlived profile；只有该 profile 支持 IP 地址 |
 | **必须依赖自动续期** | 本包按 `--days 6` 申请（比有效期提前 1 天续）。**不得能关掉 acme.sh 的 cron**，否则一周内证书过期、站点不可访问 |
 | **只支持 IPv4** | IPv6 地址申请不了 |
-| **只能用 Let's Encrypt** | BuyPass 与 ZeroSSL 都不提供 IP 证书。选了会自动改用 LE |
+| **只能用 Let's Encrypt** | BuyPass 与 ZeroSSL 都不提供 IP 证书，因此 `default` 菜单不显示这两项 |
 | **必须是公网 IP** | 私有地址（10.x / 172.16-31.x / 192.168.x / 127.x / 169.254.x）以及运营商级 NAT 的 100.64-127.x，**任何公信 CA 都不会签发** |
 | **80 端口要公网可达** | HTTP-01 验证 |
 
@@ -901,6 +947,10 @@ lnmp database import <库名> <文件.sql.gz>   # 导入到已存在的库
   导入会覆盖库中的同名表，执行前有 10 秒倒计时可以 Ctrl+C 取消。
 - 全部 `database` 子命令成功返回 0、失败返回非 0，可直接用于脚本判断。
 
+MariaDB 11.8 会在直接调用旧程序名时打印弃用提示。新版安装流程内部优先调用
+`mariadb`、`mariadb-dump`、`mariadb-admin` 等新名称，同时用包装器保留
+`mysql`、`mysqldump`、`mysqladmin` 等旧命令，因此原有运维脚本仍可继续使用。
+
 ### 8.4 备份
 
 推荐用内置的备份命令，它会自动导出数据库与网站程序、生成校验清单，
@@ -945,7 +995,12 @@ lnmp backup test          # 试恢复验证：导入临时库校验后删除
 - 批次目录用秒级时间戳，同一天跑多次不会互相覆盖；保留策略删除的是
   所有早于保留期的批次，不是只删“正好第 N 天”那一批。
 - 每个批次带 `SHA256SUMS`，`restore` 与 `test` 会先校验再动手，
-  校验不过直接拒绝。
+  校验不过直接拒绝。这份清单只在批次内全部产物都成功之后才写入，
+  所以它也是完整性判据：`lnmp backup list` 对缺少清单的批次标
+  `[不完整：缺校验清单]`，挑批次恢复时不要只看文件个数。
+- 中途失败的批次不会留下空目录：全部产物都失败时（例如目标磁盘写满）
+  批次目录会被删掉；部分成功时保留已产出的文件并标为不完整，
+  同时跳过旧批次清理，已有的恢复点不受影响。
 - 异地上传默认关闭，开启方法和备份机侧的配置见 [8.5 异地备份（SFTP）](#85-异地备份sftp)。
   上传先传到远端 `.incoming/<批次>/`，逐个核对大小无误后才改名到正式目录，
   最后才清理远端旧批次 —— 传输中断不会损失已有的恢复点。
@@ -988,10 +1043,10 @@ tar czf /root/backup/wp-content-$(date +%F).tar.gz \
 
 ### 8.5 异地备份（SFTP）
 
-> **本节与全文其余部分不同：这些命令没有在真机上完整跑过。**
-> 备份逻辑本身经过定向测试（含模拟的 SFTP 远端），但真实备份服务器上的
-> 上传、目录改名和 systemd timer 触发尚未验证，见 `todo.md` 的 `TODO-BK-001`。
-> 第一次配置时请按 8.5.4 的顺序逐步确认，不要直接依赖定时任务。
+> 上传、大小核对、目录改名与 systemd timer 安装已在受限 `internal-sftp`
+> 账号（chroot + `ForceCommand`）上实测通过。仍建议第一次配置时按 8.5.4
+> 的顺序逐步确认，不要直接依赖定时任务 —— 出错多半出在备份机侧的
+> 权限与主机指纹上，逐步走一遍能立刻定位。
 
 本地备份在 `lnmp backup init` 之后就已经自动执行了。异地上传默认关闭，
 需要一台**独立的备份服务器**，并在两侧各配一次。
@@ -1196,7 +1251,71 @@ Remote_Ftp_CA=""              # 自签证书填 CA 路径，不要直接关校�
 选 `ftp` 时每次运行都会在日志里留下明文告警。条件允许就换 `ftps`，
 再不济也可以先建 SSH 隧道再让 FTP 跑在隧道里。
 
-#### 8.5.7 关于远端校验的边界
+#### 8.5.7 备份加密（age 或 GPG）
+
+默认不加密。备份要送到自己控制不了的机器上（第三方机房、对象存储、
+别人的 FTP）时才需要开，本机磁盘上的备份加密只防得住磁盘被整块拿走。
+
+加密在压缩之后、上传之前做：`db-<库>.sql.gz` 变成 `db-<库>.sql.gz.enc`，
+明文随即删除，`SHA256SUMS` 记的是加密后的文件。`restore` 与 `test` 会自动
+解密，不需要额外参数。
+
+**age（推荐，密钥短、命令简单）**：
+
+```bash
+apt-get install -y age            # Debian/Ubuntu；EL 系在 EPEL 里（dnf install epel-release age）
+
+# 生成密钥对。公钥（age1... 那一行）用来加密，私钥文件用来解密
+mkdir -p /root/.config/lnmp
+age-keygen -o /root/.config/lnmp/backup-age.key
+chmod 600 /root/.config/lnmp/backup-age.key
+# 输出里的 "Public key: age1..." 就是下面要填的 Encrypt_Recipient
+```
+
+改 `/etc/lnmp/backup.conf`：
+
+```bash
+Enable_Encrypt=1
+Encrypt_Tool="age"
+Encrypt_Recipient="age1...（上一步的公钥）"
+Encrypt_Identity="/root/.config/lnmp/backup-age.key"
+```
+
+**GPG（已有 GPG 密钥体系时用）**：
+
+```bash
+gpg --quick-generate-key "backup <bk@example.com>" default default never
+gpg --list-keys --with-colons | awk -F: '/^fpr/{print $10; exit}'   # 取指纹
+```
+
+```bash
+Enable_Encrypt=1
+Encrypt_Tool="gpg"
+Encrypt_Recipient="上一步的指纹或邮箱"
+```
+
+GPG 分支解密走本机 keyring，不读 `Encrypt_Identity`；私钥有口令时
+无人值守的定时任务会卡住，要么用空口令的专用密钥，要么配 gpg-agent 缓存。
+
+**验证一次**：
+
+```bash
+lnmp backup run db
+ls /home/backup/db/*/            # 应该只有 .enc 和 SHA256SUMS，没有 .gz
+file /home/backup/db/*/*.enc     # age: "age encrypted file"；gpg: "data"
+lnmp backup test                 # 解密 + 校验 + 试恢复，退出码必须是 0
+```
+
+> **私钥必须存到这台机器之外。** 私钥和加密后的备份放在同一台机器上，
+> 等于没加密；而一旦这台机器没了、私钥也只有这一份，备份就永远打不开了。
+> 至少复制一份到离线介质，并且**在另一台机器上真的解密一次**验证它可用。
+
+失败时的行为：`Encrypt_Recipient` 没配、收件人无效、找不到 age/gpg 命令，
+都会让该批次失败退出（返回 1）并**连同未加密的明文一起删除** ——
+开了加密就不会有明文留在备份目录里。解密侧私钥不对或文件缺失时
+`test` / `restore` 报"解密失败。"并返回 1，不会导入半截数据。
+
+#### 8.5.8 关于远端校验的边界
 
 远端只做**逐个文件的大小核对**，不是内容校验。
 
@@ -1225,6 +1344,22 @@ SHA-256。大小核对能发现传输截断和文件缺失，发现不了内容�
 ```bash
 /root/lnmp2.3/tools/cut_nginx_logs.sh
 ```
+
+default 站点的日志是 `/home/wwwlogs/default.log` 和
+`/home/wwwlogs/default.error.log`。访问日志使用 `nginx.conf` 中的 `main` 格式：
+
+```nginx
+log_format main '$time_iso8601 $status "$request_time" $remote_addr $scheme://$http_host "$request" '
+                '$body_bytes_sent "$http_referer" '
+                '"$http_user_agent" "$http_x_forwarded_for" $remote_user';
+```
+
+经过 Cloudflare 或其它反向代理时，不能直接把任意请求头当成真实 IP。先限制源站
+只接受可信代理地址，再取消 `nginx.conf` 中示例的注释并把站点日志格式改为
+`main_proxy`。示例的取值顺序是：`X-Forwarded-For` 逗号列表第一个地址、
+`X-Real-IP`、最后才是连接源 `$remote_addr`；日志末尾还保留 `peer=`，便于核对
+实际连接到源站的代理地址。未限制源站时不要启用，因为直连客户端可以伪造
+`X-Forwarded-For` 和 `X-Real-IP`。
 
 ---
 
@@ -1360,6 +1495,7 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo
 | Memcached | 只监听回环；以专用低权限账号运行 | 协议无认证，同上 |
 | PHP | `disable_functions` 禁用 exec 系列；每站点 `open_basedir` 隔离 | `open_basedir` 限制文件路径访问，**不提供**操作系统级租户隔离：多站点共用 `www` 账号时没有内核层面的边界 |
 | phpinfo / phpMyAdmin / 演示页 | **默认全部不部署** | 需在 `lnmp.conf` 显式开启 |
+| default 站点的 PHP 边界 | 只放行 `phpinfo.php` / `redis.php` / `memcached.php` 三个固定文件名与 phpMyAdmin 入口，其余 `.php` 一律拒绝 | 放行的三个文件仅在对应开关打开时才会写入，未写入时访问返回 404；往 default 根目录手工放同名文件同样会被执行，该站点是系统默认创建，其他需求 php 的请自建新站点 |
 | phpMyAdmin（已开启时） | 装在网站根目录之外（`/usr/local/phpmyadmin`）；访问路径随机生成 | 挡的是批量扫描与源码直接下载，**不等于**做了访问控制；对外服务仍建议加来源白名单 |
 | 下载完整性 | **默认要求一种已配置的完整性机制**，按组件不同分别是：静态 SHA256 清单（`src/checksums.sha256`）、上游发布的 SHA256、**PGP 签名**（nginx / OpenResty 源码）、**包仓库 GPG 签名**（OpenResty apt/yum） | 不是"全部 SHA256"；且 `Enable_Download_Checksum` **可以被关掉**，关掉就没有这层保护 |
 
@@ -1396,9 +1532,9 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo
 
    映射片段由安装脚本生成在 `/usr/local/nginx/conf/phpmyadmin.enable.conf`
    （Apache 为 `/usr/local/apache/conf/extra/phpmyadmin.enable.conf`），
-   主配置用通配 `include` 引入。**开关两个方向都由脚本负责**：
-   `lnmp.conf` 里 `Enable_PhpMyAdmin='n'` 时片段会被删除，
-   通配符没匹配到文件不报错，因此不必回头去改主配置。
+   主配置用通配 `include` 引入。Nginx 片段同时带入 default 站点的 PHP 处理配置
+   （LNMPA 为 Apache 反代配置）。**开关两个方向都由脚本负责**：关闭时片段会被
+   移出通配符匹配范围，default 立即恢复为静态站；重新开启时原子移回。
 
    随机路径保留 `_phpmyadmin` 结尾，是为了在 default 站点配了严格访问控制时，
    一眼能认出这条路径的用途，写放行或封禁规则时不至于误伤。

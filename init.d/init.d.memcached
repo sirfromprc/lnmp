@@ -39,7 +39,7 @@ RETVAL=0
 prog="memcached"
 
 start() {
-    echo -n "Starting $prog: "
+    echo -n "正在启动 $prog："
     # 账号不存在时 memcached 会直接启动失败（-u 指向不存在的用户）。
     # 老版本升级上来的机器可能没有这个账号，这里补建一次并说明原因。
     if ! id -u "$USER" >/dev/null 2>&1; then
@@ -48,18 +48,18 @@ start() {
         useradd -r -M -s /sbin/nologin "$USER" 2>/dev/null || \
             useradd -r -M -s /usr/sbin/nologin "$USER" 2>/dev/null
         if ! id -u "$USER" >/dev/null 2>&1; then
-            echo " failed：无法创建账号 $USER，请手工创建后重试。"
+            echo " 失败：无法创建账号 $USER，请手工创建后重试。"
             exit 1
         fi
         echo -n "已创建。继续启动 $prog: "
     fi
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
-        echo " already running"
+        echo " 已在运行"
         return 0
     fi
     rm -f "$PIDFILE"
     if ! install -d -o "$USER" -g "$USER" -m 0755 "$(dirname "$PIDFILE")"; then
-        echo " failed"
+        echo " 失败"
         exit 1
     fi
     /usr/local/memcached/bin/memcached -d -l "$IP" -p "$PORT" -u "$USER" -m "$CACHESIZE" -c "$MAXCONN" -P "$PIDFILE" $OPTIONS
@@ -73,22 +73,22 @@ start() {
         sleep 0.1
     done
     if [ "$start_rc" != 0 ] || [ "$ready" != 0 ]; then
-        echo " failed"
+        echo " 失败"
         exit 1
     else
         touch /var/lock/subsys/memcached
-        echo " done"
+        echo " 完成"
     fi
 }
 stop() {
-    echo -n "Stopping $prog: "
+    echo -n "正在停止 $prog："
     if [ ! -s "$PIDFILE" ]; then
-        echo "$prog is not running."
+        echo "$prog 未运行。"
         exit 1
     fi
     kill "$(cat "$PIDFILE")"
     if [ "$?" != 0 ] ; then
-        echo " failed"
+        echo " 失败"
         exit 1
     else
         for _ in 1 2 3 4 5; do
@@ -97,7 +97,7 @@ stop() {
         done
         rm -f /var/lock/subsys/memcached
         rm -f "$PIDFILE"
-        echo " done"
+        echo " 完成"
     fi
 }
 
@@ -109,10 +109,10 @@ restart() {
 
 status() {
     if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
-        echo "$prog is running."
+        echo "$prog 正在运行。"
         return 0
     else
-        echo "$prog is stopped."
+        echo "$prog 已停止。"
         return 3
     fi
 }
@@ -131,7 +131,7 @@ case "$1" in
         status
         ;;
     *)
-        echo "Usage: $0 {start|stop|status|restart|reload}"
+        echo "用法：$0 {start|stop|status|restart|reload}"
         exit 1
         ;;
 esac

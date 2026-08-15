@@ -3,8 +3,8 @@
 Install_PHP_Fileinfo()
 {
     cd ${cur_dir}/src
-    echo "====== Installing PHP Fileinfo ======"
-    Echo_Yellow "If the memory is less than 1GB, fileinfo may fail to install."
+    echo "====== 正在安装 PHP Fileinfo 扩展 ======"
+    Echo_Yellow "内存低于 1GB 时，Fileinfo 扩展可能安装失败。"
     Press_Start
 
     Addons_Get_PHP_Ext_Dir
@@ -12,7 +12,7 @@ Install_PHP_Fileinfo()
 
     ${PHP_Path}/bin/php -m|grep fileinfo
     if [ $? -eq 0 ]; then
-        Echo_Red "PHP Module 'fileinfo' already loaded!"
+        Echo_Red "PHP 模块 fileinfo 已加载！"
         return 1
     fi
 
@@ -31,21 +31,21 @@ EOF
 
     Restart_PHP
     if [ -s "${zend_ext}" ]; then
-        Echo_Green "====== PHP Fileinfo install completed ======"
-        Echo_Green "PHP Fileinfo installed successfully, enjoy it!"
+        Echo_Green "====== PHP Fileinfo 扩展安装完成 ======"
+        Echo_Green "PHP Fileinfo 扩展安装成功。"
         return 0
     else
         rm -f ${PHP_Path}/conf.d/009-exif.ini
-        Echo_Red "PHP Fileinfo install failed!"
+        Echo_Red "PHP Fileinfo 扩展安装失败！"
         return 1
     fi
 }
 
 Uninstall_PHP_Fileinfo()
 {
-    echo "You will uninstall PHP Fileinfo..."
+    echo "即将卸载 PHP Fileinfo 扩展..."
     Press_Start
     rm -f ${PHP_Path}/conf.d/009-fileinfo.ini
     Restart_PHP
-    Echo_Green "Uninstall PHP Fileinfo completed."
+    Echo_Green "PHP Fileinfo 扩展卸载完成。"
 }

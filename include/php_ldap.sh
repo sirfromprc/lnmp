@@ -3,7 +3,7 @@
 Install_PHP_Ldap()
 {
     cd ${cur_dir}/src
-    echo "====== Installing PHP Ldap ======"
+    echo "====== 正在安装 PHP LDAP 扩展 ======"
     Press_Start
 
     Addons_Get_PHP_Ext_Dir
@@ -11,7 +11,7 @@ Install_PHP_Ldap()
 
     ${PHP_Path}/bin/php -m|grep ldap
     if [ $? -eq 0 ]; then
-        Echo_Red "PHP Module 'ldap' already loaded!"
+        Echo_Red "PHP 模块 ldap 已加载！"
         return 1
     fi
 
@@ -44,21 +44,21 @@ EOF
 
     Restart_PHP
     if [ -s "${zend_ext}" ]; then
-        Echo_Green "====== PHP Ldap install completed ======"
-        Echo_Green "PHP Ldap installed successfully, enjoy it!"
+        Echo_Green "====== PHP LDAP 扩展安装完成 ======"
+        Echo_Green "PHP LDAP 扩展安装成功。"
         return 0
     else
         rm -f ${PHP_Path}/conf.d/009-ldap.ini
-        Echo_Red "PHP Ldap install failed!"
+        Echo_Red "PHP LDAP 扩展安装失败！"
         return 1
     fi
 }
 
 Uninstall_PHP_Ldap()
 {
-    echo "You will uninstall PHP Ldap..."
+    echo "即将卸载 PHP LDAP 扩展..."
     Press_Start
     rm -f ${PHP_Path}/conf.d/009-ldap.ini
     Restart_PHP
-    Echo_Green "Uninstall PHP Ldap completed."
+    Echo_Green "PHP LDAP 扩展卸载完成。"
 }

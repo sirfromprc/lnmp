@@ -93,15 +93,15 @@ Redis_Running()
 case "$1" in
     start)
         if Redis_Running; then
-            echo "Redis server is already running (pid $REDIS_PID)."
+            echo "Redis 服务已在运行（pid $REDIS_PID）。"
             exit 0
         fi
 
         if [ -f "$PIDFILE" ]; then
-            echo "Removing stale pidfile $PIDFILE"
+            echo "正在删除失效的 pid 文件 $PIDFILE"
             rm -f "$PIDFILE"
         fi
-        echo -n "Starting Redis server..."
+        echo -n "正在启动 Redis 服务..."
         Redis_Exec
         rc=$?
         # daemonize yes 时父进程立刻返回，要等子进程把 pidfile 写出来
@@ -112,9 +112,9 @@ case "$1" in
             i=$((i + 1))
         done
         if Redis_Running; then
-            echo " done (pid $REDIS_PID)"
+            echo " 完成（pid $REDIS_PID）"
         else
-            echo " failed"
+            echo " 失败"
             echo "redis-server 退出码 ${rc}。常见原因："
             echo "  - 配置里的 loadmodule 指向了未安装的模块（Redis 8.x 默认配置会带）"
             echo "  - 端口 ${REDISPORT} 被占用，或 dir 指定的目录不可写"
@@ -124,11 +124,11 @@ case "$1" in
         ;;
     stop)
         if ! Redis_Running; then
-            echo "Redis server is not running."
-            [ -f "$PIDFILE" ] && { echo "Removing stale pidfile $PIDFILE"; rm -f "$PIDFILE"; }
+            echo "Redis 服务未运行。"
+            [ -f "$PIDFILE" ] && { echo "正在删除失效的 pid 文件 $PIDFILE"; rm -f "$PIDFILE"; }
             exit 0
         fi
-        echo -n "Stopping Redis server..."
+        echo -n "正在停止 Redis 服务..."
         "$REDIS_CLI" -p "$REDISPORT" shutdown 2>/dev/null
         i=0
         while [ $i -lt 30 ]; do
@@ -137,38 +137,38 @@ case "$1" in
             i=$((i + 1))
         done
         if Redis_Running; then
-            echo " failed (pid $REDIS_PID 仍在运行)"
+            echo " 失败（pid $REDIS_PID 仍在运行）"
             exit 1
         fi
         rm -f "$PIDFILE"
-        echo " done"
+        echo " 完成"
         ;;
     restart)
         ${0} stop || exit 1
         ${0} start
         ;;
     kill)
-        echo -n "force kill redis server..."
+        echo -n "正在强制终止 Redis 服务..."
         if killall redis-server 2>/dev/null; then
             rm -f "$PIDFILE"
-            echo " done"
+            echo " 完成"
         else
-            echo " no redis-server process found"
+            echo " 未找到 redis-server 进程"
         fi
         ;;
     status)
         if Redis_Running; then
-            echo "Redis server is running (pid $REDIS_PID)."
+            echo "Redis 服务正在运行（pid $REDIS_PID）。"
             exit 0
         elif [ -f "$PIDFILE" ]; then
-            echo "Redis server is stopped (stale pidfile $PIDFILE)."
+            echo "Redis 服务已停止（存在失效的 pid 文件 $PIDFILE）。"
             exit 1
         else
-            echo "Redis server is stopped."
+            echo "Redis 服务已停止。"
             exit 3
         fi
         ;;
   *)
-    echo "Usage: /etc/init.d/redis {start|stop|restart|status|kill}" >&2
+    echo "用法：/etc/init.d/redis {start|stop|restart|status|kill}" >&2
         exit 1
 esac

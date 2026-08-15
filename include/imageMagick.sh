@@ -27,7 +27,7 @@ Build_ImageMagick_Lib()
 
     cd ${cur_dir}/src
     if [ -s /usr/local/imagemagick/bin/convert ]; then
-        echo "ImageMagick already exists."
+        echo "ImageMagick 已存在。"
     else
         # imagemagick.org/archive/releases 只保留近期几个版本，旧版本会下线
         # （7.1.1-8 实测已 404）。GitHub 的 tag 归档是稳定可回溯的来源。
@@ -44,7 +44,7 @@ Build_ImageMagick_Lib()
 
 Install_ImageMagic()
 {
-    echo "====== Installing ImageMagic ======"
+    echo "====== 正在安装 ImageMagick ======"
     Press_Start
 
     rm -f ${PHP_Path}/conf.d/008-imagick.ini
@@ -73,22 +73,22 @@ EOF
 
     if [ -s "${zend_ext}" ] && [ -s /usr/local/imagemagick/bin/convert ]; then
         Restart_PHP
-        Echo_Green "====== ImageMagick install completed ======"
-        Echo_Green "ImageMagick installed successfully, enjoy it!"
+        Echo_Green "====== ImageMagick 安装完成 ======"
+        Echo_Green "ImageMagick 安装成功。"
         return 0
     fi
     rm -f ${PHP_Path}/conf.d/008-imagick.ini
-    Echo_Red "imagick install failed!"
+    Echo_Red "imagick 扩展安装失败！"
     return 1
 }
 
 Uninstall_ImageMagick()
 {
-    echo "You will uninstall ImageMagick..."
+    echo "即将卸载 ImageMagick..."
     Press_Start
     rm -f ${PHP_Path}/conf.d/008-imagick.ini
-    echo "Delete ImageMagick directory..."
+    echo "正在删除 ImageMagick 目录..."
     rm -rf /usr/local/imagemagick
     Restart_PHP
-    Echo_Green "Uninstall ImageMagick completed."
+    Echo_Green "ImageMagick 卸载完成。"
 }

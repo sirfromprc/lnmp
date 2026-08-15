@@ -103,8 +103,8 @@ Verify_SHA256_Value()
     fi
     if [ "${actual}" != "${expected}" ]; then
         Echo_Red "SHA256 不匹配：${file}"
-        Echo_Red "  expected: ${expected}"
-        Echo_Red "  actual:   ${actual}"
+        Echo_Red "  期望值：${expected}"
+        Echo_Red "  实际值：${actual}"
         return 1
     fi
     Echo_Green "${file} SHA256 与上游公布值一致。"
@@ -417,14 +417,14 @@ Download_Verified()
     fi
 
     if [ ! -s "${fname}" ]; then
-        echo "Notice: ${fname} not found!!!download now..."
+        echo "提示：未找到 ${fname}，现在开始下载..."
         if ! Download_Fetch "${url}" "${fname}"; then
             Echo_Red "下载失败：${url}"
             rm -f "${fname}"
             return 1
         fi
     else
-        echo "${fname} [found]"
+        echo "${fname} [已存在]"
     fi
 
     if [ -n "${expected}" ]; then
@@ -454,7 +454,7 @@ Download_Verified()
     esac
 
     # 4) 上游没有任何机器可读的校验依据
-    Echo_Red "FATAL: ${fname} 既不在 src/checksums.sha256 里，${project} 上游也不提供"
+    Echo_Red "致命错误：${fname} 既不在 src/checksums.sha256 里，${project} 上游也不提供"
     Echo_Red "可自动核对的校验文件（MySQL 只把校验值印在 dev.mysql.com 的下载页上）。"
     Echo_Red ""
     Echo_Red "请到官方下载页核对该版本的校验值，确认无误后写入清单再重试："

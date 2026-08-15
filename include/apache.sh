@@ -2,7 +2,7 @@
 
 Install_Apache_24()
 {
-    Echo_Blue "[+] Installing ${Apache_Ver}..."
+    Echo_Blue "[+] 正在安装 ${Apache_Ver}..."
     if [ "${Stack}" = "lamp" ]; then
         groupadd www
         useradd -s /sbin/nologin -g www www

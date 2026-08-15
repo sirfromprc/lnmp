@@ -9,7 +9,7 @@ Install_Multiplephp()
     . include/upgrade_php.sh
 
     if [ "${Get_Stack}" != "lnmp" ]; then
-        echo "Multiple PHP Versions ONLY for LNMP Stack!"
+        echo "多版本 PHP 仅支持 LNMP 架构！"
         exit 1
     fi
 
@@ -18,17 +18,17 @@ Install_Multiplephp()
 
     PHPSelect=""
     Print_PHP_Menu
-    read -p "Enter your choice (1 - ${PHP_Count}): " PHPSelect
+    read -p "请选择 [1-${PHP_Count}]：" PHPSelect
 
     if ! Set_PHP_Profile "${PHPSelect}"; then
-        echo "No enter,You Must enter one option."
+        echo "未输入选项，必须选择一个 PHP 版本。"
         exit 1
     fi
-    echo "You will install ${PHP_Info[$((PHPSelect-1))]}"
+    echo "即将安装 ${PHP_Info[$((PHPSelect-1))]}"
 
     Press_Install
     if [ -d "${MPHP_Path}" ]; then
-        echo "${Php_Ver} already exists!"
+        echo "${Php_Ver} 已存在！"
         exit 1
     fi
     Check_PHP_Option
@@ -51,18 +51,18 @@ Install_MPHP8x()
     Download_Files https://www.php.net/distributions/${Php_Ver}.tar.bz2 ${Php_Ver}.tar.bz2
     Require_File "${Php_Ver}.tar.bz2" "PHP ${PHP_Branch}"
     Install_Libzip
-    Echo_Blue "[+] Installing ${Php_Ver}"
+    Echo_Blue "[+] 正在安装 ${Php_Ver}"
     Tar_Cd ${Php_Ver}.tar.bz2 ${Php_Ver}
     PHP_Openssl3_Patch
     ./configure --prefix=${MPHP_Path} --with-config-file-path=${MPHP_Path}/etc --with-config-file-scan-dir=${MPHP_Path}/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
 
     PHP_Make_Install || exit 1
 
-    echo "Copy new php configure file..."
+    echo "正在复制新的 PHP 配置文件..."
     mkdir -p ${MPHP_Path}/{etc,conf.d}
     \cp php.ini-production ${MPHP_Path}/etc/php.ini
 
-    echo "Modify php.ini......"
+    echo "正在修改 php.ini..."
     sed -i 's/post_max_size =.*/post_max_size = 50M/g' ${MPHP_Path}/etc/php.ini
     sed -i 's/upload_max_filesize =.*/upload_max_filesize = 50M/g' ${MPHP_Path}/etc/php.ini
     sed -i 's/;date.timezone =.*/date.timezone = PRC/g' ${MPHP_Path}/etc/php.ini
@@ -75,7 +75,7 @@ Install_MPHP8x()
 
     cd ${cur_dir}/src
 
-    echo "Creating new php-fpm configure file..."
+    echo "正在创建新的 php-fpm 配置文件..."
     cat >${MPHP_Path}/etc/php-fpm.conf<<EOF
 [global]
 pid = ${MPHP_Path}/var/run/php-fpm.pid
@@ -101,7 +101,7 @@ request_slowlog_timeout = 0
 slowlog = var/log/slow.log
 EOF
 
-    echo "Copy php-fpm init.d file..."
+    echo "正在复制 php-fpm init.d 服务脚本..."
     \cp ${cur_dir}/src/${Php_Ver}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm${MPHP_Short_Ver}
     chmod +x /etc/init.d/php-fpm${MPHP_Short_Ver}
     sed -i "s@# Provides:          php-fpm@# Provides:          php-fpm${MPHP_Short_Ver}@g" /etc/init.d/php-fpm${MPHP_Short_Ver}
@@ -118,11 +118,11 @@ EOF
 
     if [ -s ${MPHP_Path}/sbin/php-fpm ] && [ -s ${MPHP_Path}/etc/php.ini ] && [ -s ${MPHP_Path}/bin/php ]; then
         echo "==========================================="
-        Echo_Green "You have successfully install ${Php_Ver} "
+        Echo_Green "${Php_Ver} 安装成功。"
         echo "==========================================="
     else
         rm -rf ${MPHP_Path}
-        Echo_Red "Failed to install ${Php_Ver}, see /root/install-mphp${MPHP_Short_Ver}.log for details."
+        Echo_Red "${Php_Ver} 安装失败，详情请查看 /root/install-mphp${MPHP_Short_Ver}.log。"
     fi
 }
 

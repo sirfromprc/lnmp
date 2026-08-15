@@ -3,7 +3,7 @@ export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~
 
 # Check if user is root
 if [ $(id -u) != "0" ]; then
-    echo "Error: You must be root to run this script"
+    echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
 fi
 
@@ -50,26 +50,26 @@ ionCube_NotWired_Notice()
 # /usr/local/ioncube 保留，由使用者自行决定是否删。
 Uninstall_ionCube()
 {
-    echo "You will uninstall ionCube..."
+    echo "即将卸载 ionCube..."
     Press_Start
     rm -f ${PHP_Path}/conf.d/001-ioncube.ini
     Restart_PHP
-    Echo_Green "Uninstall ionCube completed."
+    Echo_Green "ionCube 卸载完成。"
     Echo_Yellow "注意：/usr/local/ioncube 下的 .so 未删除，如不再需要请手工 rm -rf。"
 }
 
 Display_Addons_Menu()
 {
-    echo "##### cache / optimizer / accelerator #####"
+    echo "##### 缓存 / 优化器 / 加速器 #####"
     echo "  1: Memcached"
     echo "  2: opcache"
     echo "  3: Redis"
     echo "  4: apcu"
-    echo "##### Image Processing #####"
+    echo "##### 图像处理 #####"
     echo "  5: imageMagick"
     echo "##### 暂未接入 #####"
-    echo "  6: ionCube Loader (not wired up yet, see below)"
-    echo "##### PHP Modules/Extensions #####"
+    echo "  6: ionCube Loader（暂未接入，说明见下方）"
+    echo "##### PHP 模块/扩展 #####"
     echo "  7: Exif"
     echo "  8: Fileinfo"
     echo "  9: Ldap"
@@ -78,30 +78,27 @@ Display_Addons_Menu()
     echo " 12: Imap"
     echo " 13: Swoole"
     echo "#################################################"
-    echo " exit: Exit current script"
+    echo " 输入 exit：退出当前脚本"
     echo "#################################################"
-    read -p "Enter your choice (1 - 13, or exit): " action2
+    read -p "请选择 [1-13]，或输入 exit 退出：" action2
 }
 
 Restart_PHP()
 {
     if [ -s /usr/local/apache/bin/httpd ] && [ -s /usr/local/apache/conf/httpd.conf ] && [ -s /etc/init.d/httpd ]; then
-        echo "Restarting Apache......"
+        echo "正在重启 Apache......"
         /etc/init.d/httpd restart
     else
-        echo "Restarting php-fpm......"
+        echo "正在重启 php-fpm......"
         ${PHPFPM_Initd} restart
     fi
 }
 
 clear
-echo "+-----------------------------------------------------------------------+"
-echo "|            Addons script for LNMP V2.3, Written by Licess             |"
-echo "+-----------------------------------------------------------------------+"
-echo "|    A tool to Install cache,optimizer,accelerator...addons for LNMP    |"
-echo "+-----------------------------------------------------------------------+"
-echo "|          Upstream-official sources only, checksums enforced            |"
-echo "+-----------------------------------------------------------------------+"
+Print_Banner \
+    "LNMP V2.3 附加组件管理" \
+    "安装缓存、优化器、加速器等附加组件" \
+    "仅使用上游官方源码，并强制校验完整性"
 
 Select_PHP()
 {
@@ -112,147 +109,147 @@ Select_PHP()
         PHP_Path='/usr/local/php'
         PHPFPM_Initd='/etc/init.d/php-fpm'
     else
-        echo "Multiple PHP version found, Please select the PHP version."
+        echo "检测到多个 PHP 版本，请选择要操作的版本。"
         Cur_PHP_Version="`/usr/local/php/bin/php-config --version`"
-        Echo_Green "1: Default Main PHP ${Cur_PHP_Version}"
+        Echo_Green "1: 默认主 PHP ${Cur_PHP_Version}"
         if [[ -s /usr/local/php5.2/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.2.conf && -s /etc/init.d/php-fpm5.2 ]]; then
-            Echo_Green "2: PHP 5.2 [found]"
+            Echo_Green "2: PHP 5.2 [已安装]"
         fi
         if [[ -s /usr/local/php5.3/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.3.conf && -s /etc/init.d/php-fpm5.3 ]]; then
-            Echo_Green "3: PHP 5.3 [found]"
+            Echo_Green "3: PHP 5.3 [已安装]"
         fi
         if [[ -s /usr/local/php5.4/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.4.conf && -s /etc/init.d/php-fpm5.4 ]]; then
-            Echo_Green "4: PHP 5.4 [found]"
+            Echo_Green "4: PHP 5.4 [已安装]"
         fi
         if [[ -s /usr/local/php5.5/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.5.conf && -s /etc/init.d/php-fpm5.5 ]]; then
-            Echo_Green "5: PHP 5.5 [found]"
+            Echo_Green "5: PHP 5.5 [已安装]"
         fi
         if [[ -s /usr/local/php5.6/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.6.conf && -s /etc/init.d/php-fpm5.6 ]]; then
-            Echo_Green "6: PHP 5.6 [found]"
+            Echo_Green "6: PHP 5.6 [已安装]"
         fi
         if [[ -s /usr/local/php7.0/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.0.conf && -s /etc/init.d/php-fpm7.0 ]]; then
-            Echo_Green "7: PHP 7.0 [found]"
+            Echo_Green "7: PHP 7.0 [已安装]"
         fi
         if [[ -s /usr/local/php7.1/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.1.conf && -s /etc/init.d/php-fpm7.1 ]]; then
-            Echo_Green "8: PHP 7.1 [found]"
+            Echo_Green "8: PHP 7.1 [已安装]"
         fi
         if [[ -s /usr/local/php7.2/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.2.conf && -s /etc/init.d/php-fpm7.2 ]]; then
-            Echo_Green "9: PHP 7.2 [found]"
+            Echo_Green "9: PHP 7.2 [已安装]"
         fi
         if [[ -s /usr/local/php7.3/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.3.conf && -s /etc/init.d/php-fpm7.3 ]]; then
-            Echo_Green "10: PHP 7.3 [found]"
+            Echo_Green "10: PHP 7.3 [已安装]"
         fi
         if [[ -s /usr/local/php7.4/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.4.conf && -s /etc/init.d/php-fpm7.4 ]]; then
-            Echo_Green "11: PHP 7.4 [found]"
+            Echo_Green "11: PHP 7.4 [已安装]"
         fi
         if [[ -s /usr/local/php8.0/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.0.conf && -s /etc/init.d/php-fpm8.0 ]]; then
-            Echo_Green "12: PHP 8.0 [found]"
+            Echo_Green "12: PHP 8.0 [已安装]"
         fi
         if [[ -s /usr/local/php8.1/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.1.conf && -s /etc/init.d/php-fpm8.1 ]]; then
-            Echo_Green "13: PHP 8.1 [found]"
+            Echo_Green "13: PHP 8.1 [已安装]"
         fi
         if [[ -s /usr/local/php8.2/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.2.conf && -s /etc/init.d/php-fpm8.2 ]]; then
-            Echo_Green "14: PHP 8.2 [found]"
+            Echo_Green "14: PHP 8.2 [已安装]"
         fi
         if [[ -s /usr/local/php8.3/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.3.conf && -s /etc/init.d/php-fpm8.3 ]]; then
-            Echo_Green "15: PHP 8.3 [found]"
+            Echo_Green "15: PHP 8.3 [已安装]"
         fi
         if [[ -s /usr/local/php8.4/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.4.conf && -s /etc/init.d/php-fpm8.4 ]]; then
-            Echo_Green "16: PHP 8.4 [found]"
+            Echo_Green "16: PHP 8.4 [已安装]"
         fi
         if [[ -s /usr/local/php8.5/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.5.conf && -s /etc/init.d/php-fpm8.5 ]]; then
-            Echo_Green "17: PHP 8.5 [found]"
+            Echo_Green "17: PHP 8.5 [已安装]"
         fi
-        Echo_Yellow "Enter your choice (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 or 17): "
+        Echo_Yellow "请选择 [1-17]（默认 1，主 PHP）："
         read php_select
         case "${php_select}" in
             1)
-                echo "Current selection: PHP ${Cur_PHP_Version}"
+                echo "当前选择：PHP ${Cur_PHP_Version}"
                 PHP_Path='/usr/local/php'
                 PHPFPM_Initd='/etc/init.d/php-fpm'
                 ;;
             2)
-                echo "Current selection: PHP `/usr/local/php5.2/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php5.2/bin/php-config --version`"
                 PHP_Path='/usr/local/php5.2'
                 PHPFPM_Initd='/etc/init.d/php-fpm5.2'
                 ;;
             3)
-                echo "Current selection: PHP `/usr/local/php5.3/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php5.3/bin/php-config --version`"
                 PHP_Path='/usr/local/php5.3'
                 PHPFPM_Initd='/etc/init.d/php-fpm5.3'
                 ;;
             4)
-                echo "Current selection: PHP `/usr/local/php5.4/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php5.4/bin/php-config --version`"
                 PHP_Path='/usr/local/php5.4'
                 PHPFPM_Initd='/etc/init.d/php-fpm5.4'
                 ;;
             5)
-                echo "Current selection: PHP `/usr/local/php5.5/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php5.5/bin/php-config --version`"
                 PHP_Path='/usr/local/php5.5'
                 PHPFPM_Initd='/etc/init.d/php-fpm5.5'
                 ;;
             6)
-                echo "Current selection: PHP `/usr/local/php5.6/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php5.6/bin/php-config --version`"
                 PHP_Path='/usr/local/php5.6'
                 PHPFPM_Initd='/etc/init.d/php-fpm5.6'
                 ;;
             7)
-                echo "Current selection: PHP `/usr/local/php7.0/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php7.0/bin/php-config --version`"
                 PHP_Path='/usr/local/php7.0'
                 PHPFPM_Initd='/etc/init.d/php-fpm7.0'
                 ;;
             8)
-                echo "Current selection: PHP `/usr/local/php7.1/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php7.1/bin/php-config --version`"
                 PHP_Path='/usr/local/php7.1'
                 PHPFPM_Initd='/etc/init.d/php-fpm7.1'
                 ;;
             9)
-                echo "Current selection: PHP `/usr/local/php7.2/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php7.2/bin/php-config --version`"
                 PHP_Path='/usr/local/php7.2'
                 PHPFPM_Initd='/etc/init.d/php-fpm7.2'
                 ;;
             10)
-                echo "Current selection: PHP `/usr/local/php7.3/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php7.3/bin/php-config --version`"
                 PHP_Path='/usr/local/php7.3'
                 PHPFPM_Initd='/etc/init.d/php-fpm7.3'
                 ;;
             11)
-                echo "Current selection: PHP `/usr/local/php7.4/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php7.4/bin/php-config --version`"
                 PHP_Path='/usr/local/php7.4'
                 PHPFPM_Initd='/etc/init.d/php-fpm7.4'
                 ;;
             12)
-                echo "Current selection: PHP `/usr/local/php8.0/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php8.0/bin/php-config --version`"
                 PHP_Path='/usr/local/php8.0'
                 PHPFPM_Initd='/etc/init.d/php-fpm8.0'
                 ;;
             13)
-                echo "Current selection: PHP `/usr/local/php8.1/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php8.1/bin/php-config --version`"
                 PHP_Path='/usr/local/php8.1'
                 PHPFPM_Initd='/etc/init.d/php-fpm8.1'
                 ;;
             14)
-                echo "Current selection: PHP `/usr/local/php8.2/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php8.2/bin/php-config --version`"
                 PHP_Path='/usr/local/php8.2'
                 PHPFPM_Initd='/etc/init.d/php-fpm8.2'
                 ;;
             15)
-                echo "Current selection: PHP `/usr/local/php8.3/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php8.3/bin/php-config --version`"
                 PHP_Path='/usr/local/php8.3'
                 PHPFPM_Initd='/etc/init.d/php-fpm8.3'
                 ;;
             16)
-                echo "Current selection: PHP `/usr/local/php8.4/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php8.4/bin/php-config --version`"
                 PHP_Path='/usr/local/php8.4'
                 PHPFPM_Initd='/etc/init.d/php-fpm8.4'
                 ;;
             17)
-                echo "Current selection: PHP `/usr/local/php8.5/bin/php-config --version`"
+                echo "当前选择：PHP `/usr/local/php8.5/bin/php-config --version`"
                 PHP_Path='/usr/local/php8.5'
                 PHPFPM_Initd='/etc/init.d/php-fpm8.5'
                 ;;
             *)
-                echo "Default,Current selection: PHP ${Cur_PHP_Version}"
+                echo "未输入，默认选择主 PHP ${Cur_PHP_Version}。"
                 php_select="1"
                 PHP_Path='/usr/local/php'
                 PHPFPM_Initd='/etc/init.d/php-fpm'
@@ -294,9 +291,9 @@ Download_PHP_Src()
 
     Download_Files https://www.php.net/distributions/php-${Cur_PHP_Version}.tar.bz2 php-${Cur_PHP_Version}.tar.bz2
     if [ $? -eq 0 ] && [ -s php-${Cur_PHP_Version}.tar.bz2 ]; then
-        echo "php-${Cur_PHP_Version}.tar.bz2 ok"
+        echo "php-${Cur_PHP_Version}.tar.bz2 校验通过。"
     else
-        Echo_Red "Error! PHP ${Cur_PHP_Version} 下载或校验失败，请检查。"
+        Echo_Red "错误：PHP ${Cur_PHP_Version} 下载或校验失败，请检查。"
         Echo_Red "如需手工放置 php-${Cur_PHP_Version}.tar.bz2 到 src 目录，"
         Echo_Red "请确保它的 SHA256 已登记在 src/checksums.sha256 里。"
         exit 1
@@ -356,8 +353,8 @@ Select_PHP
                 Install_PHP_Swoole
                 ;;
             e[aA]ccelerator|[xX]cache|[sS][gG]|[sS]ource[gG]uardian)
-                Echo_Red "'${action2}' has been removed in LNMP 2.3."
-                Echo_Red "Reason: end-of-life (PHP 5.x only), or closed-source with no official download source."
+                Echo_Red "LNMP 2.3 已移除 '${action2}'。"
+                Echo_Red "原因：仅支持已经停止维护的 PHP 5.x，或属于没有官方公开下载源的闭源组件。"
                 exit 1
                 ;;
             [eE][xX][iI][tT])
@@ -366,7 +363,7 @@ Select_PHP
             *)
                 # 子命令拼错什么都没装，不能报成功：外部自动化只看退出码，
                 # 返回 0 等于告诉它"装好了"。
-                echo "Usage: ./addons.sh install {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
+                echo "用法：./addons.sh install {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
                 exit 1
                 ;;
         esac
@@ -415,7 +412,7 @@ Select_PHP
                 Uninstall_PHP_Swoole
                 ;;
             *)
-                echo "Usage: ./addons.sh uninstall {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
+                echo "用法：./addons.sh uninstall {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
                 exit 1
                 ;;
         esac
@@ -424,7 +421,7 @@ Select_PHP
         exit 1
         ;;
     *)
-        echo "Usage: ./addons.sh {install|uninstall} {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
+        echo "用法：./addons.sh {install|uninstall} {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
         exit 1
         ;;
     esac

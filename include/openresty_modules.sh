@@ -126,7 +126,7 @@ OR_Modules_Prepare()
                 return 1
             fi
         else
-            echo "模块 ${name} 源码包 [found]"
+            echo "模块 ${name} 源码包 [已找到]"
         fi
 
         if ! Verify_SHA256_Value "${tarball}" "${sha}"; then

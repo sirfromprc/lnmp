@@ -32,9 +32,113 @@ DB_Bin_Glibc_Ver()
 }
 
 
+# ---------------------------------------------------------------------------
+# Ensure_Libaio_Compat — 补齐官方通用二进制包所需的 libaio.so.1
+#
+# MySQL 与 MariaDB 的官方通用二进制按 SONAME libaio.so.1 链接。Debian 13
+# 起 libaio1 因 64 位 time_t 转换改名为 libaio1t64，只提供 libaio.so.1t64，
+# 系统里不再有 libaio.so.1；依赖清单里的 libaio-dev 提供的是无版本号的
+# libaio.so，同样不满足。结果是 mysqld/mariadbd 一执行就以
+# "error while loading shared libraries: libaio.so.1" 退出，数据目录初始化
+# 得不到任何文件，服务随后反复启动失败。
+#
+# 触发条件是二进制自身的动态库解析结果，不是发行版名称：Debian 12 与
+# RHEL 系提供 libaio.so.1，此处直接返回，不做任何改动。
+#
+# 兼容链接必须与 libaio.so.1t64 放在同一个目录，也就是动态链接器的默认搜索
+# 目录。放到 /usr/local/lib 并写 ld.so.conf 是无效的：ldconfig 按库文件自身的
+# SONAME（libaio.so.1t64）建缓存，libaio.so.1 这个文件名进不了缓存；只有落在
+# 默认搜索目录里，链接器在缓存未命中后按文件名查找才能找到（已实测）。
+# 参数：$1 = 服务端二进制路径。
+# ---------------------------------------------------------------------------
+Ensure_Libaio_Compat()
+{
+    local server_bin=$1 t64 link_dir link
+
+    [ -x "${server_bin}" ] || return 0
+    ldd "${server_bin}" 2>/dev/null | grep -q 'libaio\.so\.1 => not found' || return 0
+
+    # t64 转换只在 time_t 原本为 32 位的架构上改变 ABI。这些架构上
+    # libaio.so.1t64 与官方二进制期望的 libaio.so.1 不是同一套接口，
+    # 不能直接链接过去。
+    case "$(uname -m)" in
+        x86_64|aarch64|ppc64le|s390x|riscv64|loongarch64) ;;
+        *)
+            Echo_Red "错误：当前架构 $(uname -m) 缺少 libaio.so.1，且不能安全使用 libaio.so.1t64。"
+            Echo_Red "请安装提供 libaio.so.1 的软件包，或改用源码方式安装数据库。"
+            return 1
+            ;;
+    esac
+
+    t64=$(ldconfig -p 2>/dev/null | awk '$1 == "libaio.so.1t64" {print $NF; exit}')
+    if [ -z "${t64}" ] || [ ! -e "${t64}" ]; then
+        Echo_Red "错误：${server_bin} 需要 libaio.so.1，但系统里找不到可用的 libaio。"
+        Echo_Red "请先安装 libaio（Debian/Ubuntu：libaio1 或 libaio1t64；RHEL 系：libaio），再重新安装。"
+        return 1
+    fi
+
+    link_dir=$(dirname "${t64}")
+    link="${link_dir}/libaio.so.1"
+
+    # 走到这里说明搜索路径里没有可用的 libaio.so.1。目标位置若已存在实体文件
+    # （发行版以后自己补回该 SONAME），不覆盖，交由使用者处理。
+    if [ -e "${link}" ] && [ ! -L "${link}" ]; then
+        Echo_Red "错误：${link} 已存在且不是符号链接，${server_bin} 仍无法加载 libaio.so.1。"
+        Echo_Red "请手工确认该文件后重新安装。"
+        return 1
+    fi
+    if ! ln -sf "$(basename "${t64}")" "${link}"; then
+        Echo_Red "错误：创建 ${link} -> ${t64} 失败。"
+        return 1
+    fi
+    ldconfig
+
+    if ldd "${server_bin}" 2>/dev/null | grep -q 'libaio\.so\.1 => not found'; then
+        Echo_Red "错误：已建立 ${link}，${server_bin} 仍然找不到 libaio.so.1。"
+        return 1
+    fi
+
+    Echo_Green "当前发行版只提供 libaio.so.1t64，已建立 ${link} -> $(basename "${t64}")。"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Clean_Stale_DB_Socket — 清理无进程持有的残留 unix socket
+#
+# 数据库进程被 kill -9、OOM 杀死或断电时，socket 文件会留在原地。mysqld 与
+# mariadbd 都不会覆盖已存在的 socket 文件，而是以
+# "Can't start server : Bind on unix socket: Address already in use" 退出，
+# 于是新装的实例永远起不来，后续设置 root 密码等步骤跟着全部失败。
+#
+# 只删确实没有进程使用的 socket：仍有实例在监听时报错返回，绝不动它。
+# socket 路径以 /etc/my.cnf 的 [mysqld] 配置为准。
+# ---------------------------------------------------------------------------
+Clean_Stale_DB_Socket()
+{
+    local sock
+
+    sock=$(awk -F= '/^[[:space:]]*\[/{sec=$0} \
+                    sec ~ /\[mysqld\]/ && /^[[:space:]]*socket[[:space:]]*=/ \
+                    {gsub(/[[:space:]]/, "", $2); print $2; exit}' \
+           /etc/my.cnf 2>/dev/null)
+    [ -n "${sock}" ] || sock=/tmp/mysql.sock
+    [ -S "${sock}" ] || return 0
+
+    if fuser "${sock}" >/dev/null 2>&1 \
+       || ss -lxH 2>/dev/null | awk '{print $5}' | grep -qx "${sock}"; then
+        Echo_Red "错误：${sock} 正在被进程使用，可能已有数据库实例在运行。"
+        Echo_Red "请先停止该实例，确认无误后再重新安装。"
+        return 1
+    fi
+
+    Echo_Yellow "清理残留的数据库 socket（没有进程在使用）：${sock}"
+    rm -f "${sock}"
+    return 0
+}
+
 Install_DB_Bin_Tarball()
 {
-    local tarball=$1 target=$2 topdir rc restore_dotglob
+    local tarball=$1 target=$2 topdir rc restore_dotglob server_bin
 
     # ${tarball%.tar.*} 同时适配 .tar.xz（MySQL）与 .tar.gz（MariaDB）
     topdir="${cur_dir}/src/${tarball%.tar.*}"
@@ -42,26 +146,26 @@ Install_DB_Bin_Tarball()
     Tar_Cd "${tarball}"
 
     if [ ! -d "${topdir}" ]; then
-        Echo_Red "Error: ${tarball} 解压后没有预期的目录 ${tarball%.tar.*}"
+        Echo_Red "错误：${tarball} 解压后没有预期的目录 ${tarball%.tar.*}"
         Echo_Red "归档结构与预期不符（上游可能改了包内布局），拒绝继续安装。"
         exit 1
     fi
 
     if [ -e "${target}" ] && [ ! -d "${target}" ]; then
-        Echo_Red "Error: ${target} 已存在且不是目录，拒绝覆盖。"
+        Echo_Red "错误：${target} 已存在且不是目录，拒绝覆盖。"
         exit 1
     fi
     # 允许目标为空目录，以支持预先挂载到 /usr/local/mysql 的独立卷。
     # 但非空一律拒绝：往里放只会得到新旧混合的安装。
     if [ -d "${target}" ] && [ -n "$(ls -A "${target}" 2>/dev/null)" ]; then
-        Echo_Red "Error: ${target} 已存在且非空。"
+        Echo_Red "错误：${target} 已存在且非空。"
         Echo_Red "直接往里放会得到一个新旧版本混合的安装，这里拒绝继续。"
         Echo_Red "请先确认该目录下是否还有数据，备份后移走或删除，再重新安装。"
         exit 1
     fi
 
     if ! mkdir -p "${target}"; then
-        Echo_Red "Error: 无法创建 ${target}"
+        Echo_Red "错误：无法创建 ${target}"
         exit 1
     fi
 
@@ -74,16 +178,24 @@ Install_DB_Bin_Tarball()
     [ ${restore_dotglob} -eq 1 ] && shopt -u dotglob
 
     if [ ${rc} -ne 0 ]; then
-        Echo_Red "Error: 把 ${tarball%.tar.*} 移动到 ${target} 失败（磁盘空间不足？权限？）"
+        Echo_Red "错误：把 ${tarball%.tar.*} 移动到 ${target} 失败（磁盘空间不足或权限不足）。"
         Echo_Red "${target} 现在很可能是不完整的，请清空后重新安装。"
         exit 1
     fi
 
     # 落地结果自检：二进制包解开就该直接可用，bin/ 空说明前面哪一步出了问题。
     if [ ! -d "${target}/bin" ] || [ -z "$(ls -A "${target}/bin" 2>/dev/null)" ]; then
-        Echo_Red "Error: ${target}/bin 不存在或为空，通用二进制包没有正确落地。"
+        Echo_Red "错误：${target}/bin 不存在或为空，通用二进制包没有正确安装。"
         exit 1
     fi
+
+    # 解压落地后立刻确认服务端二进制可加载。缺 libaio.so.1 时后面的
+    # --initialize 会静默产出空数据目录，问题要到启动服务才暴露。
+    for server_bin in "${target}/bin/mariadbd" "${target}/bin/mysqld"; do
+        [ -x "${server_bin}" ] || continue
+        Ensure_Libaio_Compat "${server_bin}" || exit 1
+        break
+    done
     return 0
 }
 
@@ -309,12 +421,12 @@ DB_Init_Step()
 {
     local desc="$1" sql="$2" out
 
-    echo "${desc}..."
+    echo "正在执行：${desc}..."
     if out=$(Do_Query "${sql}" 2>&1); then
-        echo " ... Success."
+        echo " ... 成功。"
         return 0
     fi
-    echo " ... Failed!"
+    echo " ... 失败。"
     [ -n "${out}" ] && printf '%s\n' "${out}" | sed 's/^/     /'
     DB_Init_Failed='y'
     DB_Init_Errors="${DB_Init_Errors}

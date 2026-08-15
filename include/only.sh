@@ -25,15 +25,12 @@ Nginx_Dependent()
 Install_Only_Nginx()
 {
     clear
-    echo "+-----------------------------------------------------------------------+"
-    echo "|              Install Nginx for LNMP, Written by Licess                |"
-    echo "+-----------------------------------------------------------------------+"
-    echo "|                     A tool to only install Nginx.                     |"
-    echo "+-----------------------------------------------------------------------+"
-    echo "|          Upstream-official sources only, checksums enforced            |"
-    echo "+-----------------------------------------------------------------------+"
+    Print_Banner \
+        "LNMP 独立安装：Nginx" \
+        "仅安装 Nginx，不安装数据库和 PHP" \
+        "仅使用上游官方源码，并强制校验完整性"
     Press_Install
-    Echo_Blue "Install dependent packages..."
+    Echo_Blue "安装依赖软件包..."
     cd ${cur_dir}/src
     Get_Dist_Version
     Modify_Source
@@ -57,9 +54,7 @@ Install_Only_Nginx()
     StartOrStop start nginx
     Add_Iptables_Rules
     \cp ${cur_dir}/conf/index.html ${Default_Website_Dir}/index.html
-    Install_LNMP_Command lnmp
-    # 只装 nginx，没有数据库，置空服务名让 lnmp 的 Svc 跳过它
-    sed -i 's#^DB_SERVICE=mysql$#DB_SERVICE=#' /bin/lnmp
+    Install_Current_LNMP_Command lnmp || return 1
     Check_Nginx_Files
 }
 
@@ -129,17 +124,17 @@ DB_Dependent()
 
 Install_Database()
 {
-    echo "============================check files=================================="
+    echo "============================ 检查文件 ============================"
     DB_Download_Files
-    echo "============================check files=================================="
+    echo "============================ 文件检查结束 ========================"
 
-    Echo_Blue "Install dependent packages..."
+    Echo_Blue "正在安装依赖包..."
     Get_Dist_Version
     Modify_Source
     Check_Host_Repo_Trust
     DB_Dependent
     Check_Openssl
-    Dispatch "${DB_Install}"
+    Dispatch "${DB_Install}" || return 1
     TempMycnf_Clean
 
     if [ "${DB_Kind}" != "none" ]; then
@@ -161,7 +156,7 @@ Install_Database()
     # 初始化 SQL 失败时不能报成功，理由见 end.sh 的 Check_DB_Init_Result
     Check_DB_Init_Result || return 1
     if [ "${DB_Kind}" != "none" ]; then
-        Echo_Green "Install ${DB_Ver} completed! enjoy it."
+        Echo_Green "${DB_Ver} 安装完成。"
     fi
     return 0
 }
@@ -169,27 +164,24 @@ Install_Database()
 Install_Only_Database()
 {
     clear
-    echo "+-----------------------------------------------------------------------+"
-    echo "|      Install MySQL/MariaDB database for LNMP, Written by Licess       |"
-    echo "+-----------------------------------------------------------------------+"
-    echo "|               A tool to install MySQL/MariaDB for LNMP                |"
-    echo "+-----------------------------------------------------------------------+"
-    echo "|          Upstream-official sources only, checksums enforced            |"
-    echo "+-----------------------------------------------------------------------+"
+    Print_Banner \
+        "LNMP 独立安装：MySQL/MariaDB" \
+        "仅安装数据库，不安装 Web 服务器和 PHP" \
+        "仅使用上游官方源码，并强制校验完整性"
 
     Get_Dist_Name
     Check_DB
     if [ "${DB_Name}" != "None" ]; then
-        echo "You have install ${DB_Name}!"
+        echo "检测到 ${DB_Name} 已安装。"
         exit 1
     fi
 
     Database_Selection
     if [ "${DB_Kind}" = "none" ]; then
-        echo "DO NOT Install MySQL or MariaDB."
+        echo "已选择不安装 MySQL 或 MariaDB。"
         exit 1
     fi
-    Echo_Red "The script will REMOVE MySQL/MariaDB installed via yum or apt-get and it's databases!!!"
+    Echo_Red "警告：脚本将删除通过 yum 或 apt-get 安装的 MySQL/MariaDB 及其数据库！"
     Press_Install
     # 同 install.sh：管道退出码默认来自 tee，必须显式取左侧的。
     Install_Database 2>&1 | tee /root/install_database.log
@@ -199,9 +191,8 @@ Install_Only_Database()
     # DB_Root_Password / DB_Root_Password_Random 由上面的 Database_Selection
     # 在当前 shell 里设好，管道子 shell 不影响它们。
     if [ ${rc} -eq 0 ]; then
-        echo "+-----------------------------------------------------------------------+"
+        Install_Current_LNMP_Command lnmp || return 1
         Print_DB_Password_Notice
-        echo "+-----------------------------------------------------------------------+"
     fi
     return ${rc}
 }

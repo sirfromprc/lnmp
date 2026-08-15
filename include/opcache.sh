@@ -3,7 +3,7 @@
 Install_Opcache()
 {
 
-    echo "====== Installing zend opcache ======"
+    echo "====== 正在安装 Zend OPcache ======"
     Press_Start
 
     # 清理可能存在的旧 opcache 配置，避免与下面新写的重复
@@ -28,8 +28,8 @@ opcache.jit_buffer_size = 64M
 EOF
 
     else
-        echo "Error: can't get php version!"
-        echo "Maybe php was didn't install or php configuration file has errors.Please check."
+        echo "错误：无法获取 PHP 版本！"
+        echo "PHP 可能尚未安装，或 PHP 配置文件存在错误，请检查。"
         sleep 3
         return 1
     fi
@@ -39,21 +39,21 @@ EOF
     # 并提供 reset/invalidate 操作。
     Restart_PHP
     if [ -s "${zend_ext}" ]; then
-        Echo_Green "====== Opcache install completed ======"
-        Echo_Green "Opcache installed successfully, enjoy it!"
+        Echo_Green "====== OPcache 安装完成 ======"
+        Echo_Green "OPcache 安装成功。"
         return 0
     else
         rm -f ${PHP_Path}/conf.d/004-opcache.ini
-        Echo_Red "OPcache install failed!"
+        Echo_Red "OPcache 安装失败！"
         return 1
     fi
 }
 
 Uninstall_Opcache()
 {
-    echo "You will uninstall opcache..."
+    echo "即将卸载 OPcache..."
     Press_Start
     rm -f ${PHP_Path}/conf.d/004-opcache.ini
     Restart_PHP
-    Echo_Green "Uninstall Opcache completed."
+    Echo_Green "OPcache 卸载完成。"
 }

@@ -2,7 +2,7 @@
 
 Install_PHPMemcache()
 {
-    echo "Install memcache php extension..."
+    echo "正在安装 PHP memcache 扩展..."
     cd ${cur_dir}/src
     # 保留的 PHP 全部是 8.x，统一用 PHP8Memcache_Ver，改走 pecl 官方源
     Download_Files https://pecl.php.net/get/${PHP8Memcache_Ver}.tgz ${PHP8Memcache_Ver}.tgz
@@ -16,7 +16,7 @@ Install_PHPMemcache()
 
 Install_PHPMemcached()
 {
-    echo "Install memcached php extension..."
+    echo "正在安装 PHP memcached 扩展..."
     cd ${cur_dir}/src
     Get_Dist_Name
     if [ "$PM" = "yum" ]; then
@@ -51,24 +51,24 @@ Install_PHPMemcached()
 Install_Memcached()
 {
     ver="1"
-    echo "Which memcached php extension do you choose:"
-    echo "Install php-memcache, please enter: 1"
-    echo "Install php-memcached, please enter: 2"
-    read -p "Enter 1 or 2 (Default 1): " ver
+    echo "请选择要安装的 Memcached PHP 扩展："
+    echo "1：安装 php-memcache"
+    echo "2：安装 php-memcached"
+    read -p "请输入 1 或 2 [默认 1]：" ver
 
     if [ "${ver}" = "1" ]; then
-        echo "You choose php-memcache"
+        echo "已选择 php-memcache。"
         PHP_ZTS="memcache.so"
     elif [ "${ver}" = "2" ]; then
-        echo "You choose php-memcached"
+        echo "已选择 php-memcached。"
         PHP_ZTS="memcached.so"
     else
         ver="1"
-        echo "You choose php-memcache"
+        echo "未输入或输入无效，使用默认项 php-memcache。"
         PHP_ZTS="memcache.so"
     fi
 
-    echo "====== Installing memcached ======"
+    echo "====== 正在安装 Memcached ======"
     Press_Start
 
     rm -f ${PHP_Path}/conf.d/005-memcached.ini
@@ -81,10 +81,10 @@ Install_Memcached()
 extension = ${PHP_ZTS}
 EOF
 
-    echo "Install memcached..."
+    echo "正在安装 Memcached..."
     cd ${cur_dir}/src
     if [ -s /usr/local/memcached/bin/memcached ]; then
-        echo "Memcached already exists."
+        echo "Memcached 已存在。"
     else
         Download_Files https://memcached.org/files/${Memcached_Ver}.tar.gz ${Memcached_Ver}.tar.gz
         Require_File "${Memcached_Ver}.tar.gz" "memcached"
@@ -130,10 +130,11 @@ EOF
     # phpMyAdmin 同一口径。它会连上 memcached
     # 并读写 key，等于把「本机有 memcached 且可用」这一事实公开出去。
     if [ "${Enable_Memcached_Test_Page}" = "y" ]; then
-        echo "Copy Memcached PHP Test file..."
+        echo "正在复制 Memcached PHP 测试文件..."
         \cp ${cur_dir}/conf/memcached${ver}.php ${Default_Website_Dir}/memcached.php
+        Warn_Demo_Page_Not_Served memcached.php
     else
-        echo "Memcached test page not deployed (Enable_Memcached_Test_Page='n')."
+        echo "未部署 Memcached 测试页面（Enable_Memcached_Test_Page='n'）。"
         echo "如需自测：cp conf/memcached${ver}.php ${Default_Website_Dir}/memcached.php"
     fi
 
@@ -144,9 +145,9 @@ EOF
     Firewall_Block udp "${Memcached_Port}"
     Firewall_Save
 
-    echo "Starting Memcached..."
-    # 与 nginx、php-fpm、数据库、Redis 一致走 StartOrStop：有 systemd 就用
-    # systemctl，WSL/容器等没有 systemd 的环境才退回 SysV 脚本。
+    echo "正在启动 Memcached..."
+    # 与 nginx、php-fpm、数据库、Redis 一致走 StartOrStop：systemd 实际运行
+    # 且 unit 存在时使用 systemctl，否则退回 SysV 脚本。
     StartOrStop start memcached
 
     # 分开报，不然用户只看到一句 failed，不知道差的是扩展还是服务。
@@ -156,8 +157,8 @@ EOF
     [ -s "${zend_ext}" ] && [ "${ext_rc}" -eq 0 ] && ext_ok=1
 
     if [ "${svc_ok}" -eq 1 ] && [ "${ext_ok}" -eq 1 ]; then
-        Echo_Green "====== Memcached install completed ======"
-        Echo_Green "Memcached installed successfully, enjoy it!"
+        Echo_Green "====== Memcached 安装完成 ======"
+        Echo_Green "Memcached 安装成功。"
         return 0
     fi
     [ "${svc_ok}" -eq 1 ] && Echo_Green "memcached 服务端已安装并在运行。"
@@ -166,18 +167,18 @@ EOF
         rm -f ${PHP_Path}/conf.d/005-memcached.ini
         Echo_Red "PHP 扩展 ${PHP_ZTS} 没有装成，已移除对应的 ini，避免 PHP 启动报警告。"
     fi
-    Echo_Red "Memcached install failed!"
+    Echo_Red "Memcached 安装失败！"
     return 1
 }
 
 Uninstall_Memcached()
 {
-    echo "You will uninstall Memcached..."
+    echo "即将卸载 Memcached..."
     Press_Start
     rm -f ${PHP_Path}/conf.d/005-memcached.ini
     Restart_PHP
     Remove_StartUp memcached
-    echo "Delete Memcached files..."
+    echo "正在删除 Memcached 文件..."
     rm -rf /usr/local/libmemcached
     rm -rf /usr/local/memcached
     rm -rf /etc/init.d/memcached
@@ -185,5 +186,5 @@ Uninstall_Memcached()
     Firewall_Unblock tcp "${Memcached_Port}"
     Firewall_Unblock udp "${Memcached_Port}"
     Firewall_Save
-    Echo_Green "Uninstall Memcached completed."
+    Echo_Green "Memcached 卸载完成。"
 }

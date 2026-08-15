@@ -91,40 +91,40 @@ Nginx_Pid()
 
 case "$1" in
     start)
-        echo -n "Starting nginx... "
+        echo -n "正在启动 Nginx... "
 
         if Nginx_Pid; then
             # 已经在跑就是"已达成目标"，返回 0 保持幂等，与 redis、pureftpd 一致。
             # 返回 1 会让重复执行的安装流程把正常情况当成失败。
-            echo "nginx (pid $PID) already running."
+            echo "Nginx 已在运行（pid $PID）。"
             exit 0
         fi
 
         $NGINX_BIN -c $CONFIG
 
         if [ "$?" != 0 ]; then
-            echo " failed"
+            echo " 失败"
             exit 1
         else
-            echo " done"
+            echo " 完成"
         fi
         ;;
 
     stop)
-        echo -n "Stoping nginx... "
+        echo -n "正在停止 Nginx... "
 
         if ! Nginx_Pid; then
-            echo "nginx is not running."
+            echo "Nginx 未运行。"
             exit 1
         fi
 
         $NGINX_BIN -s stop
 
         if [ "$?" != 0 ] ; then
-            echo " failed. Use force-quit"
+            echo " 失败，请使用 force-quit。"
             $0 force-quit
         else
-            echo " done"
+            echo " 完成"
         fi
         ;;
 
@@ -133,29 +133,29 @@ case "$1" in
         # 退出码碰巧也是 0，等于无论如何都报成功，调用方判断不了状态。
         # LSB 约定：0 表示在跑，3 表示没在跑。
         if Nginx_Pid; then
-            echo "nginx (pid $PID) is running..."
+            echo "Nginx 正在运行（pid $PID）。"
             exit 0
         else
-            echo "nginx is stopped."
+            echo "Nginx 已停止。"
             exit 3
         fi
         ;;
 
     force-quit|kill)
-        echo -n "Terminating nginx... "
+        echo -n "正在强制终止 Nginx... "
 
         if ! Nginx_Pid; then
-            echo "nginx is stopped."
+            echo "Nginx 已停止。"
             exit 1
         fi
 
         kill $PID
 
         if [ "$?" != 0 ]; then
-            echo " failed"
+            echo " 失败"
             exit 1
         else
-            echo " done"
+            echo " 完成"
         fi
         ;;
 
@@ -166,30 +166,30 @@ case "$1" in
         ;;
 
     reload)
-        echo -n "Reload nginx... "
+        echo -n "正在重载 Nginx... "
 
         if Nginx_Pid; then
             # reload 失败必须传出去：conf/lnmp 的 vhost 删除靠这一步让站点真正
             # 下线，只打印 done 而返回 0，等于删完站点还在线也没人知道。
             if ! $NGINX_BIN -s reload; then
-                echo " failed"
+                echo " 失败"
                 exit 1
             fi
-            echo " done"
+            echo " 完成"
         else
-            echo "nginx is not running, can't reload."
+            echo "Nginx 未运行，无法重载。"
             exit 1
         fi
         ;;
 
     configtest)
-        echo -n "Test nginx configure files... "
+        echo -n "正在检查 Nginx 配置文件... "
 
         $NGINX_BIN -t
         ;;
 
     *)
-        echo "Usage: $0 {start|stop|restart|reload|status|configtest|force-quit|kill}"
+        echo "用法：$0 {start|stop|restart|reload|status|configtest|force-quit|kill}"
         exit 1
         ;;
 

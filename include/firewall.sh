@@ -276,3 +276,85 @@ Firewall_Save()
     echo "（系统原有的 ${main_conf} 内容未被改动，只追加了一行 include。）"
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# Check_SSH_Port_Policy — 装依赖/编译前，确认即将放行的 SSH 端口没问题
+#
+# Add_Iptables_Rules 只会放行 lnmp.conf 里 SSH_Port 这一个端口，而且它跑在
+# 安装流程的最后（编译完 DB/PHP/Web 之后）——真出问题用户也只能干等几十
+# 分钟到几小时后才发现。所以这一步要在真正开始装依赖前就做完：
+#   1) 探测到的实际监听端口与 SSH_Port 不一致 —— 直接拒绝，让用户把
+#      lnmp.conf 改对，不去猜哪个是对的；
+#   2) 一致但仍是 22（OpenSSH 默认值）—— 醒目提示即将放行 22，并强制
+#      二选一：继续（保持 22）或退出去改端口，不允许含糊带过；
+#   3) 一致且已不是 22 —— 只提示，不阻塞；
+#   4) 探测失败（没有 ss/netstat，也没找到 sshd_config）—— 没法比对，
+#      按 lnmp.conf 的 SSH_Port 处理，同样走上面 2/3 的判断。
+#
+# 非交互（无终端或 LNMP_Auto=y）不做比对和强制二选一，只打印提示后继续，
+# 不阻断已有自动化——那些场景往往是刚起的容器/CI，没有真实 sshd。
+# ---------------------------------------------------------------------------
+Check_SSH_Port_Policy()
+{
+    local raw detect_rc p ans matched=n
+    local -a detected=()
+
+    if [ ! -t 0 ] || [ "${LNMP_Auto}" = "y" ]; then
+        Echo_Yellow "非交互执行，跳过 SSH 端口检测，按 lnmp.conf 的 SSH_Port=${SSH_Port} 放行防火墙。"
+        return 0
+    fi
+
+    raw=$(Get_Actual_SSH_Port)
+    detect_rc=$?
+    if [ -n "${raw}" ]; then
+        while read -r p; do
+            detected+=("${p}")
+        done <<< "${raw}"
+    fi
+
+    if [ ${detect_rc} -ne 0 ]; then
+        Echo_Yellow "未能自动探测到系统实际监听的 SSH 端口，以下按 lnmp.conf 里的"
+        Echo_Yellow "SSH_Port=${SSH_Port} 处理，请自行确认这与实际使用的 SSH 端口一致。"
+        matched=y
+        detected=("${SSH_Port}")
+    else
+        for p in "${detected[@]}"; do
+            [ "${p}" = "${SSH_Port}" ] && matched=y
+        done
+    fi
+
+    if [ "${matched}" != "y" ]; then
+        Echo_Red "======================================================================"
+        Echo_Red "检测到系统当前实际监听的 SSH 端口：${detected[*]}"
+        Echo_Red "lnmp.conf 里的 SSH_Port=${SSH_Port} 与之不一致。"
+        Echo_Red "装完防火墙只会放行 SSH_Port 这一个端口——继续下去，真实在用的 SSH"
+        Echo_Red "端口很可能没被放行，或者该挡的端口没挡住。"
+        Echo_Red "请把 lnmp.conf 里的 SSH_Port 改成 ${detected[*]} 后重新执行本脚本。"
+        Echo_Red "======================================================================"
+        return 1
+    fi
+
+    Echo_Yellow "=========================================================================="
+    Echo_Yellow "即将放行防火墙 SSH 端口：${SSH_Port}"
+
+    if [ "${SSH_Port}" != "22" ]; then
+        Echo_Yellow "=========================================================================="
+        return 0
+    fi
+
+    Echo_Red "当前是 OpenSSH 默认端口 22，公网扫描器几乎全天候在扫这个端口。"
+    Echo_Red "建议换成其它端口降低被爆破概率或使用证书登录："
+    Echo_Red "  1. 编辑 /etc/ssh/sshd_config，把 \"#Port 22\" 改成例如 \"Port 52222\"；"
+    Echo_Red "  2. systemctl restart sshd；"
+    Echo_Red "  3. 保留当前连接，另开一个终端用新端口验证能登录后再关掉旧连接；"
+    Echo_Red "  4. 把 lnmp.conf 里的 SSH_Port 改成同一个值。"
+    Echo_Red "=========================================================================="
+    read -r -p "保持默认 22 端口继续安装请输入 y；要改端口请输入其它任意键退出： " ans
+    case "${ans}" in
+        [yY]) return 0 ;;
+        *)
+            Echo_Yellow "已退出。改好 SSH 端口和 lnmp.conf 的 SSH_Port 后，并测试能登录后再重新执行本命令。"
+            return 1
+            ;;
+    esac
+}

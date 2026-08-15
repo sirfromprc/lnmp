@@ -3,7 +3,7 @@ export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~
 
 # Check if user is root
 if [ $(id -u) != "0" ]; then
-    echo "Error: You must be root to run this script, please use root to install lnmp"
+    echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
 fi
 
@@ -17,6 +17,9 @@ fi
 
 LNMP_Ver='2.3'
 . lnmp.conf
+# version.sh 只定义组件版本常量，不依赖任何选择结果。必须在菜单函数之前载入，
+# 否则 Web_Selection 等选择阶段引用 ${Nginx_Ver} 会展开为空。
+. include/version.sh
 . include/main.sh
 . include/verify.sh
 . include/firewall.sh
@@ -42,14 +45,14 @@ Validate_Service_Ports || exit 1
 Get_Dist_Name
 
 if [ "${DISTRO}" = "unknow" ]; then
-    Echo_Red "Unable to get Linux distribution name, or do NOT support the current distribution."
+    Echo_Red "无法识别 Linux 发行版，或当前发行版不受支持。"
     exit 1
 fi
 
 if [[ "${Stack}" = "lnmp" || "${Stack}" = "lnmpa" || "${Stack}" = "lamp" ]]; then
     if [ -f /bin/lnmp ]; then
-        Echo_Red "You have installed LNMP!"
-        echo -e "If you want to reinstall LNMP, please BACKUP your data.\nand run uninstall script: ./uninstall.sh before you install."
+        Echo_Red "检测到 LNMP 已安装。"
+        echo -e "如需重新安装，请先备份数据，\n然后执行 ./uninstall.sh 卸载现有环境。"
         exit 1
     fi
 fi
@@ -57,18 +60,14 @@ fi
 Check_LNMPConf
 
 clear
-echo "+------------------------------------------------------------------------+"
-echo "|          LNMP V${LNMP_Ver} for ${DISTRO} Linux Server, Written by Licess          |"
-echo "+------------------------------------------------------------------------+"
-echo "|        A tool to auto-compile & install LNMP/LNMPA/LAMP on Linux       |"
-echo "+------------------------------------------------------------------------+"
-echo "|          Upstream-official sources only, checksums enforced             |"
-echo "+------------------------------------------------------------------------+"
+Print_Banner \
+    "LNMP V${LNMP_Ver} 安装程序" \
+    "在 ${DISTRO} Linux 上安装 LNMP、LNMPA 或 LAMP" \
+    "仅使用上游官方源码，并强制校验完整性"
 
 Init_Install()
 {
     Press_Install
-    Print_APP_Ver
     Get_Dist_Version
     Print_Sys_Info
     Check_Hosts
@@ -107,7 +106,9 @@ Init_Install()
         Deb_Lib_Opt
     fi
     if [ "${DB_Kind}" != "none" ]; then
-        Dispatch "${DB_Install}"
+        # 数据库装不起来时后续步骤都建立在不存在的实例上，必须中止并把
+        # 非零返回码一路传到入口的退出码
+        Dispatch "${DB_Install}" || return 1
     fi
     TempMycnf_Clean
     Clean_DB_Src_Dir
@@ -133,41 +134,51 @@ Install_WebServer()
 
 LNMP_Stack()
 {
-    Init_Install
+    Init_Install || return 1
     Install_PHP
     LNMP_PHP_Opt
     Install_WebServer
     Creat_PHP_Tools || return 1
     Add_Iptables_Rules
-    Add_LNMP_Startup
+    Add_LNMP_Startup || return 1
     Check_LNMP_Install
 }
 
 LNMPA_Stack()
 {
     Apache_Selection
-    Init_Install
+    Init_Install || return 1
     Dispatch "${Apache_Install}"
     Install_PHP
     Install_WebServer
     Creat_PHP_Tools || return 1
     Add_Iptables_Rules
-    Add_LNMPA_Startup
+    Add_LNMPA_Startup || return 1
     Check_LNMPA_Install
 }
 
 LAMP_Stack()
 {
     Apache_Selection
-    Init_Install
+    Init_Install || return 1
     Dispatch "${Apache_Install}"
     Install_PHP
     Creat_PHP_Tools || return 1
     Add_Iptables_Rules
-    Add_LAMP_Startup
+    Add_LAMP_Startup || return 1
     Check_LAMP_Install
 }
 
+
+# 只在真正会装依赖、可能改防火墙的入口做安装前确认；phpmyadmin 的
+# enable/disable/status 子命令和 mphp 只是补充操作，不碰端口/防火墙，
+# 弹确认反而是打扰。
+case "${Stack}" in
+    lnmp|lnmpa|lamp|nginx|db)
+        Confirm_LNMPConf_Reviewed
+        Check_SSH_Port_Policy || exit 1
+        ;;
+esac
 
 Install_Rc=0
 
@@ -205,11 +216,17 @@ case "${Stack}" in
         ;;
     *)
 
-        Echo_Red "Usage: $0 {lnmp|lnmpa|lamp}"
-        Echo_Red "Usage: $0 {nginx|db|mphp|phpmyadmin}"
-        Echo_Red "Usage: $0 phpmyadmin {enable|disable|status}"
+        Echo_Red "用法：$0 {lnmp|lnmpa|lamp}"
+        Echo_Red "用法：$0 {nginx|db|mphp|phpmyadmin}"
+        Echo_Red "用法：$0 phpmyadmin {enable|disable|status}"
         Install_Rc=1
         ;;
 esac
+
+# 独立安装/补装入口也必须保证管理命令权限。phpMyAdmin、mphp 等入口可能
+# 修改或沿用已有 /bin/lnmp，这里统一同步到 /usr/bin 并固定为 755。
+if [ "${Install_Rc}" -eq 0 ] && [ -s /bin/lnmp ]; then
+    Sync_LNMP_Command_Alias || Install_Rc=1
+fi
 
 exit ${Install_Rc}

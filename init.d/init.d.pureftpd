@@ -32,9 +32,9 @@ is_running() {
 }
 
 start() {
-    echo -n $"Starting $prog... "
+    echo -n $"正在启动 $prog... "
     if is_running; then
-        echo " already running"
+        echo " 已在运行"
         return 0
     fi
     # 陈旧的 pid 文件会让下面的就绪判断立刻"成功"，先清掉
@@ -52,21 +52,21 @@ start() {
         sleep 0.2
     done
     if [ "$start_rc" != 0 ] || [ "$ready" != 0 ]; then
-        echo " failed"
+        echo " 失败"
         return 1
     fi
-    echo " done"
+    echo " 完成"
     return 0
 }
 
 stop() {
-    echo -n $"Stopping $prog...  "
+    echo -n $"正在停止 $prog...  "
     if ! is_running; then
-        echo $"$prog is not running."
+        echo $"$prog 未运行。"
         return 1
     fi
     if ! kill "$(cat "$PURE_PID")" 2>/dev/null; then
-        echo " failed"
+        echo " 失败"
         return 1
     fi
     for _ in 1 2 3 4 5; do
@@ -74,16 +74,16 @@ stop() {
         sleep 1
     done
     if is_running; then
-        echo " failed"
+        echo " 失败"
         return 1
     fi
     rm -f "$PURE_PID"
-    echo " done"
+    echo " 完成"
     return 0
 }
 
 restart(){
-    echo $"Restarting $prog..."
+    echo $"正在重启 $prog..."
     # 本来就没在跑时 stop 会返回 1，这属于正常情况，不影响重启结果，
     # 所以 restart 的返回码只看 start。
     $0 stop
@@ -96,10 +96,10 @@ restart(){
 # 调用方（lnmp pureftpd status、service pureftpd status）据此判断必然被误导。
 status(){
     if is_running; then
-        echo $"$prog is running."
+        echo $"$prog 正在运行。"
         return 0
     fi
-    echo $"$prog is not running."
+    echo $"$prog 未运行。"
     return 3
 }
 
@@ -117,7 +117,7 @@ case "$1" in
         status
         ;;
   *)
-        echo $"Usage: $0 {start|stop|restart|status}"
+        echo $"用法：$0 {start|stop|restart|status}"
         exit 2
 esac
 # 返回码必须传出去，否则上面几个函数认真算出来的结果到调用方又变成 0。

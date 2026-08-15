@@ -154,9 +154,20 @@ Check_Perm()
 Find_Mysqldump()
 {
     local c
-    [ -n "${MySQL_Dump}" ] && [ -x "${MySQL_Dump}" ] && return 0
-    for c in /usr/local/mysql/bin/mysqldump /usr/local/mariadb/bin/mysqldump \
-             /usr/bin/mysqldump /usr/bin/mariadb-dump; do
+    if [ -n "${MySQL_Dump}" ] && [ -x "${MySQL_Dump}" ]; then
+        case "${MySQL_Dump}" in
+            /usr/local/mariadb/bin/mysqldump)
+                [ -x /usr/local/mariadb/bin/mariadb-dump ] && MySQL_Dump=/usr/local/mariadb/bin/mariadb-dump
+                ;;
+            /usr/bin/mysqldump)
+                [ -x /usr/bin/mariadb-dump ] && MySQL_Dump=/usr/bin/mariadb-dump
+                ;;
+        esac
+        return 0
+    fi
+    for c in /usr/local/mysql/bin/mysqldump \
+             /usr/local/mariadb/bin/mariadb-dump /usr/local/mariadb/bin/mysqldump \
+             /usr/bin/mariadb-dump /usr/bin/mysqldump; do
         if [ -x "${c}" ]; then MySQL_Dump="${c}"; return 0; fi
     done
     return 1
@@ -165,7 +176,9 @@ Find_Mysqldump()
 Find_Mysql_Client()
 {
     local c
-    for c in /usr/local/mysql/bin/mysql /usr/local/mariadb/bin/mysql /usr/bin/mysql; do
+    for c in /usr/local/mysql/bin/mysql \
+             /usr/local/mariadb/bin/mariadb /usr/local/mariadb/bin/mysql \
+             /usr/bin/mariadb /usr/bin/mysql; do
         if [ -x "${c}" ]; then printf '%s' "${c}"; return 0; fi
     done
     return 1
@@ -353,19 +366,34 @@ Encrypt_File()
 {
     local in="$1" out="${1}.enc" rc=0
     [ "${Enable_Encrypt}" = "1" ] || { printf '%s' "${in}"; return 0; }
-    [ -n "${Encrypt_Recipient}" ] || { Log ERROR "启用了加密但没有配置 Encrypt_Recipient"; return 1; }
+    # 启用了加密，明文就不能留在备份目录里。下面每一条失败路径都要连同输入的
+    # 明文一起删除：调用方只会把批次标记为不完整并保留目录，未加密的转储
+    # 一旦留下就会一直躺在磁盘上，与开启加密的意图正好相反。
+    if [ -z "${Encrypt_Recipient}" ]; then
+        rm -f "${in}"
+        Log ERROR "启用了加密但没有配置 Encrypt_Recipient"
+        return 1
+    fi
     case "${Encrypt_Tool}" in
         age)
-            command -v age >/dev/null 2>&1 || { Log ERROR "找不到 age 命令"; return 1; }
+            if ! command -v age >/dev/null 2>&1; then
+                rm -f "${in}"; Log ERROR "找不到 age 命令"; return 1
+            fi
             age -r "${Encrypt_Recipient}" -o "${out}" "${in}"; rc=$?
             ;;
         gpg)
-            command -v gpg >/dev/null 2>&1 || { Log ERROR "找不到 gpg 命令"; return 1; }
+            if ! command -v gpg >/dev/null 2>&1; then
+                rm -f "${in}"; Log ERROR "找不到 gpg 命令"; return 1
+            fi
             gpg --batch --yes --trust-model always -e -r "${Encrypt_Recipient}" -o "${out}" "${in}"; rc=$?
             ;;
-        *) Log ERROR "Encrypt_Tool 只支持 age 或 gpg：${Encrypt_Tool}"; return 1 ;;
+        *)
+            rm -f "${in}"
+            Log ERROR "Encrypt_Tool 只支持 age 或 gpg：${Encrypt_Tool}"
+            return 1
+            ;;
     esac
-    [ "${rc}" -eq 0 ] || { rm -f "${out}"; Log ERROR "加密失败：${in}"; return 1; }
+    [ "${rc}" -eq 0 ] || { rm -f "${out}" "${in}"; Log ERROR "加密失败：${in}"; return 1; }
     rm -f "${in}"
     printf '%s' "${out}"
     return 0
@@ -509,7 +537,11 @@ Curl_Ftp()
 # 比解析 LIST 稳，LIST 的格式随服务器实现而变。
 Ftp_Remote_Size()
 {
-    Curl_Ftp "$1" 'head' 'output = "/dev/null"' 2>/dev/null \
+    # 不能再加 output = "/dev/null"：FTP 下 --head 只发 SIZE/MDTM，不取文件体，
+    # 它拼出来的 Content-Length / Last-Modified 几行本身就走 stdout，
+    # -o 会把这几行一起丢掉，于是永远读不到大小，批次被判成"远端缺少文件"
+    # 卡在 .incoming 里不改名。
+    Curl_Ftp "$1" 'head' 2>/dev/null \
         | awk -F': ' 'tolower($1) == "content-length" { gsub(/\r/, "", $2); print $2; exit }'
 }
 
@@ -643,7 +675,12 @@ ${out}"
         [ -f "${f}" ] || continue
         base="${f##*/}"
         local_size=$(stat -c '%s' "${f}" 2>/dev/null || stat -f '%z' "${f}" 2>/dev/null)
-        remote_size=$(printf '%s\n' "${out}" | awk -v n="${base}" '$NF == n { print $5 }' | tail -n 1)
+        # sftp 的 ls -l 最后一列打印的是传给 ls 的那个路径拼上文件名，
+        # 例如 backup/.incoming/<批次>-db/SHA256SUMS，不是裸文件名；
+        # 直接拿 basename 去比 $NF 永远匹配不上，会把已经传上去的文件
+        # 判成"远端缺少"，批次卡在 .incoming 里不改名。这里统一取 basename 再比。
+        remote_size=$(printf '%s\n' "${out}" | awk -v n="${base}" \
+            '{ p = $NF; sub(/.*\//, "", p); if (p == n) print $5 }' | tail -n 1)
         if [ -z "${remote_size}" ]; then
             Log ERROR "远端缺少文件：${base}"; ok=0; continue
         fi
@@ -700,14 +737,32 @@ Cleanup_Remote_Sftp()
 
 List_Remote_Batches()
 {
-    local type="$1" out rc
+    local type="$1" out rc err_file
     case "${Remote_Protocol}" in
         sftp)
+            # sftp 的 "sftp> ..." 命令回显走 stdout，错误信息走 stderr。
+            # stderr 单独收下用来区分错误类型，回显行在下面统一过滤掉——
+            # 混进结果的话，"sftp> ls -1 backup/db" 会被 sed 截成 "db"，
+            # 当成一个批次名打印出来。
+            err_file=$(mktemp) || return 1
             out=$(printf 'ls -1 %s/%s\nbye\n' "${Remote_Dir}" "${type}" \
-                | Sftp_Run 2>/dev/null); rc=$?
+                | Sftp_Run 2>"${err_file}"); rc=$?
+            # 远端还没有这一类的目录不算错误：可能只上传过另一类，也可能该类
+            # 批次已被保留策略清空。OpenSSH 对此报的是
+            # Can't ls: "<路径>" not found。按"0 个批次"处理，不让整条 list 失败。
+            if [ "${rc}" -ne 0 ] && grep -q "Can't ls:.*not found" "${err_file}"; then
+                rm -f "${err_file}"
+                return 0
+            fi
+            rm -f "${err_file}"
             ;;
         ftps|ftp)
             out=$(Curl_Ftp "${Remote_Dir}/${type}/" 'list-only' 2>/dev/null); rc=$?
+            # curl 9 = 服务端拒绝进入该目录。远端还没有这一类的目录时就是这个
+            # 结果，和 sftp 分支一样按"0 个批次"处理，不让整条 list 失败。
+            # FTP 协议下区分不了"目录不存在"和"没有权限"，后者会在上传阶段
+            # 明确报错，不依赖 list 发现。
+            [ "${rc}" -eq 9 ] && return 0
             ;;
         *)
             Log ERROR "未知的 Remote_Protocol：${Remote_Protocol}"
@@ -715,7 +770,7 @@ List_Remote_Batches()
             ;;
     esac
     [ "${rc}" -eq 0 ] || return "${rc}"
-    printf '%s\n' "${out}" | tr -d '\r' | sed 's#.*/##; /^$/d'
+    printf '%s\n' "${out}" | tr -d '\r' | grep -v '^sftp>' | sed 's#.*/##; /^$/d'
 }
 
 Cleanup_Local()
@@ -786,6 +841,10 @@ Run_Db()
         return 0
     fi
     if [ "${failed}" -ne 0 ]; then
+        # 全部失败（例如目标磁盘写满）时批次目录是空的，留着会让 list 多出一个
+        # 0 个文件的批次，也会占着保留期。rmdir 只删空目录：部分成功时目录非空，
+        # 已经产出的文件按现有约定保留，批次仍标记为不完整。
+        rmdir "${dir}" 2>/dev/null
         Log ERROR "数据库备份有失败项，批次 ${batch} 标记为不完整。"
         return 1
     fi
@@ -815,6 +874,8 @@ Run_Web()
         return 0
     fi
     if [ "${failed}" -ne 0 ]; then
+        # 同 Run_Db：全部失败时清掉空批次目录，部分成功时保留已产出的文件。
+        rmdir "${dir}" 2>/dev/null
         Log ERROR "网站备份有失败项，批次 ${batch} 标记为不完整。"
         return 1
     fi
@@ -969,7 +1030,7 @@ Cmd_Status()
 
 Cmd_List()
 {
-    local what="${1:-all}" type b dir size remote
+    local what="${1:-all}" type b dir size remote mark
     Load_Conf || return 1
     for type in db www; do
         case "${what}" in db) [ "${type}" = "db" ] || continue ;; web) [ "${type}" = "www" ] || continue ;; esac
@@ -977,10 +1038,19 @@ Cmd_List()
         for b in $(List_Batches "${type}"); do
             dir="${Backup_Home}/${type}/${b}"
             size=$(du -sh "${dir}" 2>/dev/null | cut -f1)
-            printf '  %s  %s  %s 个文件\n' "${b}" "${size:-?}" "$(find "${dir}" -maxdepth 1 -type f -name '*.gz*' 2>/dev/null | wc -l)"
+            # SHA256SUMS 只在批次全部产出成功后才写入，缺它就是中途失败的批次。
+            # 恢复时挑批次要看到这个区别，不能只看文件个数。
+            mark=''
+            [ -f "${dir}/SHA256SUMS" ] || mark='  [不完整：缺校验清单]'
+            printf '  %s  %s  %s 个文件%s\n' "${b}" "${size:-?}" \
+                "$(find "${dir}" -maxdepth 1 -type f -name '*.gz*' 2>/dev/null | wc -l)" "${mark}"
         done
     done
-    if [ "${Enable_Remote_Backup}" = "1" ] && Check_Remote_Conf; then
+    # 启用了异地备份却配置不全时，Check_Remote_Conf 已打印具体缺什么，
+    # 但这里必须一并把返回码带出去：否则 list 打印完本地批次就返回 0，
+    # 定时任务与包装脚本会把"远端根本没查成"当成一切正常。
+    if [ "${Enable_Remote_Backup}" = "1" ]; then
+        Check_Remote_Conf || return 1
         for type in db www; do
             case "${what}" in db) [ "${type}" = "db" ] || continue ;; web) [ "${type}" = "www" ] || continue ;; esac
             Say "=== 远端 ${type} 批次 ==="
@@ -1273,7 +1343,9 @@ Guess_Db()
 Write_Systemd_Unit()
 {
     local hour="${1:-3}"
-    cat > "${Systemd_Service}" <<'EOF'
+    # 写 unit 的每一步都要判成败：写不进去时后面的 enable 未必报错，
+    # 结果是配置写好了、定时任务其实没装上，备份永远不会自动跑。
+    cat > "${Systemd_Service}" <<'EOF' || { Err "写入 ${Systemd_Service} 失败。"; return 1; }
 [Unit]
 Description=LNMP backup (websites and databases)
 After=network-online.target mysql.service mariadb.service
@@ -1285,7 +1357,7 @@ ExecStart=/bin/lnmp-backup run
 Nice=10
 IOSchedulingClass=idle
 EOF
-    cat > "${Systemd_Timer}" <<EOF
+    cat > "${Systemd_Timer}" <<EOF || { Err "写入 ${Systemd_Timer} 失败。"; return 1; }
 [Unit]
 Description=LNMP backup timer
 
@@ -1297,7 +1369,8 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-    chmod 644 "${Systemd_Service}" "${Systemd_Timer}"
+    chmod 644 "${Systemd_Service}" "${Systemd_Timer}" \
+        || { Err "设置 unit 文件权限失败。"; return 1; }
     systemctl daemon-reload >/dev/null 2>&1
     systemctl enable --now lnmp-backup.timer >/dev/null 2>&1 \
         || { Err "启用 lnmp-backup.timer 失败，请手工检查。"; return 1; }
@@ -1308,11 +1381,11 @@ EOF
 Write_Cron()
 {
     local hour="${1:-3}"
-    cat > "${Cron_File}" <<EOF
+    cat > "${Cron_File}" <<EOF || { Err "写入 ${Cron_File} 失败。"; return 1; }
 # LNMP backup —— 由 lnmp backup init 生成
 30 ${hour} * * * root /bin/lnmp-backup run
 EOF
-    chmod 644 "${Cron_File}"
+    chmod 644 "${Cron_File}" || { Err "设置 ${Cron_File} 权限失败。"; return 1; }
     Ok "已写入 cron：${Cron_File}"
     return 0
 }
@@ -1322,13 +1395,21 @@ Cmd_Init()
     local sites site_lines ans hour db_pass mysql_bin my_cnf_tmp
     local backup_home="/home/backup"
 
+    Say "配置文件位于：${Conf_File}，可根据实际需求修改相关参数，例如备份计划、是否上传备份文件等。"
+    Say "如需开启上传功能，请先安装 pure-ftpd 并完成相关配置。"
+    Say "如需修改配置，请先按 Ctrl+C 退出当前程序，修改配置文件后重新运行即可。"
+    Say ""
+    printf '确认开始配置请输入 y，其它输入一律取消：'
+    read -r ans
+    [ "${ans}" = "y" ] || { Say "已取消。"; return 0; }
+
     [ "$(id -u)" = "0" ] || { Err "init 需要 root 权限。"; return 1; }
     mkdir -p "${Conf_Dir}" && chmod 700 "${Conf_Dir}" || { Err "无法创建 ${Conf_Dir}"; return 1; }
     mkdir -p "${State_Dir}" "${Log_File%/*}" 2>/dev/null
 
     if [ -f "${Conf_File}" ]; then
         Warn "配置已存在：${Conf_File}"
-        printf '覆盖并重新生成？(y/N) '
+        printf '覆盖并重新生成？[y/N]（默认 n）：'
         read -r ans
         [ "${ans}" = "y" ] || { Say "保留现有配置。"; return 0; }
         cp -p "${Conf_File}" "${Conf_File}.bak.$(date '+%Y%m%d%H%M%S')"
@@ -1347,7 +1428,7 @@ Cmd_Init()
 
     # 数据库 option file：口令只写进 0600 文件，不进命令行、不进配置
     if [ ! -f "${My_Cnf}" ]; then
-        printf '输入数据库 root 密码（用于导出，留空则跳过，不回显）: '
+        printf '输入数据库 root 密码（用于导出，留空则跳过，不回显）：'
         if ! read -r -s db_pass; then
             echo
             Err "读取数据库 root 密码时遇到 EOF。"
@@ -1474,57 +1555,34 @@ EOF
     case "${hour}" in ''|*[!0-9]*) hour=3 ;; esac
     [ "${hour}" -gt 23 ] 2>/dev/null && hour=3
 
+    local timer_rc=0
     if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
-        Write_Systemd_Unit "${hour}"
+        Write_Systemd_Unit "${hour}" || timer_rc=1
     else
-        Write_Cron "${hour}"
+        Write_Cron "${hour}" || timer_rc=1
     fi
 
     Notice_Review_Conf "${backup_home}"
+    # 配置写好了但定时任务没装上，是最容易被忽略的半成功状态：不提示的话
+    # 使用者要等到某天需要恢复时才发现从来没备份过。
+    if [ "${timer_rc}" -ne 0 ]; then
+        Err "配置已写入，但定时任务未能安装，备份不会自动执行。"
+        Err "请按上面的错误处理后重新执行 lnmp backup init，或手工配置定时任务。"
+        return 1
+    fi
     return 0
 }
 
-# init 只是把一份默认配置铺好，除了站点清单和执行时间，其余全是脚本里写死的
-# 默认值 —— 尤其异地上传和加密默认关闭，不看一眼配置的人会以为已经异地了。
-# 这段提示单独成块，不要混进上面的流水输出里。
+# 详细的默认值说明已经在 Cmd_Init 开头打印过一遍，这里只确认结果并给出
+# 常用命令，不再重复整份 checklist。
 Notice_Review_Conf()
 {
     local home="${1:-}"
-    # 提示里引用的路径取自内置默认值，不在这里再写死一份
-    Set_Conf_Defaults
     Say ""
     Color "1;33" "══════════════════════════════════════════════════════"
-    Color "1;33" " 重要：下面这些都还是默认值，请按实际情况改一遍"
+    Say "  配置已写入：${Conf_File}"
+    Say "  备份目录：${home}"
     Color "1;33" "══════════════════════════════════════════════════════"
-    Say "  配置文件：${Conf_File}"
-    Say ""
-    Say "  Backup_Site             要备份的站点，新建站点后要补一行"
-    Say "  Backup_Home             备份存放目录${home:+（当前 ${home}）}，磁盘不够时改到大盘"
-    Say "  Keep_Days_Db=14         库备份保留天数"
-    Say "  Keep_Days_Web=60        网站备份保留天数"
-    Say "  Web_Interval_Days=7     网站文件多少天备份一次（库每次都备）"
-    Warn "  Enable_Encrypt=0        备份不加密：放到不完全可信的存储前先开"
-    Say ""
-    Color "1;33" " 异地备份服务器：现在是空的，不填就只备份在本机"
-    Warn "  Enable_Remote_Backup=0  默认关闭。这台机器坏了、盘坏了、被删了，"
-    Warn "                          备份跟着一起没 —— 强烈建议配上远端。"
-    Say "  改成 1 之后，下面这几项必须按你自己的备份服务器填："
-    Say "    Remote_Protocol=\"sftp\"  sftp（推荐，密钥登录）/ ftps / ftp"
-    Say "    Remote_Host=\"\"          备份服务器地址"
-    Say "    Remote_Port=22          sftp 通常 22，ftp/ftps 通常 21，别忘了一起改"
-    Say "    Remote_User=\"\"          备份服务器账号"
-    Say "    Remote_Dir=\"backup\"     备份放在远端的哪个目录"
-    Say "  用 sftp 还要准备好这两个文件（脚本不会自动接受未知主机）："
-    Say "    Remote_SSH_Key          专用私钥，权限 600，不要复用日常登录密钥"
-    Say "      ssh-keygen -t ed25519 -f ${Remote_SSH_Key} -N ''"
-    Say "      ssh-copy-id -i ${Remote_SSH_Key}.pub -p <端口> <账号>@<主机>"
-    Say "    Remote_Known_Hosts      对端指纹，要带外核对一次"
-    Say "      ssh-keyscan -p <端口> <主机> > ${Remote_Known_Hosts}"
-    Say "  用 ftps/ftp 则要填 Remote_Password；ftp 是明文传输，能不用就不用。"
-    Say "  配好后先手工验证一次：lnmp backup run db && lnmp backup list"
-    Say ""
-    Say "  改完直接生效，不用重跑 init；只有要改执行时间才需要重跑。"
-    Color "1;33" "──────────────────────────────────────────────────────"
     Say "  编辑配置：nano ${Conf_File}"
     Say "  立即备份：lnmp backup run all"
     Say "  只备份一个站点：lnmp backup run <域名>"
@@ -1537,7 +1595,7 @@ Notice_Review_Conf()
 Usage()
 {
     cat <<'EOF'
-Usage: lnmp backup <子命令>
+用法：lnmp backup <子命令>
 
   init                      生成配置、备份目录与定时任务
   run [db|web|all]          执行备份；不带参数按配置的周期决定是否备份网站

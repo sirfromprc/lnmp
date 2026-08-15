@@ -2,17 +2,17 @@
 #
 # nginx 日志切割（配合 crontab 使用，通常每天 0 点跑一次）
 #
-# 切完的日志按 年/月 归档到 /home/wwwlogs/2026/08/access_20260810.log
+# 切完的日志按 年/月 归档到 /home/wwwlogs/2026/08/default_20260810.log
 
 #set the path to nginx log files
 log_files_path="/home/wwwlogs/"
 
 #set nginx log files you want to cut (add your own vhost log names here)
 #
-# 注意：默认只切 access。用 lnmp vhost add 建的站点，日志名是各自的域名
+# 默认切 default 兜底站点和本机管理端口的 access。用 lnmp vhost add 建的站点，日志名是各自的域名
 # （/home/wwwlogs/example.com.log），不会自动加入列表。新建站点后
 # 要手工把名字加进这个数组，否则那些日志会一直长下去。
-log_files_name=(access)
+log_files_name=(default access)
 
 #set the path to nginx.
 nginx_sbin="/usr/local/nginx/sbin/nginx"
