@@ -7,9 +7,7 @@ Type=forking
 PIDFile=/usr/local/nginx/logs/nginx.pid
 ExecStart=/usr/local/nginx/sbin/nginx -c /usr/local/nginx/conf/nginx.conf
 ExecReload=/usr/local/nginx/sbin/nginx -s reload
-# 用 nginx -s quit 而不是 kill -s QUIT $MAINPID：后者在 systemd 没能跟踪到
-# 主进程时（$MAINPID 为空）直接返回 1，unit 随即变成 failed；
-# -s quit 是从 pid 文件读主进程号，谁把 nginx 拉起来的都能正常停掉。
+# nginx -s quit 从 pid 文件定位 master，兼容 systemd 未取得 MAINPID 的服务状态。
 ExecStop=/usr/local/nginx/sbin/nginx -s quit
 PrivateTmp=false
 

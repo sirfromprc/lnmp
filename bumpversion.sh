@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# 开发用同步脚本：把当前源码树里 conf/lnmp(a)/lamp、tools/lnmp-*.sh 的改动
-# 覆盖到已安装位置（/bin/lnmp 等），并修一遍 tools/*.sh 权限。
-#
-# 只复用 include/end.sh 里 Install_LNMP_Command 已有的安装逻辑，不重复实现
-# 一遍复制/权限规则；线上安装、升级都不会走这个脚本。
+# 维护用同步脚本：将源码树中的管理命令覆盖到已安装位置，并设置执行权限。
+# 该脚本仅同步 conf/lnmp、conf/lnmpa、conf/lamp 与 tools/lnmp-*.sh，
+# 不执行组件安装或升级，不应替代 install.sh 或 upgrade.sh。
 #
 # 用法：./bumpversion.sh [lnmp|lnmpa|lamp]
-#   不带参数时，自动探测当前 /bin/lnmp 是哪个栈；探测不出来按 lnmp 处理。
+#   不带参数时自动识别 /bin/lnmp 的栈类型，无法识别时使用 lnmp。
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 
 if [ "$(id -u)" != "0" ]; then

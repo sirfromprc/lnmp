@@ -52,9 +52,7 @@ Backup_DB_Data()
         return 0
     fi
 
-    # 数据目录为空说明这套安装从未初始化成功，没有数据需要保护。不先判空的话，
-    # 下面"备份目录非空"的自检会把空目录当成备份失败，使这类半成品安装
-    # 永远卸载不掉。
+    # 空数据目录无需备份，也不应阻止卸载未完成的安装。
     if [ -z "$(ls -A "${src}" 2>/dev/null)" ]; then
         echo "数据目录 ${src} 为空，无需备份。"
         return 0
@@ -68,15 +66,14 @@ Backup_DB_Data()
         exit 1
     fi
 
-    # 搬完必须确认目标真的在、且不是空的。这一步防的是 mv 返回 0 但结果不对
-    # （例如目标是已存在的目录，源被搬成了它的子目录）。
+    # 删除程序前必须确认备份目录存在且包含数据。
     if [ ! -d "${dst}" ] || [ -z "$(ls -A "${dst}" 2>/dev/null)" ]; then
         Echo_Red "致命错误：备份目录 ${dst} 不存在或为空，无法确认数据已安全转移。"
         Echo_Red "卸载中止，**没有删除任何文件。**"
         exit 1
     fi
 
-    # 备份必须落在待删目录之外，否则等于没备份
+    # 备份目录必须位于卸载删除范围之外。
     case "${dst}" in
     /usr/local/*)
         Echo_Red "致命错误：备份路径 ${dst} 仍在 /usr/local 下，会被后续删除。卸载中止。"
@@ -88,7 +85,7 @@ Backup_DB_Data()
     return 0
 }
 
-# 停服务 + 备份数据，任一环节失败就不往下走
+# 停止数据库并备份数据，任一步失败均中止卸载。
 Stop_And_Backup_DB()
 {
     [ "${DB_Name}" = "None" ] && return 0
@@ -100,16 +97,14 @@ Stop_And_Backup_DB()
     fi
 }
 
-# Remove_Lnmp_Conf_Dir — 处理 /etc/lnmp 下的备份配置与凭据
+# 处理 /etc/lnmp 下的备份配置与凭据。
 #
-# lnmp backup init 会在这里生成 backup.conf（站点清单、异地上传设置）与
+# lnmp backup init 会生成 backup.conf（站点清单、异地上传设置）与
 # backup-mysql.cnf（以 0600 保存数据库 root 口令）。卸载删掉了数据库实例和
 # /bin/lnmp-backup，口令文件留下只剩风险，且重装后会被误当成新实例的凭据，
-# 因此直接删除；其余配置仍有参考价值，与数据目录同样搬到 /root 下并告知去向，
-# 不静默丢弃。
+# 因此删除该凭据；其余配置移到 /root 并显示目标路径。
 #
-# 转移失败时不中止卸载：走到这一步程序文件与数据库已经删完，中止没有意义，
-# 需要的是把情况说清楚让使用者手工处理，因此始终返回 0。
+# 配置转移失败时保留原目录并提示使用者手工处理。
 Remove_Lnmp_Conf_Dir()
 {
     local dir='/etc/lnmp'
@@ -168,7 +163,7 @@ Remove_Libaio_Compat_Link()
 }
 
 # 只删除仍指向本包数据库目录的软链接，以及带 LNMP 标记的 MariaDB 包装器。
-# 用户自己安装的同名系统客户端不在清理范围内。
+# 非本包安装的同名系统客户端不在清理范围内。
 Remove_DB_Command_Links()
 {
     local command path target first second
@@ -238,7 +233,7 @@ Stop_Stack_Services()
     for svc in nginx php-fpm mysql mariadb httpd pureftpd redis; do
         [ -x "/etc/init.d/${svc}" ] && "/etc/init.d/${svc}" stop 2>/dev/null
     done
-    # init 脚本也可能一并缺失，兜底把进程停掉
+    # init 脚本缺失时按进程名停止服务。
     for svc in nginx php-fpm mysqld httpd; do
         pkill -x "${svc}" 2>/dev/null
     done
@@ -252,22 +247,19 @@ Uninstall_LNMP()
 
     Remove_StartUp nginx
     Remove_StartUp php-fpm
-    # 备份必须在任何 rm 之前，且失败即中止（Backup_DB_Data 内部 exit 1）
+    # 数据备份在删除操作前完成，失败时中止卸载。
     Stop_And_Backup_DB
 
     chattr -i ${Default_Website_Dir}/.user.ini 2>/dev/null
     echo "正在删除 LNMP 文件..."
-    # 装的是 OpenResty 时，/usr/local/nginx 只是指向它的软链。
-    # 必须先由 Uninstall_OpenResty 处理（卸包、删源、删软链），
-    # 否则下面的 rm -rf 会顺着软链把 OpenResty 的目录内容删掉，
-    # 同时避免包管理器保留不完整的 OpenResty 安装状态。
+    # OpenResty 使用 /usr/local/nginx 软链接，需先卸载软件包并移除链接。
     if [ -d /usr/local/openresty ]; then
         Uninstall_OpenResty
     fi
     rm -rf /usr/local/nginx
     rm -rf /usr/local/php
     rm -rf /usr/local/zend
-    # phpMyAdmin 及其模板缓存都在网站根目录之外，需要单独清理
+    # phpMyAdmin 及模板缓存位于网站根目录之外。
     rm -rf /usr/local/phpmyadmin /usr/local/phpmyadmin.bak.*
     rm -rf /var/lib/phpmyadmin
 
@@ -301,7 +293,7 @@ Uninstall_LNMPA()
     rm -rf /usr/local/php
     rm -rf /usr/local/apache
     rm -rf /usr/local/zend
-    # phpMyAdmin 及其模板缓存都在网站根目录之外，需要单独清理
+    # phpMyAdmin 及模板缓存位于网站根目录之外。
     rm -rf /usr/local/phpmyadmin /usr/local/phpmyadmin.bak.*
     rm -rf /var/lib/phpmyadmin
 
@@ -333,7 +325,7 @@ Uninstall_LAMP()
     rm -rf /usr/local/apache
     rm -rf /usr/local/php
     rm -rf /usr/local/zend
-    # phpMyAdmin 及其模板缓存都在网站根目录之外，需要单独清理
+    # phpMyAdmin 及模板缓存位于网站根目录之外。
     rm -rf /usr/local/phpmyadmin /usr/local/phpmyadmin.bak.*
     rm -rf /var/lib/phpmyadmin
 

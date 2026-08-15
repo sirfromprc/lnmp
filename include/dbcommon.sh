@@ -1,27 +1,10 @@
 #!/usr/bin/env bash
 #
-# dbcommon.sh — 数据库下载与工具链的共享实现
-#
-# 背景：init.sh 的 Check_Download() 与 only.sh 的 Install_Database() 曾是两份
-# 手工维护的副本已与主流程不一致；only.sh 在每次下载后检查 [ ! -s ]，
-# init.sh 没有。结果是 `./install.sh db` 下载失败会中止，而 `./install.sh lnmp`
-# 下载失败会带着空文件继续编译。
-#
-# 合并时取 only.sh 的严格版本。
+# 数据库下载、二进制安装和升级校验的共享实现。
 
-# Require_File 已移到 include/main.sh。
-#
-# 它原本定义在这里，但 addons.sh / pureftpd.sh / tools/denyhosts.sh /
-# tools/fail2ban.sh 未加载 dbcommon.sh，但会调用该函数；这些入口单独运行时
-# 将 `command not found`，下载失败也照样往下解压编译。
-# main.sh 是所有入口都会加载的模块，通用的下载守卫应该放在那里。
+# Require_File 位于所有安装入口都会加载的 include/main.sh。
 
-# ---------------------------------------------------------------------------
-# DB_Bin_Glibc_Ver — 推导通用二进制包的 glibc 版本
-# 正常情况下 DB_Bin_Glibc 由 profile.sh 按分支写死（实测值），此处的 auto
-# 只是兜底。原兜底值 2.12 / 2.17 经实测已全部从 cdn.mysql.com 下线，
-# 现使用 2.28；MySQL 8.0 的 x86_64 与 aarch64 包均使用该 glibc 版本。
-# ---------------------------------------------------------------------------
+# 通用二进制包优先使用 profile.sh 指定的 glibc 版本，auto 默认使用 2.28。
 DB_Bin_Glibc_Ver()
 {
     if [ "${DB_Bin_Glibc}" = "auto" ]; then
@@ -32,25 +15,8 @@ DB_Bin_Glibc_Ver()
 }
 
 
-# ---------------------------------------------------------------------------
-# Ensure_Libaio_Compat — 补齐官方通用二进制包所需的 libaio.so.1
-#
-# MySQL 与 MariaDB 的官方通用二进制按 SONAME libaio.so.1 链接。Debian 13
-# 起 libaio1 因 64 位 time_t 转换改名为 libaio1t64，只提供 libaio.so.1t64，
-# 系统里不再有 libaio.so.1；依赖清单里的 libaio-dev 提供的是无版本号的
-# libaio.so，同样不满足。结果是 mysqld/mariadbd 一执行就以
-# "error while loading shared libraries: libaio.so.1" 退出，数据目录初始化
-# 得不到任何文件，服务随后反复启动失败。
-#
-# 触发条件是二进制自身的动态库解析结果，不是发行版名称：Debian 12 与
-# RHEL 系提供 libaio.so.1，此处直接返回，不做任何改动。
-#
-# 兼容链接必须与 libaio.so.1t64 放在同一个目录，也就是动态链接器的默认搜索
-# 目录。放到 /usr/local/lib 并写 ld.so.conf 是无效的：ldconfig 按库文件自身的
-# SONAME（libaio.so.1t64）建缓存，libaio.so.1 这个文件名进不了缓存；只有落在
-# 默认搜索目录里，链接器在缓存未命中后按文件名查找才能找到（已实测）。
-# 参数：$1 = 服务端二进制路径。
-# ---------------------------------------------------------------------------
+# MySQL 和 MariaDB 通用二进制需要 libaio.so.1。仅在动态库解析缺失时，
+# 为兼容 ABI 的 64 位架构在 libaio.so.1t64 所在目录建立兼容链接。
 Ensure_Libaio_Compat()
 {
     local server_bin=$1 t64 link_dir link
@@ -58,9 +24,7 @@ Ensure_Libaio_Compat()
     [ -x "${server_bin}" ] || return 0
     ldd "${server_bin}" 2>/dev/null | grep -q 'libaio\.so\.1 => not found' || return 0
 
-    # t64 转换只在 time_t 原本为 32 位的架构上改变 ABI。这些架构上
-    # libaio.so.1t64 与官方二进制期望的 libaio.so.1 不是同一套接口，
-    # 不能直接链接过去。
+    # 32 位 time_t 架构存在 ABI 差异，不能链接到 libaio.so.1t64。
     case "$(uname -m)" in
         x86_64|aarch64|ppc64le|s390x|riscv64|loongarch64) ;;
         *)
@@ -80,8 +44,7 @@ Ensure_Libaio_Compat()
     link_dir=$(dirname "${t64}")
     link="${link_dir}/libaio.so.1"
 
-    # 走到这里说明搜索路径里没有可用的 libaio.so.1。目标位置若已存在实体文件
-    # （发行版以后自己补回该 SONAME），不覆盖，交由使用者处理。
+    # 不覆盖发行版提供的同名实体文件，避免替换系统库。
     if [ -e "${link}" ] && [ ! -L "${link}" ]; then
         Echo_Red "错误：${link} 已存在且不是符号链接，${server_bin} 仍无法加载 libaio.so.1。"
         Echo_Red "请手工确认该文件后重新安装。"
@@ -102,17 +65,8 @@ Ensure_Libaio_Compat()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# Clean_Stale_DB_Socket — 清理无进程持有的残留 unix socket
-#
-# 数据库进程被 kill -9、OOM 杀死或断电时，socket 文件会留在原地。mysqld 与
-# mariadbd 都不会覆盖已存在的 socket 文件，而是以
-# "Can't start server : Bind on unix socket: Address already in use" 退出，
-# 于是新装的实例永远起不来，后续设置 root 密码等步骤跟着全部失败。
-#
-# 只删确实没有进程使用的 socket：仍有实例在监听时报错返回，绝不动它。
-# socket 路径以 /etc/my.cnf 的 [mysqld] 配置为准。
-# ---------------------------------------------------------------------------
+# 清理异常终止后遗留且无进程占用的数据库 socket。
+# socket 路径以 /etc/my.cnf 的 [mysqld] 配置为准，正在使用时拒绝删除。
 Clean_Stale_DB_Socket()
 {
     local sock
@@ -140,7 +94,7 @@ Install_DB_Bin_Tarball()
 {
     local tarball=$1 target=$2 topdir rc restore_dotglob server_bin
 
-    # ${tarball%.tar.*} 同时适配 .tar.xz（MySQL）与 .tar.gz（MariaDB）
+    # 同时支持 MySQL 的 .tar.xz 和 MariaDB 的 .tar.gz 文件名。
     topdir="${cur_dir}/src/${tarball%.tar.*}"
 
     Tar_Cd "${tarball}"
@@ -155,8 +109,7 @@ Install_DB_Bin_Tarball()
         Echo_Red "错误：${target} 已存在且不是目录，拒绝覆盖。"
         exit 1
     fi
-    # 允许目标为空目录，以支持预先挂载到 /usr/local/mysql 的独立卷。
-    # 但非空一律拒绝：往里放只会得到新旧混合的安装。
+    # 允许预先挂载的空目录，非空目录会造成新旧版本文件混合。
     if [ -d "${target}" ] && [ -n "$(ls -A "${target}" 2>/dev/null)" ]; then
         Echo_Red "错误：${target} 已存在且非空。"
         Echo_Red "直接往里放会得到一个新旧版本混合的安装，这里拒绝继续。"
@@ -169,7 +122,7 @@ Install_DB_Bin_Tarball()
         exit 1
     fi
 
-    # 顶层可能有 dotfile（官方包目前没有，但不该依赖这一点），开 dotglob 一并搬走。
+    # dotglob 确保归档顶层的隐藏文件一并安装。
     restore_dotglob=0
     shopt -q dotglob || restore_dotglob=1
     shopt -s dotglob
@@ -183,14 +136,13 @@ Install_DB_Bin_Tarball()
         exit 1
     fi
 
-    # 落地结果自检：二进制包解开就该直接可用，bin/ 空说明前面哪一步出了问题。
+    # 通用二进制包安装后必须包含非空的 bin 目录。
     if [ ! -d "${target}/bin" ] || [ -z "$(ls -A "${target}/bin" 2>/dev/null)" ]; then
         Echo_Red "错误：${target}/bin 不存在或为空，通用二进制包没有正确安装。"
         exit 1
     fi
 
-    # 解压落地后立刻确认服务端二进制可加载。缺 libaio.so.1 时后面的
-    # --initialize 会静默产出空数据目录，问题要到启动服务才暴露。
+    # 初始化数据目录前确认服务端二进制所需动态库可用。
     for server_bin in "${target}/bin/mariadbd" "${target}/bin/mysqld"; do
         [ -x "${server_bin}" ] || continue
         Ensure_Libaio_Compat "${server_bin}" || exit 1
@@ -213,7 +165,7 @@ DB_Download_Files()
     mysql)
         if [ "${Bin}" = "y" ]; then
             glibc=$(DB_Bin_Glibc_Ver)
-            # 5.5/5.6/5.7 是 .tar.gz，8.0+ 是 .tar.xz
+            # MySQL 8.0 及以上使用 .tar.xz，较早版本使用 .tar.gz。
             if Version_GE "${DB_Branch}" 8.0; then
                 DB_Bin_Tarball="${Mysql_Ver}-linux-glibc${glibc}-${DB_ARCH}.tar.xz"
             else
@@ -242,13 +194,7 @@ DB_Download_Files()
     esac
 }
 
-# ---------------------------------------------------------------------------
-# DB_Toolchain_EL9 — EL9/EL10 及 Oracle 9 上为 MySQL 源码编译安装 gcc-toolset-12
-#
-# 原代码只判断 DBSelect=5（MySQL 8.0），漏掉了 11（MySQL 8.4），
-# 导致 8.4 在 EL9+ 上源码编译拿不到工具链。改判 DB_Kind 后该 bug 消失。
-
-# ---------------------------------------------------------------------------
+# EL9、EL10 和 Oracle 9 上的 MySQL 源码编译使用 gcc-toolset-12。
 DB_Toolchain_EL9()
 {
     if [ "${Bin}" = "y" ] || [ "${DB_Kind}" != "mysql" ]; then
@@ -257,27 +203,13 @@ DB_Toolchain_EL9()
     dnf install gcc-toolset-12-gcc gcc-toolset-12-gcc-c++ gcc-toolset-12-binutils gcc-toolset-12-annobin-annocheck gcc-toolset-12-annobin-plugin-gcc -y
 }
 
-# ---------------------------------------------------------------------------
 # 数据库升级的分步校验
-#
-# 三条升级路径（upgrade_mysql / upgrade_mariadb / upgrade_mysql2mariadb）都会
-# 移走原数据目录、重建实例、再从 mysqldump 的输出恢复。原实现只在最后检查
-# 二进制与 /etc/my.cnf 是否存在，备份截断、导入报错、升级工具失败都不影响
-# 「upgrade completed」的输出，属于正常运营路径上的数据完整性风险。
-#
-# 以下函数供三条路径共用，任一项不通过即返回非零，由调用方中止并保留现场。
-# ---------------------------------------------------------------------------
+# MySQL、MariaDB 及 MySQL 转 MariaDB 共用以下校验，任一失败均中止并保留现场。
 
-# 升级前的库列表快照路径。Upgrade_Date 由 upgrade.sh 在加载各模块之前设置；
-# 其他入口加载本文件时该变量为空，但那些路径不会用到升级校验。
+# 升级前的数据库列表快照路径。
 DB_List_Before="/root/db_list_before${Upgrade_Date}.txt"
 
-# Check_DB_Backup — 确认备份文件可用
-# $1 备份文件路径
-#
-# 只看 mysqldump 的退出码不足以判定备份完整：磁盘写满或进程被中断时，
-# 重定向产生的文件依然存在且体积可观，但内容是截断的。mysqldump 正常结束
-# 会在末尾写入 "-- Dump completed" 标记，以此区分。
+# 检查备份非空且包含 mysqldump 结束标记，防止使用截断文件升级。
 Check_DB_Backup()
 {
     local f="$1"
@@ -293,12 +225,8 @@ Check_DB_Backup()
     return 0
 }
 
-# Snapshot_DB_List — 记录当前库列表，供升级后比对
-# $1 mysql 客户端路径  $2 输出文件
-#
-# 排除 information_schema / performance_schema / sys：这三个库由服务端按版本
-# 自行维护，跨版本乃至 MySQL 与 MariaDB 之间的存在性并不一致，纳入比对会产生
-# 与数据完整性无关的差异。mysql 库保留，账号与授权丢失同样属于升级事故。
+# 记录升级前数据库列表，排除由服务端按版本维护的系统库。
+# mysql 库保留在快照中，用于检查账号和授权数据。
 Snapshot_DB_List()
 {
     local bin="$1" out="$2"
@@ -313,11 +241,7 @@ Snapshot_DB_List()
     return 0
 }
 
-# Verify_DB_Upgraded — 升级后验收
-# $1 mysql 客户端路径  $2 升级前的库列表文件
-# $3 经典协议端口（默认 3306）  $4 MySQL X Protocol 端口（MariaDB 留空）
-#
-# 依次确认服务可连接、库列表无缺失、本地监听基线未被重写的配置撤销。
+# 升级后检查连接、端口、数据库列表和本地监听限制。
 Verify_DB_Upgraded()
 {
     local bin="$1" before="$2" port="${3:-3306}" xport="${4:-}"
@@ -346,7 +270,7 @@ Verify_DB_Upgraded()
         rm -f "${after}"
         return 1
     fi
-    # comm -23：只列出升级前存在、升级后缺失的库。升级后新增的库不算异常。
+    # 仅将升级后缺失的数据库视为异常，新增数据库不影响验收。
     missing=$(LC_ALL=C comm -23 "${before}" "${after}")
     rm -f "${after}"
     if [ -n "${missing}" ]; then
@@ -355,8 +279,7 @@ Verify_DB_Upgraded()
         rc=1
     fi
 
-    # 升级会重写 /etc/my.cnf。此处确认 bind-address 确实生效，
-    # 避免本地监听限制在升级过程中被静默撤销。
+    # 确认升级后的 bind-address 未开放到所有网卡。
     if command -v ss >/dev/null 2>&1; then
         if ss -lnt 2>/dev/null | awk '{print $4}' \
             | grep -Eq "^(0\.0\.0\.0|\*|\[::\]):${port}$"; then
@@ -369,8 +292,7 @@ Verify_DB_Upgraded()
     return ${rc}
 }
 
-# DB_Upgrade_Abort — 升级失败时统一提示保留现场
-# $1 备份文件路径  $2 原实例的备份目录
+# 升级失败时显示保留的备份文件和原实例目录。
 DB_Upgrade_Abort()
 {
     Echo_Red "======== 升级失败，已中止 ======"
@@ -380,25 +302,11 @@ DB_Upgrade_Abort()
     return 1
 }
 
-# ---------------------------------------------------------------------------
-# 安装期数据库初始化的失败传递
-#
-# 原实现里，初始化 SQL（设 root 密码、清匿名账号、禁远程 root、删 test 库、
-# 刷权限）每条只打印 Success/Failed，不影响任何返回值。客户端整体不可用时
-# 六条全失败，安装照样打印 "Install lnmp V2.3 completed"，最终检查也只看
-# mysqld 进程和文件在不在 —— 一台没做过任何安全初始化的库就这么交付了。
-#
-# 现在任一条失败即置 DB_Init_Failed='y'，由 end.sh 的 Check_DB_Init_Result
-# 汇总成非零退出码，并逐条列出失败的步骤。
-# ---------------------------------------------------------------------------
+# 数据库安全初始化任一步骤失败都会由 end.sh 汇总并使安装返回非零状态。
 DB_Init_Failed='n'
 DB_Init_Errors=''
 
-# Check_DB_Client_Runnable <客户端路径>
-#
-# 官方通用二进制依赖的运行库不全时，客户端在动态链接阶段就退出，
-# 之后每条初始化 SQL 都会失败。先单独探一次，把原始报错打在最前面，
-# 免得后面五条 "Failed!" 掩盖真正的原因。
+# 初始化前检查数据库客户端能否运行，以直接显示缺失动态库等原始错误。
 Check_DB_Client_Runnable()
 {
     local bin="$1" out

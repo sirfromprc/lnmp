@@ -85,8 +85,7 @@ case $ARGV in
     start|stop|restart|graceful|graceful-stop)
         echo -n "正在执行 Apache 操作（${ARGV}）... "
         $HTTPD -k $ARGV
-        # 失败必须传出去。原先只打印 " failed"，退出码是那条 echo 的 0，
-        # 调用方（conf/lamp、conf/lnmpa 的 Svc）据此判断服务启停必然出错。
+        # 返回 Apache 操作的真实结果，供管理命令判断服务启停状态。
         if [ "$?" != 0 ] ; then
             echo " 失败"
             exit 1
@@ -97,9 +96,7 @@ case $ARGV in
     configtest)
         echo -n "正在检查 Apache 配置... "
         $HTTPD -t
-        # 必须把失败传出去：conf/lnmpa 与 conf/lamp 用 `if ! ... configtest`
-        # 决定要不要回滚刚写入的 vhost 配置，只打印 failed 而返回 0，
-        # 等于那道校验从来没生效过。
+        # 配置检查失败时返回非零，使虚拟主机变更能够触发回滚。
         if [ "$?" != 0 ] ; then
             echo " 失败"
             exit 1
@@ -108,10 +105,7 @@ case $ARGV in
         fi
         ;;
     status)
-        # 原来两个分支都不设返回码，最终返回最后一条 echo 的 0，恒为成功；
-        # 而且只看 pid 文件在不在 —— 进程被 kill -9 之后文件会留下来，
-        # 于是把已经死掉的 Apache 报成 running。
-        # 判断改为 pid 对应的进程是否存活，返回码按 LSB：0 在跑，3 没在跑。
+        # 同时检查 pid 文件和对应进程，按 LSB 返回 0（运行）或 3（停止）。
         if [ -s "$PID" ] && kill -0 "`cat "$PID" 2>/dev/null`" 2>/dev/null; then
             echo "Apache 正在运行。"
             exit 0
@@ -121,7 +115,7 @@ case $ARGV in
         ;;
     *)
         echo $"用法：$0 {start|stop|restart|graceful|graceful-stop|configtest|status}"
-        # apachectl 的约定：用法错误返回 2
+        # 按 apachectl 约定，用法错误返回 2。
         exit 2
         ;;
 esac

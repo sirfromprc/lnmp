@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 
-# Cur_PHP_Branch — 返回当前操作的 PHP 主版本号（如 8.0 / 8.3）
-#
-# 三条调用路径各自提供不同的输入：
+# 返回当前操作的 PHP 主版本号，按以下来源依次确定：
 #   安装：Set_PHP_Profile 设定 PHP_Branch
 #   升级：用户输入的 ${php_version}
 #   其他：${Php_Ver}（形如 php-8.3.30）
@@ -96,10 +94,7 @@ PHP_with_Bz2()
     fi
 }
 
-# 保留的 PHP 版本全部 >= 7.2，sodium 一律可内建。
-# 原判断为 "^[8-9]|1[0-2]$"，交替未加括号（实际是「^[8-9] 或 1[0-2]$」），
-# 导致旧编号 13~16（PHP 8.2 及以上）两侧都不匹配而落入 else 分支，
-# --with-sodium 从未传给 configure。
+# 当前 PHP 版本均可内建 Sodium，启用时安装系统依赖并传入构建参数。
 PHP_with_Sodium()
 {
     if [ "${Enable_PHP_Sodium}" = "n" ]; then
@@ -149,7 +144,7 @@ PHP_with_Imap()
     fi
 }
 
-# 保留的 PHP 版本全部 >= 8.0，不再需要外挂 ICU 60（那是 PHP 5.4~7.0 的约束）。
+# 当前 PHP 8.x 使用发行版提供的 ICU，无需单独安装旧版 ICU。
 PHP_with_Intl()
 {
     if pkg-config --modversion icu-i18n | grep -Eqi '^6[89]|7[0-9]'; then
@@ -202,7 +197,7 @@ Install_Composer()
     tmpdir=$(mktemp -d "${cur_dir}/src/composer.XXXXXX") || return 1
     installer="${tmpdir}/composer-setup.php"
 
-    # 先获取签名；无法取得签名时中止，避免在没有验证依据时执行远程代码。
+    # 先取得官方 SHA384；缺少校验依据时不执行远程安装程序。
     echo "正在从 composer.github.io 获取 Composer 安装程序签名..."
     expected=$(wget -q --max-redirect=3 -O- https://composer.github.io/installer.sig)
     expected=$(echo "${expected}" | tr -d '[:space:]')
@@ -242,10 +237,7 @@ Install_Composer()
     return 1
 }
 
-# PHP_Openssl3_Patch — OpenSSL 3.x 下 PHP 8.0 需要打补丁
-#
-# 保留的版本中只有 8.0 需要（8.1+ 原生支持 OpenSSL 3），
-# 故 src/patch/php-8.0-openssl3.0.patch 必须保留。
+# PHP 8.0 在 OpenSSL 3.x 环境中需要兼容补丁；PHP 8.1 及以上原生支持。
 PHP_Openssl3_Patch()
 {
     local branch
@@ -279,7 +271,7 @@ Install_PHP_8x()
     mkdir -p /usr/local/php/{etc,conf.d}
     \cp php.ini-production /usr/local/php/etc/php.ini
 
-    # php extensions
+    # 配置 PHP 扩展及运行参数。
     echo "正在修改 php.ini..."
     sed -i 's/post_max_size =.*/post_max_size = 50M/g' /usr/local/php/etc/php.ini
     sed -i 's/upload_max_filesize =.*/upload_max_filesize = 50M/g' /usr/local/php/etc/php.ini
@@ -296,13 +288,7 @@ Install_PHP_8x()
     cd ${cur_dir}/src
 
 if [ "${Stack}" = "lnmp" ]; then
-    # listen.mode 从 0666 收紧到 0660（另三处 pool 配置同步：multiplephp.sh、
-    # upgrade_php.sh、upgrade_mphp.sh）。
-    #
-    # 0666 意味着机器上任何本地账号都能连 FPM socket，进而构造 FastCGI
-    # 该请求会让 PHP 执行外部可控脚本，从而暴露 www 进程权限。
-    # 0660 + listen.owner/group = www 后，只有 www 组成员能连；
-    # nginx worker 正是以 www 运行（LNMPA/LAMP 下的 httpd 同理），不受影响。
+    # PHP-FPM socket 限定为 www 用户组访问，防止其他本地账号提交 FastCGI 请求。
     echo "正在创建新的 php-fpm 配置文件..."
     cat >/usr/local/php/etc/php-fpm.conf<<EOF
 [global]
@@ -392,7 +378,7 @@ eof
 
     if [ "${Enable_PhpMyAdmin}" = "y" ]; then
         echo "============================ 正在安装 phpMyAdmin ============================="
-        # 装到网站根目录之外，同时清掉历史版本留在根目录下的那一份
+        # 部署到网站根目录之外，并清理根目录中的旧版副本以避免源码泄露。
         if [ -n "${Default_Website_Dir}" ] && [ -d "${Default_Website_Dir}/phpmyadmin" ]; then
             rm -rf "${Default_Website_Dir}/phpmyadmin"
         fi
@@ -412,7 +398,7 @@ eof
             rm -rf "${pma_stage}"
             return 1
         fi
-        # blowfish_secret 必须随机，否则所有安装共用同一密钥
+        # 每次生成独立的 blowfish_secret，避免不同安装共享会话加密密钥。
         pma_secret=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
         access_url="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')_phpmyadmin"
         if [ -z "${pma_secret}" ] || [ "${access_url}" = '_phpmyadmin' ] ||
@@ -426,21 +412,15 @@ eof
             rm -rf "${pma_stage}"
             return 1
         fi
-        # 访问路径随机化，避开针对固定 /phpmyadmin 的批量扫描与爆破。
-        # 保留 _phpmyadmin 结尾：默认站点若配了严格的访问控制，
-        # 这个固定后缀能让人一眼认出该路径的用途，写放行或封禁规则时好处理。
+        # 随机访问路径可减少针对固定 /phpmyadmin 的批量扫描；固定后缀便于
+        # 在访问控制和日志中识别用途。
         if ! printf '%s\n' "${access_url}" > \
             "${pma_stage}/${PhpMyAdmin_Ver}/.access_url"; then
             rm -rf "${pma_stage}"
             return 1
         fi
-        # 模板缓存目录放在网站根目录之外：它需要 PHP 可写，而网站根目录下
-        # 任何可写目录都是「上传 webshell 后能直接访问」的落点。
-        # 不建这个目录 phpMyAdmin 也能跑，只是每次请求都要重新编译模板。
-        #
-        # 导入/导出用的 UploadDir、SaveDir 默认关闭（见 conf/config.inc.php），
-        # 不在网站目录下创建 upload/save；导出文件包含完整数据库内容，
-        # 落在网站目录里等于把整个数据库放到公网可下载的位置。
+        # 可写模板缓存放在网站目录之外，防止上传内容被 Web 直接访问。
+        # 导入和导出目录默认关闭，避免数据库文件落入公开目录。
         [ -e /var/lib/phpmyadmin ] || pma_vardir_was_absent='y'
         if ! mkdir -p /var/lib/phpmyadmin/tmp ||
            ! chown -R www:www /var/lib/phpmyadmin ||
@@ -459,7 +439,7 @@ eof
         echo "============================ phpMyAdmin 安装完成 ============================="
     fi
 
-    # 开启和关闭都在这里同步，不需要手工去改 default 站点的配置
+    # 按开关同步 Web 访问入口，无需手工修改默认站点。
     if ! Config_PhpMyAdmin_Access; then
         rm -f /usr/local/nginx/conf/phpmyadmin.enable.conf \
               /usr/local/apache/conf/extra/phpmyadmin.enable.conf
@@ -472,30 +452,21 @@ eof
     return 0
 }
 
-# Remove_PhpMyAdmin_Dir
-#
-# 删除 phpMyAdmin 程序目录。变量为空或指向根目录时一律不动手：
-# 这个路径来自 include/main.sh 的赋值，但函数在多条清理和回滚路径上被调用，
-# 任何一条上游漏赋值都不该变成 rm -rf /。
+# 删除 phpMyAdmin 程序目录；路径为空或为根目录时拒绝执行，防止越界删除。
 Remove_PhpMyAdmin_Dir()
 {
     [ -n "${PhpMyAdmin_Dir}" ] && [ "${PhpMyAdmin_Dir}" != '/' ] || return 0
     rm -rf "${PhpMyAdmin_Dir}"
 }
 
-# Config_PhpMyAdmin_Access
-#
 # 按 Enable_PhpMyAdmin 同步 Web 服务器上的访问入口：开启时写入映射片段，
-# 关闭时删除。片段文件名带固定前缀，主配置里用通配 include 引入——
+# 关闭时删除。片段文件名带固定前缀，主配置通过通配 include 引入，
 # 通配符没有匹配到文件时不报错，所以关闭只需删文件，不必回头改主配置。
 Config_PhpMyAdmin_Access()
 {
     local nginx_frag='/usr/local/nginx/conf/phpmyadmin.enable.conf'
     local apache_frag='/usr/local/apache/conf/extra/phpmyadmin.enable.conf'
-    # lnmp phpmyadmin disable 是把启用片段改名成这两个文件来实现的。
-    # 本函数重新生成（或删除）启用片段后，它们就是过时的残留：留着会让启用片段
-    # 与停用片段同时存在，之后 lnmp phpmyadmin enable|disable 会判定状态不明、
-    # 返回 1 并要求人工处理。安装流程重建入口时一并清掉。
+    # 重建入口时清理停用状态的旧片段，避免启用和停用文件同时存在。
     local nginx_saved='/usr/local/nginx/conf/.phpmyadmin.enable.conf.disabled'
     local apache_saved='/usr/local/apache/conf/extra/.phpmyadmin.enable.conf.disabled'
     local pma_url written=0
@@ -515,11 +486,8 @@ Config_PhpMyAdmin_Access()
 
     if [ -d /usr/local/nginx/conf ]; then
         if [ "${Stack}" = "lnmpa" ]; then
-            # LNMPA 下 PHP 由 Apache 执行，nginx 只负责把该路径整体反代过去。
-            # 这里不能再 include proxy-pass-php.conf：那是全站 PHP 反代规则，
-            # 一旦随片段进入 default，站点根目录下的 .php 也会被反代执行，
-            # 突破 default 的静态边界。phpMyAdmin 自己的 ^~ location 已经
-            # 完整反代该路径，前缀匹配优先于正则，不依赖那份全站规则。
+            # LNMPA 仅将 phpMyAdmin 路径反向代理到 Apache，避免全站 PHP 规则
+            # 使默认站点中的其他 PHP 文件可执行。
             cat >"${nginx_frag}"<<EOF || return 1
         location = /${pma_url} {
             return 301 /${pma_url}/;
@@ -531,14 +499,8 @@ Config_PhpMyAdmin_Access()
         }
 EOF
         else
-            # open_basedir 用 PHP_ADMIN_VALUE 下发：程序已不在网站根目录下，
-            # 根目录里的 .user.ini 管不到它，必须在这里单独划定可访问范围。
-            #
-            # 这里不能再 include enable-php.conf：那是全站 PHP 执行入口，
-            # 随片段进入 default 后，站点根目录下的 .php 会跟着被执行，
-            # 突破 default 的静态边界。下面的内层 location 已自带
-            # fastcgi_pass / fastcgi.conf / SCRIPT_FILENAME，phpMyAdmin 的 PHP
-            # 由它处理；外层 ^~ 前缀匹配优先于 default 里拒绝 PHP 的正则。
+            # phpMyAdmin 位于网站根目录外，需单独设置 open_basedir 和 FastCGI；
+            # 独立前缀规则不会放开默认站点中的其他 PHP 文件。
             cat >"${nginx_frag}"<<EOF || return 1
         location = /${pma_url} {
             return 301 /${pma_url}/;
@@ -578,8 +540,7 @@ EOF
         written=$((written+1))
     fi
 
-    # 一个片段都没写出来说明没找到 Web 服务的配置目录。此前这里会走完
-    # 两个都不成立的 if 而返回 0，把"什么都没配"报成配置成功。
+    # 未找到任何 Web 配置目录时返回失败，避免报告不存在的访问入口。
     if [ "${written}" -eq 0 ]; then
         Echo_Red "未找到 Nginx 或 Apache 的配置目录，phpMyAdmin 访问入口未写入。"
         return 1
@@ -587,10 +548,7 @@ EOF
     return 0
 }
 
-# Detect_PhpMyAdmin_Stack
-#
-# 独立安装入口不能沿用参数 Stack=phpmyadmin；Config_PhpMyAdmin_Access 需要知道
-# 现有环境究竟是 LNMP、LNMPA 还是 LAMP，才能生成正确的映射。
+# 独立安装 phpMyAdmin 时识别现有 LNMP、LNMPA 或 LAMP 环境，以生成正确映射。
 Detect_PhpMyAdmin_Stack()
 {
     if [ ! -s /bin/lnmp ]; then
@@ -627,9 +585,7 @@ Detect_PhpMyAdmin_Stack()
 
 Ensure_PhpMyAdmin_Config_Hooks()
 {
-    # 新安装的编译 Nginx、OpenResty、LNMP 和 LNMPA 都把公网 default 放在
-    # vhost/default.conf，nginx.conf 只留本机管理端口。旧环境仍可能把
-    # default_server 写在 nginx.conf，因此按实际文件内容选择，不依赖栈变量。
+    # 根据 default_server 的实际位置选择配置文件，兼容新旧安装目录布局。
     local nginx_conf='/usr/local/nginx/conf/nginx.conf'
     if grep -q 'default_server' /usr/local/nginx/conf/vhost/default.conf 2>/dev/null; then
         nginx_conf='/usr/local/nginx/conf/vhost/default.conf'
@@ -646,10 +602,7 @@ Ensure_PhpMyAdmin_Config_Hooks()
             PMA_Nginx_Main_Backup="${cur_dir}/src/.nginx-pma-backup.$$"
             tmp="${cur_dir}/src/.nginx-pma-new.$$"
             \cp -p "${nginx_conf}" "${PMA_Nginx_Main_Backup}" || return 1
-            # 插入点锚定 default_server 块里的 root 指令本身，不比对具体目录：
-            # 老环境可能改过网站目录，而 lnmp.conf 的 Default_Website_Dir 只是
-            # 本次读到的默认值，拿它去精确比对会匹配不上（同 Get_Actual_DB_Port
-            # 那一类问题）。这里要的只是"插进默认站点块里"，root 的值无关紧要。
+            # 以 default_server 中的 root 指令定位插入点，兼容用户修改过的网站目录。
             if ! awk '
                 /^[[:space:]]*server[[:space:]]*\{/ { in_server=1; is_default=0 }
                 in_server && /^[[:space:]]*listen[[:space:]].*default_server/ { is_default=1 }
@@ -800,9 +753,7 @@ Smoke_Test_PhpMyAdmin_HTTP()
     local attempt err last_err=''
 
     command -v curl >/dev/null 2>&1 || return 1
-    # 前几次失败是正常的：配置刚写完、nginx 刚 reload，第一次请求经常还是 404。
-    # 这些中间报错先收起来，只有五次都失败才把最后一次的原因打出来，避免在
-    # 安装成功的流程里冒出一行 curl: (22) ... 404 让人误以为出了故障。
+    # Web 服务重载后短时间内可能仍返回旧结果；重试失败后仅显示最后一次错误。
     for attempt in 1 2 3 4 5; do
         if err=$(curl -fsS --max-time 15 "${url}" -o "${output}" 2>&1) &&
            grep -qi 'phpMyAdmin' "${output}"; then
@@ -821,8 +772,7 @@ Rollback_PhpMyAdmin_Install()
     rm -f /usr/local/nginx/conf/phpmyadmin.enable.conf \
           /usr/local/apache/conf/extra/phpmyadmin.enable.conf
     if [ -n "${PMA_Nginx_Main_Backup}" ] && [ -s "${PMA_Nginx_Main_Backup}" ]; then
-        # 必须还原到当初备份的那个文件：新安装备份 vhost/default.conf，
-        # 旧环境可能仍是 nginx.conf，写死任一位置都会把内容还原错文件。
+        # 将备份恢复到原配置位置，兼容不同版本的默认站点布局。
         mv -f "${PMA_Nginx_Main_Backup}" "${PMA_Nginx_Main_Backup_Target:-/usr/local/nginx/conf/nginx.conf}"
     fi
     if [ -n "${PMA_Apache_Main_Backup}" ] && [ -s "${PMA_Apache_Main_Backup}" ]; then
@@ -836,8 +786,7 @@ Rollback_PhpMyAdmin_Install()
     elif [ "${PMA_Helper_Was_Absent}" = 'y' ]; then
         rm -f /bin/lnmp-phpmyadmin
     fi
-    # 模板缓存目录也是本次安装建的，回滚要一并撤掉；但只删本次新建的那次，
-    # 上一次安装留下的内容不能因为这次失败被清掉。
+    # 仅在本次创建模板缓存目录时回滚，保留安装前已有内容。
     [ "${PMA_Vardir_Was_Absent:-n}" = 'y' ] && rm -rf /var/lib/phpmyadmin
     Remove_PhpMyAdmin_Dir
 }
@@ -936,8 +885,7 @@ Install_Only_phpMyAdmin()
     sed -i "s/LNMPORG/$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')/g" \
         "${pma_stage}/${PhpMyAdmin_Ver}/config.inc.php" || {
         rm -rf "${pma_stage}"; return 1; }
-    # 端口取本机实际值：补装时 lnmp.conf 的 DB_Port 可能只是默认值 3306，
-    # 而主栈当初是用环境变量指定别的端口装的（见 Get_Actual_DB_Port 的说明）。
+    # 补装时读取数据库实际监听端口，避免 lnmp.conf 默认值覆盖安装时的自定义端口。
     db_port=$(Get_Actual_DB_Port) || \
         Echo_Yellow "未能从 /etc/my.cnf 读到数据库端口，按 lnmp.conf 的 ${db_port} 写入。"
     [ "${db_port}" = "${DB_Port}" ] || \
@@ -966,7 +914,7 @@ Install_Only_phpMyAdmin()
     fi
     rm -rf "${pma_stage}"
 
-    # 独立入口显式开启，但不改 lnmp.conf；以后完整安装仍然默认不装。
+    # 独立安装仅在当前流程启用 phpMyAdmin，不改写 lnmp.conf 的默认选择。
     Enable_PhpMyAdmin='y'
     if ! Ensure_PhpMyAdmin_Config_Hooks || \
        ! Config_PhpMyAdmin_Access || ! Check_PhpMyAdmin_Web_Config; then

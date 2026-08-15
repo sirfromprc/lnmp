@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 
-# ---------------------------------------------------------------------------
 # 版本号维护说明
-#
 # 所有版本号都必须对应上游官方当前实际可下载的文件，不能凭命名规律推导。
 # 多个上游只保留当前点版本（nginx.org、cdn.mysql.com/Downloads、
 # downloads.apache.org），版本一过期就是 404。
@@ -10,11 +8,8 @@
 # 修改本文件后必须执行：bash t/probe_urls.sh
 # 该脚本只发 HEAD 请求，会逐条报出 404。同时记得同步 src/checksums.sha256，
 # 否则 fail-closed 校验会中止安装。
-#
-# 本文件的版本号均已用 t/probe_urls.sh 实测可达（2026-08）。
-# ---------------------------------------------------------------------------
 
-# --- 编译期老依赖（仅少数路径使用，保持不动）---
+# --- 少数兼容路径使用的编译依赖 ---
 Autoconf_Ver='autoconf-2.13'
 Libiconv_Ver='libiconv-1.17'
 
@@ -27,9 +22,9 @@ Libzip_Ver='libzip-1.3.2'
 Openssl_New_Ver='openssl-3.5.7'
 
 # --- MySQL 源码编译依赖的 Boost 校验版本 ---
-# 这两个变量只供 t/probe_urls.sh、t/gen_checksums.sh 维护下载探测和校验清单。
+# 这两个变量仅供下载探测和校验清单维护脚本使用。
 # MySQL 8.x 安装仍从已下载源码的 cmake/boost.cmake 读取实际所需版本，
-# 不使用这里的固定值，也不恢复 CLN-302 删除的 pinned 安装分支。
+# 不使用此处固定值选择安装依赖。
 Boost_Ver='boost_1_77_0'
 Boost_New_Ver='boost_1_84_0'
 
@@ -39,21 +34,20 @@ TCMalloc_Ver='gperftools-2.18.1'
 Libunwind_Ver='libunwind-1.8.3'
 
 # --- nginx 本体 ---
-# 注意：nginx.org 只保留每个分支的最新几个点版本，历史点版本会下线。
+# nginx.org 只保留每个分支的近期点版本。
 # 1.30 是 stable 分支（次版本号为偶数），1.31 是 mainline，此处跟 stable。
 Nginx_Ver='nginx-1.30.4'
 Nghttp2_Ver='nghttp2-1.70.0'
 
 # --- OpenResty（与 nginx 官方版互斥，见 include/openresty.sh）---
 #
-# 只在源码编译方式下使用这个版本号；走官方 apt/yum 仓库时装的是仓库里的
-# 当前版本，版本由上游仓库决定（这也正是"能升级"的自然实现）。
+# 此版本号仅用于源码编译；apt/yum 安装使用上游仓库当前版本。
 #
 # OpenResty 不提供 sha256 校验文件，只提供 PGP 签名（.tar.gz.asc），
 # 所以它不进 src/checksums.sha256，改由 Verify_OpenResty_Signature 验签。
 # 升级版本号时无需更新校验清单，但要确认新版本的 .asc 仍由同一密钥签名。
 #
-# OpenResty 1.31.1.1 是 2026-05-13 发布的稳定版，内置 nginx 1.31.1。
+# OpenResty 1.31.1.1 为稳定版，内置 Nginx 1.31.1。
 OpenResty_Ver='openresty-1.31.1.1'
 # 源码编译时追加给 ./configure 的额外参数（如 --add-module=...）
 OpenResty_Modules_Options="${OpenResty_Modules_Options:-}"
@@ -67,9 +61,9 @@ LuaRestyCore='lua-resty-core-0.1.34rc3'
 LuaRestyLrucache='lua-resty-lrucache-0.15'
 LuaRestyLock='lua-resty-lock-0.09'
 LuaCjson='lua-cjson-2.1.0.19'
-# 以下是 openresty 生态里最常用的纯 Lua 库，随 Enable_Nginx_Lua 一起装。
+# 以下纯 Lua 库随 Enable_Nginx_Lua 安装。
 # 它们全都只有 .lua 文件，make install PREFIX=/usr/local/nginx 即可，
-# 不参与 nginx 编译（不是 --add-module），装错也不会导致编译失败。
+# 不作为 Nginx 编译模块加入。
 LuaRestyString='lua-resty-string-0.19'
 LuaRestyRedis='lua-resty-redis-0.33'
 LuaRestyMysql='lua-resty-mysql-0.31'
@@ -80,21 +74,13 @@ LuaRestyMemcached='lua-resty-memcached-0.18'
 LuaRestyLimitTraffic='lua-resty-limit-traffic-0.09'
 NgxDevelKit='ngx_devel_kit-0.3.4'
 NgxFancyIndex_Ver='ngx-fancyindex-0.6.0'
-# ngx_brotli 上游只有一个 2021 年的 v1.0.0rc tag，实践中都用 master。
-# 但这里不能直接下 master.tar.gz：分支归档的内容随上游每次提交变化，
-# sha256 将漂移，fail-closed 校验会在上游一提交就把安装打断。
-# 故固定到 master 的具体 commit（2023-10-09，此后该仓库无新提交 ：
-# 2026-08 实跑时经 GitHub API 复核，a71f9312 仍是 master 最后一次提交）。
-#
-# 注意：它依赖 brotli 库，且只认自己 deps/brotli 下的固定路径：既没有
-# pkg-config 检测也没有系统库开关，光装 libbrotli-dev 它是看不见的。
-# 而 GitHub 的 archive 包不含 git 子模块，deps/brotli 解压出来是空的。
-# 由 Link_System_Brotli（include/nginx.sh）把系统 brotli 软链成它期望的
-# 结构来解决，依赖清单里的 libbrotli-dev 是这条路径的前提。
+# ngx_brotli 固定到具体提交，避免 master 归档变化导致 SHA256 漂移。
+# GitHub 归档不包含 deps/brotli 子模块，构建时由 Link_System_Brotli 映射
+# 系统 Brotli 头文件和库，因此需要 libbrotli-dev 或 brotli-devel。
 
 NgxBrotli_Commit='a71f9312c2deb28875acc7bacfdd5695a111aa53'
 NgxBrotli_Ver="ngx_brotli-${NgxBrotli_Commit}"
-# ngx_cache_purge：FRiCKLE 原仓库停更于 2.3，用户指定用 2.3。
+# ngx_cache_purge 使用 FRiCKLE 仓库的 2.3 版本。
 NgxCachePurge_Ver='ngx_cache_purge-2.3'
 
 # --- Apache（仅 lnmpa / lamp 用）---

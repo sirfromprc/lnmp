@@ -15,8 +15,7 @@ Backup_MariaDB()
         echo "MariaDB 数据库备份失败，请手动备份数据库！"
         exit 1
     fi
-    # 退出码为 0 不代表备份完整，另需确认结束标记；
-    # 库列表在停服前记录，供升级完成后比对是否有数据丢失。
+    # 同时确认备份结束标记，并记录升级前库列表供完成后核对。
     Check_DB_Backup "/root/mariadb_all_backup${Upgrade_Date}.sql" || exit 1
     Snapshot_DB_List "${client_bin}" "${DB_List_Before}" || exit 1
     lnmp stop
@@ -82,7 +81,7 @@ Upgrade_MariaDB()
         Bin="n"
     fi
 
-    #do you want to install the InnoDB Storage Engine?
+    # 选择是否启用 InnoDB 存储引擎。
     echo "==========================="
 
     InstallInnodb="y"
@@ -124,9 +123,7 @@ Upgrade_MariaDB()
     else
         MariaDB_FileName="mariadb-${mariadb_version}"
     fi
-    # 不用 `if [ -s ]` 提前放行已存在的文件：Download_Verified 自己就处理
-    # "已存在则不重复下载"，且无论是否新下载都会核对 SHA256（MariaDB 走上游
-    # REST 接口逐文件公布的 sha256sum）。提前放行等于给缓存文件开免检通道。
+    # Download_Verified 对新下载和本地缓存统一核对上游公布的 SHA256。
 
     Download_Verified mariadb "${mariadb_version}" \
         "https://downloads.mariadb.org/rest-api/mariadb/${mariadb_version}/${MariaDB_FileName}.tar.gz" \
@@ -155,8 +152,7 @@ Upgrade_MariaDB()
 
         cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mariadb -DMYSQL_UNIX_ADDR=/tmp/mysql.sock -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_READLINE=1 -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 -DWITHOUT_TOKUDB=1
         if ! Make_Install; then
-            # 数据库升级尚未做自动回滚，
-            # 这里至少要把恢复所需的东西指清楚，而不是丢一句 exit 1。
+            # 编译失败时列出旧程序、服务脚本和备份的人工恢复步骤。
             Echo_Red "编译失败，升级中止。此时旧数据库已被停止并移走。"
             Echo_Red "人工恢复："
             Echo_Red "  1) mv /usr/local/oldmariadb${Upgrade_Date} /usr/local/mariadb"
@@ -178,8 +174,7 @@ socket		= /tmp/mysql.sock
 [mysqld]
 port		= ${DB_Port}
 socket		= /tmp/mysql.sock
-# 仅监听回环地址，与全新安装保持同一监听基线（见 include/mariadb.sh）。
-# 升级重写 /etc/my.cnf，此处不写则原有的本地监听限制会被静默撤销。
+# 升级后的数据库继续仅监听回环地址，避免重写配置时撤销访问限制。
 # 需要远程连库时改为具体地址，并同步调整防火墙放行与账号 Host 授权范围。
 bind-address = 127.0.0.1
 user    = mariadb
@@ -286,8 +281,7 @@ EOF
     cd ${cur_dir} && rm -rf ${cur_dir}/src/mariadb-${mariadb_version}
 
     lnmp start
-    # 成功判定不能只看文件是否存在：还须确认服务可连接、库列表无缺失、
-    # 本地监听基线未被重写的 /etc/my.cnf 撤销。
+    # 升级成功需确认服务可连接、数据库列表完整且仍保持本地监听限制。
     if [[ -x "${client_bin}" && -x "${safe_bin}" && -s /etc/my.cnf ]] \
         && Verify_DB_Upgraded "${client_bin}" "${DB_List_Before}" "${DB_Port}"; then
         Echo_Green "======== MariaDB 升级完成 ======"

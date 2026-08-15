@@ -15,9 +15,7 @@ Install_PHP_Swoole()
         return 1
     fi
 
-    # 保留的 PHP 全部是 8.x，统一用 PHPSwoole_Ver，改走 pecl 官方源。
-    # 旧正则 '^8.[0-3].' 无法匹配 PHP 8.4 和 8.5，
-    # 什么都没编译却仍写 009-swoole.ini，属既存 bug，随收敛一并消失。
+    # 当前 PHP 8.x 统一使用 PHPSwoole_Ver 指定的 PECL 官方版本。
     Download_Files https://pecl.php.net/get/${PHPSwoole_Ver}.tgz ${PHPSwoole_Ver}.tgz
     Require_File "${PHPSwoole_Ver}.tgz" "pecl swoole"
     Tar_Cd ${PHPSwoole_Ver}.tgz ${PHPSwoole_Ver}

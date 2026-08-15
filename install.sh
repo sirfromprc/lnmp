@@ -17,8 +17,7 @@ fi
 
 LNMP_Ver='2.3'
 . lnmp.conf
-# version.sh 只定义组件版本常量，不依赖任何选择结果。必须在菜单函数之前载入，
-# 否则 Web_Selection 等选择阶段引用 ${Nginx_Ver} 会展开为空。
+# version.sh 提供菜单所需的组件版本常量，必须在选择函数执行前载入。
 . include/version.sh
 . include/main.sh
 . include/verify.sh
@@ -30,7 +29,7 @@ LNMP_Ver='2.3'
 . include/mariadb.sh
 . include/php.sh
 . include/nginx.sh
-# 通知函数：让安装/升级流程里可以直接写 tgnotice "..."
+# 提供安装和升级流程使用的 Telegram 通知函数。
 . tools/lnmp-tgnotice.sh
 . include/openresty_modules.sh
 . include/openresty.sh
@@ -75,8 +74,7 @@ Init_Install()
     if [ "${CheckMirror}" != "n" ]; then
         Modify_Source
     fi
-    # 放在 Modify_Source 之后：本包自己改写过的源（RHEL 系）也一并被检查到，
-    # 检查的是即将真正用于装依赖的最终状态。只警告，不阻断。
+    # 检查 Modify_Source 处理后的最终软件源状态；异常仅告警，不阻断安装。
     Check_Host_Repo_Trust
     Add_Swap
     Set_Timezone
@@ -106,8 +104,7 @@ Init_Install()
         Deb_Lib_Opt
     fi
     if [ "${DB_Kind}" != "none" ]; then
-        # 数据库装不起来时后续步骤都建立在不存在的实例上，必须中止并把
-        # 非零返回码一路传到入口的退出码
+        # 数据库安装失败时立即中止，避免继续配置依赖数据库的组件。
         Dispatch "${DB_Install}" || return 1
     fi
     TempMycnf_Clean
@@ -170,9 +167,8 @@ LAMP_Stack()
 }
 
 
-# 只在真正会装依赖、可能改防火墙的入口做安装前确认；phpmyadmin 的
-# enable/disable/status 子命令和 mphp 只是补充操作，不碰端口/防火墙，
-# 弹确认反而是打扰。
+# 安装依赖或修改防火墙的入口需要安装前确认；不涉及端口和防火墙的
+# phpMyAdmin 管理子命令及 mphp 不执行该确认。
 case "${Stack}" in
     lnmp|lnmpa|lamp|nginx|db)
         Confirm_LNMPConf_Reviewed
@@ -223,8 +219,7 @@ case "${Stack}" in
         ;;
 esac
 
-# 独立安装/补装入口也必须保证管理命令权限。phpMyAdmin、mphp 等入口可能
-# 修改或沿用已有 /bin/lnmp，这里统一同步到 /usr/bin 并固定为 755。
+# 成功后同步管理命令到 /usr/bin，并将执行权限设置为 755。
 if [ "${Install_Rc}" -eq 0 ] && [ -s /bin/lnmp ]; then
     Sync_LNMP_Command_Alias || Install_Rc=1
 fi

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 
-# Check if user is root
+# 安装软件并写入系统配置需要 root 权限。
 if [ $(id -u) != "0" ]; then
     echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
@@ -9,8 +9,7 @@ fi
 
 cur_dir=$(cd "$(dirname "$0")/.." && pwd)
 
-# 脚本被复制到源码目录之外执行时，上面推导出的 cur_dir 是错的，加载会失败。
-# 不检查的话后面每个公共函数都会 command not found，却还继续往下跑。
+# 校验源码目录，避免在其他位置执行时因公共函数未加载而继续安装。
 if [ ! -f "${cur_dir}/include/main.sh" ]; then
     echo "错误：找不到 ${cur_dir}/include/main.sh。"
     echo "请在 LNMP 源码目录内执行本脚本，例如 ./tools/$(basename "$0")。"

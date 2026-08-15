@@ -19,16 +19,6 @@
 
 IP=127.0.0.1
 PORT=11211
-
-
-
-
-
-
-
-
-
-
 USER=memcached
 MAXCONN=1024
 CACHESIZE=64
@@ -40,8 +30,7 @@ prog="memcached"
 
 start() {
     echo -n "正在启动 $prog："
-    # 账号不存在时 memcached 会直接启动失败（-u 指向不存在的用户）。
-    # 老版本升级上来的机器可能没有这个账号，这里补建一次并说明原因。
+    # 启动前确保专用账号存在，使 Memcached 无需以 root 身份运行。
     if ! id -u "$USER" >/dev/null 2>&1; then
         echo
         echo "账号 $USER 不存在，正在创建（memcached 不应以 root 运行，见 SEC2-003）..."

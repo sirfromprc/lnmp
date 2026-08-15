@@ -6,7 +6,7 @@ Install_Opcache()
     echo "====== 正在安装 Zend OPcache ======"
     Press_Start
 
-    # 清理可能存在的旧 opcache 配置，避免与下面新写的重复
+    # 清理旧 OPcache 配置，避免扩展被重复加载。
     rm -f ${PHP_Path}/conf.d/004-opcache.ini
 
     Addons_Get_PHP_Ext_Dir
@@ -34,9 +34,7 @@ EOF
         return 1
     fi
 
-    # ocp.php（opcache 控制面板）不再部署到网站根目录：
-    # 它会泄露完整的缓存文件路径列表（等于暴露整个应用目录树）、内存统计，
-    # 并提供 reset/invalidate 操作。
+    # OPcache 控制面板会泄露应用路径和内存统计，并提供缓存重置操作，因此不部署。
     Restart_PHP
     if [ -s "${zend_ext}" ]; then
         Echo_Green "====== OPcache 安装完成 ======"

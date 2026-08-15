@@ -24,8 +24,7 @@ PURE_PID="/var/run/pure-ftpd.pid"
 RETVAL=0
 prog="Pure-FTPd"
 
-# pid 文件存在不等于进程还在：崩溃或被 kill -9 之后文件会留下来。
-# 判断一律以 pid 对应的进程是否存活为准。
+# 同时检查 pid 文件和对应进程，避免残留 pid 导致状态误判。
 is_running() {
     [ -s "$PURE_PID" ] || return 1
     kill -0 "$(cat "$PURE_PID" 2>/dev/null)" 2>/dev/null
@@ -37,12 +36,11 @@ start() {
         echo " 已在运行"
         return 0
     fi
-    # 陈旧的 pid 文件会让下面的就绪判断立刻"成功"，先清掉
+    # 启动前清理失效的 pid 文件。
     rm -f "$PURE_PID"
     $PURE_FTPD $PURE_CONF
     start_rc=$?
-    # Daemonize yes：命令会立刻返回，pid 文件由 pure-ftpd 自己写，
-    # 等它落地再下结论，否则刚起来就查会误判成失败。
+    # Daemonize yes 会立即返回，等待 pid 文件写入后再判断启动结果。
     ready=1
     for _ in 1 2 3 4 5 6 7 8 9 10; do
         if is_running; then
@@ -84,16 +82,13 @@ stop() {
 
 restart(){
     echo $"正在重启 $prog..."
-    # 本来就没在跑时 stop 会返回 1，这属于正常情况，不影响重启结果，
-    # 所以 restart 的返回码只看 start。
+    # 重启结果以 start 为准，停止状态不影响后续启动。
     $0 stop
     sleep 2
     $0 start
 }
 
-# LSB 约定：0 表示在跑，3 表示没在跑。
-# 原实现两个分支都不设返回码，最终返回的是最后一条 echo 的退出码，恒为 0，
-# 调用方（lnmp pureftpd status、service pureftpd status）据此判断必然被误导。
+# 按 LSB 约定返回 0（运行）或 3（停止）。
 status(){
     if is_running; then
         echo $"$prog 正在运行。"
@@ -120,5 +115,5 @@ case "$1" in
         echo $"用法：$0 {start|stop|restart|status}"
         exit 2
 esac
-# 返回码必须传出去，否则上面几个函数认真算出来的结果到调用方又变成 0。
+# 将服务操作的真实返回码传给调用方。
 exit $?

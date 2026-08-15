@@ -1,19 +1,16 @@
-# 发布。**编译验证不过就不发布**。
+# 发布流程。编译验证失败时不创建 Release。
 #
 # 关于版本号：产品版本固定为 v2.3，不随发布次数递增。
-# 但 git tag 必须唯一，否则同一个 tag 反复移动会让已下载的人
-# 校验不上（同名 tag、不同内容，是供应链上最恶心的一种情况）。
-# 所以采用：
+# git tag 必须唯一；同名 tag 指向不同内容会破坏下载文件的稳定校验。
+# 命名规则：
 #   tag        v2.3-20260908       每次发布唯一
 #   release 名 LNMP v2.3 (2026-09-08)
 #   包名       lnmp-v2.3-20260908.tar.gz
-# 产品版本始终是 v2.3，日期只是"这一次发布"的标识。
+# 产品版本始终为 v2.3，日期用于区分发布批次。
 #
-# 关于签名：默认用 GitHub 原生的构建证明（attestation）——
-# 不需要管理任何密钥，验证方式：
+# 默认生成 GitHub 构建证明（attestation），验证方式：
 #   gh attestation verify lnmp-v2.3-YYYYMMDD.tar.gz --repo <owner>/<repo>
-# 如果仓库里配了 GPG_PRIVATE_KEY / GPG_PASSPHRASE 两个 secret，
-# 会额外产出一份 .asc 分离签名；没配就跳过，不影响发布。
+# 配置 GPG_PRIVATE_KEY / GPG_PASSPHRASE 后额外生成 .asc 分离签名。
 
 name: 发布
 
@@ -37,7 +34,7 @@ permissions:
   contents: read
 
 jobs:
-  # ---- 第一关：静态检查 ----
+  # 静态检查
   static:
     name: 静态检查
     runs-on: ubuntu-latest
@@ -51,7 +48,7 @@ jobs:
       - run: bash t/test_bump.sh
       - run: bash t/test_upstream.sh
 
-  # ---- 第二关：真编译 ----
+  # 编译验证
   build:
     name: 编译验证
     needs: static
@@ -60,7 +57,7 @@ jobs:
       # tag 触发时 inputs 为空，正式发布一律走 full
       level: ${{ inputs.level || 'full' }}
 
-  # ---- 第三关：打包并发布 ----
+  # 打包并发布
   publish:
     name: 打包发布
     needs: [static, build]
@@ -100,11 +97,8 @@ jobs:
           set -e
           PKG='${{ steps.ver.outputs.pkg }}'
           mkdir -p dist "/tmp/${PKG}"
-          # 排除开发期产物：用户拿到的包里不该有 CI 配置、交接文档、待办清单。
-          # t/ 保留 —— probe_urls.sh 这类脚本对使用者排查下载失败很有用。
-          # tests/ 排除 —— 那里放的是只在本地跑的定向测试，产品代码不依赖，
-          # 对使用者没有意义。它已在 .gitignore 里，CI 检出时本就不存在，
-          # 这条 exclude 是防御性的：即使将来取消忽略也不会混进发布包。
+          # 发布包排除 CI 配置、交接文档、待办清单和本地定向测试。
+          # t/ 保留，其中的下载探测脚本可供使用者排查安装问题。
           tar --exclude-vcs \
               --exclude='./.github' \
               --exclude='./.claude' \
@@ -130,9 +124,7 @@ jobs:
         with:
           subject-path: dist/*.tar.gz
 
-      # GPG 是可选的：配了 secret 才走，没配自动跳过。
-      # Windows + GitHub Desktop 的用户不必为了发布去折腾密钥管理 ——
-      # 上面的构建证明已经能证明"这个包确实由本仓库的这次工作流产出"。
+      # GPG 签名为可选项；未配置 secret 时仍保留 GitHub 构建证明。
       - name: 检查是否配置了 GPG
         id: gpg
         env:

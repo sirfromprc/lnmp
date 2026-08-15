@@ -1,33 +1,20 @@
 #!/usr/bin/env bash
-#
 # OpenResty 自定义编译模块与 Lua 库管理
-#
-# ---------------------------------------------------------------------------
-# 原先只有 include/version.sh 里一个 OpenResty_Modules_Options 变量，
-# 是个裸的 configure 参数入口，缺的东西都在这里补：
-#
-#   * lnmp.conf 里没有配置项，用户不知道有这个入口 → 配置项与说明进 lnmp.conf；
-#   * 模块源码要用户自己下载好、自己保证没被动过 → 这里负责下载 + 强制 SHA256；
-#   * 初装时临时 export 的参数不落盘，升级时忘记再传就会编译出不含模块的版本
-#     → 初装成功后持久化到 /etc/lnmp/openresty-build.conf，升级自动沿用；
-#   * 官方软件包安装方式（ORMode=1）根本没法加编译期模块，原先静默忽略
-#     → 配了模块却选包安装时直接报错并给出两条出路；
-#   * 动态模块编译出 .so 之后没人写 load_module，模块等于没启用
-#     → 编译后扫描 modules 目录自动生成 conf/load_modules.conf；
-#   * 自定义 Lua 库没有入口 → 支持自定义 lualib 目录，以及 opm / luarocks 包。
-# ---------------------------------------------------------------------------
+# 自定义模块使用 HTTPS 下载并强制校验 SHA256；源码安装完成后记录构建配置，
+# 供升级沿用。动态模块自动生成加载指令，并支持自定义 lualib、opm 和 luarocks。
+# 官方预编译包不能加入编译期模块，配置冲突时会在安装前提示。
 
-# 编译期配置的持久化位置。这里不含凭据，但与其它 lnmp 配置同处 /etc/lnmp。
+# 编译配置不含凭据，与其他 LNMP 配置统一保存在 /etc/lnmp。
 OR_Build_Conf="/etc/lnmp/openresty-build.conf"
 OR_Prefix="/usr/local/openresty"
 OR_Built_Modules_File="${cur_dir}/src/or-modules/.built-modules"
 
-# 由 OR_Modules_Prepare 产出，追加给 ./configure
+# OR_Modules_Prepare 生成并追加到 ./configure 的模块参数。
 OR_Modules_Add_Options=""
 
 OR_Field() { printf '%s' "$1" | awk -F'|' -v i="$2" '{gsub(/^[ \t]+|[ \t]+$/,"",$i); print $i}'; }
 
-# 模块名会进路径和文件名，字符集必须先卡住
+# 模块名用于路径和文件名，因此限制为安全字符集。
 OR_Check_Module_Name()
 {
     case "$1" in
@@ -41,9 +28,7 @@ OR_Check_Module_Name()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# OR_Modules_Configured — 是否配置了任何编译期模块
-# ---------------------------------------------------------------------------
+# 判断是否配置了编译模块或 Lua 库。
 OR_Modules_Configured()
 {
     [ "${#OpenResty_Custom_Modules[@]}" -gt 0 ] && return 0
@@ -54,12 +39,7 @@ OR_Modules_Configured()
     return 1
 }
 
-# ---------------------------------------------------------------------------
-# OR_Check_Pkg_Mode_Conflict — 包安装方式装不了编译期模块
-#
-# 预编译包里的模块集合是上游定死的。原先这种组合会静默忽略用户配的模块，
-# 装完发现模块不在，很难往配置上想。
-# ---------------------------------------------------------------------------
+# 官方预编译包的模块集合固定，配置自定义编译模块时必须改用源码安装。
 OR_Check_Pkg_Mode_Conflict()
 {
     OR_Modules_Configured || return 0
@@ -70,12 +50,9 @@ OR_Check_Pkg_Mode_Conflict()
     return 1
 }
 
-# ---------------------------------------------------------------------------
-# OR_Modules_Prepare — 下载、校验、解压模块源码，构造 configure 参数
-#
+# 下载、校验并解压模块源码，同时生成 configure 参数。
 # 每条配置的格式：名称|下载地址|SHA256|类型(static|dynamic)
 # 校验强制执行：这些源码会被编译进对外服务的进程，比普通依赖更需要确认来源。
-# ---------------------------------------------------------------------------
 OR_Modules_Prepare()
 {
     local entry name url sha kind dir tarball
@@ -87,7 +64,7 @@ OR_Modules_Prepare()
     mkdir -p "${cur_dir}/src/or-modules" || return 1
 
     for entry in "${OpenResty_Custom_Modules[@]}"; do
-        # 允许在配置里用 # 注释掉某一行
+        # 配置项可使用 # 禁用。
         case "${entry}" in ''|\#*) continue ;; esac
 
         name=$(OR_Field "${entry}" 1)
@@ -135,8 +112,7 @@ OR_Modules_Prepare()
             return 1
         fi
 
-        # 解压到确定的目录名：上游 tarball 顶层目录名不可预测（常带版本号），
-        # --strip-components=1 之后 configure 参数才能写死
+        # 去除上游归档的可变顶层目录，使 configure 使用稳定路径。
         rm -rf "${dir}"
         mkdir -p "${dir}" || return 1
         if ! tar zxf "${tarball}" -C "${dir}" --strip-components=1; then
@@ -161,12 +137,8 @@ OR_Modules_Prepare()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# OR_Modules_Capture_Built — make 成功后记录本次真实生成的动态模块
-#
-# 模块配置名与 .so 文件名没有可靠映射，只能从 nginx 的 objs 目录取实际产物。
-# 记录必须发生在源码目录被删除之前，Post_Build 再用这份清单生成 load_module。
-# ---------------------------------------------------------------------------
+# 构建完成后记录实际生成的动态模块。模块配置名不一定等于 .so 文件名，
+# 因此以 Nginx 构建目录中的产物为准，并在清理源码前保存清单。
 OR_Modules_Capture_Built()
 {
     local tmp so
@@ -180,14 +152,9 @@ OR_Modules_Capture_Built()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# OR_Write_Load_Modules_Conf — 生成动态模块的 load_module 指令
-#
+# 生成动态模块的 load_module 指令。
 # --add-dynamic-module 只是把 .so 编译出来放进 modules/，nginx 不会自动加载。
-# 少了这一步，动态模块等于没装，而且不会有任何报错。
-# 直接扫描 modules 目录而不是照配置推断文件名：.so 的名字由模块自己的 config
-# 决定，未必等于配置里写的名称。
-# ---------------------------------------------------------------------------
+# .so 名称由模块自身配置决定，因此根据实际构建清单生成加载配置。
 OR_Write_Load_Modules_Conf()
 {
     local conf="${OR_Prefix}/nginx/conf/load_modules.conf"
@@ -196,8 +163,7 @@ OR_Write_Load_Modules_Conf()
     mkdir -p "${conf%/*}" || return 1
     tmp=$(mktemp "${conf}.XXXXXXXX") || return 1
 
-    # 只删除上一版由本文件加载、而本次构建已不再产出的模块。目录中其它手工
-    # 放置的 .so 不归 LNMP 管，既不加载也不删除。
+    # 仅删除 LNMP 上次加载但本次未构建的模块，保留用户手工放置的 .so。
     if [ -f "${OR_Built_Modules_File}" ] && [ -f "${conf}" ]; then
         old=$(sed -n 's#^[[:space:]]*load_module[[:space:]]\+modules/\([^;]*\.so\);#\1#p' "${conf}")
         for name in ${old}; do
@@ -232,12 +198,9 @@ OR_Write_Load_Modules_Conf()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# OR_Write_Lua_Paths_Conf — 生成 Lua 搜索路径
-#
+# 生成 Lua 搜索路径。
 # 自定义 lualib 目录要进 lua_package_path，否则 require 找不到。
 # 单独成文件由 nginx.conf include，避免每次都去改模板。
-# ---------------------------------------------------------------------------
 OR_Write_Lua_Paths_Conf()
 {
     local conf="${OR_Prefix}/nginx/conf/lua_paths.conf" tmp extra_lua='' extra_c=''
@@ -270,13 +233,9 @@ OR_Write_Lua_Paths_Conf()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# OR_Install_Lua_Packages — opm / luarocks 包
-#
+# 安装 opm 和 luarocks 包。
 # opm 是 OpenResty 自带的包管理器，装的是 lua-resty-* 这类纯 Lua 库；
-# luarocks 不随 OpenResty 分发，只有系统里已经有才用。
-# 装包失败不中止安装：Web 服务本身是好的，缺库属于可以事后补的问题。
-# ---------------------------------------------------------------------------
+# luarocks 仅在系统已安装时使用。Lua 包失败不影响 Web 服务，可稍后补装。
 OR_Install_Lua_Packages()
 {
     local pkg failed=0 opm="${OR_Prefix}/bin/opm" rocks
@@ -313,13 +272,7 @@ OR_Install_Lua_Packages()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# OR_Modules_Persist — 把这次用到的编译期配置落盘
-#
-# 初装时用环境变量临时传入的参数不会自己留下来。升级走的是另一个入口，
-# 忘记再传一遍就会编译出一个不含这些模块的 OpenResty，
-# 而且同样不会有任何报错 —— 直到某天发现某个 location 不工作。
-# ---------------------------------------------------------------------------
+# 保存本次编译配置，使 OpenResty 升级时继续包含相同模块和 Lua 库。
 OR_Modules_Persist()
 {
     local tmp m
@@ -357,12 +310,7 @@ OR_Modules_Persist()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# OR_Modules_Load_Persisted — 升级入口读取初装时的配置
-#
-# 显式配置优先：lnmp.conf 里配了就用 lnmp.conf 的，什么都没配才回落到
-# 初装时记录的那一份。这样"想改"和"忘了传"能区分开。
-# ---------------------------------------------------------------------------
+# 升级时优先使用 lnmp.conf 的显式配置；未配置时加载安装阶段保存的设置。
 OR_Modules_Load_Persisted()
 {
     [ -f "${OR_Build_Conf}" ] || return 0
@@ -378,9 +326,7 @@ OR_Modules_Load_Persisted()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# OR_Modules_Post_Build — 编译安装之后统一收尾
-# ---------------------------------------------------------------------------
+# 编译后写入模块加载及 Lua 路径配置，并安装附加 Lua 包。
 OR_Modules_Post_Build()
 {
     OR_Write_Load_Modules_Conf || return 1

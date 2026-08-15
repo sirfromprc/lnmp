@@ -6,8 +6,7 @@ Install_Apache_24()
     if [ "${Stack}" = "lamp" ]; then
         groupadd www
         useradd -s /sbin/nologin -g www www
-        # 权限基线，口径同 include/nginx.sh：
-        # 站点根目录 755 www:www，日志目录 755 root:root（原为 777）。
+        # 站点目录由 www 管理，日志目录仅允许 root 写入。
         mkdir -p ${Default_Website_Dir}
         mkdir -p /home/wwwlogs
         chown root:root /home/wwwlogs
@@ -19,9 +18,7 @@ Install_Apache_24()
     fi
     Tar_Cd ${Apache_Ver}.tar.bz2 ${Apache_Ver}
     cd srclib
-    # APR / APR-util 要放进 httpd 源码树的 srclib/ 下一起编译。
-    # 原写法是「src/ 下已有就直接 cp 进来」，跳过了 Download_Files 的校验 ：
-    # 缓存文件走的是免检通道。现改为先在 src/ 里下载+校验，再 cp 进 srclib/。
+    # APR 和 APR-util 经下载校验后复制到 httpd 的 srclib 目录参与编译。
 
     local apache_srclib="${PWD}"
     cd "${cur_dir}/src" || exit 1
@@ -69,7 +66,7 @@ Install_Apache_24()
         sed -i "s#/home/wwwroot/default#${Default_Website_Dir}#g" /usr/local/apache/conf/extra/httpd-vhosts.conf
     fi
 
-    # PHP 7 起模块名不再是 php5_module，模板里的旧行要去掉
+    # PHP 7 及以上不加载 php5_module。
     if [ "${PHP_Apache_Module}" != "libphp5.so" ]; then
         sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
     fi

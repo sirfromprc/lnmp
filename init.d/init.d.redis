@@ -24,18 +24,6 @@ REDIS_CLI=/usr/local/redis/bin/redis-cli
 PIDFILE=/usr/local/redis/var/redis.pid
 CONF="/usr/local/redis/etc/redis.conf"
 RUNAS=redis
-
-
-
-
-
-
-
-
-
-
-
-
 Redis_Exec()
 {
     if ! id -u "${RUNAS}" >/dev/null 2>&1; then
@@ -46,7 +34,7 @@ Redis_Exec()
         return $?
     fi
 
-    # 已经是目标账号（非 root 环境下手工启动）就直接跑
+    # 当前用户已是 Redis 专用账号时直接启动。
     if [ "$(id -un)" = "${RUNAS}" ]; then
         "$EXEC" "$CONF"
         return $?
@@ -59,25 +47,7 @@ Redis_Exec()
     fi
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Redis_Running — 返回 0 表示确实在运行，同时把 PID 放进 REDIS_PID
+# 运行时返回 0，并将进程号写入 REDIS_PID。
 Redis_Running()
 {
     REDIS_PID=''
@@ -104,7 +74,7 @@ case "$1" in
         echo -n "正在启动 Redis 服务..."
         Redis_Exec
         rc=$?
-        # daemonize yes 时父进程立刻返回，要等子进程把 pidfile 写出来
+        # daemonize yes 会立即返回，等待子进程写入 pid 文件后再判断结果。
         i=0
         while [ $i -lt 20 ]; do
             Redis_Running && break

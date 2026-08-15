@@ -1,28 +1,16 @@
 #!/usr/bin/env bash
 
-# DB_Info / PHP_Info / Apache_Info 已移至 include/profile.sh，
-# 与编号映射表放在一起，避免菜单文本和版本表分居两地而脱节。
+# 数据库、PHP 和 Apache 的菜单信息与编号映射统一定义在 profile.sh。
 
-# phpMyAdmin 装在网站根目录之外。放在根目录下时，Web 服务器配置一旦失效
-# （改错、被覆盖、模块未加载），整套源码连同 config.inc.php 就会被当作
-# 静态文件下载。访问入口由 Web 服务器映射，见 Config_PhpMyAdmin_Access。
+# phpMyAdmin 位于网站根目录之外，防止 Web 配置失效时源码和 config.inc.php
+# 被作为静态文件下载；访问入口由 Web 服务器单独映射。
 PhpMyAdmin_Dir='/usr/local/phpmyadmin'
 
-# 记录随机访问路径，供安装结束提示与 lnmp status 读取。
+# 保存随机访问路径，供安装完成提示和 lnmp status 查询。
 PhpMyAdmin_Url_File="${PhpMyAdmin_Dir}/.access_url"
 
-# Check_DB_Source_Build — 源码编译数据库前的可行性把关
-#
-# 本包的典型用户是 1-2GB 内存的小 VPS，而 MySQL 8.x 源码编译对内存和磁盘都不
-# 便宜：Debian 12 / 8 核 6GB 实测，编译目录涨到约 7.8GB，`make -j8` 还在
-# sql_gis 处被 OOM 杀掉过（cc1plus 单进程 anon-rss 787MB）。这种机器上选源码
-# 编译，结果不是跑几个小时就是中途失败，而官方通用二进制几分钟装完、功能一样。
-#
-# 分三档处理：
-#   低于硬下限（profile 的 DB_Min_Mem_MB 与 2048MB 取大者，或磁盘不足）
-#       直接拒绝，并指明改用通用二进制；
-#   够用但低于推荐值，说明代价，交互式必须显式确认；
-#   非交互（无终端或 LNMP_Auto=y）打印警告后继续，不破坏已有自动化。
+# 源码编译 MySQL 需要较多内存、磁盘和时间。低于最低资源要求时停止并建议
+# 使用官方通用二进制；低于推荐内存时要求交互确认，非交互执行仅提示风险。
 Check_DB_Source_Build()
 {
     local mem_mb disk_mb min_mem rec_mem=4096 min_disk=15360 ans jobs
@@ -73,7 +61,7 @@ Check_DB_Source_Build()
 
 Database_Selection()
 {
-#which MySQL Version do you want to install?
+    # 选择需要安装的数据库版本。
     if [ -z "${DBSelect}" ]; then
         Print_DB_Menu
         read -p "请选择数据库版本（1-${DB_Count}，0 表示不安装，默认 ${DB_Default}）: " DBSelect
@@ -96,9 +84,7 @@ Database_Selection()
     Check_DB_Source_Build || exit 1
 
     if [[ "${DBSelect}" != "0" ]]; then
-        #set mysql root password
-        #
-        # 密码输入不回显，且不得写入安装日志。
+        # 设置数据库 root 密码，输入过程不回显且不写入安装日志。
         DB_Root_Password_Random='n'
         if [ -z "${DB_Root_Password}" ]; then
             echo "==========================="
@@ -112,7 +98,7 @@ Database_Selection()
             fi
         fi
 
-        #do you want to enable or disable the InnoDB Storage Engine?
+        # 选择是否启用 InnoDB 存储引擎。
         echo "==========================="
 
         if [ -z ${InstallInnodb} ]; then
@@ -139,7 +125,7 @@ Database_Selection()
 
 PHP_Selection()
 {
-#which PHP Version do you want to install?
+    # 选择需要安装的 PHP 版本。
     if [ -z "${PHPSelect}" ]; then
         echo "==========================="
 
@@ -163,7 +149,7 @@ PHP_Selection()
 
 MemoryAllocator_Selection()
 {
-#which Memory Allocator do you want to install?
+    # 选择可选的内存分配器。
     if [ -z ${SelectMalloc} ]; then
         echo "==========================="
 
@@ -207,26 +193,20 @@ malloc-lib=/usr/lib/libtcmalloc.so'
     fi
 }
 
-# ---------------------------------------------------------------------------
-# Web_Selection — 选 nginx 还是 OpenResty（互斥）。
-#
-# 产出：
+# 选择互斥的 Nginx 或 OpenResty。结果变量：
 #   WebServer               nginx | openresty
 #   OpenResty_Install_Mode  pkg | source（仅 WebServer=openresty 时有意义）
-#
-# 非交互用法：
-#   WebSelect=1                          装 nginx（默认，行为与改动前完全一致）
+# 非交互参数：
+#   WebSelect=1                          安装 Nginx（默认）
 #   WebSelect=2 ORMode=1                 装 OpenResty，官方仓库预编译包
 #   WebSelect=2 ORMode=2                 装 OpenResty，源码编译
-#
 # 仅 lnmp 和 lnmpa 需要此选项；lamp 不安装 nginx。
-# ---------------------------------------------------------------------------
 Web_Selection()
 {
     WebServer='nginx'
     OpenResty_Install_Mode=''
 
-    # lamp 不含 nginx，直接跳过
+    # LAMP 不安装 Nginx 或 OpenResty。
     if [ "${Stack}" = "lamp" ]; then
         return 0
     fi
@@ -248,13 +228,13 @@ Web_Selection()
         WebServer='nginx'
         [ -z "${WebSelect}" ] && echo "未输入选项，使用默认项 Nginx。" \
                               || echo "已选择安装 Nginx。"
-        # 互斥是双向的：机器上已经有 OpenResty 时也不能再装 nginx
+        # Nginx 与现有 OpenResty 不能同时占用相同服务入口。
         Check_WebServer_Conflict nginx || exit 1
         return 0
         ;;
     esac
 
-    # 选了 OpenResty 才问装法
+    # OpenResty 可选择官方软件包或源码编译。
     if [ -z "${ORMode}" ]; then
         echo "==========================="
         Echo_Yellow "OpenResty 有两种安装方式："
@@ -274,7 +254,7 @@ Web_Selection()
         ;;
     esac
 
-    # 互斥的第一道闸：菜单阶段就拦住，别等编译完一堆东西才发现装不了
+    # 安装前检查 Web 服务器冲突，避免占用相同端口和服务名。
     Check_WebServer_Conflict openresty || exit 1
     return 0
 }
@@ -290,7 +270,7 @@ Dispaly_Selection()
 Apache_Selection()
 {
     echo "==========================="
-    #set Server Administrator Email Address
+    # 设置 Apache 服务器管理员邮箱。
     if [ -z ${ServerAdmin} ]; then
         ServerAdmin=""
         read -p "请输入服务器管理员邮箱（默认 webmaster@example.com）: " ServerAdmin
@@ -311,11 +291,9 @@ Apache_Selection()
     echo "将安装 ${Apache_Info[$((ApacheSelect-1))]}。"
 }
 
-# ---------------------------------------------------------------------------
-# Wait_PM：在限定时间内等待包管理器锁释放。
+# 在限定时间内等待包管理器锁释放。
 # 不终止包管理器进程，也不删除活动锁文件，避免破坏 dpkg/rpm 数据库。
 # Kill_PM 保留为兼容别名。
-# ---------------------------------------------------------------------------
 PM_Lock_Wait_Sec=300
 
 PM_Lock_Busy()
@@ -327,7 +305,7 @@ PM_Lock_Busy()
             [ -e "${f}" ] || continue
             fuser "${f}" >/dev/null 2>&1 && return 0
         done
-        # 老版本 yum 只留 pid 文件不加锁，退化为检查该 pid 是否还活着
+        # 旧版 yum 可能只保留 pid 文件，因此同时检查对应进程是否存活。
         if [ -s /var/run/yum.pid ]; then
             kill -0 "$(cat /var/run/yum.pid 2>/dev/null)" 2>/dev/null && return 0
         fi
@@ -368,7 +346,7 @@ Wait_PM()
     echo "包管理器已空闲，继续。"
 }
 
-# 兼容旧调用点
+# 保留现有调用使用的函数名。
 Kill_PM()
 {
     Wait_PM
@@ -381,9 +359,7 @@ Press_Install()
 
     case "${Stack}" in
     lnmp|lnmpa|lamp)
-        # 完整安装：选择做完之后，把版本、端口这些会真正影响系统的信息摆
-        # 出来，用户看完再决定是否继续——原来的"press any key"敲任意键都
-        # 能过，等于没有确认。
+        # 完整安装前展示版本、端口及目录等系统变更，供用户确认。
         Echo_Yellow "=========================================================================="
         Echo_Yellow "您即将安装/编译以下模块，请确认！" 
         Print_APP_Ver
@@ -404,7 +380,7 @@ Press_Install()
     Kill_PM
 }
 
-# lnmp/lnmpa/lamp 完整安装在真正开始装依赖、编译前的最后一道确认。
+# lnmp、lnmpa 和 lamp 在安装依赖及编译前进行最终确认。
 # 非交互（无终端或 LNMP_Auto=y）不阻断，打印提示后直接继续。
 Confirm_Start_Install()
 {
@@ -426,9 +402,7 @@ Confirm_Start_Install()
     esac
 }
 
-# 菜单选择完成后，把编号翻译成语义变量。必须在 version.sh 之后调用，
-# 因为二者共同构成完整的版本信息（version.sh 提供与选择无关的组件版本，
-# profile.sh 提供随选择变化的部分）。
+# 菜单编号在加载 version.sh 后转换为版本属性；profile.sh 提供随选项变化的值。
 Set_Profiles()
 {
     if [ -n "${DBSelect}" ]; then
@@ -442,7 +416,7 @@ Set_Profiles()
     fi
 }
 
-# 非法编号必须显式报错，禁止静默回退到默认版本。
+# 非法编号直接报错，避免意外安装默认版本。
 Invalid_Selection()
 {
     Echo_Red "致命错误：${1}Select 的值无效：'${2}'"
@@ -693,12 +667,9 @@ Verify_Download_File()
     return 0
 }
 
-# ---------------------------------------------------------------------------
 # Require_File <文件名> <描述>
-#
 # 下载后的存在性检查，防止下载失败后继续编译。
 # 所有入口脚本均加载 main.sh，因此该函数在此统一定义。
-# ---------------------------------------------------------------------------
 Require_File()
 {
     if [ ! -s "$1" ]; then
@@ -737,17 +708,10 @@ Download_Files()
     Verify_Download_File "${FileName}"
 }
 
-# Tar_Cd <包名> [解压后的目录名]
-#
-# 目录切换、解压和目标目录检查任一步失败时立即终止。
-# ---------------------------------------------------------------------------
+# Tar_Cd <包名> [解压后的目录名]：目录切换、解压或目标检查失败时终止。
 # Check_Conf_Applied <文件> <期望匹配的正则> <说明>
-#
-# 端口这类值是"模板里有默认值 + 安装时按 lnmp.conf 覆写"的模式。
-# 如果上游模板换了写法，sed 会一条都匹配不上却仍然返回 0：
-# 服务用模板里的默认端口跑起来，防火墙按 lnmp.conf 的端口放行，
-# 两边对不上，而且全程没有任何报错。这里在覆写后确认一次。
-# ---------------------------------------------------------------------------
+# 配置模板改动可能使 sed 未命中却仍返回成功，因此写入后验证目标值，
+# 防止服务监听端口与防火墙放行端口不一致。
 Check_Conf_Applied()
 {
     local file="$1" pattern="$2" what="$3"
@@ -764,22 +728,11 @@ Check_Conf_Applied()
     return 0
 }
 
-# ---------------------------------------------------------------------------
 # Get_Actual_DB_Port [配置文件]
-#
 # 输出本机数据库实际监听的端口，取不到时退回 lnmp.conf 的 DB_Port。
 # 返回 0 表示取自配置文件，返回 1 表示用的是退回值。
-# 参数只为定向测试传入替身配置，实际调用一律用默认的 /etc/my.cnf。
-#
-# lnmp.conf 里写的是 DB_Port="${DB_Port:-3306}"：装主栈时可以用环境变量
-# 指定非默认端口（DB_Port=3307 ./install.sh lnmp），该值进了 /etc/my.cnf，
-# 但不会回写 lnmp.conf。事后单独补装或升级 phpMyAdmin 时环境变量早已不在，
-# 读到的仍是 3306，写进 config.inc.php 就是错的 —— 而 config.inc.php 用
-# host = 127.0.0.1 走 TCP（不用 localhost，见该文件注释），端口错了直接连不上库。
-#
-# 只认 [mysqld] 段里的 port：[client] 段那条是客户端默认值，管理员可能单独改过。
-# MySQL 与 MariaDB 的模板都写在 /etc/my.cnf，两者取法相同。
-# ---------------------------------------------------------------------------
+# 环境变量指定的安装端口不会回写 lnmp.conf，后续安装 phpMyAdmin 时需读取
+# /etc/my.cnf 的 [mysqld] 端口，确保 TCP 连接使用数据库当前监听值。
 Get_Actual_DB_Port()
 {
     local conf="${1:-/etc/my.cnf}" port=''
@@ -815,19 +768,14 @@ Get_Actual_DB_Port()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# Get_Actual_SSH_Port — 探测系统当前实际监听的 SSH 端口
-#
-# 不能只信 lnmp.conf 里的 SSH_Port：sshd_config 改了没重启、或者用
-# ExecStart 的 -o Port= 覆盖过，配置文件里的值和真实监听端口会对不上。
+# 探测系统当前实际监听的 SSH 端口。sshd_config 尚未重载或 ExecStart 使用
+# -o Port= 覆盖时，配置文件值可能与真实监听端口不同。
 # 优先看真实监听的 socket（ss/netstat 能看到内核当前的状态），
 # 两者都不可用时才退回解析 sshd_config（含 Debian/Ubuntu 默认
 # Include 的 /etc/ssh/sshd_config.d/*.conf）；配置文件存在但没有
 # 显式 Port 行，按 OpenSSH 的默认值处理，即 22。
-#
 # 输出：每行一个端口号，按数字升序去重。彻底探测不到（没有 ss/netstat，
-# 也找不到 sshd_config）时不输出、返回 1，交调用方决定怎么处理。
-# ---------------------------------------------------------------------------
+# 也找不到 sshd_config）时不输出并返回 1。
 Get_Actual_SSH_Port()
 {
     local port
@@ -864,11 +812,8 @@ Get_Actual_SSH_Port()
 
 # Get_Sshd_Config_Ports [sshd_config 路径]
 #
-# 解析 sshd_config 里的 Port 指令，跟随 Debian/Ubuntu 默认的
-# `Include /etc/ssh/sshd_config.d/*.conf`（取主配置所在目录下的
-# sshd_config.d/*.conf）。只覆盖这一种固定的 Include 布局，不做通用
-# Include 解析——本包主线是 Debian 12。
-# 参数只为定向测试传入替身配置，实际调用一律用默认的 /etc/ssh/sshd_config。
+# 解析 sshd_config 及同目录 sshd_config.d/*.conf 中的 Port 指令，覆盖
+# Debian/Ubuntu 默认 Include 布局；默认读取 /etc/ssh/sshd_config。
 Get_Sshd_Config_Ports()
 {
     local conf="${1:-/etc/ssh/sshd_config}"
@@ -995,15 +940,8 @@ Check_LNMPConf()
     fi
 }
 
-# ---------------------------------------------------------------------------
-# Confirm_LNMPConf_Reviewed — 正式开始选择版本前提醒检查 lnmp.conf
-#
-# 典型事故：SSH 端口已经在系统里改过、但 lnmp.conf 的 SSH_Port 还是默认值，
-# 装完防火墙只放行旧端口，等于把当前的登录方式关在门外；数据库目录、
-# 网站目录、是否开 phpMyAdmin 同理，装完再改往往比装之前改麻烦得多。
-#
-# 非交互（无终端或 LNMP_Auto=y）打印提示后继续，不阻断已有自动化。
-# ---------------------------------------------------------------------------
+# 选择版本前提醒核对 lnmp.conf。SSH 端口错误可能使防火墙阻断远程登录，
+# 数据库目录、网站目录和 phpMyAdmin 开关也应在安装前确认。非交互执行仅提示。
 Confirm_LNMPConf_Reviewed()
 {
     local ans
@@ -1159,13 +1097,7 @@ Remove_StartUp()
 
     echo "正在取消 ${init_name} 服务的开机启动..."
 
-    # 先按 systemd 停一次，且不看 unit 是不是本包部署的。
-    # 只装 init 脚本时（例如 OpenResty 只写 /etc/init.d/nginx），systemd 会用
-    # sysv-generator 生成一个 unit，开机启动后状态是 active (exited)。
-    # 用 lnmp stop 或 init 脚本停服务，systemd 并不知道，该状态会一直留着；
-    # 卸载删掉文件也不清除它。重装写入新 unit 并 daemon-reload 同样不会重置
-    # 已有的 active 状态，于是随后的 systemctl start 认为服务已在运行、直接
-    # 返回成功，服务实际从未被启动，而 lnmp status 显示的是上一次的 active。
+    # 先通过 systemd 停止并重置服务，清除 SysV 兼容单元可能保留的过期状态。
     if Systemd_Is_Running; then
         systemctl stop "${init_name}.service" 2>/dev/null
         systemctl reset-failed "${init_name}.service" 2>/dev/null
@@ -1182,13 +1114,8 @@ Remove_StartUp()
         fi
     fi
 
-    # 本包部署的 unit 必须随之删除。只 disable 会把 ExecStart 指向已删除二进制的
-    # unit 留在系统里，后续 Service_Exists 仍判定该服务存在，管理脚本的整体启停
-    # 会去启动一个根本不存在的服务并报错。
-    # 判定"本包部署"看 ExecStart：nginx/php-fpm/httpd/pureftpd/redis 指向
-    # /usr/local/ 下的二进制，mysql/mariadb/memcached 的 unit 则包装
-    # /etc/init.d/<服务名>。发行版自带的同名 unit 在 /lib/systemd/system，
-    # 不在这里，不会被误删。
+    # 删除由 LNMP 部署且 ExecStart 指向 LNMP 组件的单元，避免卸载后仍被识别
+    # 为可用服务；发行版位于系统单元目录的同名服务不在删除范围内。
     local esc_name=${init_name//./\\.}
     if [ -f "${unit}" ] && grep -qE \
         "^ExecStart=[^[:space:]]*(/usr/local/|/etc/init\.d/${esc_name}([[:space:]]|$))" \
@@ -1198,13 +1125,11 @@ Remove_StartUp()
     fi
 }
 
-# 下载路径不再依据外部地理探测结果切换，统一使用上游官方源。
+# 下载统一使用上游官方源，不依赖外部地理探测。
 country='US'
 
-# ---------------------------------------------------------------------------
-# Check_Supported_Distro：在编译前检查发行版下限。
+# 编译前检查发行版下限。
 # PHP 8.0+、MySQL 8.0+、OpenSSL 3.5 和 nginx 1.30 需要较新的编译器与系统库。
-# ---------------------------------------------------------------------------
 Check_Supported_Distro()
 {
     local why=''
@@ -1261,8 +1186,7 @@ Check_CMPT()
     fi
 }
 
-# Version_GE <a> <b> — 版本号 a >= b 时返回 0
-# 替代按菜单编号划定版本区间的写法，编号变化不再影响这类判断。
+# Version_GE <a> <b>：版本号 a 大于或等于 b 时返回 0，判断不依赖菜单编号。
 Version_GE()
 {
     [ -z "$1" ] && return 1
@@ -1325,11 +1249,9 @@ Check_Stack()
     fi
 }
 
-# First_Executable <候选路径...> — 返回第一个可执行文件。
-#
+# First_Executable <候选路径...>：返回第一个可执行文件。
 # MariaDB 11.x 已把 mysql、mysqldump 等旧程序名标记为弃用，但不同版本和
-# 安装形态提供的新旧名称不完全相同。调用点统一按文件能力优先新名称，
-# 缺失时回退旧名称，不按版本号猜测实际包布局。
+# 安装形态提供的新旧名称不完全相同，因此优先使用新名称，缺失时回退旧名称。
 First_Executable()
 {
     local candidate
@@ -1368,9 +1290,7 @@ Check_DB()
     fi
 }
 
-# SQL 走临时文件而不是固定的 /tmp/.mysql.tmp。
-#
-# mktemp 配合 umask 077，避免共享临时目录中的文件名预测和符号链接覆盖。
+# SQL 使用权限受限的随机临时文件，避免共享目录中的文件名预测和符号链接覆盖。
 Do_Query()
 {
     local sql_file rc
@@ -1435,9 +1355,7 @@ TempMycnf_Clean()
     rm -f /tmp/.mysql.tmp
 }
 
-# 只按实际运行能力判断 systemd，不再把 WSL 等开发环境名称当作能力。
-# WSL 可以启用 systemd，普通服务器也可能没有运行 systemd；检查环境名字会
-# 同时产生误判和漏判。/run/systemd/system 是 systemd 启动后创建的运行标志。
+# 通过 /run/systemd/system 判断 systemd 是否实际运行，适用于服务器和 WSL。
 Systemd_Is_Running()
 {
     [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1
@@ -1451,9 +1369,7 @@ Systemd_Unit_Exists()
     [ -s "/usr/lib/systemd/system/${service}.service" ]
 }
 
-# 这次启动到底走不走 systemd，判断只留一份。
-# 安装收尾要在启动后核对服务状态，核对方式取决于走了哪条分支：
-# 各自再写一遍条件，迟早出现「用 systemctl 启动、用 pid 文件判断」这类错配。
+# 统一选择 systemd 或 init 脚本，保证服务启动与状态检查使用同一管理方式。
 Use_Systemd_Unit()
 {
     local service=$1
@@ -1488,8 +1404,7 @@ Check_Openssl()
         isOpenSSL3='y'
     fi
 }
-# 计算 UTF-8 文本在常见终端中的显示宽度：ASCII 占 1 列，三字节中日韩字符占 2 列。
-# 本项目的 banner 文案只使用这两类字符，借此保证中文框线可以稳定对齐。
+# 计算横幅文本的终端显示宽度：ASCII 占 1 列，中日韩字符占 2 列。
 Text_Display_Width()
 {
     local text="$1" bytes ascii_bytes wide_chars
@@ -1499,17 +1414,14 @@ Text_Display_Width()
     printf '%d' $((ascii_bytes + wide_chars * 2))
 }
 
-# Warn_Demo_Page_Not_Served — 演示页写入 default 根目录后核对 Web 配置是否放行
-#
+# 写入演示页后检查默认站点是否允许访问。
 # default 站点默认拒绝执行 PHP。新装环境的配置模板已按固定文件名放行
-# phpinfo / redis / memcached 三个演示页；在此之前装好的环境没有这段规则，
-# 页面文件写进去了也只会返回 404。这里只做检查和提示，不去改使用者可能
-# 已经定制过的站点配置。始终返回 0，不影响调用方的安装结果。
+# phpinfo、redis 和 memcached 演示页；旧配置可能返回 404。检查仅提示，
+# 不修改用户已定制的站点配置，也不影响安装结果。
 Warn_Demo_Page_Not_Served()
 {
     local page="$1"
-    # nginx 与 Apache 两份模板里放行规则的写法不同，但都含这段固定的文件名
-    # 分支，用固定串匹配，免去两套正则转义。
+    # Nginx 与 Apache 模板均包含固定文件名分支，可使用同一字符串检查。
     local pattern='(phpinfo|redis|memcached)'
     local ngx_default='/usr/local/nginx/conf/vhost/default.conf'
     local apache_vhosts='/usr/local/apache/conf/extra/httpd-vhosts.conf'

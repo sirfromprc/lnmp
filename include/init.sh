@@ -67,14 +67,7 @@ CentOS_RemoveAMP()
     yum clean all
 }
 
-# ---------------------------------------------------------------------------
-# Deb_Purge_Installed <包名...> — 只 purge 确实装着的包
-#
-# 原实现无条件对一长串包名执行 apt-get purge 与 dpkg -P，其中 apache2.2-*、
-# php5*、mysql-*-5.5、libmysqlclient15* 在 Debian 10+ / Ubuntu 18.04+ 上
-# 根本不存在（系统下限见 Check_Supported_Distro）。全新系统的清理阶段因此
-# 刷出十几条"包未安装/无此包"的报错，真出问题的那条反而看不出来。
-# ---------------------------------------------------------------------------
+# 仅清理实际已安装的旧包，避免无关的“包未安装”信息掩盖卸载错误。
 Deb_Purge_Installed()
 {
     local p installed=''
@@ -99,8 +92,7 @@ Deb_RemoveAMP()
     apt-get update -y
     [[ $? -ne 0 ]] && apt-get update --allow-releaseinfo-change -y
 
-    # 只列受支持发行版里可能真实存在的包名。Apache 2.2（2017 EOL）与 PHP 5
-    # 的包名已从这些发行版消失，不再尝试。
+    # 清理受支持发行版中仍可能存在的旧组件包。
     pkill -x apache2 >/dev/null 2>&1
     Deb_Purge_Installed apache2 apache2-bin apache2-data apache2-utils apache2-doc \
                         libapache2-mod-php
@@ -108,20 +100,16 @@ Deb_RemoveAMP()
     if [ "${DB_Kind}" != "none" ]; then
         Deb_Purge_Installed mysql-server mysql-client mysql-common \
                             mariadb-server mariadb-client mariadb-common libmariadbd-dev
-        # 发行版包的配置目录留着会被源码版 MySQL 的 my.cnf 搜索路径命中。
-        # mysql.sh / mariadb.sh 会把它改名备份，这里不删。
+        # 保留发行版数据库配置目录，由后续安装流程改名备份，避免被源码版误用。
         [ -d /etc/mysql ] && echo "注意：/etc/mysql 仍存在，安装数据库时会自动改名备份。"
     fi
 
     apt-get autoremove -y && apt-get clean
 }
 
-# ---------------------------------------------------------------------------
-# Setup_Selinux
 # 默认保留 SELinux 状态，并为安装目录设置必要的安全上下文。
 # 仅当 Disable_Selinux='y' 时关闭 SELinux。
 # 源码安装路径可能缺少发行版预置策略；相关拒绝记录位于 /var/log/audit/audit.log。
-# ---------------------------------------------------------------------------
 Setup_Selinux()
 {
     [ -s /etc/selinux/config ] || return 0
@@ -145,7 +133,7 @@ Setup_Selinux()
         restorecon -R "${Default_Website_Dir}" /home/wwwlogs 2>/dev/null
     fi
     if command -v setsebool >/dev/null 2>&1; then
-        # Web 进程要连本机数据库、要发邮件
+        # Web 服务需要访问数据库及建立发送邮件所需的网络连接。
         setsebool -P httpd_can_network_connect_db 1 2>/dev/null
         setsebool -P httpd_can_network_connect 1 2>/dev/null
     fi
@@ -153,7 +141,7 @@ Setup_Selinux()
     Echo_Yellow "必要时在 lnmp.conf 设 Disable_Selinux='y' 后重试。"
 }
 
-# 兼容旧调用点（install.sh / only.sh）
+# 保留 install.sh 和 only.sh 使用的函数入口。
 Disable_Selinux()
 {
     Setup_Selinux
@@ -186,16 +174,14 @@ Check_Hosts()
     fi
 }
 
-# CentOS 官方签名公钥指纹。EL8/9/10 仓库使用随包公钥，并在安装前核对指纹。
+# CentOS 官方签名公钥指纹；EL8/9/10 配置仓库前核对随附公钥。
 #
 # 值来自 https://www.centos.org/keys/ 公布的 CentOS Official Signing Key
 # （rsa4096，2019-05-03 创建，security@centos.org）。
 CentOS_GPG_Key_FP='99DB70FAE1D7CE227FB6488205B555B38483C65D'
 
-# ---------------------------------------------------------------------------
-# Install_CentOS_GPG_Key：安装并核验随包分发的 CentOS 官方公钥。
+# 安装并核验 LNMP 随附的 CentOS 官方公钥。
 # 公钥与软件包必须来自独立的信任路径，避免仓库内容和验证密钥同时被替换。
-# ---------------------------------------------------------------------------
 Install_CentOS_GPG_Key()
 {
     local src="${cur_dir}/conf/RPM-GPG-KEY-CentOS-Official"
@@ -207,7 +193,7 @@ Install_CentOS_GPG_Key()
         exit 1
     fi
 
-    # gpg 不一定装了（最小化安装的 EL 可能没有），有就核指纹，没有就明确降级提示。
+    # 最小化安装可能没有 gpg，此时明确提示无法执行指纹核对。
     if command -v gpg >/dev/null 2>&1; then
         fp=$(gpg --show-keys --with-colons "${src}" 2>/dev/null | awk -F: '$1=="fpr"{print $10; exit}')
         if [ "${fp}" != "${CentOS_GPG_Key_FP}" ]; then
@@ -236,7 +222,7 @@ RHEL_Modify_Source()
         return 0
     fi
 
-    # 使用随包仓库配置、官方 HTTPS 源、gpgcheck 和本地固定公钥。
+    # 使用随附仓库配置、官方 HTTPS 源、签名校验和固定公钥。
     # 未提供模板的发行版版本不自动生成仓库配置。
     Install_CentOS_GPG_Key
 
@@ -437,26 +423,24 @@ Modify_Source()
     fi
 }
 
-# ---------------------------------------------------------------------------
-# Check_Host_Repo_Trust：只读检查宿主机软件源配置。
+# 只读检查宿主机软件源配置。
 # 编译依赖由宿主机软件源提供，不受 src/checksums.sha256 覆盖。
 # 检查只输出警告，不修改配置或阻断安装，以兼容内网镜像和离线源。
 # 关闭签名校验或 TLS 记为问题；启用签名校验的 HTTP 源仅作提示。
-# ---------------------------------------------------------------------------
 Check_Host_Repo_Trust()
 {
     local problems=0 notes=0 f line _repo_tmp _sec _key _ln _raw
 
     Echo_Blue "[+] 检查宿主机软件源的信任配置（只读，不会修改任何东西）..."
 
-    # 使用临时文件读入结果，避免管道子 shell 丢失外层计数器更新。
+    # 通过临时文件读取结果，确保计数器在当前 shell 中更新。
     _repo_tmp=$(mktemp) || return 0
     trap 'rm -f "${_repo_tmp}"' RETURN 2>/dev/null
 
     if [ "${PM}" = "apt" ]; then
-        # 输出格式为“文件:行号:原文”；grep 模式同时排除注释行。
+        # 输出包含文件、行号和原文，并排除配置中的注释行。
 
-        # 1) 安全问题：trusted=yes、allow-insecure 和 Trusted: yes 会关闭签名校验
+        # trusted=yes、allow-insecure 和 Trusted: yes 会关闭签名校验。
         for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list \
                  /etc/apt/sources.list.d/*.sources; do
             [ -f "${f}" ] && [ -s "${f}" ] || continue
@@ -470,7 +454,7 @@ Check_Host_Repo_Trust()
             done < "${_repo_tmp}"
         done
 
-        # 2) 真问题：apt.conf 里全局允许未签名
+        # apt.conf 全局允许未签名包时，所有相关软件源都会失去签名保护。
         for f in /etc/apt/apt.conf /etc/apt/apt.conf.d/*; do
             [ -f "${f}" ] && [ -s "${f}" ] || continue
             grep -nEi 'AllowUnauthenticated[^;]*"?true|AllowInsecureRepositories[^;]*"?true' "${f}" 2>/dev/null > "${_repo_tmp}"
@@ -482,7 +466,7 @@ Check_Host_Repo_Trust()
             done < "${_repo_tmp}"
         done
 
-        # 3) 仅提示：启用签名校验的 HTTP 源不计入问题数。
+        # 启用签名校验的 HTTP 源仅作提示，不计入问题数。
         # 包签名仍可验证完整性，但传输内容不具备保密性。
         for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list \
                  /etc/apt/sources.list.d/*.sources; do
@@ -500,14 +484,14 @@ Check_Host_Repo_Trust()
             done < "${_repo_tmp}"
         done
 
-        # 4) 仅提示：第三方源目录里的文件（事实陈述，不是指控）
+        # 提示用户第三方软件源也会参与编译依赖安装。
         for f in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
             [ -f "${f}" ] && [ -s "${f}" ] || continue
             Echo_Yellow "   提示：第三方源 ${f} 也会用于安装编译依赖"
         done
 
     elif [ "${PM}" = "yum" ]; then
-        # 1) 检查已启用 repo 的 gpgcheck 和 sslverify。
+        # 检查已启用仓库的 gpgcheck 和 sslverify。
         # 按 section 解析，避免未启用的备用仓库产生误报。
         for f in /etc/yum.repos.d/*.repo; do
             [ -s "${f}" ] || continue
@@ -527,8 +511,7 @@ Check_Host_Repo_Trust()
                  if(k=="sslverify") {sv=v; svn=NR; svl=$0; gsub(/ /,"\002",svl)}}
                 END{flush()}
             ' "${f}"); do
-                # 字段：section|键|行号|原文（原文里的空格在 awk 里换成了 \002，
-                # 否则 for-in-$() 的分词会把一行拆散）
+                # 字段依次为仓库段、配置键、行号和原文；用 \002 保留原文空格。
                 _sec=$(echo "${line}" | cut -d'|' -f1)
                 _key=$(echo "${line}" | cut -d'|' -f2)
                 _ln=$(echo  "${line}" | cut -d'|' -f3)
@@ -546,7 +529,7 @@ Check_Host_Repo_Trust()
             done
         done
 
-        # 2) 真问题：全局配置里关掉 gpgcheck
+        # 全局关闭 gpgcheck 会影响所有继承该配置的软件源。
         for f in /etc/yum.conf /etc/dnf/dnf.conf; do
             [ -f "${f}" ] && [ -s "${f}" ] || continue
             grep -nE '^[[:space:]]*gpgcheck[[:space:]]*=[[:space:]]*0' "${f}" 2>/dev/null > "${_repo_tmp}"
@@ -558,8 +541,7 @@ Check_Host_Repo_Trust()
             done < "${_repo_tmp}"
         done
 
-        # 3) 仅提示：明文 http:// 的 baseurl / mirrorlist
-        # 同 APT：yum 在 gpgcheck=1 时包签名仍然有效，http 不等于能被塞包。
+        # 明文 HTTP 源仅作提示；gpgcheck=1 时仍会验证软件包签名。
         for f in /etc/yum.repos.d/*.repo; do
             [ -f "${f}" ] && [ -s "${f}" ] || continue
             grep -nEi '^[[:space:]]*(baseurl|mirrorlist|metalink)[[:space:]]*=[[:space:]]*http://' "${f}" 2>/dev/null > "${_repo_tmp}"
@@ -590,7 +572,7 @@ Check_Host_Repo_Trust()
     else
         Echo_Green "   未发现关闭签名或 TLS 校验的软件源配置。"
     fi
-    # trap ... RETURN 在部分 sh 下不生效，这里显式再删一次
+    # 显式清理临时文件，兼容不支持 RETURN trap 的 shell。
     rm -f "${_repo_tmp}"
     return 0
 }
@@ -701,22 +683,9 @@ EOF
     fi
 }
 
-# ---------------------------------------------------------------------------
-# Deb_Ncurses5_Compat — 补齐 MySQL/MariaDB 官方通用二进制所需的 ncurses 5
-#
-# MySQL 8.4 的官方通用二进制里，mysql 客户端链接的是 libncurses.so.5 与
-# libtinfo.so.5。原依赖清单只装了 libncurses-dev / libncurses5-dev /
-# libtinfo-dev（都是头文件包，运行库是 .so.6），于是客户端在动态链接阶段就退出：
-#
-#   error while loading shared libraries: libncurses.so.5
-#
-# 后果不止是命令行不好用：数据库初始化 SQL（清匿名账号、删 test 库、刷权限）
-# 和装完之后的 lnmp database add/list/del 全都走这个客户端。
-#
-# Debian 12 仓库里还有 libncurses5 / libtinfo5，优先装它们；
-# Debian 13 已移除这两个包，此时退回把系统自带的 .so.6 软链成 .so.5
-# （ncurses 5 与 6 在客户端用到的这部分接口上兼容，MySQL 官方文档也是这么建议的）。
-# ---------------------------------------------------------------------------
+# MySQL 8.4 通用二进制客户端依赖 libncurses.so.5 和 libtinfo.so.5；数据库
+# 安全初始化及 lnmp database 命令均需要该客户端。优先安装兼容运行库，
+# Debian 13 无对应软件包时按 MySQL 兼容要求链接系统提供的 .so.6。
 Deb_Ncurses5_Compat()
 {
     local so path
@@ -749,9 +718,8 @@ Deb_Dependent()
 
     Deb_Ncurses5_Compat
 
-    # PHP imap 扩展（Enable_PHP_Imap='y' 时用）依赖 uw-imap 的 libc-client。
-    # 该库已从 Debian 13 移除（上游 2011 年后停更），在更早的发行版上还有。
-    # 单独一轮安装并给出明确提示，不混进主清单里静默失败。
+    # PHP imap 扩展依赖已从 Debian 13 移除的 uw-imap libc-client；单独安装
+    # 该依赖，以便缺失时明确提示扩展无法编译。
     if [ "${Enable_PHP_Imap}" = 'y' ]; then
         apt-get --no-install-recommends install -y libc-client-dev libc-client2007e-dev 2>/dev/null
         if ! ls /usr/include/c-client >/dev/null 2>&1 && ! ls /usr/include/imap >/dev/null 2>&1; then
@@ -797,7 +765,7 @@ Check_Download()
         Download_Files https://files.phpmyadmin.net/phpMyAdmin/${pma_ver}/${PhpMyAdmin_Ver}.tar.xz ${PhpMyAdmin_Ver}.tar.xz
         Require_File "${PhpMyAdmin_Ver}.tar.xz" "phpMyAdmin"
     fi
-    # 不分发缺少可验证上游来源的 PHP 探针。
+    # PHP 探针缺少可验证的上游来源，因此不随安装包分发。
 
     if [ "${Stack}" != "lnmp" ]; then
         Download_Files https://archive.apache.org/dist/httpd/${Apache_Ver}.tar.bz2 ${Apache_Ver}.tar.bz2
@@ -809,8 +777,7 @@ Check_Download()
     fi
 }
 
-# Make_Install / PHP_Make_Install
-# 并行编译失败后串行重试一次；任一步失败均返回非零。
+# 编译默认使用并行任务，失败后串行重试一次；任一步失败均返回非零。
 # configure 或 cmake 成功后必须生成 Makefile，否则终止编译。
 Check_Makefile_Ready()
 {
@@ -822,13 +789,8 @@ Check_Makefile_Ready()
     return 0
 }
 
-# Build_Jobs — 并行编译的任务数
-#
-# 原先五处各写各的 `-j 核数`，只看 CPU 不看内存。C++ 单个编译进程峰值能吃掉
-# 1GB 以上：Debian 12 / 8 核 / 6GB 实测，MySQL 8.4 的 sql_gis 编译到一半
-# `make -j8` 被 OOM 杀掉（cc1plus anon-rss 787MB），白跑一整轮才退到串行重来。
-# 这里按每个任务 1GB 折算内存能支撑的并发，再和核数取小。内存宽裕的机器
-# 结果仍是核数，行为不变。
+# 并行任务数同时受 CPU 核数和可用内存约束。按每个任务约 1GB 内存估算，
+# 可降低 MySQL 等大型 C++ 项目编译时触发 OOM 的概率。
 Build_Jobs()
 {
     local cpus mem_mb jobs
@@ -1002,11 +964,9 @@ Install_TCMalloc()
     ln -sf /usr/local/lib/libtcmalloc* /usr/lib/
 }
 
-# ---------------------------------------------------------------------------
 # Boost 处理
 # 安装路径使用 DB_Boost_Mode；升级路径根据 mysql_version 推导。
 # Boost 必须通过统一下载校验，不允许 cmake 自行联网下载。
-# ---------------------------------------------------------------------------
 
 # Boost_Mode：返回 auto 或 none。
 Boost_Mode()
@@ -1028,8 +988,7 @@ Download_Boost()
 
     case "${mode}" in
     auto)
-        # MySQL 8.x 所需的 boost 版本记录在源码树的 cmake/boost.cmake 里。
-        # 这是一处"下载内容驱动后续下载"的拼接，故对解析结果做严格校验。
+        # MySQL 8.x 所需的 Boost 版本由源码树指定，解析结果必须符合版本格式。
         Get_Boost_Ver=$(grep 'SET(BOOST_PACKAGE_NAME' cmake/boost.cmake | grep -oE '[0-9]+(_[0-9]+){2}' | head -n1)
         if ! echo "${Get_Boost_Ver}" | grep -Eq '^[0-9]+_[0-9]+_[0-9]+$'; then
             Echo_Red "错误：无法确定 ${DB_Ver:-mysql-${mysql_version}} 所需的 Boost 版本。"
@@ -1038,12 +997,8 @@ Download_Boost()
         fi
         cd ${cur_dir}/src/
         boost_dot=$(echo "${Get_Boost_Ver}" | tr '_' '.')
-        # 这里的版本号是从 MySQL 源码解析出来的，静态清单不可能预先穷举
-        # （8.0.46 要 1.77.0、8.4.7 要 1.84.0，换个点版本就可能再变）。
-        # 走 Download_Verified：archives.boost.io 在每个包旁边放 <file>.json，
-        # 里面有官方 sha256，解析出哪个版本都能核对。
-        #
-        # Download_Verified 同时处理本地缓存和完整性校验，调用前不得按文件存在性跳过。
+        # 不同 MySQL 点版本可能要求不同的 Boost。通过上游 JSON 中的 SHA256
+        # 校验动态解析的版本，并同时验证本地缓存，避免使用未核验的源码包。
         Download_Verified boost "${boost_dot}" \
             "https://archives.boost.io/release/${boost_dot}/source/boost_${Get_Boost_Ver}.tar.bz2" \
             "boost_${Get_Boost_Ver}.tar.bz2"
@@ -1060,7 +1015,7 @@ Install_Boost()
     local srcdir
     [ "$(Boost_Mode)" = "none" ] && return 0
 
-    # 源码包自带 boost 的话直接用（mysql-boost-*.tar.gz 这种）
+    # mysql-boost 源码包已包含 Boost 时直接使用包内目录。
     if [ -n "${Mysql_Ver}" ]; then
         srcdir="${cur_dir}/src/${Mysql_Ver}/boost"
     else

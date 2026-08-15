@@ -18,9 +18,9 @@ echo '
 /var/lib/denyhosts/users-hosts
 ' | grep -v "^$" | xargs sed -i "/${HOST}/d"
 
-# DenyHosts 走的是 /etc/hosts.deny（tcp_wrappers），本身不写防火墙规则。
-# 若该 IP 另外被 fail2ban 用 nftables 封过，需要单独解封，例如：
+# DenyHosts 通过 /etc/hosts.deny（tcp_wrappers）限制访问，不创建防火墙规则。
+# 同一 IP 若也被 fail2ban 通过 nftables 封禁，还需单独解封：
 #   fail2ban-client set sshd unbanip ${HOST}
-# 手工加过的 nft 规则可用 `nft -a list ruleset` 查 handle 后删除。
+# 手动添加的 nftables 规则可通过 `nft -a list ruleset` 查询 handle 后删除。
 echo " 完成"
 /etc/init.d/denyhosts start

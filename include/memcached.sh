@@ -4,7 +4,7 @@ Install_PHPMemcache()
 {
     echo "正在安装 PHP memcache 扩展..."
     cd ${cur_dir}/src
-    # 保留的 PHP 全部是 8.x，统一用 PHP8Memcache_Ver，改走 pecl 官方源
+    # PHP 8.x 使用 PHP8Memcache_Ver 指定的 PECL 官方版本。
     Download_Files https://pecl.php.net/get/${PHP8Memcache_Ver}.tgz ${PHP8Memcache_Ver}.tgz
     Require_File "${PHP8Memcache_Ver}.tgz" "pecl memcache"
     Tar_Cd ${PHP8Memcache_Ver}.tgz ${PHP8Memcache_Ver}
@@ -29,7 +29,7 @@ Install_PHPMemcached()
     Download_Files https://launchpad.net/libmemcached/1.0/${Libmemcached_Ver#libmemcached-}/+download/${Libmemcached_Ver}.tar.gz ${Libmemcached_Ver}.tar.gz
     Require_File "${Libmemcached_Ver}.tar.gz" "libmemcached"
     Tar_Cd ${Libmemcached_Ver}.tar.gz ${Libmemcached_Ver}
-    # gcc 7 及以上需要此补丁；原正则 "^[7-9]|1[0-5]" 的第二段未锚定且 gcc 16+ 不匹配
+    # GCC 7 及以上需要兼容补丁，版本判断覆盖后续两位数版本。
     if gcc -dumpversion | grep -Eq "^([7-9]|[1-9][0-9])"; then
         patch -p1 < ${cur_dir}/src/patch/libmemcached-1.0.18-gcc7.patch
     fi
@@ -97,7 +97,7 @@ EOF
         ln -sf /usr/local/memcached/bin/memcached /usr/bin/memcached
 
         \cp ${cur_dir}/init.d/init.d.memcached /etc/init.d/memcached
-        # 端口跟随 lnmp.conf，与防火墙阻断规则用同一个变量
+        # 服务监听端口与 lnmp.conf 及防火墙规则保持一致。
         sed -i "s/^PORT=.*/PORT=${Memcached_Port}/" /etc/init.d/memcached
         Check_Conf_Applied /etc/init.d/memcached "^PORT=${Memcached_Port}\$"             "Memcached 端口 ${Memcached_Port}" || return 1
         chmod +x /etc/init.d/memcached
@@ -112,13 +112,11 @@ EOF
       mkdir -p /var/lock/subsys
     fi
 
-    # unit 的部署放在 if/else 外面：memcached 已经装过时上面的分支不会重跑，
-    # 但那台机器同样需要这个 unit，否则启动还是绕开 systemd。
+    # 重复安装时也部署 systemd 单元，确保服务通过统一入口管理。
     \cp ${cur_dir}/init.d/memcached.service /etc/systemd/system/memcached.service
     StartUp memcached
 
-    # 扩展装不上不再中断流程：memcached 服务端已经装好了，后面的启动、防火墙
-    # 和验收该走完，最终由下面的检查如实给出结论，而不是把机器丢在半装状态。
+    # PHP 扩展失败后仍完成服务启动、防火墙和验收，以分别报告服务端与扩展状态。
     local ext_rc=0
     if [ "${ver}" = "1" ]; then
         Install_PHPMemcache || ext_rc=1
@@ -126,9 +124,7 @@ EOF
         Install_PHPMemcached || ext_rc=1
     fi
 
-    # 演示页会部署到网站根目录且没有鉴权，因此默认不部署；与 phpinfo、
-    # phpMyAdmin 同一口径。它会连上 memcached
-    # 并读写 key，等于把「本机有 memcached 且可用」这一事实公开出去。
+    # 测试页无鉴权且会读写缓存，可能暴露 Memcached 的可用状态，因此默认不部署。
     if [ "${Enable_Memcached_Test_Page}" = "y" ]; then
         echo "正在复制 Memcached PHP 测试文件..."
         \cp ${cur_dir}/conf/memcached${ver}.php ${Default_Website_Dir}/memcached.php
@@ -140,17 +136,16 @@ EOF
 
     Restart_PHP
 
-    # memcached 无认证，暴露到公网等于把缓存内容和 UDP 反射放大面一起开放
+    # Memcached 无认证，需阻止公网访问缓存内容并避免 UDP 反射风险。
     Firewall_Block tcp "${Memcached_Port}"
     Firewall_Block udp "${Memcached_Port}"
     Firewall_Save
 
     echo "正在启动 Memcached..."
-    # 与 nginx、php-fpm、数据库、Redis 一致走 StartOrStop：systemd 实际运行
-    # 且 unit 存在时使用 systemctl，否则退回 SysV 脚本。
+    # 按系统能力选择 systemd 或 SysV 启动服务。
     StartOrStop start memcached
 
-    # 分开报，不然用户只看到一句 failed，不知道差的是扩展还是服务。
+    # 分别检查服务端和 PHP 扩展，便于定位未完成的安装部分。
     local svc_ok=0 ext_ok=0
     [ -s /usr/local/memcached/bin/memcached ] \
         && /etc/init.d/memcached status >/dev/null 2>&1 && svc_ok=1

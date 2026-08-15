@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
-# MariaDB_Branch — 返回当前操作的 MariaDB 主版本号（如 10.11 / 11.4）
-# 安装路径由 Set_DB_Profile 设定 DB_Branch；升级路径只有用户输入的 mariadb_version。
+# 返回当前操作的 MariaDB 主版本号；安装使用 DB_Branch，升级使用输入版本。
 MariaDB_Branch()
 {
     if [ "${DB_Kind}" = "mariadb" ] && [ -n "${DB_Branch}" ]; then
@@ -18,11 +17,8 @@ MariaDB_WITHSSL()
     MariaDBWITHSSL=''
 }
 
-# Install_MariaDB_Compat_Command <旧名称> <新名称> [源目录] [目标目录]
-#
-# 直接把 /usr/bin/mysql 软链到 mariadb 仍会把旧程序名传给 MariaDB，11.8
-# 因而继续打印 Deprecated program name。包装器通过 exec 新名称消除提示，
-# 同时完整保留参数、标准输入输出和退出码；新名称不存在时回退旧二进制。
+# 为旧命令名安装兼容入口。包装器调用 MariaDB 新命令名以避免弃用提示，
+# 并保留参数、标准输入输出及退出码；缺少新名称时回退旧二进制。
 Install_MariaDB_Compat_Command()
 {
     local legacy="$1" canonical="$2"
@@ -94,19 +90,8 @@ Install_MariaDB_Command_Compat()
     return ${rc}
 }
 
-# ---------------------------------------------------------------------------
-# Rewrite_MariaDB_Initd_Names — 让 init 脚本改用 MariaDB 新程序名
-#
-# /etc/init.d/mariadb 是上游 support-files/mysql.server 的原样拷贝，内部按
-# $bindir/mysqld_safe、$bindir/mysqladmin 调用。这两个路径直指
-# /usr/local/mariadb/bin，绕过 Install_MariaDB_Command_Compat 在 /usr/bin 建立
-# 的新名包装，于是每次启动服务都会往 stderr 打印：
-#   /usr/local/mariadb/bin/mysqld_safe: Deprecated program name.
-#   It will be removed in a future release, use 'mariadbd-safe' instead
-# 提示本身只是噪声，但这些旧入口一旦被上游删除，服务就会直接起不来。
-#
-# 只在对应新名确实存在时替换，缺失时保留原样。
-# ---------------------------------------------------------------------------
+# 上游 init 脚本仍可能调用弃用的 mysqld_safe 和 mysqladmin。新命令存在时
+# 替换对应入口，避免弃用提示并兼容后续移除旧命令的 MariaDB 版本。
 Rewrite_MariaDB_Initd_Names()
 {
     local initd=${1:-/etc/init.d/mariadb}
@@ -173,13 +158,11 @@ EOF
     /etc/init.d/mariadb restart
     sleep 2
 
-    # 客户端跑不起来时后面每一步都会失败，先探一次并置标记，理由同 mysql.sh。
+    # 安全初始化依赖可用的客户端，因此在执行 SQL 前先验证运行能力。
     Check_DB_Client_Runnable "${mariadb_client}"
 
-    # 指定 --defaults-file 使其只读 /etc/my.cnf，理由同 mysql.sh：
-    # 残留的 ~/.my.cnf 会让客户端带旧密码连接。
-    #
-    # 与 mysql.sh 一样，这里失败还有下面的空密码分支兜底，报错先收起来。
+    # 仅加载 /etc/my.cnf，避免残留的 ~/.my.cnf 携带旧密码；失败时再尝试
+    # 通过空密码连接完成首次密码设置。
     local first_error
     first_error=$("${mariadb_admin}" --defaults-file=/etc/my.cnf \
                   -u root password "${DB_Root_Password}" 2>&1)
@@ -216,7 +199,7 @@ EOF
     if [ $? -eq 0 ]; then
         echo "数据库 root 密码验证通过。"
     fi
-    # 「不存在」不是失败，理由同 mysql.sh。
+    # 目标账号或测试库不存在时无需报错，安全状态已满足要求。
     DB_Init_Step "删除匿名用户" \
         "DELETE FROM mysql.user WHERE User='';"
     DB_Init_Step "禁止 root 远程登录" \
@@ -241,8 +224,7 @@ Check_MariaDB_Data_Dir()
     fi
 }
 
-# Install_MariaDB_1011 是唯一的真实实现，11.4 / 11.8 复用它。
-# 10.11 / 11.4 / 11.8 的编译参数与目录布局完全一致。
+# MariaDB 10.11、11.4 和 11.8 使用相同的编译参数与目录布局。
 Install_MariaDB_1011()
 {
     local install_db
@@ -271,14 +253,8 @@ socket      = /tmp/mysql.sock
 [mysqld]
 port        = ${DB_Port}
 socket      = /tmp/mysql.sock
-# 默认仅监听回环地址，避免数据库在安装完成后直接暴露到公网。
-#
-# 防火墙里虽然有一条 3306 drop，但那是第二道防线：nftables 缺失、
-# 规则写入失败、或者管理员自己调整防火墙时，唯一还挡着的就是这一行。
-
-#
-# 确实需要远程连库时，改成具体地址（不要用 0.0.0.0），
-# 同时在防火墙里按来源 IP 放行，并确认账号的 Host 授权范围。
+# 仅监听回环地址，防止防火墙失效时数据库直接暴露到公网。
+# 远程访问应绑定具体地址，并按来源 IP 配置防火墙和账号 Host 权限。
 bind-address = 127.0.0.1
 user    = mariadb
 basedir = /usr/local/mariadb

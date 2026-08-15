@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
-#
 # 多版本 PHP 升级。2.3 起仅支持 PHP 8.0+。
-#
-# 原文件 999 行，含 Upgrade_MPHP5.6 / 7.0 / 7.1 / 7.2 / 7.3 / 7.4 / 8.0 / 8.1 / 8.2
-# 九个函数（其中 8.x 那几个与通用版 Upgrade_MPHP8x 逐字相同），现全部收敛为
-# 单个 Upgrade_MPHP8x。
-#
-# 同时移除：MPHP_Select 的 12 项硬编码菜单与两处 12 分支派发、
-# ${Download_Mirror} 下载、Zend Guard Loader 下载。
+# 已安装版本由统一映射表识别，升级仅允许在相同 PHP 8.x 分支内进行。
 
 Upgrade_Multiplephp()
 {
@@ -59,7 +52,7 @@ Upgrade_Multiplephp()
         break
     done
 
-    # 编号已翻译为语义，后续只用 PHP_Branch / MPHP_Path
+    # 后续步骤使用所选分支及对应安装路径。
     Cur_MPHP_Big_Ver="${PHP_Branch}"
     Cur_MPHP_Path="${MPHP_Path}"
 
@@ -75,13 +68,12 @@ Upgrade_Multiplephp()
         exit 1
     fi
 
-    # 只接受 8.x，且必须与当前大版本一致（不允许跨大版本升级）
+    # 仅接受与当前主次版本一致的 PHP 8.x 完整版本号。
     if ! echo "${php_version}" | grep -Eq '^8\.[0-9]+\.[0-9]+$'; then
         Echo_Red "仅支持 PHP 8.x，输入值：${php_version}"
         exit 1
     fi
-    # 原判断用 grep -Eqi "${Cur_MPHP_Big_Ver}" 做子串匹配，
-    # "8.1" 会误匹配 "8.10.x"、"18.1.x" 之类。改为精确前缀比较。
+    # 精确比较主次版本，避免相似字符串被识别为同一分支。
     if [ "$(echo "${php_version}" | cut -d. -f1-2)" != "${Cur_MPHP_Big_Ver}" ]; then
         Echo_Red "错误：不能跨 PHP 分支升级！"
         Echo_Red "当前分支为 ${Cur_MPHP_Big_Ver}，输入的目标版本为 ${php_version}"
@@ -91,8 +83,7 @@ Upgrade_Multiplephp()
 
     Press_Start
     cd ${cur_dir}/src
-    # 只从 php.net 官方获取。
-    # 走 Download_Verified 的理由同 upgrade_php.sh。
+    # 从 php.net 官方下载并验证源码包。
     if ! Download_Verified php "${php_version}" \
          "https://www.php.net/distributions/php-${php_version}.tar.bz2" \
          "php-${php_version}.tar.bz2"; then
@@ -110,7 +101,7 @@ Upgrade_Multiplephp()
     Upgrade_MPHP8x
 }
 
-# Upgrade_MPHP8x — 多版本 PHP 升级的唯一实现
+# 多版本 PHP 8.x 的统一升级流程。
 Upgrade_MPHP8x()
 {
     cd ${cur_dir}/src
@@ -124,7 +115,7 @@ Upgrade_MPHP8x()
         exit 1
     fi
 
-    # 装到暂存目录，构建期间线上完全不受影响
+    # 先安装到暂存目录，构建期间不替换正在运行的版本。
     MPHP_Stage="${cur_dir}/src/.mphp-stage.$$"
     MPHP_Backup="/usr/local/mphp-${Cur_MPHP_Big_Ver}-backup${Upgrade_Date}"
     rm -rf "${MPHP_Stage}"
@@ -155,7 +146,7 @@ Upgrade_MPHP8x()
     fi
     Echo_Green "新 PHP 冒烟测试通过：${Smoke_Out}"
 
-    # 到这里才停服务并切换
+    # 新版本冒烟检查通过后再停服切换。
     Rollback_MPHP()
     {
         Echo_Red "正在恢复升级前的 PHP ${Cur_MPHP_Big_Ver}..."
@@ -190,7 +181,7 @@ Upgrade_MPHP8x()
     mkdir -p ${Cur_MPHP_Path}/{etc,conf.d}
     \cp php.ini-production ${Cur_MPHP_Path}/etc/php.ini
 
-    # php extensions
+    # 配置 PHP 扩展及运行参数。
     echo "正在修改 php.ini..."
     sed -i 's/post_max_size =.*/post_max_size = 50M/g' ${Cur_MPHP_Path}/etc/php.ini
     sed -i 's/upload_max_filesize =.*/upload_max_filesize = 50M/g' ${Cur_MPHP_Path}/etc/php.ini

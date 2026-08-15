@@ -1,37 +1,34 @@
 #!/usr/bin/env bash
 #
-# lnmp-tgnotice —— Telegram 通知，供脚本里随手调用。
+# lnmp-tgnotice 用于从 LNMP 脚本发送 Telegram 通知。
 #
 #   tgnotice "备份失败：wpdemo"            默认 HTML 格式
 #   tgnotice "*已完成*" md                 MarkdownV2 格式
 #
-# 这个文件有两种用法，两种都可以：
+# 支持两种调用方式：
 #
 #   1. 当命令用：/bin/lnmp-tgnotice "文本" [md]
 #   2. 被 source 之后当函数用：. /bin/lnmp-tgnotice && tgnotice "文本"
 #
-# 安装后 /etc/profile.d/lnmp-tgnotice.sh 会自动 source 它，
-# 所以交互 shell 和管理脚本里直接写 tgnotice 就能用。
+# 安装后由 /etc/profile.d/lnmp-tgnotice.sh 自动加载，交互式 shell 和管理脚本
+# 可直接调用 tgnotice。
 #
 # ---------------------------------------------------------------------------
-# 几个实现上的取舍
+# 安全与发送规则
 #
-# Bot token 不进命令行参数：进程参数对同机所有用户可见，一条 ps 就能拿到
-# 别人的 bot 控制权。所以 URL 和消息体都写进权限 600 的 curl 配置文件，
-# argv 里只留 --config。消息本身也可能含内网信息，一并按此处理。
+# Bot token 和消息内容可能包含敏感信息，均写入权限 600 的临时 curl 配置。
+# 命令行参数仅包含 --config，防止其他本机用户通过进程列表读取凭据。
 #
-# 文本默认原样发送，不替用户转义：HTML 模式下 <b>粗体</b> 这类标签是
-# 用户想要的效果，替他转义就没法用了。代价是纯文本里的 < & 会让
-# Telegram 返回 400，所以解析失败时自动降级成纯文本重发一次 ——
-# 通知的首要目标是送达，格式是次要的。
+# 消息保留 HTML 或 MarkdownV2 标记以支持格式化内容。Telegram 解析失败时，
+# 自动降级为纯文本重发一次，避免因保留字符导致通知丢失。
 #
-# 返回码如实反映结果：发送成功 0，失败非 0。通知失败通常不该中断主流程，
-# 调用方按需写 `tgnotice "..." || true`。
+# 发送成功返回 0，失败返回非 0。不需要因通知失败中断主任务时，
+# 可使用 `tgnotice "..." || true`。
 # ---------------------------------------------------------------------------
 
 TG_Conf_File="${TG_Conf_File:-/etc/lnmp/notify.conf}"
 
-# Telegram 单条消息上限 4096 字符
+# Telegram 单条消息上限为 4096 字符。
 TG_Max_Len=4000
 
 _tg_color() { if [ -t 2 ]; then printf '\033[%sm%s\033[0m\n' "$1" "$2" >&2; else printf '%s\n' "$2" >&2; fi; }
@@ -39,7 +36,7 @@ _tg_err()   { _tg_color "0;31" "$*"; }
 _tg_warn()  { _tg_color "0;33" "$*"; }
 _tg_ok()    { _tg_color "0;32" "$*"; }
 
-# curl 配置文件里双引号字符串的转义：反斜杠、双引号，换行写成 \n
+# 转义 curl 配置中的反斜杠、双引号和换行符。
 _tg_escape()
 {
     local s="$1"
@@ -72,8 +69,8 @@ _tg_load_conf()
     return 0
 }
 
-# _tg_send <文本> <parse_mode 或空串>
-# parse_mode 传空串表示纯文本发送
+# _tg_send <文本> <parse_mode 或空字符串>
+# parse_mode 为空时按纯文本发送。
 _tg_send()
 {
     local text="$1" mode="$2" cfg rc body attempt=1
@@ -124,8 +121,7 @@ tgnotice()
 
     _tg_load_conf || return 1
 
-    # 没开通知就安静地跳过：这个函数会散落在各处被调用，
-    # 未启用时每次都刷一行提示反而干扰正常输出。
+    # 通知未启用时直接返回成功，避免可选通知干扰主任务输出。
     [ "${TG_Enable}" = "1" ] || return 0
 
     if [ -z "${TG_Bot_Token}" ] || [ -z "${TG_Chat_Id}" ]; then
@@ -139,7 +135,7 @@ tgnotice()
         text|plain|raw)          mode="" ;;
         *) _tg_err "tgnotice: 未知格式 '${fmt}'，可用：md、html、text"; return 1 ;;
     esac
-    # 第二个参数没给时用配置里的默认格式（出厂即 HTML）
+    # 未指定第二个参数时使用配置中的默认格式。
     [ -z "${fmt}" ] && mode="${TG_Parse_Mode}"
 
     if [ "${#text}" -gt "${TG_Max_Len}" ]; then
@@ -151,8 +147,7 @@ tgnotice()
     rc=$?
     [ "${rc}" -eq 0 ] && return 0
 
-    # 解析失败时降级为纯文本重发。典型场景：想发纯文本，但内容里带了
-    # < & 或 MarkdownV2 的保留字符，Telegram 直接返回 400。
+    # HTML 或 MarkdownV2 保留字符导致解析失败时，降级为纯文本重发。
     case "${body}" in
         *"can't parse entities"*|*"can't find end"*|*"Unsupported start tag"*|*"Character '"*)
             _tg_warn "tgnotice: ${mode} 解析失败，已改为纯文本重发。原因：${body}"
@@ -242,20 +237,20 @@ _tgnotice_init()
 
     ( umask 077; cat > "${TG_Conf_File}" <<EOF
 # LNMP 通知配置 —— 由 lnmp-tgnotice --init 生成
-# 权限必须是 600：这里的令牌等同于机器人的完整控制权。
+# 权限必须为 600，防止其他本机用户读取机器人令牌。
 
 TG_Enable=1
 TG_Bot_Token="${token}"
 TG_Chat_Id="${chat}"
 
-# 不指定格式时用哪种：HTML 或 MarkdownV2
+# 默认消息格式：HTML 或 MarkdownV2。
 TG_Parse_Mode="${mode}"
 
-# 单次请求超时（秒）与失败重试次数
+# 单次请求超时（秒）和失败重试次数。
 TG_Timeout=10
 TG_Retry=2
 
-# 是否禁用链接预览：1 禁用，0 允许
+# 链接预览：1 禁用，0 允许。
 TG_Disable_Preview=1
 EOF
     )
@@ -297,7 +292,7 @@ _tgnotice_main()
                 _tg_err "通知未启用（TG_Enable=0）。先执行 lnmp-tgnotice --init。"
                 return 1
             fi
-            # 测试消息带一点 HTML，顺便验证格式解析是通的
+            # 测试消息包含 HTML，用于同时验证发送和格式解析。
             if tgnotice "<b>LNMP</b> 测试通知 —— $(hostname 2>/dev/null) $(date '+%F %T')"; then
                 _tg_ok "测试消息已发送。"
             else
@@ -308,7 +303,7 @@ _tgnotice_main()
     esac
 }
 
-# 被 source 时只定义函数；直接执行时才跑命令行入口
+# source 加载时仅定义函数，直接执行时运行命令行入口。
 if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     _tgnotice_main "$@"
 fi

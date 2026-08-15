@@ -58,8 +58,7 @@ Install_Pureftpd()
     Echo_Blue "正在复制配置文件..."
     mkdir /usr/local/pureftpd/etc
     \cp ${cur_dir}/conf/pure-ftpd.conf /usr/local/pureftpd/etc/pure-ftpd.conf
-    # 端口跟随 lnmp.conf：控制端口写 Bind，被动范围写 PassivePortRange。
-    # 这三个值同时决定下面的放行规则，改一处即可。
+    # 控制端口与被动端口范围同时用于服务配置和防火墙规则。
     sed -i "s|^PassivePortRange .*|PassivePortRange             ${Pureftpd_Passive_Min} ${Pureftpd_Passive_Max}|" \
         /usr/local/pureftpd/etc/pure-ftpd.conf
     if grep -q '^Bind ' /usr/local/pureftpd/etc/pure-ftpd.conf; then
@@ -69,8 +68,7 @@ Install_Pureftpd()
         printf '\n# 监听地址与端口，由 lnmp.conf 的 Pureftpd_Port 决定\nBind                         0.0.0.0,%s\n' \
             "${Pureftpd_Port}" >> /usr/local/pureftpd/etc/pure-ftpd.conf
     fi
-    # 覆写之后确认真的写进去了：上游模板改了写法时 sed 会一条都匹配不上，
-    # 服务就会用模板里的默认端口起来，与下面的放行规则对不上。
+    # 写入后核对配置，避免模板格式变化导致监听端口与防火墙规则不一致。
     Check_Conf_Applied /usr/local/pureftpd/etc/pure-ftpd.conf \
         "^Bind[[:space:]]+0\.0\.0\.0,${Pureftpd_Port}\$" \
         "FTP 控制端口 ${Pureftpd_Port}" || exit 1
@@ -86,12 +84,9 @@ Install_Pureftpd()
     touch /usr/local/pureftpd/etc/pureftpd.passwd
     touch /usr/local/pureftpd/etc/pureftpd.pdb
 
-    # FTP 协议本身是明文的，账号口令在网络上失去防护。pure-ftpd 已带 --with-tls，
-    # 仅缺少证书时保留原配置；启用 TLS 但缺少证书会导致启动失败，
-    # 所以这里先把自签证书准备好（pure-ftpd 要求私钥和证书合并在同一个 pem）。
+    # FTP 明文传输账号口令。FTPS 启动需要包含私钥和证书的 PEM 文件。
     #
-    # 自签证书客户端会提示「证书不受信任」，但链路仍然是加密的 ：
-    # 比明文强得多。有正式证书的话，把 fullchain + privkey 拼进同一文件替换即可。
+    # 自签证书会触发客户端信任警告；生产环境应使用正式证书替换。
     if [ ! -s /usr/local/pureftpd/etc/pure-ftpd.pem ]; then
         Echo_Blue "正在为 FTPS 生成自签名证书..."
         openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
@@ -124,13 +119,11 @@ Install_Pureftpd()
 
     if [[ -s /usr/local/pureftpd/sbin/pure-ftpd && -s /usr/local/pureftpd/etc/pure-ftpd.conf && -s /etc/init.d/pureftpd ]]; then
         Echo_Blue "正在启动 Pure-FTPd..."
-        # 走 StartOrStop 而不是只检查 systemctl 命令是否存在；必须确认 systemd
-        # 实际运行且 unit 存在，否则退回 SysV 脚本。
+        # 根据可用的 systemd unit 或 SysV 脚本启动服务。
         StartOrStop start pureftpd
         Pureftpd_Start_Rc=$?
         if [ "${Pureftpd_Start_Rc}" -eq 0 ]; then
-            # init 脚本的 status 只打印文字、恒返回 0，不能当判据。
-            # 走 systemd 就问 systemctl，否则看 pid 文件对应的进程还在不在。
+            # 使用 systemd 活动状态或 pid 对应进程判断服务是否启动。
             if Use_Systemd_Unit pureftpd; then
                 systemctl is-active --quiet pureftpd.service || Pureftpd_Start_Rc=1
             elif ! { [ -s /var/run/pure-ftpd.pid ] \
@@ -173,7 +166,7 @@ if [ "${action}" = "uninstall" ]; then
     Uninstall_Pureftpd
     Pureftpd_Rc=$?
 else
-    # 管道退出码默认来自 tee，必须显式取左侧的，否则装失败也返回 0。
+    # 使用安装函数的管道状态，避免 tee 的成功状态掩盖安装失败。
     Install_Pureftpd 2>&1 | tee /root/pureftpd-install.log
     Pureftpd_Rc=${PIPESTATUS[0]}
 fi

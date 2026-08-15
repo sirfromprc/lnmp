@@ -25,17 +25,16 @@
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 NAME=fail2ban
 
-# fail2ban-client is not a daemon itself but starts a daemon and
-# loads its with configuration
+# fail2ban-client 负责启动守护进程并加载配置。
 DAEMON=/usr/bin/$NAME-client
 SCRIPTNAME=/etc/init.d/$NAME
 
-# Exit if the package is not installed
+# 未安装客户端时无需启动服务。
 [ -x "$DAEMON" ] || exit 0
 
 do_start()
 {
-	# Assure that /var/run/fail2ban exists
+	# 启动前确保运行目录存在。
     [ -d /var/run/fail2ban ] || mkdir -p /var/run/fail2ban
 
     echo -n "正在启动 fail2ban..."

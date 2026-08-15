@@ -73,7 +73,7 @@ Upgrade_Nginx()
         exit 1
     fi
 
-    # 1) 先用新二进制测现有配置，此时线上还没被动过
+    # 替换前用新二进制检查现有配置，失败不会影响当前服务。
     echo "用新二进制测试现有配置（尚未替换线上文件）..."
     if ! ./objs/nginx -t -p /usr/local/nginx -c /usr/local/nginx/conf/nginx.conf; then
         Echo_Red "新版 nginx 无法通过现有配置的语法检查，放弃升级。"
@@ -82,7 +82,7 @@ Upgrade_Nginx()
         exit 1
     fi
 
-    # 2) 备份旧二进制并替换
+    # 备份旧二进制后再替换，供失败时恢复。
     echo "备份旧二进制到 ${nginx_bak} 并替换..."
     if ! cp -p "${nginx_bin}" "${nginx_bak}"; then
         Echo_Red "备份旧 nginx 二进制失败，放弃升级。"
@@ -94,7 +94,7 @@ Upgrade_Nginx()
         exit 1
     fi
 
-    # 出了任何问题都用它把旧二进制换回去并确保服务在跑
+    # 升级失败时恢复旧二进制并确认服务继续运行。
     Rollback_Nginx()
     {
         Echo_Red "正在回滚到升级前的 nginx..."
@@ -109,7 +109,7 @@ Upgrade_Nginx()
         fi
     }
 
-    # 3) 热升级（向 master 发 USR2/QUIT，切换到新二进制的 worker）
+    # 通过 USR2/QUIT 热升级到新二进制和工作进程。
     echo "执行热升级..."
     if ! make upgrade; then
         Echo_Red "make upgrade 失败。"
@@ -117,7 +117,7 @@ Upgrade_Nginx()
         exit 1
     fi
 
-    # 4) 确认真的切过去了：进程在跑，且版本号是目标版本
+    # 确认进程仍在运行且版本号与目标一致。
     sleep 2
     if ! pgrep -x nginx >/dev/null 2>&1; then
         Echo_Red "热升级后没有 nginx 进程在运行。"
@@ -131,7 +131,7 @@ Upgrade_Nginx()
         exit 1
     fi
 
-    # 到这里才算成功，可以清理源码
+    # 通过运行状态和版本检查后再清理构建目录。
     cd ${cur_dir} && rm -rf "${build_dir}"
     if [ "${Enable_Nginx_Lua}" = 'y' ]; then
         if ! grep -q 'lua_package_path "/usr/local/nginx/lib/lua/?.lua";' /usr/local/nginx/conf/nginx.conf; then
@@ -140,8 +140,7 @@ Upgrade_Nginx()
         if ! grep -q "content_by_lua 'ngx.say(\"hello world\")';" /usr/local/nginx/conf/nginx.conf; then
             sed -i "/location \/nginx_status/i\        location /lua\n        {\n            default_type text/html;\n            content_by_lua 'ngx.say\(\"hello world\"\)';\n        }\n" /usr/local/nginx/conf/nginx.conf
         fi
-        # 改完配置再测一次并 reload，测不过就把配置改动撤销的成本太高，
-        # 这里只报警并保留旧配置的运行态（不 reload 就不会生效）。
+        # Lua 配置通过语法检查后才重载；失败时保留当前运行配置并提示处理。
         if ${nginx_bin} -t; then
             ${nginx_bin} -s reload
         else

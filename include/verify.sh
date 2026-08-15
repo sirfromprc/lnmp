@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
-#
 # verify.sh：下载与完整性校验的统一入口。
 # 安装侧固定版本使用静态清单；升级侧动态版本使用上游校验值或签名。
-#
-# ---------------------------------------------------------------------------
-# 上游提供的校验方式（2026-08）
-#
+# 上游校验方式：
 #   PHP        releases API                                      SHA256
 #   MariaDB    downloads REST API                                SHA256
 #   phpMyAdmin <文件URL>.sha256                                  SHA256
@@ -13,21 +9,16 @@
 #   MySQL      下载页人工核对，动态升级需预先写入静态清单
 #
 # MySQL 动态升级必须预先将哈希写入 src/checksums.sha256。
-# ---------------------------------------------------------------------------
 
 # 限制重定向次数，并禁止 HTTPS 降级。官方 CDN 主机可能动态变化，
 # 因此不维护最终主机白名单，下载内容最终由 SHA256 或 PGP 验证。
 DL_MAX_REDIRECT=5
 
-# ---------------------------------------------------------------------------
 # Download_Fetch <url> <目标文件>
-#
-# 统一下载入口具有两项约束：
+# 下载入口具有两项约束：
 #   1. 仅允许 HTTPS，重定向不得降级；
 #   2. 重定向次数有上限。
-#
 # curl 可同时约束初始协议和重定向协议；wget 仅作为兼容回退。
-# ---------------------------------------------------------------------------
 Download_Fetch()
 {
     local url="$1" out="$2"
@@ -53,12 +44,8 @@ Download_Fetch()
          --max-redirect=${DL_MAX_REDIRECT} -O "${out}" "${url}"
 }
 
-# ---------------------------------------------------------------------------
-# Download_Head_OK <url> — 只发 HEAD 请求探测 URL 是否可达（2xx 才算可达）
-#
+# Download_Head_OK <url>：通过 HEAD 请求确认 HTTPS 地址返回 2xx。
 # 在修改本地配置前检查上游资源是否存在，例如 OpenResty 发行版仓库。
-# 仅允许 HTTPS。
-# ---------------------------------------------------------------------------
 Download_Head_OK()
 {
     local url="$1" code
@@ -78,13 +65,11 @@ Download_Head_OK()
         esac
     fi
 
-    # 没有 curl 时退回 wget 的 --spider
+    # curl 不可用时使用 wget --spider 探测。
     wget -q --spider --max-redirect=${DL_MAX_REDIRECT} --timeout=30 "${url}" 2>/dev/null
 }
 
-# ---------------------------------------------------------------------------
 # Verify_SHA256_Value <文件> <期望值>
-# ---------------------------------------------------------------------------
 Verify_SHA256_Value()
 {
     local file="$1" expected="$2" actual
@@ -111,23 +96,16 @@ Verify_SHA256_Value()
     return 0
 }
 
-# ---------------------------------------------------------------------------
 # Upstream_SHA256 <project> <version> <落地文件名>
-#
 # 返回上游公布的 SHA256；获取失败时返回空串。
 # 校验值与软件包同源，可检测传输或镜像差异，不覆盖上游自身失陷风险。
-# ---------------------------------------------------------------------------
-#
 # _Json_Sha256_After <json文件> <锚点键> <锚点值> <目标键>
-#
-# 极小的 JSON 取值：把内容按逗号拆行，找到 "<锚点键>":"<锚点值>" 那一行，
-# 然后向后找第一个 "<目标键>":"<64位十六进制>"。
-#
+# 将固定格式 JSON 按记录拆分，定位锚点后读取目标 SHA256 字段。
 # 使用 Shell 解析固定字段，避免引入 python 或 jq 依赖。
 # 获取失败时返回空串，由调用方拒绝继续。
 _Json_Sha256_After()
 {
-    # 去除 JSON 结构字符，使记录首个键可以正常匹配。
+    # 去除 JSON 结构字符后匹配记录首个键。
     tr ',' '\n' < "$1" | tr -d ' "[]{}' | awk -F: -v k="$2" -v v="$3" -v t="$4" '
         $1 == k && $2 == v { found = 1; next }
         found && $1 == t && $2 ~ /^[0-9a-f]{64}$/ { print $2; exit }
@@ -154,16 +132,13 @@ Upstream_SHA256()
         fi
         ;;
     phpmyadmin)
-        # 官方在每个包旁边放 <file>.sha256
+        # phpMyAdmin 为每个软件包提供对应的 .sha256 文件。
         if Download_Fetch "https://files.phpmyadmin.net/phpMyAdmin/${ver}/${fname}.sha256" "${tmp}" >/dev/null 2>&1; then
             out=$(grep -oE '^[0-9a-f]{64}' "${tmp}" | head -n1)
         fi
         ;;
     boost)
-        # archives.boost.io 在每个包旁边放 <file>.json，里面有 sha256。
-        #
-        # Boost 版本由 MySQL 源码中的 cmake/boost.cmake 决定，
-        # 因此通过上游 JSON 动态获取对应版本的 SHA256。
+        # Boost 版本由 MySQL 源码决定，通过上游 JSON 获取对应 SHA256。
         if Download_Fetch "https://archives.boost.io/release/${ver}/source/${fname}.json" "${tmp}" >/dev/null 2>&1; then
             out=$(grep -oE '"sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "${tmp}" \
                   | head -n1 | grep -oE '[0-9a-f]{64}')
@@ -174,18 +149,13 @@ Upstream_SHA256()
     printf '%s' "${out}"
 }
 
-# ---------------------------------------------------------------------------
 # Verify_Nginx_Signature <文件> <文件URL>
-#
 # nginx.org 不公布 sha256，只公布 PGP 签名（<file>.asc）。
-# 公钥随包分发，避免签名与验证密钥来自同一下载路径。
-#
+# 公钥随 LNMP 分发，避免签名与验证密钥来自同一下载路径。
 # gpg 用于生成钥匙串，gpgv 使用指定钥匙串验签，不修改 ~/.gnupg。
 # 钥匙串中的主密钥和实际签名者均须匹配固定指纹白名单。
-#
-# 指纹取自 nginx.org 公布的签名密钥（2026-08）。
+# 指纹取自 nginx.org 公布的签名密钥。
 # 更新随包公钥时必须同步更新指纹清单。
-# ---------------------------------------------------------------------------
 Nginx_Key_Fingerprints='
 8540A6F18833A80E9C1653A42FD21310B49F6B46
 573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62
@@ -197,7 +167,7 @@ D6786CE303D9A9022998DC6CC8464D549AF75C0A
 43387825DDB1BB97EC36BA5D007C8D7C15D87369
 '
 
-# Nginx_Key_Allowed <指纹>：检查指纹是否在随包白名单内。
+# 检查 Nginx 密钥指纹是否在随附白名单内。
 Nginx_Key_Allowed()
 {
     case "$(echo "${Nginx_Key_Fingerprints}" | tr -d ' \t')" in
@@ -210,7 +180,7 @@ Verify_Nginx_Signature()
 {
     local file="$1" url="$2" tmpdir keyring sig out fpr sigfpr bad=0 good=0
 
-    # gpg 与 gpgv 都要有：gpg 负责 --dearmor，gpgv 负责验签。
+    # gpg 用于转换公钥，gpgv 用于验证签名，两者均为必需。
     if ! command -v gpg >/dev/null 2>&1; then
         Echo_Red "系统缺少 gpg（--dearmor 需要它），无法验证 nginx 的 PGP 签名。"
         Echo_Red "请安装后重试（Debian/Ubuntu: apt install gnupg；RHEL 系: yum install gnupg2）。"
@@ -226,7 +196,7 @@ Verify_Nginx_Signature()
         return 1
     fi
 
-    # gpgv 将相对钥匙串路径解释为相对 ~/.gnupg，因此必须使用绝对路径。
+    # 使用绝对钥匙串路径，避免 gpgv 相对 ~/.gnupg 解析。
     tmpdir=$(mktemp -d) || return 1
     keyring="${tmpdir}/nginx.gpg"
     sig="${tmpdir}/$(basename "${file}").asc"
@@ -237,7 +207,7 @@ Verify_Nginx_Signature()
         return 1
     fi
 
-    # 逐个核对钥匙串中的主密钥指纹，拒绝白名单外的密钥。
+    # 逐个核对主密钥指纹，拒绝白名单外的密钥。
     for fpr in $(gpg --show-keys --with-colons "${keyring}" 2>/dev/null |
                  awk -F: '/^pub:/{p=1} /^fpr:/{if(p){print $10; p=0}}'); do
         if Nginx_Key_Allowed "${fpr}"; then
@@ -260,8 +230,7 @@ Verify_Nginx_Signature()
         return 1
     fi
 
-    # 实际验签：不只看退出码，还要在输出里确认 "Good signature"，
-    # 并把签名者的主密钥指纹再对一次白名单。
+    # 验签需同时确认有效签名状态和签名者指纹。
     out=$(gpgv --status-fd 1 --keyring "${keyring}" "${sig}" "${file}" 2>/dev/null)
     if ! echo "${out}" | grep -q '^\[GNUPG:\] GOODSIG'; then
         Echo_Red "nginx 源码包 PGP 签名验证失败，拒绝使用该文件。"
@@ -270,7 +239,7 @@ Verify_Nginx_Signature()
         return 1
     fi
 
-    # VALIDSIG 同时包含签名子密钥和主密钥指纹，任一匹配白名单即可。
+    # VALIDSIG 中的签名子密钥或主密钥必须匹配白名单。
     fpr=$(echo "${out}" | awk '/^\[GNUPG:\] VALIDSIG/{print $NF; exit}')
     sigfpr=$(echo "${out}" | awk '/^\[GNUPG:\] VALIDSIG/{print $3; exit}')
     if ! Nginx_Key_Allowed "${fpr}" && ! Nginx_Key_Allowed "${sigfpr}"; then
@@ -288,9 +257,7 @@ Verify_Nginx_Signature()
     return 0
 }
 
-# ---------------------------------------------------------------------------
 # OpenResty 源码包的 PGP 验签
-#
 # 指纹取自 openresty.org/en/download.html 的公布："All the releases are signed
 # by the public PGP key A0E98066 of Yichun Zhang."
 # 固定完整指纹以验证从 keyserver 获取的公钥实体。
@@ -299,9 +266,7 @@ Verify_Nginx_Signature()
 #   仓库包  E52218E7087897DC6DEA6D6D97DB7443D5EDEB74  OpenResty Admin
 #   源码包  25451EB088460026195BD62CB550E09EA0E98066  Yichun Zhang (agentzh)
 # 仓库包由 apt/yum 的 GPG 校验处理。
-#
 # OpenResty 与 nginx 使用独立密钥和验证流程，保持函数边界独立。
-# ---------------------------------------------------------------------------
 OpenResty_Key_Fingerprints='
 25451EB088460026195BD62CB550E09EA0E98066
 '
@@ -388,16 +353,12 @@ Verify_OpenResty_Signature()
     return 0
 }
 
-# ---------------------------------------------------------------------------
 # Download_Verified <project> <version> <url> <落地文件名>
-#
 # 升级侧统一入口，按以下顺序选择验证方式：
-#
 #   1) src/checksums.sha256 中的静态值；
 #   2) 上游发布的 SHA256；
 #   3) 上游发布的 PGP 签名；
 #   4) 无机器可读校验依据时终止。
-# ---------------------------------------------------------------------------
 Download_Verified()
 {
     local project="$1" ver="$2" url="$3" fname="$4"
@@ -411,7 +372,7 @@ Download_Verified()
         return $?
     fi
 
-    # 1) 静态清单优先
+    # 优先使用静态校验清单。
     if [ -s "${manifest}" ]; then
         expected=$(awk -v f="${fname}" '$1 !~ /^#/ && $2 == f {print $1; exit}' "${manifest}")
     fi
@@ -432,7 +393,7 @@ Download_Verified()
         return 0
     fi
 
-    # 2) 上游官方 sha256
+    # 静态清单无记录时获取上游官方 SHA256。
     case "${project}" in
     php|mariadb|phpmyadmin|boost)
         echo "向上游获取 ${fname} 的官方 SHA256..."
@@ -446,14 +407,14 @@ Download_Verified()
         Verify_SHA256_Value "${fname}" "${expected}" || { rm -f "${fname}"; return 1; }
         return 0
         ;;
-    # 3) 只有 PGP 签名
+    # Nginx 使用上游 PGP 签名。
     nginx)
         Verify_Nginx_Signature "${fname}" "${url}" || { rm -f "${fname}"; return 1; }
         return 0
         ;;
     esac
 
-    # 4) 上游没有任何机器可读的校验依据
+    # 缺少机器可读的校验依据时终止。
     Echo_Red "致命错误：${fname} 既不在 src/checksums.sha256 里，${project} 上游也不提供"
     Echo_Red "可自动核对的校验文件（MySQL 只把校验值印在 dev.mysql.com 的下载页上）。"
     Echo_Red ""

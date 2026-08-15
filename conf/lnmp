@@ -1,7 +1,7 @@
 #!/bin/bash
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 
-# Check if user is root
+# 管理系统服务和配置需要 root 权限。
 if [ $(id -u) != "0" ]; then
     echo "错误：必须使用 root 用户运行此命令。"
     exit 1
@@ -20,7 +20,7 @@ DB_SERVICE=
 
 arg1=$1
 arg2=$2
-# database export/import 需要库名和文件名两个附加参数
+# database export/import 需要库名和文件名两个附加参数。
 arg3=$3
 arg4=$4
 
@@ -52,23 +52,12 @@ Print_Banner()
     printf '+%s+\n' "${border}"
 }
 
-# 通知函数：安装时与 lnmp 一起装到 /bin/lnmp-tgnotice。
-# source 进来之后，本脚本任何位置都可以直接写 tgnotice "文本" [md]。
+# 通知函数安装在 /bin/lnmp-tgnotice，载入后可由管理命令直接调用。
 [ -r /bin/lnmp-tgnotice ] && . /bin/lnmp-tgnotice
 
-# ---------------------------------------------------------------------------
-# Svc <服务名> <动作> — lnmp 命令与 systemd 共用同一条启停路径
-#
-# 原实现一律直调 /etc/init.d/<服务>。装机时服务是由 systemctl 拉起来的，
-# 一旦执行过 lnmp restart，新进程就跑在 systemd 之外，unit 立刻变成 failed：
-#
-#   lnmp restart          → 返回 0，网站也正常
-#   systemctl is-active nginx php-fpm → 都是 failed
-#
-# 于是 systemctl stop/restart、开机自启和一切基于 unit 状态的监控全部失真。
-# 现在有 systemd 且本包装过对应 unit 时走 systemctl，否则才退回 SysV 脚本。
-# configtest / force-quit / kill 这些 systemd 里没有的动作始终走 SysV 脚本。
-# ---------------------------------------------------------------------------
+# Svc <服务名> <动作>
+# 服务操作优先通过 systemd 执行，使进程状态与 systemctl 及监控结果一致。
+# systemd 不支持的动作和无 unit 的服务由 SysV 脚本处理。
 Systemd_Service_Exists()
 {
     local service="$1"
@@ -83,9 +72,7 @@ Service_Exists()
     Systemd_Service_Exists "${service}" || [ -x "/etc/init.d/${service}" ]
 }
 
-# 每次执行管理命令都按当前系统重新检测，不能把首次安装时的组件集合写死。
-# 这样先装静态 Nginx、以后补装 PHP/数据库时，下一次 lnmp restart 会自动
-# 把新出现的服务纳入；未安装的服务则明确跳过。
+# 每次运行管理命令时检测现有组件，使后续增装的服务自动纳入管理。
 Detect_Managed_Services()
 {
     WEB_SERVICE=
@@ -135,10 +122,8 @@ Svc_If_Installed()
     Svc "${service}" "${action}"
 }
 
-# 直接执行 `lnmp <服务> <动作>` 时用它包一层：systemctl 动作成功时不打印
-# 任何内容（这是 systemd 的正常行为，不是 bug），用户只会看到命令悄无声息地
-# 退出，分不清是成功了还是卡住了。这里补一条明确的成功/失败提示。
-# status 动作本身就会打印完整状态，不需要再叠加提示。
+# systemctl 成功时通常不输出内容，因此管理命令补充明确的成功或失败结果。
+# status 已包含完整状态，不再重复提示。
 Svc_Feedback()
 {
     local service="$1" action="$2" rc
@@ -161,8 +146,7 @@ Svc_Feedback()
     return ${rc}
 }
 
-# 启停结束后核对 unit 状态。命令自己返回 0 不代表 systemd 那边也对得上，
-# 这里把对不上的服务显式点出来，而不是留给下一次故障恢复时才发现。
+# 启动完成后核对 unit 状态，及时提示进程与 systemd 状态不一致的服务。
 Check_Svc_State()
 {
     local service failed=''
@@ -242,7 +226,7 @@ lnmp_status()
     Svc_If_Installed PHP-FPM "${PHP_SERVICE}" status
     Svc_If_Installed Database "${DB_SERVICE}" status
 
-    # phpMyAdmin 的访问路径是安装时随机生成的，在这里回显，省得去翻安装日志
+    # 显示安装时随机生成的 phpMyAdmin 访问路径。
     if [ -s /usr/local/phpmyadmin/.access_url ] &&
        [ -s /usr/local/nginx/conf/phpmyadmin.enable.conf ]; then
         echo "phpMyAdmin: http://<服务器IP>/$(cat /usr/local/phpmyadmin/.access_url)/"
@@ -308,7 +292,7 @@ Function_Database()
 
 Function_Backup()
 {
-    # 备份实现是独立文件，三个管理脚本共用同一份，安装时与 lnmp 一起复制
+    # 三种运行模式共用 /bin/lnmp-backup，避免备份行为不一致。
     local bin="/bin/lnmp-backup"
     if [ ! -x "${bin}" ]; then
         Echo_Red "找不到 ${bin}，安装不完整。"
@@ -347,17 +331,8 @@ Function_Ftp()
     esac
 }
 
-# ---------------------------------------------------------------------------
-# 站点级 PHP 开关。
-#
-# enable_site_php=y（默认）：保持原有行为，继续询问 Pathinfo、选择 PHP 版本。
-# enable_site_php=n：站点配置里不写任何 PHP 执行入口，改写 Site_PHP_Off_Block
-#   的兜底规则，供纯静态站点以及 Node、Go 等自带后端的站点使用。
-#
-# 非交互执行（标准输入不是终端）时不读取输入行，改看环境变量 VHOST_PHP：
-# 未设置一律按 y 处理。这样自动化能显式关闭 PHP，原有的管道喂入序列也不会
-# 因为新增这一问而整体错位。
-# ---------------------------------------------------------------------------
+# 站点级 PHP 开关：默认配置 PHP 入口；关闭后所有 .php 请求返回 404。
+# 非交互执行通过 VHOST_PHP=n 关闭 PHP，未设置时保持默认开启。
 Site_PHP_Menu()
 {
     local answer
@@ -401,24 +376,19 @@ Site_PHP_Menu()
     done
 }
 
-# 未开启 PHP 的站点写进 Nginx server 块的兜底规则，HTTP 与 HTTPS 共用。
-# 缩进按模板里占位符所处的位置对齐：首行不带缩进，其余行自带 8 个空格。
+# HTTP 与 HTTPS 共用以下规则，防止未解析的 .php 文件作为静态内容泄露。
 Site_PHP_Off_Block()
 {
     cat <<'EOF'
-# 本站点未开启 PHP：.php 以及 .php/xxx 一律返回 404。
-        # 少了这段规则，站点目录里一旦出现 .php 文件（旧站遗留、备份、被写入
-        # 的后门），Nginx 会把它当普通静态文件返回：自带的 mime.types 里没有
-        # .php，按 default_type application/octet-stream 把源码整份交出去。
-        # 若本站点改为整站反代（proxy_pass 给 Node、Go 等后端），需要把 .php
-        # 路径原样透传给后端处理，删掉本段即可。
+# 本站点未开启 PHP，.php 及其 PATH_INFO 请求统一返回 404，防止源码泄露。
+        # 整站反向代理需要由后端处理 .php 路径时，可删除此 location。
         location ~ [^/]\.php(/|$) {
             return 404;
         }
 EOF
 }
 
-# 站点首页候选。未开启 PHP 时不再把 PHP 文件列为首页。
+# 未开启 PHP 时，首页候选不包含 PHP 文件。
 Site_Index_Line()
 {
     if [ "${enable_site_php}" = "n" ]; then
@@ -766,9 +736,8 @@ Multiple_PHP_Select()
     fi
 }
 
-# default 兜底站点：接收匹配不上其它域名的访问，包括直接用服务器 IP 访问。
-# Add_VHost 会在询问域名前统一打印说明；用户随后输入 default 时，这里只负责
-# 检查内置站点是否存在。找不到该文件时才现场补建一次（老环境升级、或文件被误删）。
+# default 兜底站点接收未匹配其它域名的请求，包括直接访问服务器 IP。
+# 配置缺失时会重新创建内置站点。
 Print_Default_Site_Intro()
 {
     Echo_Green "===================================================================="
@@ -788,9 +757,7 @@ Add_VHost_Default()
         return 0
     fi
 
-    # 与 include/nginx.sh 的 Write_Nginx_Default_VHost 保持一致：内核支持时
-    # 加 reuseport。两处内容不同的话，补建出来的 default 会和安装时生成的
-    # 不是同一份配置。
+    # 支持的内核启用 reuseport，使补建配置与安装配置保持一致。
     uname_r=$(uname -r)
     if echo "${uname_r}" | grep -Eq '^3\.(9|1[0-9])|^[4-9]\.'; then
         listen_extra=' reuseport'
@@ -812,15 +779,10 @@ server {
 
         #error_page   404   /404.html;
 
-        # phpMyAdmin 的访问入口。该片段由安装脚本按开关生成或删除，
-        # 开启时片段会同时带入 PHP/反代配置；关闭时 default 保持静态。
+        # phpMyAdmin 启用时载入访问入口及其 PHP 或反向代理配置。
         include phpmyadmin.*.conf;
 
-        # phpinfo / redis / memcached 三个演示页由 Enable_PHPInfo_Page、
-        # Enable_Redis_Test_Page、Enable_Memcached_Test_Page 决定是否写入本目录，
-        # 默认都不写。正则 location 按出现顺序匹配，本条在下面拒绝 PHP 的规则
-        # 之前，因此这三个固定文件名可执行；开关关闭时文件不存在，请求按 404
-        # 处理，不需要按开关改配置。
+        # 仅允许已启用的 phpinfo、Redis 和 Memcached 演示页执行 PHP。
         location ~ ^/(phpinfo|redis|memcached)\.php\$ {
             try_files \$uri =404;
             fastcgi_pass  unix:/tmp/php-cgi.sock;
@@ -828,10 +790,8 @@ server {
             include fastcgi.conf;
         }
 
-        # default 是静态兜底站点，除上面三个演示页外一律不执行 PHP，
-        # 避免源码被当作静态文件下载。phpMyAdmin 片段用 ^~ 前缀 location
-        # 自带 PHP 处理，前缀匹配优先于本正则，因此启用 phpMyAdmin 不会让
-        # 根目录下的其它 .php 变得可执行。
+        # default 根目录中的其它 PHP 文件返回 404，防止源码作为静态文件下载。
+        # phpMyAdmin 使用独立的优先前缀 location，不受此规则影响。
         location ~ [^/]\.php(/|\$) {
             return 404;
         }
@@ -876,7 +836,7 @@ Add_VHost()
         Read_Input domain "域名"
         Check_Domain_Name "${domain}" || continue
         if [ "${domain}" = "default" ]; then
-            # default 是内置兜底站点，vhost add 不重复建站，只在缺失时补建配置。
+            # default 是内置兜底站点，仅在配置缺失时补建。
             Add_VHost_Default || return 1
             Echo_Green " default 站已安装，是默认兜底站，如需为其配置 SSL 证书，请执行 lnmp ssl add"
             return 0
@@ -906,9 +866,9 @@ Add_VHost()
         if [ "${vhostdir}" == "" ]; then
             vhostdir="/home/wwwroot/${domain}"
         fi
-        # 目录随后会交给 mkdir -p / chown -R，先规范化并限制在允许的站点根下
+        # 目录会用于递归创建和授权，因此必须先规范化并限制在站点根目录内。
         Check_Vhost_Dir "${vhostdir}" || exit 1
-        # Check_Vhost_Dir 通过时会把规范化后的路径写回 vhostdir
+        # 校验通过后使用规范化的网站目录路径。
         Check_Vhost_Dir "${vhostdir}" && break
     done
     echo "虚拟主机目录：${vhostdir}"
@@ -934,7 +894,7 @@ Add_VHost()
 
     Site_PHP_Menu
 
-    # Pathinfo 只是 PHP 的一种 URL 解析方式，站点不开 PHP 就没有可问的余地。
+    # Pathinfo 仅适用于启用 PHP 的站点。
     if [ "${enable_site_php}" == "y" ]; then
         Echo_Yellow "是否开启 PHP Pathinfo? (y/N，默认 n) "
         read enable_pathinfo
@@ -1021,20 +981,14 @@ Add_VHost()
     chmod -R 755 "${vhostdir}"
     chown -R www:www "${vhostdir}"
 
-    # default 站点的 80 端口已经由 nginx.conf 里内置的 default_server 块
-    # 处理（server_name _;，接收所有未匹配到其它 vhost 的请求），不需要、
-    # 也不应该再建一个 vhost/default.conf 去重复监听 80。该文件只在后面
-    # 选择加 SSL 证书时才会由 Create_SSL_Config 生成，只装 443 那个 server
-    # 块。Add_SSL 里对同一情况的判断（"${domain}" != "default"）与此一致。
+    # default 的 80 端口由内置 default_server 处理，避免重复监听。
     if [ "${domain}" != "default" ]; then
         Add_VHost_Config
     fi
 
-    # .user.ini 只对 PHP 生效，未开启 PHP 的站点不写，也不必惊动 php-fpm。
+    # .user.ini 仅用于启用 PHP 的站点。
     if [ "${enable_site_php}" != "n" ]; then
-        # 重建同名站点时旧的 .user.ini 可能还在，且带着 immutable 属性。
-        # 不先解除，下面的重定向会以 "Operation not permitted" 失败，
-        # 同时更新 open_basedir，避免站点目录变更后仍限制在旧路径。
+        # 更新前解除 immutable 属性，使 open_basedir 与当前网站目录一致。
         [ -f "${vhostdir}/.user.ini" ] && chattr -i "${vhostdir}/.user.ini" 2>/dev/null
         cat >"${vhostdir}/.user.ini"<<EOF
 open_basedir=${vhostdir}:/tmp/:/proc/
@@ -1048,8 +1002,7 @@ EOF
     if [ "${create_database}" == "y" ]; then
         Add_Database
         database_add_rc=$?
-        # 建库是 vhost 流程里最后一次用到数据库 root 凭据，用完立刻清掉，
-        # 不等到脚本退出
+        # 建库完成后立即清理数据库 root 凭据，缩短明文凭据的留存时间。
         TempMycnf_Clean
     fi
 
@@ -1099,8 +1052,7 @@ EOF
             Echo_Red "可稍后执行 lnmp ftp add 单独重试。"
         fi
     elif [ -s /usr/local/pureftpd/sbin/pure-ftpd ]; then
-        # 只有装了 pure-ftpd 才会问“是否创建 FTP 账号”，未装时这里不该
-        # 冒出一行没问过的“no”，对没装 FTP 的用户没有意义。
+        # 仅在已安装 Pure-FTPd 时显示 FTP 创建结果。
         echo "创建 FTP 账号：否"
     fi
     if [ "${create_ssl}" == "y" ]; then
@@ -1139,7 +1091,7 @@ Del_VHost()
     while :;do
         Echo_Yellow "请输入要删除的域名: "
         Read_Input domain "域名"
-        # 这个值会拼成 .../vhost/<域名>.conf 并被 rm 掉，同样要先约束字符集
+        # 域名会组成待删除的配置文件路径，因此必须先限制字符集。
         Check_Domain_Name "${domain}" || continue
         break
     done
@@ -1159,10 +1111,7 @@ Del_VHost()
         fi
         rm -f /usr/local/nginx/conf/vhost/${domain}.conf
 
-        # 删掉配置文件不等于站点下线：运行中的 nginx 用的是已加载的配置，
-        # 不 reload 就会继续对外提供这个站点，而命令已经报告"已删除"。
-        # 与 Add_VHost_Config 一样，先 nginx -t 再 reload；任一步失败都返回非零，
-        # 并说清楚线上配置还没切换。
+        # 删除配置后需要先通过语法检查再重载，才能使运行中的站点下线。
         Del_VHost_Reload_Nginx || exit 1
 
         echo "========================================================"
@@ -1229,11 +1178,10 @@ Check_DB()
 Make_TempMycnf()
 {
     local pw
-    # option file 在引号包裹的值里把反斜杠当转义符（\n、\t、\s 等），
-    # 原样写入会让含反斜杠的密码被解析成别的字符，表现为“密码是对的却认证失败”。
-    # 单引号不用另外处理：解析时只按首尾配对剥引号，值中间的单引号原样保留。
+    # MySQL option file 会解析反斜杠转义，写入前需转义反斜杠以保持密码原值。
+    # 单引号仅用于包围字段值，密码内部的单引号无需另行处理。
     pw="${1//\\/\\\\}"
-    # 先备份管理员原有的 ~/.my.cnf，TempMycnf_Clean 会还原
+    # 管理员已有的 ~/.my.cnf 会在凭据清理时恢复。
     if [ -s ~/.my.cnf ] && [ ! -e ~/.my.cnf.lnmp-bak ]; then
         cp -p ~/.my.cnf ~/.my.cnf.lnmp-bak
     fi
@@ -1244,14 +1192,12 @@ user=root
 password='${pw}'
 EOF
     chmod 600 ~/.my.cnf
-    # 标记这份凭据由本次执行写入，退出时无论走哪条分支都要清掉
+    # 标记临时凭据，确保退出时清理。
     LNMP_Mycnf_Owned=1
     LNMP_Set_Trap
 }
 
-# 密码校验最多重试 3 次。原实现是 `while [ $status -eq 1 ]` 的无上限循环：
-# 交互下输错密码只能 Ctrl+C 退出，非交互下输入耗尽后 read 立刻返回，
-# 循环就变成空转刷屏。失败时返回非 0，由调用方决定是否继续。
+# 数据库 root 密码最多校验 3 次，避免输入错误或 EOF 导致无休止重试。
 Verify_DB_Password()
 {
     local attempt=0 max_attempt=3
@@ -1272,22 +1218,15 @@ Verify_DB_Password()
     return 1
 }
 
-# ---------------------------------------------------------------------------
-# 凭据和临时文件处理约束：
-#   1. 临时文件使用 root 专属目录和不可预测名称；
-#   2. 凭据不得写入终端日志；
-#   3. SQL 字符串必须转义，标识符必须通过白名单校验。
-# ---------------------------------------------------------------------------
+# 凭据和 SQL 临时文件使用 root 专属随机目录，并在退出时统一清理。
+# SQL 字符串需要转义，数据库标识符需要通过字符白名单校验。
 
-# root 专属临时目录，退出时统一清理。
+# root 专属临时目录。
 LNMP_Tmp_Dir=""
-# 本次执行是否写过 ~/.my.cnf（里面是数据库 root 明文密码）。
+# 标记 ~/.my.cnf 是否为临时生成的数据库 root 凭据。
 LNMP_Mycnf_Owned=0
 
-# 退出清理：临时目录和临时凭据挂在同一个 EXIT trap 上。
-# 参数非法、系统库、EOF 等中途 exit 的分支也会经过这里，
-# 不再依赖调用方在末尾补一次 TempMycnf_Clean —— 例如 vhost add 建库那条路径
-# 原先就没有清理，root 密码会一直留在 ~/.my.cnf 里。
+# EXIT trap 同时清理临时目录和数据库凭据，覆盖异常退出路径。
 LNMP_Cleanup()
 {
     if [ -n "${LNMP_Tmp_Dir}" ]; then
@@ -1297,23 +1236,15 @@ LNMP_Cleanup()
     TempMycnf_Clean
 }
 
-# INT/TERM 必须单独退出：只挂 EXIT 的话，trap 执行完脚本会接着往下跑，
-# Del_Database 里 "Press ctrl+c to cancel" 的倒计时就取消不掉了。
-#
-# 约束：注册 trap 的两个入口（Make_TempMycnf、LNMP_Tmp_Init）都只能在主 shell
-# 调用，不要放进 $(...) 或管道右侧。子 shell 继承 LNMP_Tmp_Dir 的值，却会在自己
-# 退出时执行这里注册的 EXIT trap，把主 shell 还在用的临时目录和凭据一起删掉。
+# INT/TERM 需要显式退出，确保中断倒计时后进入 EXIT 清理。
+# trap 只能在主 shell 注册，防止子 shell 提前清理主流程仍在使用的文件。
 LNMP_Set_Trap()
 {
     trap 'LNMP_Cleanup' EXIT
     trap 'echo; exit 130' INT TERM
 }
 
-# 临时目录的初始化必须在当前 shell 完成，不能塞进 LNMP_Mktemp。
-# LNMP_Mktemp 的返回值要靠命令替换取回，而命令替换是子 shell：在子 shell 里
-# 给 LNMP_Tmp_Dir 赋值，父 shell 拿不到；在子 shell 里注册 EXIT trap，子 shell
-# 一退出就把刚建好的文件连目录一起删掉，随后写 SQL 或密码文件必然失败，
-# 退出时的清理也只是对着空变量执行 rm -rf ""。
+# 临时目录必须在当前 shell 初始化，使主流程和 EXIT trap 使用同一路径。
 LNMP_Tmp_Init()
 {
     [ -n "${LNMP_Tmp_Dir}" ] && return 0
@@ -1323,15 +1254,14 @@ LNMP_Tmp_Init()
     return 0
 }
 
-# 调用前必须已执行 LNMP_Tmp_Init。
+# 调用前需要完成 LNMP_Tmp_Init。
 LNMP_Mktemp()
 {
     [ -n "${LNMP_Tmp_Dir}" ] || return 1
     mktemp "${LNMP_Tmp_Dir}/$1.XXXXXXXX"
 }
 
-# MySQL 单引号字符串的转义：先转反斜杠，再转单引号（顺序不能反，
-# 否则会把上一步加进去的转义符再转一遍）。
+# MySQL 字符串先转义反斜杠，再转义单引号，避免重复处理新增的转义符。
 Sql_Quote()
 {
     local v="$1"
@@ -1340,10 +1270,7 @@ Sql_Quote()
     printf '%s' "${v}"
 }
 
-# 库名 / 用户名走白名单，不做转义。
-#
-# 标识符（反引号里的东西）没有可靠的通用转义方式，而 MySQL 的库名和用户名
-# 本来就只该用这些字符。与其想办法转义，不如直接拒绝越界的输入。
+# 数据库名和用户名使用字符白名单，防止标识符构造为非法 SQL。
 Check_DB_Identifier()
 {
     case "$1" in
@@ -1359,16 +1286,9 @@ Check_DB_Identifier()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# 输入边界：域名用于配置文件名和配置内容，站点目录用于递归权限操作。
-# 相关输入必须通过格式、元字符和允许目录范围检查。
-# ---------------------------------------------------------------------------
+# 域名会写入文件路径和 Nginx 配置，站点目录会用于递归授权，均需边界检查。
 
-# 单个 DNS 名：标签由字母数字和连字符组成，点分隔，可带前导 *. 泛域名。
-# 拒绝路径分隔符、空白和配置元字符。
-# ---------------------------------------------------------------------------
-# Read_Input：检测 EOF，防止非交互输入耗尽后校验循环空转。
-# ---------------------------------------------------------------------------
+# 检测 EOF，防止非交互输入耗尽后校验循环空转。
 Read_Input()
 {
     local __var="$1" __what="${2:-输入}"
@@ -1381,7 +1301,7 @@ Read_Input()
     fi
 }
 
-# Read_Secret — 同上，用于不回显的密码输入
+# 读取不回显的密码，并检测 EOF。
 Read_Secret()
 {
     local __var="$1" __what="${2:-密码}"
@@ -1407,7 +1327,7 @@ Check_Domain_Name()
         Echo_Red "域名过长（超过 253 字符）：${d}"
         return 1
     fi
-    # 去掉可能的泛域名前缀再校验主体
+    # 泛域名前缀不参与 DNS 标签格式校验。
     case "${d}" in
     \*.*) d="${d#\*.}" ;;
     esac
@@ -1421,7 +1341,7 @@ Check_Domain_Name()
     return 0
 }
 
-# 附加域名是空格分隔的一串，逐个校验，有一个不合法就整体拒绝
+# 附加域名按空格分隔，任一名称无效时拒绝整组输入。
 Check_More_Domains()
 {
     local d
@@ -1431,12 +1351,8 @@ Check_More_Domains()
     return 0
 }
 
-# 站点目录：必须是绝对路径、规范化后仍落在允许的根之下、不含空白与元字符。
-#
-# 允许的根默认是 /home、/var/www、/srv、/data、/www 这几处常见位置，
-# 外加 lnmp.conf 里配的 Default_Website_Dir 的父目录。
-# 拒绝 /、/usr、/etc 等系统目录，避免对其执行 chmod -R 或 chown -R
-# 是不可逆的破坏。
+# 站点目录必须是无元字符的绝对路径，并位于允许的网站根目录内。
+# 该限制防止递归 chmod 或 chown 影响系统目录及其它用户数据。
 Check_Vhost_Dir()
 {
     local d="$1" norm root ok='n'
@@ -1458,7 +1374,7 @@ Check_Vhost_Dir()
         return 1
     fi
 
-    # 规范化（不要求已存在），把 .. 和多余的 / 折掉
+    # 规范化路径，不要求目标已经存在。
     norm=$(printf '%s' "${d}" | sed -e 's#/\+#/#g' -e 's#/\./#/#g' -e 's#/$##')
     case "${norm}" in
     *..*)
@@ -1480,21 +1396,15 @@ Check_Vhost_Dir()
         return 1
     fi
 
-    # 允许根本身不能直接当站点目录。上面的匹配对 "/home" 也会成立
-    # （模式 /home/* 里的 * 可以匹配空），而 chown -R www:www /home
-    # 会把所有用户的家目录一起改掉。至少要深一层。
+    # 网站必须位于允许根的子目录，避免递归授权整个根目录。
     if [ "${norm}" = "${matched_root}" ]; then
         Echo_Red "不能直接用 '${norm}' 作为站点目录，请在它下面建子目录。"
         Echo_Red "（随后的 chown -R 会作用于整个目录树。）"
         return 1
     fi
 
-    # ---------------------------------------------------------------------
-    # 逐级检查路径组件，任一为符号链接即拒绝。
-    #
-    # 从允许根的下一层开始逐级检查，防止中间路径组件通过符号链接越界。
+    # 逐级拒绝子路径中的符号链接，防止递归授权越过允许目录边界。
     # 允许根本身可由管理员配置为符号链接。
-    # ---------------------------------------------------------------------
     rest="${norm#${matched_root}/}"
     probe="${matched_root}"
     while [ -n "${rest}" ]; do
@@ -1508,9 +1418,8 @@ Check_Vhost_Dir()
         fi
     done
 
-    # 再用 realpath 交叉确认一次：解析掉所有符号链接后仍须落在允许根之下。
-    # 允许根本身也解析后再比，这样 /home -> /mnt/data/home 的部署不会被误拒。
-    # realpath -m 不要求路径已存在（coreutils 8.15+，Debian/CentOS 均自带）。
+    # realpath 解析后的路径仍需位于解析后的允许根目录内。
+    # realpath -m 支持尚未创建的目标路径。
     if command -v realpath >/dev/null 2>&1; then
         resolved=$(realpath -m "${norm}" 2>/dev/null) || resolved="${norm}"
         ok='n'
@@ -1533,8 +1442,7 @@ Check_Vhost_Dir()
 Do_Query()
 {
     local sql_file rc
-    # 这里失败是环境问题（建不出临时目录），不能只返回非 0：
-    # Verify_DB_Password 会把非 0 当成密码错误，一直重试下去。
+    # 临时目录创建失败属于环境错误，不能作为密码校验失败重试。
     LNMP_Tmp_Init || exit 1
     sql_file=$(LNMP_Mktemp query) || exit 1
     chmod 600 "${sql_file}"
@@ -1546,8 +1454,8 @@ Do_Query()
     return ${rc}
 }
 
-# 只清理本次执行自己写进去的凭据，避免误删管理员原有的 ~/.my.cnf。
-# 可重复调用：正常路径末尾调一次，EXIT trap 再调一次也不会重复还原备份。
+# 仅清理临时生成的凭据，避免删除管理员已有的 ~/.my.cnf。
+# 清理函数可重复调用，不会重复恢复备份。
 TempMycnf_Clean()
 {
     [ "${LNMP_Mycnf_Owned}" -eq 1 ] || return 0
@@ -1653,8 +1561,7 @@ Edit_Database()
     done
     pass_q=$(Sql_Quote "${database_username_passwd}")
 
-    # 三条语句合成一次执行：mysql 客户端默认遇错即停，
-    # 分三次调用只检查中间那次的返回码，前后两次失败都会被当成成功。
+    # 三条语句一次执行，确保任一主机授权失败都会返回错误。
     if ! Do_Query "ALTER USER '${database_username}'@'localhost' IDENTIFIED BY '${pass_q}';
 ALTER USER '${database_username}'@'127.0.0.1' IDENTIFIED BY '${pass_q}';
 FLUSH PRIVILEGES;"; then
@@ -1675,8 +1582,7 @@ Del_Database()
         return 1
     fi
     Check_DB_Identifier "${database_name}" || return 1
-    # 先确认库确实存在：既把“库名敲错”和“删除失败”区分开，
-    # 也不用等完 10 秒倒计时才发现名字打错了。
+    # 删除倒计时前确认数据库存在，避免将名称错误误报为删除失败。
     if ! Database_Exists "${database_name}"; then
         Echo_Red "数据库不存在：${database_name}"
         return 1
@@ -1704,18 +1610,14 @@ EOF
     return 0
 }
 
-# ---------------------------------------------------------------------------
 # 备份与恢复
 #
 #   lnmp database export <数据库名> <文件.sql.gz>
 #   lnmp database import <数据库名> <文件.sql.gz>
 #
-# 导出的是单库内容，不带 CREATE DATABASE / USE 语句：目标库完全由命令行参数
-# 决定，备份文件里记录的库名不会反过来盖掉用户指定的库，因此同一份备份可以
-# 恢复到另一个库名，也不会误写到别的库上。
-# ---------------------------------------------------------------------------
+# 导出文件不含 CREATE DATABASE 或 USE，导入目标由命令参数决定，支持恢复到其它库名。
 
-# 与数据库客户端同目录选择导出程序；MariaDB 优先使用无弃用提示的新名称。
+# 从数据库客户端目录选择导出程序，MariaDB 优先使用 mariadb-dump。
 MySQL_Dump_Bin=""
 Check_Dump_Bin()
 {
@@ -1733,8 +1635,7 @@ Check_Dump_Bin()
     return 0
 }
 
-# 库是否存在。用 information_schema 精确比较，不用 SHOW DATABASES LIKE ——
-# LIKE 会把库名里的下划线当成单字符通配符，wp_a 能匹配到 wpxa。
+# 通过 information_schema 精确匹配库名，避免下划线被 LIKE 解释为通配符。
 Database_Exists()
 {
     local name_q out
@@ -1744,7 +1645,7 @@ Database_Exists()
     [ -n "${out}" ]
 }
 
-# 备份文件路径：父目录必须已存在，目标不能是目录或其它非普通文件。
+# 备份文件的父目录必须存在，目标只能是普通文件路径。
 Check_Backup_Path()
 {
     local f="$1" dir
@@ -1791,8 +1692,7 @@ Export_Database()
         return 1
     fi
 
-    # 先写同目录临时文件再改名：中途失败不会留下一个看着像备份的半截文件，
-    # 同目录也保证 mv 是原子改名而不是跨文件系统复制。
+    # 先写入同目录临时文件再原子改名，失败时不会留下不完整的备份文件。
     tmp_file=$(mktemp "${out_file}.lnmp-part.XXXXXXXX") || {
         Echo_Red "无法在目标目录创建临时文件：${out_file}"
         return 1
@@ -1802,10 +1702,7 @@ Export_Database()
         --single-transaction --quick --routines --triggers --events \
         --default-character-set=utf8mb4 \
         "${database_name}" | gzip -c > "${tmp_file}"
-    # PIPESTATUS 必须一次性快照：第一条赋值语句本身就会把它重置成
-    # 那条赋值的状态，再取 [1] 拿到的不是管道右侧的退出码 ——
-    # set -u 下直接报 unbound variable，没开 set -u 则静默变成空字符串，
-    # gzip / mysql 的失败会被当成没发生。
+    # 一次性保存 PIPESTATUS，确保导出和压缩任一失败都能被识别。
     pipe_st=("${PIPESTATUS[@]}")
     dump_rc=${pipe_st[0]}
     gzip_rc=${pipe_st[1]}
@@ -1842,8 +1739,7 @@ Import_Database()
         Echo_Red "备份文件不可读或为空：${in_file}"
         return 1
     fi
-    # 不自动建库：建库同时还要建用户和授权，那是 database add 的职责，
-    # 这里凭空 CREATE DATABASE 会留下一个没有对应用户的库。
+    # 导入不自动建库，避免生成没有对应用户和授权的数据库。
     if ! Database_Exists "${database_name}"; then
         Echo_Red "数据库不存在：${database_name}"
         Echo_Red "请先执行 lnmp database add 建库建用户，再导入。"
@@ -1857,7 +1753,7 @@ Import_Database()
     Sleep_Sec 10
 
     echo "正在导入数据库 ${database_name} ..."
-    # 按文件内容判断是否压缩，不按扩展名：直接给未压缩的 .sql 也能导入。
+    # 按文件内容识别压缩格式，未压缩的 SQL 文件也可直接导入。
     if gzip -t "${in_file}" 2>/dev/null; then
         gzip -dc "${in_file}" | ${MySQL_Bin} --defaults-file=~/.my.cnf \
             --default-character-set=utf8mb4 "${database_name}"
@@ -1885,7 +1781,7 @@ Enter_Ftp_Name()
     while :;do
         Echo_Yellow "请输入 FTP 账号名（只允许字母、数字和下划线）: "
         Read_Input ftp_account_name "FTP 账号名"
-        # 账号名会被拼进 /tmp 路径和 pure-pw 的参数，必须先约束字符集
+        # 账号名用于临时路径和 pure-pw 参数，因此必须限制字符集。
         if ! Check_DB_Identifier "${ftp_account_name}"; then
             continue
         else
@@ -1911,10 +1807,8 @@ Add_Ftp_Menu()
         while :;do
             Echo_Yellow "请输入 FTP 账号 ${ftp_account_name} 的目录: "
             Read_Input vhostdir "FTP 目录"
-            # 复用站点目录校验。该目录随后会被 mkdir -p 与 chown -R www:www，
-            # 并作为 FTP 根目录传给 pure-pw：填 / 或 /etc 时前者不可逆，
-            # 后者会让该 FTP 账号看到 www 身份能访问的全部内容。
-            # 校验通过时 Check_Vhost_Dir 会把规范化后的路径写回 vhostdir。
+            # FTP 根目录会被递归授权，必须限制在允许的网站目录内。
+            # 校验通过后使用规范化的路径。
             Check_Vhost_Dir "${vhostdir}" && break
             vhostdir=''
         done
@@ -1933,11 +1827,9 @@ Check_Pureftpd()
 Add_Ftp()
 {
     local rc ftp_pass_file www_uid www_gid
-    # 兜底校验：本函数也可由 vhost 流程直接调用，不能假设 vhostdir 已被校验。
-    # Check_Vhost_Dir 幂等，对已规范化的路径重复调用无副作用。
+    # 创建账号前再次校验目录，覆盖直接调用和建站调用两种入口。
     Check_Vhost_Dir "${vhostdir}" || return 1
-    # www 账号缺失时 id 输出为空，pure-pw 会拿到空的 -u/-g 参数并报一个
-    # 难以对应到原因的用法错误，这里先说清楚
+    # pure-pw 需要有效的 www 用户和用户组 ID。
     www_uid=$(id -u www 2>/dev/null) || { Echo_Red "系统里没有 www 用户，无法创建 FTP 账号。"; return 1; }
     www_gid=$(id -g www 2>/dev/null) || { Echo_Red "系统里没有 www 用户组，无法创建 FTP 账号。"; return 1; }
     if [ ! -d "${vhostdir}" ]; then
@@ -1981,7 +1873,7 @@ List_Ftp()
 Edit_Ftp()
 {
     local pass_rc=0 dir_rc=0 ftp_pass_file www_uid www_gid
-    # 这里不因 List_Ftp 失败而中止：列表只是给用户看的参考
+    # 账号列表仅供操作前参考，读取失败不阻止后续编辑。
     List_Ftp
     Enter_Ftp_Name
     Echo_Yellow "请输入 FTP 账号 ${ftp_account_name} 的新密码（输入不回显，留空则不修改）: "
@@ -2009,7 +1901,7 @@ EOF
     Echo_Yellow "请输入 FTP 账号 ${ftp_account_name} 的新目录（留空则不修改）: "
     Read_Input vhostdir "FTP 目录"
     if [ "${vhostdir}" != "" ]; then
-        # 留空表示不修改，因此只在确实填了新值时校验。约束同 Add_Ftp_Menu。
+        # 仅在填写新目录时执行与创建账号相同的目录校验。
         if ! Check_Vhost_Dir "${vhostdir}"; then
             Echo_Red "FTP 目录未修改。"
             return 1
@@ -2030,7 +1922,7 @@ EOF
     else
         echo "FTP 目录保持不变。"
     fi
-    # 改密码和改目录是两件独立的事，任一失败都要让整体返回非 0
+    # 密码或目录任一修改失败时，整体返回非零状态。
     if [ ${pass_rc} -ne 0 ] || [ ${dir_rc} -ne 0 ]; then
         return 1
     fi
@@ -2099,7 +1991,7 @@ Add_SSL_Info_Menu()
     if [ "${vhostdir}" == "" ]; then
         vhostdir="/home/wwwroot/${domain}"
     fi
-    # 目录随后会交给 mkdir -p / chown -R，先规范化并限制在允许的站点根下
+    # 网站目录会被递归创建和授权，因此必须限制在允许的站点根目录内。
     Check_Vhost_Dir "${vhostdir}" || exit 1
     echo "虚拟主机目录：${vhostdir}"
 
@@ -2169,8 +2061,7 @@ Add_SSL_Info_Menu()
     fi
 }
 
-# lnmp ssl add 只给已经存在的虚拟主机添加证书。站点参数从现有配置读取，
-# 不再重复询问目录、伪静态、日志、Pathinfo 和 IPv6 等建站选项。
+# lnmp ssl add 从现有虚拟主机读取站点参数，仅询问证书相关选项。
 Add_SSL_Only_Info_Menu()
 {
     local vhost_conf
@@ -2224,9 +2115,7 @@ Add_SSL_Only_Info_Menu()
     rewrite="${rewrite:-none}"
     include_enable_php=$(awk '$1 == "include" && $2 ~ /^enable-php[^;]*\.conf;$/ { print "include " $2; exit }' "${vhost_conf}")
     if [ -z "${include_enable_php}" ]; then
-        # 现有配置里没有任何 enable-php*.conf，说明建站时选择了不开启 PHP。
-        # HTTPS 必须沿用同一状态：443 若不写兜底规则，站点目录里的 .php
-        # 会被当成静态文件把源码返回。
+        # HTTPS 沿用现有站点的 PHP 状态，防止 .php 源码作为静态文件返回。
         enable_site_php="n"
         include_enable_php="$(Site_PHP_Off_Block)"
         echo "网站 ${domain} 未开启 PHP，HTTPS 配置沿用同一状态。"
@@ -2368,9 +2257,7 @@ Add_SSL_Menu()
     Return_301_Menu
 }
 
-# acme.sh 使用 GitHub 官方固定 tag 和对应 SHA256，不使用浮动版本。
-# 升级时必须同时更新以下两个值。校验值获取方法：
-#   curl -sSL https://github.com/acmesh-official/acme.sh/archive/refs/tags/<ver>.tar.gz | sha256sum
+# acme.sh 使用 GitHub 官方固定版本和 SHA256，更新版本时必须同步更新校验值。
 Acme_Sh_Ver='3.1.4'
 Acme_Sh_SHA256='e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee091fd32'
 
@@ -2405,7 +2292,7 @@ Install_Check_Acme.sh()
         return 1
     fi
 
-    # 下载内容必须通过固定 SHA256 后才能解压和执行。
+    # 安装包通过固定 SHA256 校验后才能解压和执行。
     actual=$(sha256sum "${tarball}" | awk '{print $1}')
     if [ "${actual}" != "${Acme_Sh_SHA256}" ]; then
         Echo_Red "acme.sh 安装包 SHA256 不匹配，拒绝执行。"
@@ -2420,7 +2307,7 @@ Install_Check_Acme.sh()
         rm -rf "${tmpdir}"
         return 1
     fi
-    # 归档顶层目录必须与固定版本精确匹配。
+    # 归档目录必须与固定版本一致。
     if [ ! -s "${srcdir}/acme.sh" ]; then
         Echo_Red "acme.sh 归档结构异常：未找到 ${srcdir}/acme.sh"
         rm -rf "${tmpdir}"
@@ -2437,18 +2324,16 @@ Install_Check_Acme.sh()
     rm -rf "${tmpdir}"
 
     sed -i 's/cat "\$CERT_PATH"$/#cat "\$CERT_PATH"/g' /usr/local/acme.sh/acme.sh
-    # 保留 acme.sh 默认密钥类型，并关闭绕过固定版本校验的自动升级。
-    # upgrade.sh 仅提供需人工确认的手动升级入口。
+    # 关闭 acme.sh 自动升级，避免未经固定版本校验的代码覆盖证书管理组件。
+    # 安全更新通过 upgrade.sh 手动确认，完成后应重新核对来源和完整性。
     /usr/local/acme.sh/acme.sh --upgrade --auto-upgrade 0 >/dev/null 2>&1
     cat >/usr/local/acme.sh/upgrade.sh<<EOF
 #!/bin/bash
 #
 # 手动升级 acme.sh；禁止加入 crontab。
 #
-# 它执行 acme.sh --upgrade，从 GitHub 拉最新代码覆盖 /usr/local/acme.sh，
-# 手动升级不使用本包固定的版本与 SHA256，执行后须重新确认组件来源和完整性。
-#
-# 需要跟进上游安全修复时再手动跑。
+# 此操作直接从 GitHub 更新，不使用安装包的固定版本和 SHA256。
+# 仅在需要上游安全更新时执行，完成后须确认组件来源和完整性。
 
 echo "警告：即将从 GitHub 升级 acme.sh，此过程不做完整性校验。"
 printf "确认继续请输入 yes: "
@@ -2495,8 +2380,7 @@ Create_SSL_Config()
         ssl_ipv6_listen='#listen [::]:443 ssl default_server ipv6only=on;'
         ssl_server_name='_'
         ssl_rewrite_line=''
-        # default 站点始终按内置形态生成：phpMyAdmin 入口保留，
-        # 根目录下的其它 .php 一律 404，与 nginx.conf 里的 80 端口块一致。
+        # default 的 HTTPS 配置保留 phpMyAdmin，并拒绝根目录中的其它 .php。
         ssl_index='index index.html index.htm index.php default.html default.htm default.php;'
         ssl_php_block='include phpmyadmin.*.conf;
 
@@ -2527,8 +2411,7 @@ Create_SSL_Config()
 server {
         ${ssl_listen}
         ${ssl_ipv6_listen}
-        # nginx 1.25.1 起 HTTP/2 用独立的 http2 指令开启，
-        # 写在 listen 后面的 http2 参数会被警告为已废弃。
+        # Nginx 1.25.1 及以上使用独立的 http2 指令。
         http2 on;
         server_name ${ssl_server_name};
         ${ssl_index}
@@ -2536,36 +2419,29 @@ server {
 
         ssl_certificate ${ssl_certificate};
         ssl_certificate_key ${ssl_certificate_key};
-        # TLS 1.0/1.1 已被 RFC 8996 正式弃用，主流浏览器也早已不再连接。
+        # TLS 1.0 和 1.1 已被 RFC 8996 弃用。
         ssl_protocols TLSv1.2 TLSv1.3;
-        # 只保留带前向保密（ECDHE/DHE）的 AEAD 套件。特意排除三类：
-        #   3DES（Sweet32 攻击）、静态 RSA 密钥交换（私钥泄露后历史流量
-        #   可被全部解密）、CBC 模式（Lucky13 一类填充攻击不断出新变种）。
-        # TLS 1.3 不受本行控制，它有独立的套件命名空间，OpenSSL 的默认值
-        # 本身就只有三个 AEAD 算法，无需干预。
+        # 仅保留支持前向保密的 AEAD 套件，排除 3DES、静态 RSA 和 CBC。
+        # TLS 1.3 使用 OpenSSL 独立的默认套件配置。
         ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-        # off = 由客户端挑套件。上面每个都安全，手机能选到有硬件加速的
-        # CHACHA20，服务器强推 AES-GCM 反而更慢更费电。
+        # 由客户端选择套件，可优先使用设备具备硬件加速的算法。
         ssl_prefer_server_ciphers off;
-        # 握手结果缓存，回头客可跳过完整握手。10m 约可存 4 万个会话。
+        # 10 MB 会话缓存约可保存 4 万个握手结果，减少重复完整握手。
         ssl_session_cache shared:SSL:10m;
         ssl_session_timeout 5m;
-        # off = 关闭 session ticket。加密 ticket 的那把密钥在 nginx 里长期不变，
-        # 一旦泄露，此前录下的流量可被批量解密，等于抵消了上面的前向保密。
+        # 关闭 session ticket，避免长期票据密钥泄露影响历史会话的前向保密。
         ssl_session_tickets off;
-        # DHE 系列套件所需的 DH 参数，由 lnmp ssl add 首次运行时生成。
+        # DHE 套件使用 lnmp ssl add 首次生成的 DH 参数。
         ssl_dhparam /usr/local/nginx/conf/ssl/dhparam.pem;
 
-        # HSTS：让浏览器在 max-age 秒内一律用 HTTPS 访问本站，可挡掉
-        # 首次访问之外的降级劫持。启用前必须确认证书可以持续续签，
-        # 且所有子域名均有可用证书；浏览器记录该策略后无法回退到 HTTP，
-        # 配错会导致整站在有效期内都打不开。确认无误后再取消注释。
+        # HSTS 会在有效期内强制浏览器使用 HTTPS。启用前须确认主域名和所有
+        # 子域名均可持续提供有效证书，否则浏览器无法回退到 HTTP。
         #add_header Strict-Transport-Security "max-age=31536000" always;
 
         ${ssl_rewrite_line}
         #error_page   404   /404.html;
 
-        # Deny access to PHP files in specific directory
+        # 可按需禁止指定目录执行 PHP。
         #location ~ /(wp-content|uploads|wp-includes|images)/.*\.php$ { deny all; }
 
         ${ssl_php_block}
@@ -2614,28 +2490,16 @@ EOF
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# default 站点（仅通过 IP 访问）的证书处理。
-#
-# `default` 是本包的保留站点名：根目录 /home/wwwroot/default，用服务器 IP
-# 直接访问。该站点没有域名，无法申请需要验证域名控制权的 DV 证书。
-#
-# Let's Encrypt 自 2025 年起支持为 IP 地址签发证书，但有以下限制：
-#   - 只有 shortlived profile 支持 IP 标识符（classic / tlsserver 都不支持）
-#   - 有效期 7 天，必须启用自动续期
-#   - 仅支持 IPv4，不支持 IPv6 地址
-#   - 只能是公网可达的公网 IP；私有地址（10/172.16-31/192.168/127/169.254）
-#     不符合公信 CA 的签发条件
-#   - BuyPass 与 ZeroSSL 都不提供 IP 证书，只能用 Let's Encrypt
-# ---------------------------------------------------------------------------
+# default 站点通过服务器 IP 访问，只能为公网 IPv4 申请 Let's Encrypt
+# shortlived 证书。证书有效期为 7 天，必须保留自动续期。
 
-# Detect_Server_IP - 探测本机对外 IPv4
+# 探测服务器对外使用的 IPv4 地址。
 Detect_Server_IP()
 {
     local ip=''
-    # 读取默认路由使用的源地址
+    # 优先读取默认路由使用的源地址。
     ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
-    # NAT 环境下通过外部服务获取公网出口地址
+    # 私有地址环境通过外部服务获取公网出口地址。
     if [ -z "${ip}" ] || Is_Private_IP "${ip}"; then
         local pub
         pub=$(curl -fsS --max-time 8 https://api.ipify.org 2>/dev/null)
@@ -2644,7 +2508,7 @@ Detect_Server_IP()
     printf '%s' "${ip}"
 }
 
-# Is_Private_IP <ip> - 私有或保留地址返回 0；空值和非 IPv4 地址也返回 0
+# 私有、保留、空值或非 IPv4 地址返回 0。
 Is_Private_IP()
 {
     case "$1" in
@@ -2656,8 +2520,7 @@ Is_Private_IP()
     return 1
 }
 
-# Prepare_Default_Site_IP_Cert - 打印说明并将证书申请目标从域名切换为 IP
-# 返回 0 继续申请，1 中止
+# 说明 IP 证书限制并将 default 的申请目标切换为公网 IPv4。
 Prepare_Default_Site_IP_Cert()
 {
     local ip
@@ -2720,21 +2583,12 @@ Prepare_Default_Site_IP_Cert()
     Echo_Yellow "=========================================================="
     echo
 
-    # 把申请目标从域名换成 IP，并挂上必需的 profile。
-    #
-    # `--days 6` 不能省：acme.sh 的 cron 是按「距上次签发超过 --days 天就续」
-    # 判断的，默认值（60）是给 90 天证书用的。shortlived 证书只有 7 天，
-    # 不收紧这个阈值，cron 会认为"还早着呢"而一直不续，证书到期站点直接不可访问。
-    # 取 6 而不是 7：比有效期提前 1 天续，留出续期失败重试的余量。
-    #
-    # 参数组合经实测可用（用户在真实公网 VPS 上验证）：
-    #   acme.sh --issue -d <IPv4> -w /home/wwwroot/default \
-    #           --server letsencrypt --certificate-profile shortlived --days 6
+    # shortlived 证书有效期为 7 天，设置 6 天续期阈值可留出失败重试时间。
     letsdomain="-d ${ip}"
     cert_profile_opt="--certificate-profile shortlived --days 6"
     default_site_ip="${ip}"
 
-    # BuyPass / ZeroSSL 不支持 IP，强制回落到 Let's Encrypt
+    # BuyPass 和 ZeroSSL 不支持 IP 证书，统一使用 Let's Encrypt。
     if [ "${ssl_choice}" != "2" ]; then
         Echo_Yellow "已自动改用 Let's Encrypt（原选择不支持 IP 证书）。"
         echo
@@ -2743,7 +2597,7 @@ Prepare_Default_Site_IP_Cert()
     return 0
 }
 
-# Print_Self_Signed_Hint — 给出可直接粘贴的自签名证书生成命令
+# 输出适用于内网环境的自签名证书命令。
 Print_Self_Signed_Hint()
 {
     local ip="${1:-<你的IP>}"
@@ -2795,8 +2649,7 @@ Add_SSL()
         else
             letsdomain="-d ${domain}"
         fi
-        # default 站点没有域名，转为 IP 证书流程（含说明文字）。
-        # 必须在 Add_VHost_Config 之前执行，因为该函数使用 letsdomain 和 vhostdir。
+        # default 没有域名，证书申请目标改为公网 IPv4。
         if [ "${domain}" = "default" ]; then
             vhostdir="${vhostdir:-/home/wwwroot/default}"
             Prepare_Default_Site_IP_Cert || return 1
@@ -3097,7 +2950,7 @@ case "${arg1}" in
         exit $?
         ;;
     backup)
-        # 子命令参数个数不定（restore 要三个），去掉 backup 本身后原样转交
+        # backup 子命令参数数量不同，移除命令名后完整转交。
         shift
         Function_Backup "$@"
         exit $?

@@ -4,8 +4,7 @@
 #   ci.yml          静态检查，几十秒，每次推送都跑
 #   build-test.yml  真编译，几十分钟，只在升级 PR 和发布前跑
 #
-# 这个项目历史上的严重问题全部是"跨文件不一致"——单看每个文件都自洽，
-# 合起来对不上。所以 consistency 这一步比 shellcheck 更值钱，别删。
+# consistency 检查用于发现版本、映射和校验清单之间的跨文件不一致。
 
 name: CI
 
@@ -47,7 +46,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
           # SC1090/SC1091: 动态 source，本项目大量使用，无法静态解析
-          # SC2086: 未加引号的展开，老代码里遍地都是，单独治理
+          # SC2086: 未加引号的展开由专项检查处理
           # SC2181: $? 判断风格
           shellcheck -S error -e SC1090,SC1091,SC2086,SC2181 \
             install.sh uninstall.sh upgrade.sh addons.sh pureftpd.sh \
@@ -68,8 +67,7 @@ jobs:
       - name: 审计修复定向自测
         run: bash t/test_audit_fixes.sh
 
-      # 验证自动升版脚本会同步所有需要同步的文件。
-      # 漏改的后果是升版分支在这一步之前都是绿的，直到映射表自测才报错。
+      # 验证自动升版脚本同步版本映射和校验清单。
       - name: 升版跨文件同步自测（t/test_bump.sh）
         run: bash t/test_bump.sh
 

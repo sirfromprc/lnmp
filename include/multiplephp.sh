@@ -13,7 +13,7 @@ Install_Multiplephp()
         exit 1
     fi
 
-#which PHP Version do you want to install?
+    # 选择需要并行安装的 PHP 版本。
     echo "==========================="
 
     PHPSelect=""
@@ -38,7 +38,7 @@ Install_Multiplephp()
     Check_Openssl
 
     MPHP_Short_Ver="${PHP_Branch}"
-    # 退出码取左侧真实状态，不能让 tee 的 0 把安装失败盖过去。
+    # 返回安装命令的退出码，避免 tee 成功掩盖安装失败。
     Install_MPHP8x 2>&1 | tee /root/install-mphp${PHP_Branch}.log
     return ${PIPESTATUS[0]}
 }
@@ -126,7 +126,7 @@ EOF
     fi
 }
 
-# 各版本入口，供 profile.sh 的 MPHP_Install 派发
+# profile.sh 通过对应入口安装各 PHP 分支。
 Install_MPHP8.0() { MPHP_Short_Ver="8.0"; Install_MPHP8x; }
 Install_MPHP8.1() { MPHP_Short_Ver="8.1"; Install_MPHP8x; }
 Install_MPHP8.2() { MPHP_Short_Ver="8.2"; Install_MPHP8x; }

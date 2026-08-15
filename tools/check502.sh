@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Restart php-fpm when 502 Bad Gateway occurs (use with crontab)
+# 配合 crontab 定时检查站点，返回 502 时重启 PHP-FPM 以恢复请求处理。
 
 CheckURL="http://www.xxx.com"
 

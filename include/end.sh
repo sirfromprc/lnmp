@@ -13,18 +13,16 @@ Add_Iptables_Rules()
     Firewall_Allow tcp 80
     Firewall_Allow tcp 443
     Firewall_Allow_ICMP
-    # 数据库端口只挡外部新建连接，本机经 lo 访问不受影响
+    # 数据库端口拒绝外部新建连接，本机经回环接口访问不受影响。
     Firewall_Block tcp "${DB_Port}"
-    # 33060 是 MySQL X Protocol，功能上等价于 3306（一样能跑 SQL）。
-    # 它不受 my.cnf 的 bind-address 约束，只挡 3306 会留下一个等价入口。
-    # MariaDB 没有这个端口，多这条规则也无副作用。
+    # MySQL X Protocol 可通过 33060 执行数据库操作，且不受 my.cnf 中
+    # bind-address 的约束，因此需要单独限制外部访问；MariaDB 不使用此端口。
     Firewall_Block tcp "${DB_X_Port}"
 
     Firewall_Save
 }
 
-# 保证两个常用绝对路径指向相同内容且权限固定为 755。
-# /bin 与 /usr/bin 在 merged-/usr 系统上是同一目录，在旧布局上则不是。
+# 同步两个常用命令路径并固定权限，兼容 merged-/usr 与传统目录布局。
 Sync_LNMP_Command_Alias()
 {
     local tmp
@@ -74,8 +72,7 @@ Install_Current_LNMP_Command()
     Install_LNMP_Command "${installed_stack}"
 }
 
-# 管理命令和备份实现要一起安装：lnmp backup 子命令调用 /bin/lnmp-backup，
-# 只更新其中一个会让新版 lnmp 调到旧版或根本不存在的备份脚本。
+# 管理命令依赖配套工具，需同步安装以保证各子命令可用。
 Install_LNMP_Command()
 {
     local stack=$1 source target
@@ -101,13 +98,11 @@ Install_LNMP_Command()
         fi
     done
 
-    # /bin 在主流发行版通常与 /usr/bin 合并，但不能依赖这一点。用户直接执行
-    # /usr/bin/lnmp 时也必须得到同一个、权限正确的管理命令。
+    # 保证从 /bin 或 /usr/bin 调用时使用同一份管理命令。
     Sync_LNMP_Command_Alias || return 1
 
     Install_Tgnotice_Profile || return 1
-    # tools/ 目录下的脚本在仓库里是 644（git 不记录可执行位），README/HowtoGuides
-    # 里都是 ./tools/xxx.sh 直接调用；不补权限会导致装完之后直接 Permission denied。
+    # 工具脚本需要可执行权限，以支持通过 ./tools/xxx.sh 直接调用。
     if ! chmod 755 "${cur_dir}"/tools/*.sh 2>/dev/null; then
         Echo_Red "设置 tools/ 目录脚本权限失败，请手动执行: chmod 755 ${cur_dir}/tools/*.sh"
         return 1
@@ -115,13 +110,12 @@ Install_LNMP_Command()
     return 0
 }
 
-# 让 tgnotice 函数在登录 shell 里直接可用，脚本里写 tgnotice "..." 即可。
-# 只在 bash 下加载：函数用到了 bash 的数组与字符串操作，dash 跑不了。
+# 在 Bash 登录环境中加载 tgnotice；该函数依赖 Bash 数组与字符串操作。
 Install_Tgnotice_Profile()
 {
     mkdir -p /etc/profile.d 2>/dev/null || return 0
     cat > /etc/profile.d/lnmp-tgnotice.sh <<'PROFILE_EOF'
-# 由 LNMP 安装流程生成：加载 tgnotice 函数。
+# LNMP 通知函数，仅在 Bash 环境中加载。
 # 用法：tgnotice "文本"        默认 HTML
 #       tgnotice "文本" md     MarkdownV2
 if [ -n "${BASH_VERSION:-}" ] && [ -r /bin/lnmp-tgnotice ]; then
@@ -146,8 +140,7 @@ Add_LNMP_Startup()
     fi
 }
 
-# 三个 Add_*_Startup 原本各有一份逐字相同的数据库启动块，现合并。
-# 管理脚本不再固化 mysql/mariadb；每次执行时按现有 unit/init 脚本检测。
+# 各安装栈共用数据库启动流程，并按已安装的服务类型启用对应服务。
 Startup_DB()
 {
     if [ "${DB_Kind}" = "none" ]; then
@@ -259,11 +252,8 @@ Clean_DB_Src_Dir()
     [ "${DB_Kind}" = "none" ] && return 0
     [ -n "${DB_Ver}" ] && rm -rf ${cur_dir}/src/${DB_Ver}
 
-    # Boost 源码目录清理只跟安装时动态解析的 Get_Boost_Ver 走。
-    # version.sh 的 Boost_Ver/Boost_New_Ver 仅供探测与校验清单使用，
-    # 不参与安装目录选择。
-    #
-    # 必须检查非空值，避免变量为空时 rm -rf ${cur_dir}/src/ 删除整个 src 目录。
+    # Boost 清理范围由安装时解析的 Get_Boost_Ver 确定；非空检查可防止
+    # 变量缺失时误删整个 src 目录。
     if [ "${DB_Needs_Boost}" = "y" ]; then
         [ -n "${Get_Boost_Ver}" ] && [ -d "${cur_dir}/src/boost_${Get_Boost_Ver}" ] && rm -rf ${cur_dir}/src/boost_${Get_Boost_Ver}
     fi
@@ -319,7 +309,7 @@ Print_Sucess_Info()
         "LNMP V${LNMP_Ver} 安装完成" \
         "运行 lnmp {start|stop|reload|restart|kill|status} 管理服务" \
         "仅使用上游官方源码，并强制校验完整性"
-    # 统一用 Print_Banner 输出安装摘要，中文与英文混排时也能保持边框对齐。
+    # 安装摘要统一使用横幅格式，便于查看访问地址和常用管理入口。
     local summary_lines=()
     if [ "${Enable_PhpMyAdmin}" = "y" ]; then
         summary_lines+=("phpMyAdmin：http://IP/$(cat ${PhpMyAdmin_Url_File} 2>/dev/null)/")
@@ -342,9 +332,7 @@ Print_Sucess_Info()
     echo "LNMP 安装耗时 $(((stop_time-start_time)/60)) 分钟。"
     Echo_Green "LNMP V${LNMP_Ver} 安装完成。"
 
-    # 校验被关掉时，在最后再说一次。
-    # 安装过程刷屏几千行，开头的警告早滚没了；而这句话决定了这台机器上的
-    # 组件到底有没有可信来源，必须让人在流程结束时还看得见。
+    # 完整性校验关闭时在安装结束处再次提示，便于确认组件来源可信度。
 
     if [ "${Enable_Download_Checksum}" != "y" ]; then
         echo
@@ -369,18 +357,8 @@ Print_Failed_Info()
     return 1
 }
 
-# ---------------------------------------------------------------------------
-# Check_Firewall_Result — 防火墙是否真的配上了。
-#
-# 组件文件齐全 ≠ 安装成功。`Add_Iptables_Rules` 失败时会返回 1 并置
-# FW_Failed='y'，但三个安装栈都是无条件往下走的，最终检查又只看组件文件 ：
-# 于是「nftables 缺失 / 规则写入失败 / 持久化失败」这些情况下，
-# 安装照样以 0 退出并打印"完成"，而 3306 就那么暴露着。
-# 自动化只看退出码时，根本发现不了安全控制已经失效。
-#
-# 现在把它并入成功判定：防火墙没配上就不算安装成功。
-# 组件本身仍然可用（该装的都装了），但退出码是 1，且明确告诉用户下一步做什么。
-# ---------------------------------------------------------------------------
+# 防火墙初始化、规则写入或持久化失败时返回非零。组件可能仍可运行，
+# 但数据库等端口的暴露状态需要人工确认后才能视为安装完成。
 Check_Firewall_Result()
 {
     [ "${FW_Failed}" != 'y' ] && return 0
@@ -400,17 +378,8 @@ Check_Firewall_Result()
     return 1
 }
 
-# ---------------------------------------------------------------------------
-# Check_DB_Init_Result — 数据库初始化 SQL 是否真的执行成功。
-#
-# Check_DB_Files 只看数据库客户端、safe 启动器和 /etc/my.cnf 在不在，
-# 那只能说明「装上了」。初始化 SQL 失败时（典型是客户端缺运行库跑不起来），
-# 匿名账号、test 库、远程 root 授权是否被清掉完全没有依据 ——
-# 恰好干净不等于处理正确。
-#
-# 与 Check_Firewall_Result 同一处理方式：组件仍然可用，但退出码为 1，
-# 并明确指出是哪些步骤失败、该怎么补。
-# ---------------------------------------------------------------------------
+# 数据库文件存在仅表示组件已安装，不能证明安全初始化已经完成。
+# 任一初始化步骤失败时返回非零，并提示核对账号、测试库和远程授权。
 Check_DB_Init_Result()
 {
     [ "${DB_Init_Failed}" != 'y' ] && return 0
@@ -435,8 +404,7 @@ Check_LNMP_Install()
     Check_PHP_Files
     if [[ "${isNginx}" = "ok" && "${isDB}" = "ok" && "${isPHP}" = "ok" ]]; then
         Print_Sucess_Info
-        # 组件齐全但防火墙或数据库初始化失败 → 仍然返回非零，
-        # 不让自动化误判为成功。两项都要检查，不能因为前一项失败就跳过后一项。
+        # 组件齐全后仍需分别检查防火墙和数据库初始化，两项均通过才返回成功。
         local rc=0
         Check_Firewall_Result || rc=1
         Check_DB_Init_Result || rc=1

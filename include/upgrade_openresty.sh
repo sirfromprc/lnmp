@@ -1,23 +1,12 @@
 #!/usr/bin/env bash
-#
-# upgrade_openresty.sh — 升级 OpenResty
-#
-# 升级方式取决于当初是怎么装的，自动判定，不问用户：
-#
+# 根据现有 OpenResty 的安装方式自动选择升级路径：
 #   包安装的   → 走包管理器升级（apt-get install --only-upgrade / dnf update）
-#               配置文件由包管理器按 conffile 规则处理，本包铺的
-#               nginx.conf 属于"被本地修改过的配置"，apt 会询问或保留，
-#               这里统一用 --force-confold 保留本地版本（站点配置不能被覆盖）。
-#
+#               使用 --force-confold 保留当前站点配置。
 #   源码装的   → 下载新版源码、验签、重新编译安装到同一前缀。
-#               conf/ 目录不动（OpenResty 的 make install 不覆盖已存在的
-#               nginx.conf），vhost 配置自然保留。
-#
+#               保留现有 conf 和虚拟主机配置。
 # 判定依据：包管理器里有没有 openresty 这个包。
 
-# ---------------------------------------------------------------------------
-# OpenResty_Installed_By — 返回 pkg / source / none
-# ---------------------------------------------------------------------------
+# 返回 OpenResty 安装类型：pkg、source 或 none。
 OpenResty_Installed_By()
 {
     if [ ! -d /usr/local/openresty ]; then
@@ -66,9 +55,7 @@ Upgrade_OpenResty()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# Upgrade_OpenResty_Pkg — 包方式升级
-# ---------------------------------------------------------------------------
+# 通过系统包管理器升级 OpenResty。
 Upgrade_OpenResty_Pkg()
 {
     if [ "${PM}" = "apt" ]; then
@@ -92,9 +79,7 @@ Upgrade_OpenResty_Pkg()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# Upgrade_OpenResty_Source — 源码方式升级
-# ---------------------------------------------------------------------------
+# 通过官方源码升级 OpenResty。
 Upgrade_OpenResty_Source()
 {
     local ver tarball url
@@ -129,13 +114,12 @@ Upgrade_OpenResty_Source()
         return 1
     fi
 
-    # 备份现有配置目录。make install 通常不会覆盖已有 conf，
-    # 但升级是不可逆操作，先留一份再说。
+    # 升级前备份现有配置目录，供安装异常时恢复。
     local bak="/usr/local/openresty/nginx/conf.bak.${Upgrade_Date}"
     cp -a /usr/local/openresty/nginx/conf "${bak}" && \
         echo "已备份配置到 ${bak}"
 
-    # 初装时配的模块要一并带过来，否则升级会编译出一个不含模块的版本
+    # 沿用安装时的模块配置，避免升级后缺少现有功能。
     if ! OR_Modules_Load_Persisted; then
         Echo_Red "读取已记录的模块配置失败，升级中止。"
         return 1
@@ -178,8 +162,7 @@ Upgrade_OpenResty_Source()
     cd "${cur_dir}/src/"
     rm -rf "${cur_dir}/src/openresty-${ver}"
 
-    # 动态模块的 .so 换了新版本，load_module 列表要重写；
-    # 这一步在 nginx -t 之前完成，否则重载会因缺文件失败。
+    # 重写新版本动态模块的加载清单，并在配置检查前确保引用文件存在。
     if ! OR_Modules_Post_Build; then
         Echo_Red "生成模块与 Lua 路径配置失败。"
         return 1

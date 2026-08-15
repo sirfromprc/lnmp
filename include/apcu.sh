@@ -14,7 +14,7 @@ Install_Apcu()
 
     cd ${cur_dir}/src
 
-    # 保留的 PHP 全部是 8.x，统一用 PHPNewApcu_Ver，改走 pecl 官方源
+    # 支持的 PHP 8.x 使用 PHPNewApcu_Ver，并从 PECL 官方源下载。
     Download_Files https://pecl.php.net/get/${PHPNewApcu_Ver}.tgz ${PHPNewApcu_Ver}.tgz
     Require_File "${PHPNewApcu_Ver}.tgz" "pecl apcu"
     Tar_Cd ${PHPNewApcu_Ver}.tgz ${PHPNewApcu_Ver}
@@ -26,7 +26,7 @@ Install_Apcu()
 
     cd ..
 
-    # apcu_bc 仅 PHP 7 需要，随 PHP<8.0 裁剪一并移除
+    # apcu_bc 仅适用于 PHP 7，PHP 8 无需安装。
     rm -rf ${cur_dir}/src/${PHPNewApcu_Ver}
 
     cat >${PHP_Path}/conf.d/009-apcu.ini<<EOF

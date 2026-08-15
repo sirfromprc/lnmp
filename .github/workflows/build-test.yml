@@ -1,8 +1,7 @@
 # 真编译验证。被 upstream-check.yml 和 release.yml 调用（workflow_call），
 # 也可以手动触发。
 #
-# 为什么非要真编译：本项目最难查的一类问题是 lua-resty-core 与
-# lua-nginx-module 的版本断言。它写在 base.lua 里，由 **Lua 运行时**执行：
+# lua-resty-core 与 lua-nginx-module 的版本断言位于 base.lua，只在 Lua 运行时执行：
 #
 #     ./configure  通过
 #     make         通过
@@ -10,10 +9,9 @@
 #     nginx 启动   通过
 #     第一次访问带 Lua 的 location  → 500
 #
-# 前面每一道都会给绿灯。所以 lua 这一档最后必须真发一次请求并比对响应体。
+# 因此 Lua 验证必须发送真实请求并比对响应体。
 #
-# 容器用 debian:12，与本项目的目标发行版一致 —— 在 ubuntu-latest 上编过
-# 不代表在 Debian 12 上编得过（libpcre3-dev 在新发行版已被移除就是例子）。
+# 容器使用目标发行版 debian:12，避免 ubuntu-latest 的依赖差异掩盖构建问题。
 
 name: Build Test
 
@@ -67,7 +65,7 @@ jobs:
         if: inputs.artifact != ''
         run: grep -E "^(Nginx_Ver|PHP_Ver|Lua)" include/version.sh || true
 
-      - name: 离线一致性检查（先排掉低级错误再花时间编译）
+      - name: 编译前离线一致性检查
         run: bash t/consistency.sh
 
       - name: 编译并验证
@@ -129,8 +127,7 @@ jobs:
       - name: 编译并验证
         run: bash t/build_test.sh php
 
-  # 汇总节点：供上游工作流用 needs 依赖单个 job，
-  # 不必关心 full 模式下多出来的两个 job 是否被跳过。
+  # 汇总节点为调用方提供单一 needs 结果，并兼容 quick 模式的 skipped 状态。
   result:
     name: 构建验证结论
     if: always()

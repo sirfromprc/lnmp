@@ -10,8 +10,7 @@ if [ $(id -u) != "0" ]; then
 fi
 
 cur_dir=$(cd "$(dirname "$0")/.." && pwd)
-# 脚本被复制到源码目录之外执行时，上面推导出的 cur_dir 是错的，加载会失败。
-# 不检查的话后面每个公共函数都会 command not found，却还继续往下跑。
+# 校验源码目录，避免在其他位置执行时因公共函数未加载而继续重置密码。
 if [ ! -f "${cur_dir}/include/main.sh" ]; then
     echo "错误：找不到 ${cur_dir}/include/main.sh。"
     echo "请在 LNMP 源码目录内执行本脚本，例如 ./tools/$(basename "$0")。"
@@ -84,7 +83,7 @@ if [ -z "${DB_Ver}" ]; then
 fi
 echo "检测到：${DB_Name} ${DB_Ver}"
 
-# Version_GE <a> <b>：a >= b 返回 0。使用 sort -V 避免按字典序比较版本号。
+# Version_GE <a> <b>：a >= b 时返回 0；sort -V 按版本段比较，避免字典序误判。
 Version_GE()
 {
     [ -z "$1" ] && return 1
@@ -103,7 +102,7 @@ if ! Version_GE "${DB_Ver}" "${Min_Ver}"; then
     exit 1
 fi
 
-# --- 读密码：不回显、两次确认 -----------------------------------------------
+# --- 读取密码：不回显并要求两次输入一致 -----------------------------
 while :; do
     DB_Root_Password=''
     DB_Root_Password2=''
@@ -123,10 +122,8 @@ while :; do
 done
 unset DB_Root_Password2
 
-# SQL 单引号字符串的转义：反斜杠和单引号。
-# 不做这一步的话，含 ' 的合法密码会让语句语法错误，构造过的输入还能改变 SQL 语义。
-# 使用参数展开，避免额外的引号转义和外部命令依赖。
-# 顺序不能反：必须先转反斜杠，否则会把下一步加进去的转义符再转一遍。
+# 转义 SQL 单引号字符串中的反斜杠和单引号，防止合法密码引发语法错误或改变 SQL 语义。
+# 使用参数展开可避免外部命令依赖。反斜杠必须先转义，否则后续新增的转义符会被重复处理。
 Sql_Escape()
 {
     local v="$1"
@@ -136,7 +133,7 @@ Sql_Escape()
 }
 Sql_Escaped_Password=$(Sql_Escape "${DB_Root_Password}")
 
-# --- 私有工作目录：root 独占，trap 清理 -------------------------------------
+# --- 私有工作目录：限制访问并在退出时清理 -------------------------
 Work_Dir=$(mktemp -d /run/lnmp-dbreset.XXXXXXXX 2>/dev/null) \
     || Work_Dir=$(mktemp -d /tmp/lnmp-dbreset.XXXXXXXX) || exit 1
 chmod 700 "${Work_Dir}"
@@ -156,7 +153,7 @@ ALTER USER 'root'@'localhost' IDENTIFIED BY '${Sql_Escaped_Password}';
 EOF
 chmod 600 "${Init_Sql}"
 
-# mysqld 以数据库自己的用户运行，得能读到 init-file 与写工作目录
+# mysqld 使用数据库服务账号运行，该账号需要读取 init-file 并写入工作目录。
 DB_User=$(awk -F= '/^[[:space:]]*user[[:space:]]*=/{gsub(/[[:space:]]/,"",$2); print $2; exit}' /etc/my.cnf 2>/dev/null)
 [ -z "${DB_User}" ] && DB_User="${DB_Name}"
 if id "${DB_User}" >/dev/null 2>&1; then
@@ -166,7 +163,7 @@ else
     DB_User='root'
 fi
 
-# --- 停掉正在跑的服务 --------------------------------------------------------
+# --- 停止当前数据库服务 ----------------------------------------------------
 echo "正在停止 ${DB_Name}..."
 /etc/init.d/${DB_Name} stop >/dev/null 2>&1
 Waited=0
@@ -185,10 +182,10 @@ while DB_Server_Running; do
     Waited=$((Waited + 2))
 done
 
-# --- 用官方 --init-file 流程拉起临时实例 -------------------------------------
+# --- 使用官方 --init-file 流程启动临时实例 -------------------------------
 #
-# --skip-networking  强制只走 Unix socket，重置窗口内不对网络暴露任何东西
-# --socket/--pid-file 指到私有目录，这样后面能确认"关闭的是本次启动的实例"
+# --skip-networking 强制仅通过 Unix socket 访问，密码重置期间不开放网络连接。
+# --socket 和 --pid-file 使用私有目录，以便准确识别并关闭临时实例。
 echo "正在启动临时 ${DB_Name} 实例（仅使用 init-file 和本地 socket）..."
 "${DB_Safe}" \
     --user="${DB_User}" \
@@ -198,7 +195,7 @@ echo "正在启动临时 ${DB_Name} 实例（仅使用 init-file 和本地 socke
     --pid-file="${Tmp_Pid}" \
     >"${Tmp_Log}" 2>&1 &
 
-# 轮询等待就绪，而不是固定 sleep
+# 通过 ping 轮询临时实例，最长等待 120 秒。
 Ready='n'
 Waited=0
 while [ ${Waited} -lt 120 ]; do
@@ -219,18 +216,18 @@ if [ "${Ready}" != 'y' ]; then
     exit 1
 fi
 
-# 确认拿到的确实是本次启动的实例：它必须写出了指定的 pid 文件
+# 指定的 pid 文件必须存在，用于确认后续操作针对本次启动的临时实例。
 if [ ! -s "${Tmp_Pid}" ]; then
     echo "错误：临时实例没有写出预期的 pid 文件，无法确认身份，中止。"
     exit 1
 fi
 Tmp_Mysqld_Pid=$(cat "${Tmp_Pid}")
 
-# --- 关掉临时实例，恢复正常服务 ---------------------------------------------
+# --- 关闭临时实例并恢复正常服务 -----------------------------------------
 echo "正在关闭临时实例..."
-# init-file 中的 ALTER USER 已经让新密码立即生效，不能再用无凭据的
-# mysqladmin shutdown。前面已通过专用 pid 文件确认实例身份，向该 pid 发送
-# SIGTERM 会让 mysqld 走正常关闭流程，也不需要把新密码再写进命令行或配置文件。
+# ALTER USER 执行后新密码已生效，无凭据的 mysqladmin shutdown 无法使用。
+# 向专用 pid 文件标识的进程发送 SIGTERM，可正常关闭临时实例，
+# 且无需将新密码写入命令行或配置文件。
 if ! kill -TERM "${Tmp_Mysqld_Pid}" 2>/dev/null; then
     echo "错误：无法向临时实例发送关闭信号（pid ${Tmp_Mysqld_Pid}）。"
     exit 1

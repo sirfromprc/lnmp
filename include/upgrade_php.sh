@@ -1,17 +1,6 @@
 #!/usr/bin/env bash
-#
 # PHP 升级。2.3 起仅支持升级到 PHP 8.0+。
-#
-# 原文件 1225 行，含 Upgrade_PHP_52 / _53 / _54 / _556 / _7 / _72 / _73 / _74
-# 八个已停止支持分支的升级函数（合计 678 行），以及 Upgrade_PHP_80..83 四份
-# 几乎逐字相同的副本。现全部收敛为单个 Upgrade_PHP_8x。
-#
-# 同时移除：
-#   - Zend Guard Loader / ZendOptimizer 下载（闭源二进制，仅 PHP 5.x 可用，
-#     且下载地址走站长镜像 ${Download_Mirror}/web/zend/...）
-#   - src/patch/php-5.* 系列补丁调用
-#   - libphp5.so / libphp7.so 分支（PHP 8 统一为 libphp.so）
-#   - Install_PHP_Dependent 中 country=CN 的 EPEL 镜像改写
+# 所有 PHP 8.x 分支使用统一升级流程，Apache 模块统一为 libphp.so。
 
 Check_Stack_Choose()
 {
@@ -65,12 +54,9 @@ Start_Upgrade_PHP()
     Check_Openssl
 }
 
-# ---------------------------------------------------------------------------
-# 升级 PHP 的事务辅助：切换、回滚、冒烟测试
-#
+# PHP 升级使用事务式切换：
 # 顺序：构建 → 装到暂存目录 → 冒烟测试 → 停服务 → 原子切换 → 起服务 → 复检
 # 任何一步失败都把旧目录、init 脚本、Apache 模块与配置换回去并重启服务。
-# ---------------------------------------------------------------------------
 PHP_Old_Dir=""
 
 Rollback_PHP()
@@ -96,7 +82,7 @@ Rollback_PHP()
     Echo_Red "已恢复升级前的 PHP。请检查站点是否正常。"
 }
 
-# 用暂存目录里的新 PHP 做冒烟测试：能不能跑、版本对不对
+# 确认暂存目录中的 PHP 可执行且版本正确。
 Smoke_Test_PHP()
 {
     local root="$1" out
@@ -113,7 +99,7 @@ Smoke_Test_PHP()
     return 0
 }
 
-# 停服务 → 备份旧目录 → 把暂存目录搬到 /usr/local/php
+# 停止服务、备份旧目录并将暂存版本切换到 /usr/local/php。
 Switch_To_New_PHP()
 {
     local stage="$1"
@@ -126,8 +112,7 @@ Switch_To_New_PHP()
         mv /usr/local/php "${PHP_Old_Dir}" || return 1
         mv /etc/init.d/php-fpm "${PHP_Old_Dir}/init.d.php-fpm.bak.${Upgrade_Date}"
     else
-        # PHP 8 的 Apache 模块统一为 libphp.so；原 libphp5.so / libphp7.so
-        # 备份分支与「7.x 降级到 5.x 时删 LoadModule」的处理已随旧分支删除。
+        # PHP 8 的 Apache 模块统一使用 libphp.so。
         [ -s /usr/local/apache/modules/libphp.so ] && \
             \cp /usr/local/apache/modules/libphp.so /usr/local/apache/modules/libphp.so.bak.${Upgrade_Date}
         mv /usr/local/php "${PHP_Old_Dir}" || return 1
@@ -182,8 +167,7 @@ Install_PHP_Dependent()
     fi
 
     if echo "${CentOS_Version}" | grep -Eqi "^7" || echo "${RHEL_Version}" | grep -Eqi "^7"  || echo "${Aliyun_Version}" | grep -Eqi "^2" || echo "${Alibaba_Version}" | grep -Eqi "^2" || echo "${Oracle_Version}" | grep -Eqi "^7" || echo "${Anolis_Version}" | grep -Eqi "^7"; then
-        # 原此处在 country=CN 时把 EPEL 的 metalink 改写为 mirrors.ustc.edu.cn，
-        # 地理探测移除后一并删除，统一用官方 EPEL。
+        # 依赖统一通过官方 EPEL 软件源安装。
         if [ "${DISTRO}" = "Oracle" ]; then
             yum -y install oracle-epel-release
         else
@@ -238,7 +222,7 @@ Check_PHP_Upgrade_Files()
         fi
     fi
 
-    # 文件在只是最低标准，还要确认跑起来的确实是目标版本
+    # 除文件完整外，还需确认运行版本及 PHP-FPM 主进程状态。
     local run_ver
     run_ver=$(/usr/local/php/bin/php -v 2>&1 | head -n1)
     if ! echo "${run_ver}" | grep -q "PHP ${php_version}"; then
@@ -255,10 +239,7 @@ Check_PHP_Upgrade_Files()
     return 0
 }
 
-# Upgrade_PHP_8x — PHP 8.x 升级的唯一实现
-#
-# 原 Upgrade_PHP_80 / _81 / _82 / _83 是四份逐字相同的副本
-# （_84 / _85 已是调用 _83 的壳），差异只有 8.0 需要的 openssl3 补丁。
+# PHP 8.x 的统一升级实现；PHP 8.0 按需应用 OpenSSL 3 兼容补丁。
 Upgrade_PHP_8x()
 {
     Install_Libzip
@@ -277,9 +258,7 @@ Upgrade_PHP_8x()
         exit 1
     fi
 
-    # 装到暂存目录而不是直接覆盖 /usr/local/php。
-    # PHP 的 make install 支持 INSTALL_ROOT（等价于 DESTDIR），
-    # 产出落在 ${PHP_Stage}/usr/local/php，路径前缀仍是编译时定的 /usr/local/php。
+    # 使用 INSTALL_ROOT 安装到暂存目录，检查通过前不覆盖当前 PHP。
     PHP_Stage="${cur_dir}/src/.php-stage.$$"
     rm -rf "${PHP_Stage}"
     mkdir -p "${PHP_Stage}" || exit 1
@@ -305,7 +284,7 @@ Upgrade_PHP_8x()
         exit 1
     fi
 
-    # 到这里才停服务并切换；失败自动回滚
+    # 冒烟检查通过后再停服切换，失败时恢复旧版本。
     if ! Switch_To_New_PHP "${PHP_Stage}"; then
         Rollback_PHP
         rm -rf "${PHP_Stage}"
@@ -318,7 +297,7 @@ Upgrade_PHP_8x()
     mkdir -p /usr/local/php/{etc,conf.d}
     \cp php.ini-production /usr/local/php/etc/php.ini
 
-    # php extensions
+    # 配置 PHP 扩展及运行参数。
     echo "正在修改 php.ini..."
     sed -i 's/post_max_size =.*/post_max_size = 50M/g' /usr/local/php/etc/php.ini
     sed -i 's/upload_max_filesize =.*/upload_max_filesize = 50M/g' /usr/local/php/etc/php.ini
@@ -369,7 +348,7 @@ EOF
     LNMP_PHP_Opt
 fi
     if [ "${Stack}" != "lnmp" ]; then
-        # 清理旧模块的 LoadModule 行（从 PHP 5/7 升上来的遗留）
+        # 清理旧 PHP 5/7 Apache 模块的 LoadModule 残留。
         sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
         sed -i '/^LoadModule php7_module/d' /usr/local/apache/conf/httpd.conf
     fi
@@ -387,6 +366,6 @@ fi
 Upgrade_PHP()
 {
     Start_Upgrade_PHP
-    # 版本白名单已在 Start_Upgrade_PHP 中校验，此处直接走统一实现
+    # 目标版本验证通过后进入统一升级流程。
     Upgrade_PHP_8x
 }

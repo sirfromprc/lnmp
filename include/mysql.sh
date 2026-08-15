@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
-# MySQL_Branch — 返回当前操作的 MySQL 主版本号（如 5.7 / 8.0 / 8.4）
-# 安装路径由 Set_DB_Profile 设定 DB_Branch；升级路径只有用户输入的 mysql_version。
+# 返回当前操作的 MySQL 主版本号；安装使用 DB_Branch，升级使用输入版本。
 MySQL_Branch()
 {
     if [ "${DB_Kind}" = "mysql" ] && [ -n "${DB_Branch}" ]; then
@@ -36,15 +35,11 @@ MySQL_Sec_Setting()
     /etc/init.d/mysql restart
     sleep 2
 
-    # 先确认客户端本身跑得起来。跑不起来时下面每一步都会失败，
-    # 这里把原始的动态链接报错打出来，并直接置初始化失败标记。
+    # 安全初始化依赖可用的客户端，因此在执行 SQL 前先验证运行能力。
     Check_DB_Client_Runnable /usr/local/mysql/bin/mysql
 
-    # 指定 --defaults-file 使其只读 /etc/my.cnf。初始化后的 root 密码为空，
-    # 但残留的 ~/.my.cnf 会让客户端带旧密码连接，本步骤将因此失败。
-    #
-    # 两条设置途径互为备份，第一条失败是可以接受的。它的报错先收起来，
-    # 只有两条都失败时才展示，避免在正常安装过程中打印会被误认为故障的错误。
+    # 仅加载 /etc/my.cnf，避免残留的 ~/.my.cnf 携带旧密码。第一种设置方式
+    # 失败时尝试空密码连接，两种方式均失败才显示原始错误。
     local first_error
     first_error=$(/usr/local/mysql/bin/mysqladmin --defaults-file=/etc/my.cnf \
                   -u root password "${DB_Root_Password}" 2>&1)
@@ -169,25 +164,17 @@ MySQL_Opt()
     fi
 }
 
-# ---------------------------------------------------------------------------
-# MySQL_Deprecated_Opt — 把 /etc/my.cnf 里 MySQL 8.4 已弃用的项换成等价写法
-#
-# 8.4 启动时会对下面三项报 deprecation warning：
+# 将 /etc/my.cnf 中 MySQL 8.4 弃用项转换为等价配置：
 #   binlog_format            8.4 只剩 ROW 一种取值，显式设置已无意义
 #   innodb_log_file_size     \ 两项合并为 innodb_redo_log_capacity
 #   innodb_log_files_in_group/  （8.0.30 引入，8.4 起是唯一的配置方式）
-#
-# 放在 MySQL_Opt 之后执行：先由 MySQL_Opt 按内存分档算出 innodb_log_file_size，
-# 这里再换算成等价的 redo 容量。旧配置默认 2 个日志文件，故总量为 ×2。
-#
+# MySQL_Opt 先按内存确定日志文件大小，再按两个日志文件换算 redo 总容量。
 # 只对 8.4 及以上生效；8.0 仍然接受旧写法，不动它以免影响既有实例的行为。
-# ---------------------------------------------------------------------------
 MySQL_Deprecated_Opt()
 {
     local branch size num unit
 
-    # 升级路径以用户输入的目标版本为准。MySQL_Branch 会优先返回 lnmp.conf 里
-    # DBSelect 派生的 DB_Branch，那是安装时的选择，未必等于本次要升到的版本。
+    # 升级时以目标版本为准，避免使用安装配置中的旧分支。
     if [ -n "${mysql_version:-}" ]; then
         branch=$(echo "${mysql_version}" | cut -d. -f1-2)
     else
@@ -200,7 +187,7 @@ MySQL_Deprecated_Opt()
     size=$(awk -F= '/^innodb_log_file_size/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' /etc/my.cnf)
     num=${size%[MGmg]}
     unit=${size#"${num}"}
-    # 取不到值（例如上游模板改过）时用 MySQL 自己的默认值 100M，不做换算
+    # 无法解析日志大小时使用 MySQL 默认的 100M redo 总容量。
     if [ -z "${num}" ] || echo "${num}" | grep -qv '^[0-9]\+$'; then
         num=50
         unit=M
@@ -209,7 +196,7 @@ MySQL_Deprecated_Opt()
 
     sed -i "s#^innodb_log_file_size.*#innodb_redo_log_capacity = $((num * 2))${unit}#" /etc/my.cnf
     sed -i '/^innodb_log_files_in_group/d' /etc/my.cnf
-    # binlog_format 直接删除：8.4 的唯一取值 ROW 就是默认值
+    # MySQL 8.4 的 binlog_format 仅支持默认值 ROW，无需显式配置。
     sed -i '/^binlog_format/d' /etc/my.cnf
 }
 
@@ -235,7 +222,7 @@ Install_MySQL_80()
         Echo_Blue "[+] 正在使用源码安装 ${Mysql_Ver}..."
         Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
         Install_Boost
-        # Install_Boost 下载外部 Boost 时会回到 src/，这里显式回到 MySQL 源码树。
+        # Boost 准备完成后返回 MySQL 源码目录继续构建。
         cd "${cur_dir}/src/${Mysql_Ver}" || exit 1
         mkdir build && cd build
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
@@ -253,24 +240,10 @@ socket      = /tmp/mysql.sock
 [mysqld]
 port        = ${DB_Port}
 socket      = /tmp/mysql.sock
-# 默认仅监听回环地址，避免数据库在安装完成后直接暴露到公网。
-#
-# 防火墙里虽然有一条 3306 drop，但那是第二道防线：nftables 缺失、
-# 规则写入失败、或者管理员自己调整防火墙时，唯一还挡着的就是这一行。
-
-#
-# 确实需要远程连库时，改成具体地址（不要用 0.0.0.0），
-# 同时在防火墙里按来源 IP 放行，并确认账号的 Host 授权范围。
+# 仅监听回环地址，防止防火墙失效时数据库直接暴露到公网。
+# 远程访问应绑定具体地址，并按来源 IP 配置防火墙和账号 Host 权限。
 bind-address = 127.0.0.1
-# bind-address 管不到 X Protocol（33060 端口）。它由独立的
-# mysqlx_bind_address 控制，默认值是 *，也就是说只写上面那行的话，
-# 33060 仍会监听所有地址；2026-08 回归测试结果如下：
-#   LISTEN 127.0.0.1:3306   （已收敛）
-#   LISTEN *:33060          （仍然敞开）
-# X Protocol 能执行和 3306 等价的 SQL，堵了 3306 却漏了它等于没堵。
-#
-# loose- 前缀：X Plugin 被显式关闭（mysqlx=OFF）时这个选项就不存在，
-# 不加前缀 mysqld 会因「未知选项」拒绝启动。加了则降级为一条警告。
+# X Protocol 使用独立监听地址；loose- 前缀兼容已关闭 X Plugin 的配置。
 loose-mysqlx-bind-address = 127.0.0.1
 loose-mysqlx-port = ${DB_X_Port}
 datadir = ${MySQL_Data_Dir}
@@ -331,12 +304,11 @@ ${MySQLMAOpt}
 EOF
 
     MySQL_Opt
-    # 8.4 及以上把弃用项换成等价写法；8.0 走进去会直接返回
+    # MySQL 8.4 及以上转换弃用配置，8.0 保持原配置。
     MySQL_Deprecated_Opt
     Check_MySQL_Data_Dir
     chown -R mysql:mysql /usr/local/mysql
-    # 初始化失败时数据目录是空的，后面的启动、设密码、安全设置全部没有意义，
-    # 继续往下走只会刷屏并把一次失败的安装报告成部分成功。MariaDB 侧同理。
+    # 数据目录初始化失败时停止，避免继续执行无效的启动和安全设置。
     if ! /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql; then
         Echo_Red "MySQL 数据目录初始化失败：${MySQL_Data_Dir}"
         Echo_Red "请根据上面 mysqld 的报错处理后重新安装。"
@@ -367,7 +339,7 @@ Install_MySQL_84()
         Echo_Blue "[+] 正在使用源码安装 ${Mysql_Ver}..."
         Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
         Install_Boost
-        # Install_Boost 下载外部 Boost 时会回到 src/，这里显式回到 MySQL 源码树。
+        # Boost 准备完成后返回 MySQL 源码目录继续构建。
         cd "${cur_dir}/src/${Mysql_Ver}" || exit 1
         mkdir build && cd build
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
@@ -385,24 +357,10 @@ socket      = /tmp/mysql.sock
 [mysqld]
 port        = ${DB_Port}
 socket      = /tmp/mysql.sock
-# 默认仅监听回环地址，避免数据库在安装完成后直接暴露到公网。
-#
-# 防火墙里虽然有一条 3306 drop，但那是第二道防线：nftables 缺失、
-# 规则写入失败、或者管理员自己调整防火墙时，唯一还挡着的就是这一行。
-
-#
-# 确实需要远程连库时，改成具体地址（不要用 0.0.0.0），
-# 同时在防火墙里按来源 IP 放行，并确认账号的 Host 授权范围。
+# 仅监听回环地址，防止防火墙失效时数据库直接暴露到公网。
+# 远程访问应绑定具体地址，并按来源 IP 配置防火墙和账号 Host 权限。
 bind-address = 127.0.0.1
-# bind-address 管不到 X Protocol（33060 端口）。它由独立的
-# mysqlx_bind_address 控制，默认值是 *，也就是说只写上面那行的话，
-# 33060 仍会监听所有地址；2026-08 回归测试结果如下：
-#   LISTEN 127.0.0.1:3306   （已收敛）
-#   LISTEN *:33060          （仍然敞开）
-# X Protocol 能执行和 3306 等价的 SQL，堵了 3306 却漏了它等于没堵。
-#
-# loose- 前缀：X Plugin 被显式关闭（mysqlx=OFF）时这个选项就不存在，
-# 不加前缀 mysqld 会因「未知选项」拒绝启动。加了则降级为一条警告。
+# X Protocol 使用独立监听地址；loose- 前缀兼容已关闭 X Plugin 的配置。
 loose-mysqlx-bind-address = 127.0.0.1
 loose-mysqlx-port = ${DB_X_Port}
 datadir = ${MySQL_Data_Dir}
@@ -463,12 +421,11 @@ ${MySQLMAOpt}
 EOF
 
     MySQL_Opt
-    # 8.4 及以上把弃用项换成等价写法；8.0 走进去会直接返回
+    # MySQL 8.4 及以上转换弃用配置，8.0 保持原配置。
     MySQL_Deprecated_Opt
     Check_MySQL_Data_Dir
     chown -R mysql:mysql /usr/local/mysql
-    # 初始化失败时数据目录是空的，后面的启动、设密码、安全设置全部没有意义，
-    # 继续往下走只会刷屏并把一次失败的安装报告成部分成功。MariaDB 侧同理。
+    # 数据目录初始化失败时停止，避免继续执行无效的启动和安全设置。
     if ! /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql; then
         Echo_Red "MySQL 数据目录初始化失败：${MySQL_Data_Dir}"
         Echo_Red "请根据上面 mysqld 的报错处理后重新安装。"

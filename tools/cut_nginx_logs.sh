@@ -1,27 +1,26 @@
 #!/usr/bin/env bash
 #
-# nginx 日志切割（配合 crontab 使用，通常每天 0 点跑一次）
+# Nginx 日志切割，通常由 crontab 在每天 0 点执行。
 #
-# 切完的日志按 年/月 归档到 /home/wwwlogs/2026/08/default_20260810.log
+# 日志按年和月归档，例如 /home/wwwlogs/2026/08/default_20260810.log。
 
-#set the path to nginx log files
+# Nginx 日志目录。
 log_files_path="/home/wwwlogs/"
 
-#set nginx log files you want to cut (add your own vhost log names here)
+# 需要切割的日志名，可在数组中添加虚拟主机日志名。
 #
-# 默认切 default 兜底站点和本机管理端口的 access。用 lnmp vhost add 建的站点，日志名是各自的域名
-# （/home/wwwlogs/example.com.log），不会自动加入列表。新建站点后
-# 要手工把名字加进这个数组，否则那些日志会一直长下去。
+# 默认处理 default 站点和本机管理端口的 access 日志。`lnmp vhost add`
+# 创建的站点使用域名作为日志名，需手动加入数组才会定期切割。
 log_files_name=(default access)
 
-#set the path to nginx.
+# Nginx 可执行文件路径。
 nginx_sbin="/usr/local/nginx/sbin/nginx"
 
-#Set how long you want to save
+# 日志保留天数。
 save_days=30
 
 ############################################
-#Please do not modify the following script #
+# 以下为日志切割逻辑，无需修改。       #
 ############################################
 
 yesterday=$(date -d "yesterday" +"%Y%m%d")
@@ -29,10 +28,10 @@ log_files_dir="${log_files_path}$(date -d "yesterday" +"%Y")/$(date -d "yesterda
 
 mkdir -p "${log_files_dir}" || exit 1
 
-#cut nginx log files
+# 移动前一天的日志到归档目录。
 for name in "${log_files_name[@]}"; do
     src="${log_files_path}${name}.log"
-    # 站点还没产生日志时 mv 会报错刷屏，跳过即可
+    # 未生成日志的站点无需归档。
     [ -f "${src}" ] || continue
     logfile="${name##*/}"
     mv "${src}" "${log_files_dir}/${logfile}_${yesterday}.log"
@@ -41,9 +40,8 @@ done
 find "${log_files_path}" -mindepth 1 -type f -name '*.log' \
      -mtime +"${save_days}" -delete
 
-# 删掉因为上面清理而变空的年/月目录（-empty 保证不会误删还有内容的）
+# 只删除已清空的年、月目录，`-empty` 保护仍有内容的目录。
 find "${log_files_path}" -mindepth 1 -type d -empty -delete 2>/dev/null
 
-# 让 nginx 重新打开日志文件。日志已经被 mv 走，不做这一步的话
-# worker 仍持有旧 inode，继续往归档文件里写。
+# 重新打开日志文件，避免 worker 继续通过旧 inode 写入归档文件。
 "${nginx_sbin}" -s reload

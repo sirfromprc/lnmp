@@ -30,8 +30,7 @@ Install_PHP_Sodium()
         apt-get install -y libsodium-dev
     fi
 
-    # 保留的 PHP 全部 >= 8.0，sodium 一律从 PHP 源码树的 ext/sodium 编译。
-    # 原判断 '^7.[234].|8.[0-3].' 会让 PHP 8.4/8.5 落空。
+    # 当前 PHP 8.x 统一从源码树的 ext/sodium 编译扩展。
     Download_PHP_Src
 
     Tar_Cd php-${Cur_PHP_Version}.tar.bz2 php-${Cur_PHP_Version}/ext/sodium

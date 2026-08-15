@@ -1,7 +1,9 @@
 # LNMP 2.3 从零搭建 WordPress 生产环境
 
-> 本文的每一条命令都在 **Debian 12、Debian 13 / x86_64 / 6G 内存 / 4 核** 上真实执行过，
-> 输出为实际回显。
+> 主安装、建站、WordPress、Redis、HTTPS 和备份流程已在
+> **Debian 12、Debian 13 / x86_64 / 6G 内存 / 4 核** 上实测，文中的“实测输出”来自
+> 这些环境。1~2GB、3~4GB 和 5GB 以上的容量表依据当前配置生成逻辑与内存预算给出
+> 保守起点，未对每个容量档进行同等真机压测。
 > 环境组合：nginx 1.30.4 + PHP 8.3.33 + MySQL 8.4.7（官方通用二进制）
 > + Redis 8.10.0 + phpMyAdmin 5.2.3 + WordPress 7.0.3。
 >
@@ -22,6 +24,7 @@
 8. [日常运维命令](#八日常运维命令)
 9. [故障排查](#九故障排查)
 10. [安全基线](#十安全基线)
+11. [依据与校准方法](#十一依据与校准方法)
 
 ---
 
@@ -31,15 +34,36 @@
 
 | 项 | 要求 | 说明 |
 |---|---|---|
+| 权限 | **root 用户** | `install.sh` 开头检查 `id -u`，非 root 立即退出；脚本需要写系统目录、服务和防火墙 |
 | 系统 | Debian 12 / 13，Ubuntu 18.04+，EL 8+ | 主要验证目标是 Debian 系 |
-| 架构 | x86_64 | 官方 MySQL 通用二进制只提供 x86_64；其他架构会回退到源码编译 |
+| 架构 | x86_64 为主线 | 当前项目只为 x86_64 通用数据库包提供完整自动校验路径；其他架构回退源码编译，上游是否另有包不等于本项目可安全安装 |
 | 内存 | **≥ 2G** | 编译 nginx（含 Lua/Brotli/OpenSSL）与 PHP 很吃内存。过小内存编译可能会失败 |
-| 磁盘 | ≥ 10G 可用 | 源码包 + 编译产物；仅 MySQL 二进制包就有 912M |
+| 磁盘 | 通用二进制安装 ≥ 10G；数据库源码编译 ≥ 15G | 源码编译目录峰值已超过 7G，还要给安装目录、日志、数据和备份留空间 |
 | 机器状态 | **必须是干净机器** | 安装会卸载系统自带的 nginx/php/apache/mysql 并接管防火墙 |
 | 网络 | 能访问 nginx.org / php.net / cdn.mysql.com / github.com | 全部走上游官方源，不考虑国内能否访问问题 |
 
 > 注意：**不要在已有业务的服务器上直接跑。** 脚本会移除系统包管理器装的
 > Web/DB 组件，并写入 nftables 规则。
+>
+> 本文命令均按**直接登录 root** 编写，因此不重复使用 `sudo`。
+> 开始前执行 `id -u` 应输出 `0`；普通用户运行安装入口会得到“必须使用 root 用户”
+> 的错误并立即退出。
+
+安装前应记录系统、资源、时间同步和监听端口。以下检查均为只读，结果应随部署记录保存：
+
+```bash
+cat /etc/os-release
+uname -m
+free -h
+df -h / /usr/local /home 2>/dev/null
+df -i / /usr/local /home 2>/dev/null
+timedatectl status
+ss -lntup
+```
+
+`uname -m` 主线应为 `x86_64`；磁盘空间和 inode 任一不足都会导致编译或解压失败；
+时间未同步会影响 TLS、软件仓库和证书签发。`ss` 的结果用于确认 80、443、3306 等端口
+没有被既有服务占用。云主机还需单独核对安全组，脚本只能管理本机防火墙。
 
 ### 1.2 编译耗时参考
 
@@ -49,10 +73,17 @@
 ### 1.3 获取代码
 
 ```bash
-git clone https://github.com/<你的用户名>/<仓库名>.git lnmp2.3
+# 发布地址确定后，将占位符替换为实际的 v2.3 Release 压缩包地址
+wget <v2.3-release压缩包地址>
+tar zxf v2.3.tar.gz
 cd lnmp2.3
 chmod +x install.sh addons.sh uninstall.sh upgrade.sh
+id -u
+# 必须输出 0
 ```
+
+tar 包通常会保留可执行位，但 ZIP、面板上传或跨文件系统复制可能丢失；显式执行一次
+`chmod` 可以保证后续既能用 `bash install.sh`，也能直接运行这些入口脚本。
 
 > 优先使用 tag 或 release，而不是 `main` 分支。`main` 的内容可能在两次安装之间
 > 变化，两台机器装出来的东西就不一样了。
@@ -64,23 +95,24 @@ chmod +x install.sh addons.sh uninstall.sh upgrade.sh
 ### 2.1 交互式安装
 
 ```bash
-./install.sh lnmp
+bash install.sh lnmp
 ```
 
 先提醒检查 `lnmp.conf`（端口、目录等）并要求输入 `y` 才继续，然后自动探测
 系统实际监听的 SSH 端口：和 `lnmp.conf` 的 `SSH_Port` 对不上会直接拒绝；
 一致但仍是默认的 22 会提示改端口的步骤并要求再输入一次 `y`。
 之后依次会问：数据库版本 → 是否用通用二进制 → 数据库 root 密码 →
-是否启用 InnoDB → PHP 版本 → 内存分配器。选完会打印一份完整摘要（版本、
+是否启用 InnoDB → PHP 版本 → Nginx/OpenResty → 内存分配器。选完会打印一份完整摘要（版本、
 编译参数、即将放行/阻断的端口），要求输入 `y` 确认后才真正开始装依赖、
-编译——这一步之前如果要改选择，Ctrl+C 退出重新执行即可，还没有任何改动
-落到系统上。
+编译。最终确认前可用 Ctrl+C 退出并重新选择，此时尚未开始系统变更。
 
 ### 2.2 非交互安装（站群自动部署）
 
-全部选项都可以用环境变量传入，一条命令跑完：
+常用标量选择可以用环境变量传入；OpenResty 数组选项仍需编辑 `lnmp.conf`：
 
 ```bash
+read -r -s -p '数据库 root 密码: ' DB_Root_Password; echo
+export DB_Root_Password
 LNMP_Auto=y \
 DBSelect=2 \
 Bin=y \
@@ -88,8 +120,8 @@ PHPSelect=4 \
 SelectMalloc=1 \
 InstallInnodb=y \
 Enable_PhpMyAdmin=y \
-DB_Root_Password='换成你自己的强密码' \
-./install.sh lnmp
+bash install.sh lnmp
+unset DB_Root_Password
 ```
 
 参数含义：
@@ -106,8 +138,8 @@ DB_Root_Password='换成你自己的强密码' \
 | `DB_Root_Password` | 字符串 | 留空则随机生成 |
 
 > **`Enable_PhpMyAdmin` 只控制整包安装，默认仍为 `n`。** 主栈装好后如需补装，
-> 显式执行 `./install.sh phpmyadmin`；重复执行不会覆盖现有安装，升级使用
-> `./upgrade.sh phpmyadmin`。
+> 显式执行 `bash install.sh phpmyadmin`；重复执行不会覆盖现有安装，升级使用
+> `bash upgrade.sh phpmyadmin`。
 >
 > 临时不用时执行 `lnmp phpmyadmin disable` 关闭 Web 入口；需要时执行
 > `lnmp phpmyadmin enable` 恢复。关闭操作保留程序、配置和随机路径，
@@ -115,7 +147,7 @@ DB_Root_Password='换成你自己的强密码' \
 >
 > 开启后，程序装在 `/usr/local/phpmyadmin`（不在网站根目录下），
 > 访问路径随机生成，形如 `49763abb_phpmyadmin`。地址在安装结束时打印，
-> 之后用 `lnmp status` 可以再查。详见 [7.x 安全加固](#仍需管理员完成以下配置)。
+> 之后用 `lnmp status` 可以再查。安全加固见 10.1。
 
 ### 2.3 用 OpenResty 替代 nginx（可选）
 
@@ -125,11 +157,11 @@ OpenResty 是 nginx 的增强发行版，自带 LuaJIT 与整套 `lua-resty-*` �
 
 ```bash
 # 交互式：安装过程中会问「Web Server」选 2
-./install.sh lnmp
+bash install.sh lnmp
 
-# 非交互
-WebSelect=2 ORMode=1 ... ./install.sh lnmp    # 官方仓库预编译包（不编译）
-WebSelect=2 ORMode=2 ... ./install.sh lnmp    # 源码编译
+# 预先选择 OpenResty，其余项目仍按提示输入
+WebSelect=2 ORMode=1 bash install.sh lnmp    # 官方仓库预编译包（不编译）
+WebSelect=2 ORMode=2 bash install.sh lnmp    # 源码编译
 ```
 
 两种装法的取舍：
@@ -153,8 +185,8 @@ WebSelect=2 ORMode=2 ... ./install.sh lnmp    # 源码编译
 `/usr/local/nginx → /usr/local/openresty/nginx`，所以：
 
 ```bash
-lnmp nginx reload        # 照常可用
-lnmp vhost add           # 照常可用
+lnmp nginx reload               # 照常可用
+lnmp vhost add                  # 照常可用
 /usr/local/nginx/conf/vhost/    # 站点配置还在这里
 ```
 
@@ -169,7 +201,7 @@ lua_package_cpath "/usr/local/openresty/lualib/?.so;;";
 升级：
 
 ```bash
-./upgrade.sh openresty
+bash upgrade.sh openresty
 ```
 
 会**按当初的安装方式自动分流**（包装的走 apt 升级、源码装的走重新编译），
@@ -188,7 +220,7 @@ OpenResty_Custom_Modules=(
 ## 不需要下载源码的 configure 参数
 OpenResty_Modules_Options="--with-http_dav_module"
 
-## 自己的 Lua 库目录（绝对路径），会加进 lua_package_path
+## 自定义 Lua 库目录（绝对路径），会加入 lua_package_path
 OpenResty_Custom_Lualib="/opt/mylua"
 
 ## opm 包（OpenResty 自带的包管理器）
@@ -214,17 +246,17 @@ SHA256 强制校验不是形式：这些代码会被编译进对外服务的进�
 
 `--add-dynamic-module` 只负责把 `.so` 编出来放进 `nginx/modules/`，
 nginx 不会自动加载它 —— 少了 `load_module` 指令等于没装，而且不报错。
-安装流程会扫描本次真实编译出来的 `.so`，生成
+安装流程会扫描当前构建生成的 `.so`，生成
 `/usr/local/openresty/nginx/conf/load_modules.conf` 并由主配置 include。
 
-从配置里删掉某个动态模块后重新编译，上一版由该文件加载、本次不再产出的 `.so`
+从配置中删除动态模块并重新编译后，上一版由该文件加载、当前构建未产出的 `.so`
 会被清掉，不会出现"配置里删了但旧 so 还在加载"的情况；
 目录里手工放的其它 `.so` 不归本包管，既不加载也不删。
 
 **升级时的沿用**
 
 初装成功后，这组配置会写进 `/etc/lnmp/openresty-build.conf`（600）。
-`./upgrade.sh openresty` 会读它，用同一组模块重新编译，
+`bash upgrade.sh openresty` 会读它，用同一组模块重新编译，
 不必升级时再手工传一遍参数，也就不会出现"升完发现某个 location 不工作"。
 
 优先级：当前 `lnmp.conf` 里**显式配了**就以 `lnmp.conf` 为准（表示你想改），
@@ -236,8 +268,8 @@ nginx 不会自动加载它 —— 少了 `load_module` 指令等于没装，而
 `lua_package_cpath`，单独生成 `conf/lua_paths.conf` 由主配置 include，
 不用每次改模板。目录不存在会自动创建。放进去的 `.lua` 直接 `require` 即可。
 
-opm 与 luarocks 的装包失败**只告警不中止安装** —— Web 服务本身是好的，
-缺库属于可以事后补的问题，装完记得看一眼输出。
+opm 与 luarocks 的装包失败**只告警不中止安装**，因为该结果不影响 Web 服务启动。
+安装结束后应核对告警，并补装应用所需的 Lua 库。
 luarocks 需要系统里先装好（`apt-get install luarocks`），本包不负责装它。
 
 ### 2.4 验证安装结果
@@ -277,6 +309,177 @@ curl http://127.0.0.1:1008/lua
 # hello world
 ```
 
+### 2.5 配置总索引
+
+本项目有三层配置，修改时先确认自己改的是哪一层：
+
+1. 仓库根目录 `lnmp.conf`：只在安装、补装或升级时读取。安装完成后改它，正在运行的
+   服务不会自动变化。
+2. 安装选择变量：`DBSelect`、`PHPSelect` 等决定这一次装什么，可在命令前传入。
+3. `/usr/local`、`/etc/lnmp` 和 `/etc/my.cnf` 下的运行期配置：安装后真正生效的文件。
+   改完必须先做对应语法检查，再 reload/restart；升级前要备份。
+
+#### 2.5.1 `lnmp.conf` 的全部选项
+
+以下清单与当前 `lnmp.conf` 一一对应。标量写成 `${变量:-默认值}`，可以编辑文件，
+也可以只对一次命令用同名环境变量覆盖。数组无法可靠地通过普通环境变量传递，
+必须直接编辑 `lnmp.conf`。
+
+| 选项 | 默认 | 生效范围与建议 |
+|---|---:|---|
+| `Nginx_Modules_Options` | 空 | 追加 Nginx configure 参数；只加入固定版本、已校验来源的模块 |
+| `PHP_Modules_Options` | 空 | 追加 PHP configure 参数；先确认目标 PHP 版本仍支持该参数 |
+| `MySQL_Data_Dir` | `/usr/local/mysql/var` | MySQL 数据目录；使用本机块存储，避免 NFS/对象存储 |
+| `MariaDB_Data_Dir` | `/usr/local/mariadb/var` | MariaDB 数据目录；要求同上 |
+| `Default_Website_Dir` | `/home/wwwroot/default` | default 兜底站目录，不是以后所有新站点的父目录 |
+| `Enable_PHPInfo_Page` | `n` | 公开 phpinfo 页面；生产保持关闭 |
+| `Enable_PhpMyAdmin` | `n` | 安装并映射 phpMyAdmin；更推荐按需启用、限制来源 |
+| `Enable_Memcached_Test_Page` | `n` | 无鉴权演示页；生产保持关闭 |
+| `Enable_Redis_Test_Page` | `n` | 无鉴权且会写 Redis 的演示页；生产保持关闭 |
+| `Enable_Nginx_Openssl` | `y` | Nginx TLS 构建；公开站点保持开启 |
+| `Enable_Nginx_Lua` | `y` | LuaJIT、lua-nginx-module 和常用 resty 库；不用 Lua 可设 `n` 缩短构建、减小攻击面 |
+| `Enable_Ngx_Brotli` | `y` | 编译 Brotli 模块；低 CPU VPS 仍可编译，是否对响应启用由 Nginx 配置决定 |
+| `Enable_Ngx_CachePurge` | `y` | 编译缓存清除模块；不使用 Nginx/FastCGI 缓存可关闭 |
+| `Enable_Ngx_FancyIndex` | `n` | 目录美化索引；公开生产站一般保持关闭 |
+| `Enable_Swap` | `y` | 缺少 Swap 时创建 swapfile；它只缓冲突发内存，不是增加 FPM worker 的理由 |
+| `Enable_PHP_Default_Opcache` | `y` | WordPress 必需的主要 PHP 性能层，保持开启 |
+| `Enable_PHP_Default_Igbinary` | `y` | phpredis 紧凑序列化支持；使用 Redis 时建议保留 |
+| `Enable_PHP_Default_Redis` | `y` | 安装 phpredis 扩展，不等于安装 Redis 服务端 |
+| `Enable_PHP_Default_Imagick` | `y` | 图片处理扩展；不用 PDF/复杂图片处理时可评估关闭，WordPress 会回退 GD |
+| `Enable_PHP_Exif` | `n` | 需要读取照片 EXIF 的站点再开启 |
+| `Enable_PHP_Fileinfo` | `y` | 上传 MIME 检测依赖，保持开启 |
+| `Enable_PHP_Ldap` | `n` | 只在对接 LDAP 时开启 |
+| `Enable_PHP_Bz2` | `n` | 只在应用明确依赖 bzip2 时开启 |
+| `Enable_PHP_Sodium` | `n` | PHP 8 自带 sodium 能力因构建方式而异；应用明确要求时开启并用 `php -m` 验证 |
+| `Enable_PHP_Imap` | `n` | Debian 13 已移除旧 uw-imap 开发库，非邮件应用不要开启 |
+| `Download_Insecure` | `n` | 关闭 TLS 校验；除临时定位证书链问题外不得开启，更不能用于生产安装 |
+| `Enable_Download_Checksum` | `y` | 项目完整性校验总开关；保持开启 |
+| `SSH_Port` | `22` | 只生成防火墙放行规则，不修改 sshd；必须与真实监听端口一致 |
+| `DB_Port` | `3306` | 写入 `/etc/my.cnf` 并生成防火墙规则；安全依靠回环监听和来源控制，不靠换端口 |
+| `DB_X_Port` | `33060` | MySQL X Protocol 端口及阻断规则；MariaDB 不使用 |
+| `Redis_Port` | `6379` | 写 Redis 配置、init 脚本、测试页及防火墙规则 |
+| `Memcached_Port` | `11211` | 写 init 脚本、测试页及 TCP/UDP 阻断规则 |
+| `Pureftpd_Port` | `21` | FTP 控制端口 |
+| `Pureftpd_Data_Port` | `20` | FTP 主动模式数据端口 |
+| `Pureftpd_Passive_Min` / `Pureftpd_Passive_Max` | `20000` / `30000` | 被动端口范围；并发传输每路占一个端口，云安全组也要同步 |
+| `OpenResty_Custom_Modules` | 空数组 | `名称\|HTTPS地址\|SHA256\|static/dynamic`，仅 `ORMode=2`；必须直接编辑文件 |
+| `OpenResty_Modules_Options` | 空 | OpenResty 源码 configure 参数，仅 `ORMode=2` |
+| `OpenResty_Custom_Lualib` | 空 | 自定义 Lua 库绝对路径，仅源码构建路径使用 |
+| `OpenResty_Opm_Packages` | 空数组 | 安装的 opm 包；失败只告警，安装后要实际 `require` 验证 |
+| `OpenResty_Luarocks_Packages` | 空数组 | 安装的 luarocks 包；需预装 luarocks |
+| `Disable_Selinux` | `n` | 保留 SELinux；先根据 audit 日志修标签/策略，不把关闭当性能优化 |
+| `CheckMirror` | `y` | `n` 跳过联网准备、源修改和 DNS 探测，并使数据库默认走源码；组件源码仍需已在 `src/` 或能下载 |
+
+`Pureftpd_Data_Port` 当前用于防火墙规则，FTP 被动模式主要依赖端口范围。Nginx 的
+80/443 不在 `lnmp.conf`：这两个端口分布在主配置、虚拟主机和证书流程里，项目明确
+不提供统一改端口开关。
+
+#### `CheckMirror` 的准确作用
+
+这个变量沿用旧名称，但它不是简单的“选择下载镜像”，也不是总联网开关。当前代码中的
+影响点只有以下几类：
+
+| `CheckMirror` | 安装准备 | 数据库 `Bin` 未指定时 | 仍然会做的事 |
+|---|---|---|---|
+| `y`（默认） | 执行 `Modify_Source`、NTP 对时和下载域名 DNS 探测 | 当前架构有受支持的通用二进制时默认 `Bin=y` | 安装系统依赖、下载/校验组件 |
+| `n` | 跳过上述三项 | 默认 `Bin=n`，转为源码编译 | **仍会**在 Debian 清理/安装依赖时执行 `apt-get update`，仍会下载缺少的组件并做完整性校验 |
+
+对 Debian 12/13，`Modify_Source` 本身没有改写 Debian 软件源的分支；因此 `n` 的主要实际
+变化是跳过 NTP/DNS 预检，并在没有显式给 `Bin` 时把数据库改成源码编译。它不会跳过
+`Deb_RemoveAMP`、`Deb_Dependent` 中的 APT 更新和包安装，也不会让 `Check_Download` 停止
+访问 nginx.org、php.net、数据库上游或 GitHub。
+
+常规联网 VPS 保持默认：
+
+```bash
+CheckMirror=y Bin=y bash install.sh lnmp
+```
+
+只有系统时间和 APT 源已由内网/镜像管理、且明确不希望脚本做联网预检时才设 `n`。
+如果仍要数据库通用二进制，必须同时明确 `Bin=y`；文件不在 `src/` 时脚本照样联网下载：
+
+```bash
+CheckMirror=n Bin=y bash install.sh lnmp
+```
+
+真正离线安装还需要可用的本地 APT 仓库/缓存、全部依赖包，以及提前放入 `src/` 的全部
+组件归档和相应校验/签名材料。本项目没有一个变量能自动准备这些条件。不要用
+`Download_Insecure=y` 或 `Enable_Download_Checksum=n` 冒充离线兼容，这只会移除安全校验。
+
+#### 2.5.2 当前安装选择
+
+| 变量 | 可用值 | 建议 |
+|---|---|---|
+| `LNMP_Auto` | `y` | 跳过确认；自动化必须同时固定其余选择并保存退出码 |
+| `WebSelect` | `1` Nginx；`2` OpenResty | WordPress 常规站选 Nginx；确实使用 Lua/OpenResty 生态再选 2 |
+| `ORMode` | `1` 官方包；`2` 源码 | Debian 13 上游仓库当前没有 trixie 包，选 2 |
+| `DBSelect` | `0` 不装；`1` MySQL 8.0；`2` MySQL 8.4；`3` MariaDB 10.11；`4` 11.4；`5` 11.8 | 新部署优先 MySQL 8.4 LTS 或经过应用验证的 MariaDB LTS；不要新装已 EOL 的 MySQL 8.0 |
+| `Bin` | `y` 通用二进制；`n` 源码 | x86_64 默认 `y`；只有确实需要定制构建才选 `n` |
+| `DB_Root_Password` | 字符串或留空 | 自动化应从受限 secret 注入；留空会随机生成到 root-only 文件 |
+| `InstallInnodb` | `y` / `n` | WordPress 必须 `y` |
+| `PHPSelect` | `1`~`6` 对应 PHP 8.0~8.5 | 新站优先仍在上游安全支持期且插件已兼容的 8.3/8.4；不要仅因“版本最新”跳过兼容测试 |
+| `SelectMalloc` | `1` 无；`2` Jemalloc；`3` TCMalloc | VPS 默认 1；没有分配器碎片证据就不要增加变量 |
+| `ApacheSelect` | 当前仅 `1`=2.4 | 只在 LNMPA/LAMP 询问；Apache 栈未做同等真机覆盖 |
+
+#### 2.5.3 安装后的配置位置
+
+| 范围 | 主配置位置 | 修改后验证/生效 |
+|---|---|---|
+| Nginx/OpenResty | `/usr/local/nginx/conf/nginx.conf` | `nginx -t && lnmp nginx reload` |
+| 单站点 | `/usr/local/nginx/conf/vhost/<域名>.conf` | 同上；站点开关优先用 `lnmp vhost`/`lnmp ssl` 生成 |
+| rewrite | `/usr/local/nginx/conf/rewrite/<名称>.conf` | 同上 |
+| PHP 路由 | `/usr/local/nginx/conf/enable-php*.conf` | 同上；多版本 socket 必须匹配 |
+| TLS 证书 | `/usr/local/nginx/conf/ssl/<域名>/` | 由 `lnmp ssl`/acme.sh 管理，不手工覆盖自动续期文件 |
+| PHP | `/usr/local/php/etc/php.ini`、`/usr/local/php/etc/php-fpm.conf`、`/usr/local/php/conf.d/*.ini` | `php --ini`、`php-fpm -t`，然后 `lnmp php-fpm reload` |
+| 多版本 PHP | `/usr/local/php8.x/etc/`、`/usr/local/php8.x/conf.d/` | 用该版本二进制检查；重载对应 FPM 服务 |
+| MySQL/MariaDB | `/etc/my.cnf` | `mysql -e` 回读变量；需要 restart 的参数安排维护窗口 |
+| Redis | `/usr/local/redis/etc/redis.conf` | Redis 没有等价的完整 `-t`；安排维护窗口重启后用日志、`CONFIG GET` 和 `INFO` 回读 |
+| Memcached | `/etc/init.d/memcached` | 重启后用 `ss` 和 `stats settings` 核对监听/内存参数 |
+| Pure-FTPd | `/usr/local/pureftpd/etc/pure-ftpd.conf` | 重启后核对监听端口及被动范围 |
+| phpMyAdmin | `/usr/local/phpmyadmin/config.inc.php`；Web 映射 `/usr/local/nginx/conf/phpmyadmin.enable.conf` | 优先 `lnmp phpmyadmin enable\|disable\|status`；改映射后 `nginx -t` |
+| OpenResty 构建记录 | `/etc/lnmp/openresty-build.conf`，运行期 Lua 路径 `/usr/local/nginx/conf/lua_paths.conf` | 升级会沿用构建记录；改 Lua 路径后 `nginx -t` |
+| 备份 | `/etc/lnmp/backup.conf`、数据库凭据 `/etc/lnmp/backup-mysql.cnf` | 权限必须 600；`lnmp backup run` 后执行 `lnmp backup test` |
+| Telegram | `/etc/lnmp/notify.conf` | `lnmp tgnotice --status`、`--test`；Token 文件必须 600/400 |
+| 防火墙 | Debian `/etc/nftables.d/lnmp.nft`，运行期 `inet lnmp` 表 | `nft list table inet lnmp`，并从外部主机实测端口 |
+| WordPress | `<站点>/wp-config.php`、`<站点>/.user.ini` | `wp config list`（有 WP-CLI 时）和真实 HTTP 请求 |
+| 日志 | `/home/wwwlogs/`、`/usr/local/php/var/log/`、数据库数据目录中的错误日志、`/var/log/lnmp/backup.log` | 结合 systemd journal；不要只看单一日志 |
+
+备份配置支持的全部字段是 `Backup_Home`、`MySQL_Dump`、`MySQL_Option_File`、
+`Backup_Site`、`Keep_Days_Db`、`Keep_Days_Web`、`Web_Interval_Days`、
+`Enable_Remote_Backup`、`Remote_Protocol`、`Remote_Host`、`Remote_Port`、
+`Remote_User`、`Remote_Dir`、`Remote_Password`、`Remote_Ftp_Verify`、
+`Remote_Ftp_CA`、`Remote_SSH_Key`、`Remote_Known_Hosts`、`Enable_Encrypt`、
+`Encrypt_Tool`、`Encrypt_Recipient`、`Encrypt_Identity`。具体取值与验证见 8.4、8.5。
+
+通知配置支持 `TG_Enable`、`TG_Bot_Token`、`TG_Chat_Id`、`TG_Parse_Mode`、
+`TG_Timeout`、`TG_Retry`、`TG_Disable_Preview`；用 `lnmp tgnotice --init` 生成，
+不要把 Token 写进仓库或命令行历史。
+
+站点级可配置项由 `lnmp vhost add` 收集：主域名、附加域名、站点目录、rewrite、
+是否开启 PHP、Pathinfo、PHP 版本、访问日志、IPv6、数据库、SSL 与跳转策略。
+数据库、FTP、证书和 DNS provider 凭据分别通过 `lnmp database`、`lnmp ftp`、
+`lnmp ssl`/`dnsssl` 管理。不要直接复制别人的完整 vhost；保留本项目生成的 socket、
+PHP 禁用分支和 phpMyAdmin 边界，再做最小修改。
+
+#### 2.5.4 维护者配置与可选组件入口
+
+读者如果还要修改项目本身，而不只是已安装服务，入口如下：
+
+| 目标 | 位置/命令 | 边界 |
+|---|---|---|
+| Nginx/OpenResty 初装模板 | `conf/nginx.conf`、`conf/openresty.conf` | 只影响以后安装；已安装实例改 `/usr/local/nginx/conf/nginx.conf` |
+| 管理命令源码 | `conf/lnmp`、`conf/lnmpa`、`conf/lamp` | 三套公共功能必须同步；运行中的命令是 `/bin/lnmp`，不能只改仓库文件就认为已生效 |
+| 通用组件版本 | `include/version.sh` | 改版本后更新对应校验/签名材料并执行 URL、lint 和一致性检查 |
+| 数据库/PHP/Apache 菜单与版本 | `include/profile.sh` | 编号、版本语义、安装函数和架构能力在这里统一映射，不能只改菜单文字 |
+| 静态 SHA256 清单 | `src/checksums.sha256` | 只覆盖走静态 SHA256 的组件；PGP/仓库 GPG/上游动态校验各走自己的路径 |
+| PHP/缓存扩展 | `bash addons.sh install {memcached\|opcache\|redis\|apcu\|imagemagick\|exif\|fileinfo\|ldap\|bz2\|sodium\|imap\|swoole}` | 按实际依赖安装；主安装已默认提供 OPcache、igbinary、phpredis、imagick |
+| Pure-FTPd 服务 | `bash pureftpd.sh` | 端口来自 `lnmp.conf`；不需要传统 FTP 时不要增加该公网服务 |
+| 组件升级 | `bash upgrade.sh {nginx\|openresty\|mysql\|mariadb\|m2m\|php\|phpa\|phpmyadmin\|mphp}` | 先备份和测试；数据库升级没有自动回滚 |
+| 管理功能 | `lnmp vhost/database/ftp/ssl/dnsssl/onlyssl/backup/tgnotice/phpmyadmin` | 优先走命令生成配置，保留校验、权限与回滚逻辑 |
+
+`addons.sh` 菜单虽然仍列出 ionCube，但当前版本没有接入可用安装流程；不要把菜单名当成
+功能已经实现。Apache/LNMPA/LAMP 保留代码路径，但没有 Debian 13 主线同等级的真机覆盖。
+
 ---
 
 ## 三、安装 Redis
@@ -285,7 +488,7 @@ WordPress 的对象缓存要用到。**PHP 的 redis 扩展在主安装时就装
 （`Enable_PHP_Default_Redis='y'`），这一步装的是 **Redis 服务端**。
 
 ```bash
-./addons.sh install redis
+bash addons.sh install redis
 ```
 
 关键回显：
@@ -315,7 +518,6 @@ Redis 的安全默认值（本包已配好，不要随意放开）：
 - 只监听 `127.0.0.1` 和 `::1`，不对外
 - nftables 里 `tcp dport 6379 drop`
 - 数据目录 `/usr/local/redis/var`，日志 `/usr/local/redis/var/redis.log`
-
 - 以专用低权限账号 `redis` 运行（不是 root）
 
 > **回环监听是必要条件，不是充分条件。**
@@ -333,23 +535,28 @@ Redis 的安全默认值（本包已配好，不要随意放开）：
 >
 > | 场景 | 做法 |
 > |---|---|
-> | 单站点、单租户 | 回环 + 低权限账号，可以接受 |
-> | 多站点同机 | 每站一个 Redis 实例（不同端口/socket），或用 ACL 给每站独立账号 |
-> | 有合规要求 | Unix socket + 文件权限，按站点区分 |
+> | 单站点、单租户 | 回环 + Redis 低权限系统账号；可再给 default 用户设强密码 |
+> | 多个互相信任的站点 | 每站前缀/ACL 可减少误操作，但要监控总内存和淘汰；Redis database 编号不是安全边界 |
+> | 互不信任的租户 | 本项目共用 `www` 用户和一个 FPM 池，**不提供硬隔离**；需另建 Unix 用户/FPM 池，并配独立 Redis socket/ACL，或拆主机/容器 |
 >
-> 另外：**只要暴露到回环以外的任何网卡，必须先设 `requirepass`** ：
-> 历史上未授权 Redis 被用来写 SSH 公钥的案例非常多。
+> Redis 6+ 的现代认证机制是 ACL；`requirepass` 只是给 default 用户设密码的兼容接口。
+> 但 ACL 凭据也保存在站点配置里，共用同一 `www` 系统账号时，站点被完全攻破后仍可能
+> 窃取其它站点凭据，所以它不能替代进程/文件权限隔离。
 
-即使只回环监听，多站点同机或者不放心的话也建议直接设密码，步骤如下：
+不要把本项目编译的 Redis 直接开放到公网。确需跨机访问时使用私网/VPN/SSH 隧道，限制
+来源，并确认链路加密；仅设置密码不能防止明文协议上的凭据和数据被窃听。
+
+单站点希望给回环连接再加一道认证时，可以使用兼容性较好的 `requirepass`。下面把密码
+保存到 root-only 文件，不打印到终端，也不通过 `redis-cli -a` 暴露在进程参数中：
 
 ```bash
-# 1. 生成一个随机密码，写入 requirepass（配置文件属主是 root:redis，权限 640）。
-#    先删掉已有的 requirepass 行（不管是注释掉的默认值还是之前设过的密码）
-#    再追加一行，不依赖不同 Redis 版本默认注释的具体措辞，重复执行也安全。
+# 1. 生成并保存密码（配置文件是 root:redis 640，密码文件是 root 600）
+umask 077
 REDISPW=$(openssl rand -base64 24)
+printf '%s\n' "${REDISPW}" > /root/.lnmp_redis_password
 sed -i '/^[[:space:]]*#\?[[:space:]]*requirepass[[:space:]]/d' /usr/local/redis/etc/redis.conf
-echo "requirepass ${REDISPW}" >> /usr/local/redis/etc/redis.conf
-echo "记下这个密码，后面 wp-config.php 要用：${REDISPW}"
+printf 'requirepass %s\n' "${REDISPW}" >> /usr/local/redis/etc/redis.conf
+unset REDISPW
 
 # 2. 重启使配置生效
 /etc/init.d/redis restart
@@ -357,8 +564,7 @@ echo "记下这个密码，后面 wp-config.php 要用：${REDISPW}"
 # 3. 验证：不带密码应该被拒绝，带密码才能执行命令
 redis-cli ping
 # (error) NOAUTH Authentication required.
-redis-cli -a "${REDISPW}" ping
-# Warning: Using a password with '-a' option on the command line interface can be insecure.
+REDISCLI_AUTH="$(cat /root/.lnmp_redis_password)" redis-cli ping
 # PONG
 ```
 
@@ -366,10 +572,11 @@ redis-cli -a "${REDISPW}" ping
 在 [5.3 生成 wp-config.php](#53-生成-wp-configphp) 的 Redis 常量块里加一行：
 
 ```php
-define( 'WP_REDIS_PASSWORD', '上面生成的密码' );
+define( 'WP_REDIS_PASSWORD', '读取 /root/.lnmp_redis_password 后填入的密码' );
 ```
 
-不改这一行的话，插件仍按无密码连接，会直接报连接失败。
+不改这一行的话，插件仍按无密码连接，会直接报连接失败。写入后保持 `wp-config.php`
+的 root 所有和 640 权限，不要让密码文件进入备份之外的日志、Git 或聊天记录。
 
 ---
 
@@ -430,7 +637,7 @@ printf 'wp.example.com\n\n\ny\nwordpress\nn\ny\n\nn\ny\n数据库root密码\nwpd
 ```
 
 **不带 PHP 的站点**（纯静态，或 Node、Go 等自带后端）：用 `VHOST_PHP=n` 关掉 PHP，
-喂入序列里不再有 Pathinfo 那一行，也不建库：
+输入序列不再包含 Pathinfo，也不创建数据库：
 
 ```bash
 printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
@@ -440,7 +647,7 @@ printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
 > IPv6 `n` → 建库 `n` → SSL `n` → 任意键。站点行为见 4.4。
 
 > 注意：**输入项数量必须精确**。域名、数据库 root 密码、数据库名、库用户密码
-> 这四项少喂时会报 `读取<项目>时遇到 EOF —— 标准输入已经没有内容了。` 并退出
+> 缺少任一项时会报告 `读取<项目>时遇到 EOF：标准输入已经没有内容。` 并退出
 > （这是有意的快速失败，早期版本在这里会无限刷屏）；其余选项少喂时按默认值处理，
 > 不会报错，得到的站点配置与预期不符。
 >
@@ -448,7 +655,7 @@ printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
 > 序列要相应调整。单版本时不会问。
 >
 > 注意：**第 6 步的 PHP 开关不占喂入序列的一行**。非交互执行时不读标准输入，
-> 只看环境变量 `VHOST_PHP`：不设就是开启 PHP，与旧版本行为一致，
+> 只读取环境变量 `VHOST_PHP`：未设置时开启 PHP，
 > 上面这条命令不用改。要建不带 PHP 的站点见 4.4。
 
 ### 4.3 验证站点
@@ -483,12 +690,12 @@ wpdemo
 # 交互：第 6 步输入 n
 lnmp vhost add
 
-# 非交互：用环境变量显式关闭，喂入序列里不要再留 Pathinfo 那一行
+# 非交互：用环境变量显式关闭，输入序列不包含 Pathinfo
 # 依次是：域名、更多域名、目录、伪静态 n、访问日志 n、IPv6 n、建库 n、SSL n、任意键
 printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
 ```
 
-`VHOST_PHP` 不设置时按开启 PHP 处理，与旧版本一致。
+`VHOST_PHP` 未设置时按开启 PHP 处理。
 
 关闭 PHP 后各栈的实际差别：
 
@@ -496,7 +703,7 @@ printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
 |---|---|
 | LNMP | 不写 `include enable-php*.conf;`；`.php`、`.php/xxx` 一律 404 |
 | LNMPA | 不写 `include proxy-pass-php.conf;`（不再反代给 Apache）；Apache 侧同时 `php_admin_flag engine off` 并把 `.php` 挡成 404 |
-| LAMP | Apache `php_admin_flag engine off` + `RedirectMatch 404 "\.php(/|$)"`，`open_basedir` 一并注释掉 |
+| LAMP | Apache `php_admin_flag engine off` + `RedirectMatch 404 "\.php(/\|$)"`，`open_basedir` 一并注释掉 |
 
 三栈共同点：首页候选去掉 `index.php`、`default.php`，站点目录不写 `.user.ini`，
 `lnmp ssl add` 追加 443 配置时会从现有站点配置读回同一状态，不会重新打开 PHP。
@@ -507,7 +714,7 @@ Nginx 侧那条 404 规则**不能省**：站点目录里一旦出现 `.php` 文
 Apache 侧更是必需项：`.php` 的处理器挂在 `httpd.conf` 全局，站点配置什么都不写
 就等于照常执行 PHP。
 
-**Go / Node 站点的反代**由你自己按实际监听端口写，本开关只负责关掉 PHP 执行入口：
+**Go / Node 站点的反向代理**需按后端实际监听端口配置；本开关只关闭 PHP 执行入口：
 
 ```nginx
 # /usr/local/nginx/conf/vhost/app.example.com.conf
@@ -538,7 +745,7 @@ WP_VER=7.0.3
 curl -fsSL -o wordpress.tar.gz     "https://wordpress.org/wordpress-${WP_VER}.tar.gz"
 curl -fsSL -o wordpress.tar.gz.sha1 "https://wordpress.org/wordpress-${WP_VER}.tar.gz.sha1"
 
-# 校验不通过必须**立即中止**，不能只打印一句提示
+# 校验不通过必须立即中止，不能只打印一句提示
 if [ "$(cat wordpress.tar.gz.sha1)" != "$(sha1sum wordpress.tar.gz | awk '{print $1}')" ]; then
     echo "校验失败：文件与官方发布的哈希不一致，已中止。" >&2
     rm -f wordpress.tar.gz
@@ -688,12 +895,12 @@ curl -s -X POST \
 
 > `blog_public=0` 表示不希望搜索引擎索引。正式站点改成 `1`。
 
-装完立即改密码，让上面那次输入作废：
+安装完成后立即修改密码，使安装阶段使用的凭据失效：
 
 ```bash
 # 后台「用户 → 个人资料」改，或用 wp-cli：
 # wp user update 管理员用户名 --user_pass='新密码' --path=/home/wwwroot/wp.example.com
-history -c   # 清掉本次 shell 历史
+history -c   # 清理当前 shell 历史
 ```
 
 </details>
@@ -732,7 +939,7 @@ cd /home/wwwroot/wp.example.com/wp-content/plugins
 PLUGIN_VER=2.5.4
 curl -fsSL -o redis-cache.zip "https://downloads.wordpress.org/plugin/redis-cache.${PLUGIN_VER}.zip"
 
-# 注意：wordpress.org 的插件目录**不提供**逐文件的哈希或签名。
+# 注意：wordpress.org 的插件目录不提供逐文件的哈希或签名。
 # 此步骤无法取得可靠的完整性依据；官方域名不能替代文件完整性验证。
 # 至少记录实际部署文件的哈希，以便后续检查文件是否变化；
 # 并且只固定版本、不用浮动链接。
@@ -777,89 +984,288 @@ php -r '$r=new Redis(); $r->connect("127.0.0.1",6379);
 # {"a":1}
 ```
 
-### 6.2 PHP 参数
+### 6.2 PHP 与 OPcache
 
-安装后的默认值（`/usr/local/php/etc/php.ini`）：
+安装后的 `/usr/local/php/etc/php.ini` 来自 PHP 的 production 模板，脚本明确改动
+`upload_max_filesize=50M`、`post_max_size=50M`、`max_execution_time=300`、
+`cgi.fix_pathinfo=0`、`expose_php=Off`、时区和禁用函数。`memory_limit` 仍是模板的
+128M，`max_input_vars` 仍是 1000。不要把所有站点一律改成 256M/3000：
 
-| 参数 | 默认值 | WordPress 建议 |
-|---|---|---|
-| `memory_limit` | 128M | **256M**（装插件多、用 Elementor 之类页面构建器时 128M 会不够） |
-| `upload_max_filesize` | 50M | 够用；要传大视频再调 |
-| `post_max_size` | 50M | 应 ≥ `upload_max_filesize` |
-| `max_input_vars` | 1000 | **3000**（菜单项多或插件设置页字段多时会静默丢数据） |
-| `max_file_uploads` | 20 | 够用 |
-| `date.timezone` | PRC | 按需改 |
+| 参数 | 建议起点 | 何时调整 |
+|---|---:|---|
+| `memory_limit` | 普通站 128M；电商/页面构建器 256M | 先看 PHP fatal error 和插件文档；它是单请求上限，不是预留内存 |
+| `upload_max_filesize` | 50M | 只按业务最大上传调，不建议用 PHP 上传大视频/备份 |
+| `post_max_size` | 不小于上传上限，另留表单开销 | 必须与 Nginx `client_max_body_size` 一起改 |
+| `max_input_vars` | 1000 | 菜单/复杂表单确认发生截断后再升到 2000~3000 |
+| `max_execution_time` | 300 是项目值，普通页面应远低于此值 | 长任务移到队列/CLI；不要靠继续加超时掩盖慢请求 |
 
-修改：
+OPcache 已由 `Enable_PHP_Default_Opcache=y` 默认安装，配置在
+`/usr/local/php/conf.d/004-opcache.ini`，项目值为 128M、10000 个脚本。容量判断必须读取
+**FPM 进程池**的 `opcache_get_status(false)`；直接运行 `php -r` 看到的是独立 CLI 进程，
+默认还关闭 CLI OPcache，不能代表网站。可临时建立只允许回环访问的状态端点读取
+`memory_usage` 与 `opcache_statistics`，检查完立即删除，不要把 OPcache 状态公开到公网。
 
-```bash
-sed -i 's/^memory_limit = .*/memory_limit = 256M/'   /usr/local/php/etc/php.ini
-sed -i 's/^max_input_vars = .*/max_input_vars = 3000/' /usr/local/php/etc/php.ini
-lnmp php-fpm reload
-```
+只有 `free_memory` 长期接近 0 或 `hash_restarts` 增长时才扩大到 192M/256M 或增加
+`opcache.max_accelerated_files`。手工更新 WordPress 的环境保持
+`opcache.validate_timestamps=1`；只有不可变镜像、原子发布且发布后显式 reset OPcache
+的流程才适合关闭时间戳检查。
 
-> nginx 侧的 `client_max_body_size` 默认已是 `50m`（与 PHP 一致）。
-> 调整 PHP 上传上限时，必须同步调整 nginx；否则大文件会在 nginx 层返回 413，
-> 请求不会到达 PHP。
-
-`disable_functions` 默认禁用了 `exec`/`system`/`shell_exec` 等一批函数。
-WordPress 本身不需要它们，**建议保持禁用**。少数插件（如某些备份、
-图片处理插件）会调用 `exec`，如果确实需要：
-
-```bash
-/root/lnmp2.3/tools/remove_disable_function.sh
-```
-
-### 6.3 PHP-FPM 进程数
-
-默认配置：
-
-```
-listen = /tmp/php-cgi.sock
-pm = dynamic
-pm.max_children = 60
-```
-
-`pm.max_children` 的估算方法：**可用内存 ÷ 单进程峰值内存**。
-
-先测本机实际占用：
+修改后先检查语法再平滑加载：
 
 ```bash
-ps --no-headers -o rss -C php-fpm | awk '{s+=$1; n++} END {printf "平均 %.1f MB，进程数 %d\n", s/n/1024, n}'
+/usr/local/php/bin/php --ini
+/usr/local/php/sbin/php-fpm -t && lnmp php-fpm reload
 ```
 
-本次验证环境实测：**平均 23.9 MB，进程数 32**（刚装好的 WordPress，无插件）。
+`disable_functions` 是降低插件误用风险的补充措施，不是安全边界。WordPress 核心不需要
+`exec`/`system`/`shell_exec`，保持项目默认；某个插件确实需要时，先确认它调用的准确
+函数和输入边界，尽量只解除单项，而不是直接运行脚本清空整份限制。
 
-但**不要照这个数字去算 max_children**：空载值没有参考意义。
-装上插件、跑起真实流量后，单进程 60-120M 很常见（页面构建器、
-电商插件更高）。稳妥做法是按 **100M/进程** 估：
+### 6.3 PHP-FPM 进程模型
 
+项目先生成 `pm=dynamic`、`pm.max_children=10`，随后按机器总内存自动改为：
+
+| 总内存 | 项目生成的 `max_children` | 同时生成的 `start/min/max_spare` |
+|---:|---:|---:|
+| `<=1GB` | 10 | 2 / 1 / 6 |
+| `>1GB, <=2GB` | 20 | 10 / 10 / 20 |
+| `>2GB, <=4GB` | 40 | 20 / 20 / 40 |
+| `>4GB, <=8GB` | 60 | 30 / 30 / 60 |
+| `>8GB` | 80 | 40 / 40 / 80 |
+
+这是**程序实际行为，不是本指南的推荐值**。它只看总内存，没有扣除数据库、Redis、
+OPcache、内核页缓存和备份任务；特别是 `start_servers=30/40` 会在低流量 VPS 常驻很多
+空闲 worker。混部 WordPress 应按 6.6 的起点下调。
+
+容量公式使用真实高峰数据：
+
+```text
+max_children = floor(PHP 可用内存 / 单 worker 的高峰 PSS)
 ```
-pm.max_children ≈ (总内存 - 系统 - MySQL - Redis 占用) ÷ 100M
+
+RSS 会把共享库/OPcache 重复计入每个进程，条件允许时安装 `smem` 看 PSS；没有 `smem`
+可先用 RSS 做保守上界。必须在插件、主题、缓存预热和代表性请求都到位后采样，空白首页
+的 20~30MB 没有规划意义：
+
+```bash
+ps --no-headers -o pid,rss,etime,cmd -C php-fpm --sort=-rss | head -20
+grep -E '^(MemAvailable|SwapFree):' /proc/meminfo
+journalctl -k --since today | grep -Ei 'oom|out of memory|killed process'
 ```
 
-6G 的机器给 MySQL 留 1.5G、系统留 0.5G，剩 4G → `4096/100 ≈ 40`。
-默认值 60 对 6G 机器偏激进，**上线前按真实峰值复测一次**。
+低流量 1~4GB VPS 可用 `pm=ondemand` 降低常驻内存，并保留
+`pm.process_idle_timeout=10s`；稳定高流量用 `dynamic` 减少冷启动。两种模式都保留
+`pm.max_requests=500~1000` 控制长期碎片。调整后观察 502、FPM 日志中的
+`server reached pm.max_children` 和系统 Swap/OOM，而不是看到 CPU 空闲就继续加 worker。
 
-**内存小的机器一定要调小**，否则并发一高就 OOM，
-表现是站点间歇性 502 而日志里什么也看不出来。
+### 6.4 MySQL 8.4 / MariaDB
 
-改完 `lnmp php-fpm reload`。
+MySQL 与 MariaDB 安装都调用项目的 `MySQL_Opt`：按总内存把
+`innodb_buffer_pool_size` 设为 128M（1~2GB）、256M（2~4GB）、512M（4~8GB），
+同时固定 `max_connections=500`，并随内存放大 `sort_buffer_size`、`read_buffer_size` 等
+连接级 buffer。这是程序实际生成值，不代表两种引擎在 WordPress 混部 VPS 上都应保持
+500 个连接。FPM worker 才是主要数据库并发来源，连接级 buffer 会在活跃连接上叠加。
 
-### 6.4 定时任务
+建议从下面关系开始：
 
-WordPress 默认通过访问触发 `wp-cron.php`。低流量站点的定时任务可能延迟，
-流量高时每次请求都检查一遍，浪费性能。生产环境建议改成系统 cron：
+```text
+max_connections = 所有 PHP-FPM 池的 max_children 总和 + 10~20 个管理/计划任务余量
+innodb_buffer_pool_size = 留足系统、PHP、Redis 和备份峰值后的数据库预算
+```
+
+WordPress 应保持 InnoDB。不要启用 MySQL 8 已删除的 query cache，也不要照搬旧文章把
+`sort_buffer_size`、`join_buffer_size`、`read_buffer_size` 调成几十 MB；它们不是全局缓存。
+`tmp_table_size` 与 `max_heap_table_size` 也按连接生效，32M 起步通常足够，先用状态值确认
+磁盘临时表比例。`innodb_flush_log_at_trx_commit=1` 是项目默认和最稳妥的数据持久性设置；
+改成 2 是明确的数据丢失权衡，不是免费优化。
+
+修改 `/etc/my.cnf` 前先记录当前值：
+
+```bash
+mysql -NBe "SHOW VARIABLES WHERE Variable_name IN ('max_connections','innodb_buffer_pool_size','tmp_table_size','max_heap_table_size');"
+mysql -NBe "SHOW GLOBAL STATUS WHERE Variable_name IN ('Max_used_connections','Threads_connected','Created_tmp_tables','Created_tmp_disk_tables','Innodb_buffer_pool_reads','Innodb_buffer_pool_read_requests');"
+```
+
+运行一到两周或覆盖业务高峰后再判断。`Max_used_connections` 长期很低就不需要 500；
+buffer pool 命中率只能说明读工作集，不能单独证明要占用更多整机内存。慢站点优先开短时
+慢查询日志并用 `EXPLAIN` 修查询/索引，不用增加 buffer 掩盖插件产生的低效 SQL。
+
+#### MySQL 8.4 与 MariaDB 的选择
+
+WordPress 核心对两者都支持，常规文章/用户/元数据查询也很接近。真实站点的差异通常先由
+插件 SQL、索引、磁盘延迟、buffer pool 是否容纳热数据和页面/对象缓存决定，不能脱离数据
+与并发宣称“MariaDB 一定更快”或“MySQL 一定更稳”。本项目中的实际差异如下：
+
+| 维度 | MySQL 8.4 LTS | MariaDB 10.11 / 11.4 / 11.8 | 对 WordPress 的意义 |
+|---|---|---|---|
+| 项目默认选择 | `DBSelect=2`，官方通用二进制 | `DBSelect=3/4/5`，官方通用二进制 | x86_64 都优先 `Bin=y`，不要为“优化”源码编译 |
+| 查询缓存 | MySQL 8 已删除 | 仍提供；项目模板会设置并随内存放大 `query_cache_size` | 写入会使相关结果失效并产生同步开销；现代动态站默认关闭更可预测 |
+| 优化器/统计信息 | MySQL 8.4 的 optimizer、histogram 与 EXPLAIN 行为 | 已与 MySQL 分叉，优化器开关、统计信息和执行计划不同 | 慢 SQL 必须在目标引擎上 `EXPLAIN`，不能复制另一引擎的 hint/变量 |
+| redo 配置 | 项目将旧项换成 `innodb_redo_log_capacity` | 保留 MariaDB 自身的 InnoDB redo 参数 | 不要把 MySQL 8.4 的 redo 变量写进 MariaDB，或反向照搬 |
+| 额外协议 | 有 X Protocol，项目通过 `DB_X_Port` 和回环绑定收口 | 没有 MySQL X Protocol | WordPress 不使用 X Protocol；确认无其它客户端依赖时可评估 `mysqlx=OFF` |
+| 兼容与迁移 | 新项目默认、上游 LTS；MySQL 8.0 菜单项已 EOL，只为兼容保留 | 适合已有 MariaDB 运维经验/数据链路的环境 | 物理数据目录不互换；项目只提供 MySQL→MariaDB 迁移入口，没有无损反向切换 |
+| 性能结论 | 读写表现取决于具体版本、查询与数据 | 同左 | 用整站 HTTP p95/p99、数据库 CPU/IO/慢查询比较，不能只跑空库 sysbench |
+
+新建普通 WordPress、没有既有偏好时使用项目默认 MySQL 8.4 LTS 最省兼容决策；已经有
+MariaDB 备份、监控和故障处理经验时选 MariaDB LTS 同样合理。不要为了传闻中的几个百分点
+做生产库跨引擎迁移；迁移需要逻辑备份、字符集/排序规则/SQL mode 检查和完整回滚演练。
+
+#### MariaDB 的起始优化
+
+MariaDB 与 MySQL 的 buffer pool **使用同一份整机内存预算**，不因名字不同就多分内存。
+但当前项目会启用并放大 MariaDB query cache；对有后台编辑、评论、电商订单或定时任务的
+WordPress，建议先关闭，再通过真实对照测试决定是否恢复：
+
+```ini
+[mysqld]
+query_cache_type = 0
+query_cache_size = 0
+```
+
+不要只看 `Qcache_hits` 很高就认定有效：还要同时看写入延迟、CPU、锁等待和 HTTP p95。
+页面缓存/CDN 与 Redis 对象缓存通常比数据库 query cache 更清楚地控制失效边界。纯只读、
+重复 SQL 极高的站点可以做 A/B 测试，但那不是普通 WordPress 的默认前提。
+
+MySQL 8.4 与 MariaDB 的共同起始项可写在 `/etc/my.cnf`，数值按 6.6 选择：
+
+```ini
+[mysqld]
+innodb_buffer_pool_size = 512M
+max_connections = 50
+tmp_table_size = 32M
+max_heap_table_size = 32M
+innodb_flush_log_at_trx_commit = 1
+```
+
+这里的 512M/50 对应 3~4GB 单站混部示例。MariaDB 保留自己的 redo/binlog 参数；
+MySQL 8.4 保留项目生成的 `innodb_redo_log_capacity`。不要把通用片段扩展成几十个来源不明
+的变量，也不要用 `skip-name-resolve`、关闭 Performance Schema 等老式清单作为默认动作；
+前者会改变账号 Host 匹配语义，后者会丢失诊断能力，只有证据充分时才改。
+
+#### 如何做有意义的性能对比
+
+比较 MySQL 与 MariaDB 时，使用同一份逻辑备份、同一 PHP-FPM 并发、相同 buffer pool/连接
+预算和相同持久性设置。分别预热后回放匿名页、登录、搜索、后台保存、订单/评论写入等真实
+链路，至少记录：HTTP p50/p95/p99、错误率、数据库 CPU、磁盘延迟/IOPS、峰值 RSS、
+`Rows_examined`、磁盘临时表、锁等待和慢查询。对象缓存必须两边都清空或都预热。
+
+如果差异只出现在一次短跑、未覆盖写入、或一边数据已热一边未热，就不能作为选型依据。
+WordPress 常见的第一收益仍是删除低效插件/查询、补正确索引、页面缓存与 OPcache，而不是
+替换数据库品牌。
+
+### 6.5 Redis 对象缓存容量
+
+项目安装的 Redis 默认没有 `maxmemory`，这意味着对象缓存可以一直增长到系统开始回收
+甚至 OOM。只把该实例用于可重建的 WordPress 对象缓存时，应在
+`/usr/local/redis/etc/redis.conf` 设硬上限和淘汰策略：
+
+```conf
+maxmemory 128mb
+maxmemory-policy allkeys-lfu
+```
+
+`allkeys-lfu` 适合“所有 key 都是缓存”的独立实例。若同一实例还存 session、队列或任何
+不能随时丢的数据，就不能套用这条策略，应拆实例或使用明确 TTL/ACL。缓存专用实例可按
+恢复时间目标决定是否关闭 RDB/AOF；混用实例不得为省 I/O 关闭持久化。
+
+修改前后用真实数据核对：
+
+```bash
+redis-cli INFO memory | grep -E 'used_memory_human|used_memory_peak_human|maxmemory_human|mem_fragmentation_ratio'
+redis-cli INFO stats  | grep -E 'keyspace_hits|keyspace_misses|evicted_keys'
+```
+
+`maxmemory` 不是 Redis 进程总内存上限，复制/AOF buffer、allocator 碎片和 fork 写时复制仍
+需额外空间，因此不要把所有剩余内存都给它。命中率低且 `evicted_keys` 持续增长时先检查
+key 前缀、TTL 和插件行为，再决定扩容；低流量站点甚至可能不需要 Redis。
+
+### 6.6 1~2GB、3~4GB、5GB 以上的起始方案
+
+下表假设 **Nginx + PHP 8.3 + MySQL 8.4 或 MariaDB LTS + Redis 与 WordPress 同机**、
+1 个普通站点，Redis 只做对象缓存，PHP worker 高峰按约 80~120MB 估算。两种数据库先用
+相同 buffer pool 和连接预算；MariaDB 另按 6.4 关闭 query cache 后再测。它是避免 OOM 的
+上线起点，不是跑分结论；WooCommerce、页面构建器、导入任务和多站点必须重新测。
+
+| 物理内存 | MySQL/MariaDB `innodb_buffer_pool_size` | MySQL/MariaDB `max_connections` | Redis `maxmemory` | PHP-FPM 建议起点 | 系统与突发余量 |
+|---:|---:|---:|---:|---|---:|
+| 1GB | 128M | 20 | 32~64M | `ondemand`，`max_children=4` | 至少 350M + 1~2GB Swap |
+| 2GB | 256M | 30 | 64~128M | `ondemand`，`max_children=8` | 至少 500M + 1~2GB Swap |
+| 3~4GB | 512M | 40~50 | 128~256M | `ondemand` 或 `dynamic`，`max_children=12~20` | 700M~1G |
+| 5~8GB | 1G~1.5G | 60~80 | 256~512M | `dynamic`，`max_children=24~40` | 1G~1.5G |
+| 8GB 以上 | 先给整机 20~30%，再按工作集调 | FPM 总 worker + 20 | 先给 5~10%，按命中/淘汰调 | 用实测高峰 PSS 计算，不固定照抄 80 | 至少 15~20% |
+
+1GB 机器只能承载轻量站点，编译阶段和插件更新阶段都容易触发内存峰值；优先用数据库
+通用二进制、减少插件、开启页面缓存/CDN，并避免在流量高峰做备份压缩。5GB 以上也不是
+把剩余内存全给 MySQL/MariaDB：同机 PHP 的并发内存通常更不可预测。
+
+每次只改一组值，至少验证以下四类信号：
+
+```bash
+free -h
+vmstat 1 10
+mysql -NBe "SHOW GLOBAL STATUS LIKE 'Max_used_connections';"
+redis-cli INFO stats | grep -E 'keyspace_hits|keyspace_misses|evicted_keys'
+```
+
+如果 `si/so` 在正常流量下持续非零、`MemAvailable` 逼近 0 或内核出现 OOM，先降低
+FPM worker 和连接数；不要通过调高 swappiness、扩大 Swap 或禁用 OOM killer 掩盖超配。
+
+### 6.7 WordPress 定时任务
+
+WordPress 默认用访问触发 `wp-cron.php`。低流量时会延迟，高流量时又会产生重复检查。
+生产环境可改系统 timer/cron，但应先确认 WP-Cron 没有长时间运行或失败的事件。
 
 ```php
-// wp-config.php 里加
+// wp-config.php；确认系统任务已安装后再启用
 define( 'DISABLE_WP_CRON', true );
 ```
 
-```bash
-# 每 5 分钟触发一次
-( crontab -l 2>/dev/null; echo "*/5 * * * * curl -s http://wp.example.com/wp-cron.php?doing_wp_cron >/dev/null 2>&1" ) | crontab -
+已安装 WP-CLI 时优先直接运行到期事件，不经过公开 HTTP：
+
+```cron
+*/5 * * * * runuser -u www -- /usr/local/bin/wp cron event run --due-now --path=/home/wwwroot/wp.example.com --quiet
 ```
+
+WP-CLI 应以站点文件所属的受限账号运行；本文示例路径需按实际 `command -v wp` 修改。
+没有 WP-CLI 时使用 HTTPS 且让失败可见，不使用会吞掉 HTTP 错误的 `curl -s`：
+
+```cron
+*/5 * * * * curl -fsS --max-time 60 'https://wp.example.com/wp-cron.php?doing_wp_cron' >/dev/null
+```
+
+### 6.8 Debian 12/13 VPS 优化基线
+
+现代 Debian 内核和 systemd 的默认值已适合大多数 VPS。不要照抄旧文章里的整页 sysctl、
+禁用磁盘日志、`noatime`、巨大 TCP buffer、固定 Nginx worker 数或关闭 IPv6；这些改动
+常常在超卖 VPS 上降低稳定性，并让故障难以复现。
+
+上线前按以下顺序处理：
+
+1. **更新与重启基线**：安装前完成 `apt update && apt full-upgrade`，有内核/libc 更新就
+   在部署业务前重启。之后启用 Debian 安全更新流程；Nginx/PHP/MySQL 等源码安装组件不受
+   apt 自动更新覆盖，仍需跟踪本项目 `upgrade.sh` 并先在测试机验证。
+2. **时间与磁盘**：确认 `timedatectl` 同步正常、`df -h`/`df -i` 有余量；云盘支持 discard
+   时启用并检查 `fstrim.timer`，不要在未知后端强制连续 discard。
+3. **Swap 只做保险**：项目在缺少 Swap 时可能创建 `/var/swapfile`，并只在 swappiness=0
+   时改到 10。对 1~2GB VPS 保留 Swap，但持续换页代表应用内存分配错误。
+4. **按实际并发设置文件描述符**：项目已把 `nofile` 和 `fs.file-max` 写到 65535，Nginx
+   `worker_connections` 也很高。实际并发未逼近限制时，改成几十万没有收益。
+5. **网络只按证据调**：先用 `ss -s`、丢包/RTT 和云厂商带宽上限定位。BBR 只对特定
+   高带宽高时延或丢包链路有帮助，不是 WordPress 延迟通用解法；开启前确认内核模块、
+   qdisc 和对照测试，不把页面慢查询归因于拥塞算法。
+6. **云防火墙与本机防火墙双检**：项目的 nftables 链策略是 accept，只显式阻断数据库
+   与缓存端口；云安全组应只开放实际 SSH 端口和 80/443，数据库远程管理优先 SSH 隧道。
+7. **观察而非定时清缓存**：不要建立 `drop_caches` cron，也不要为了“释放内存”重启
+   MySQL/Redis/PHP。Linux page cache 是可回收内存，判断压力看 `MemAvailable`、PSI、Swap
+   和 OOM 记录。
+8. **虚拟化现实**：`worker_processes auto` 已按可见 CPU 工作；VPS 不要启用
+   `worker_cpu_affinity auto` 绑核，超卖和 CPU quota 下可能造成负载倾斜。可在
+   `/usr/local/nginx/conf/nginx.conf` 注释该行，压测确认后保留结果。
+
+Debian 12 与 13 的主要差异不需要两套“调优参数”。Debian 13 的依赖更现代，项目已经
+处理 `libaio1t64`、ncurses 兼容和 OpenResty trixie 仓库缺失；不要为兼容旧教程手工安装
+来路不明的 `.deb` 或恢复已移除库。系统升级前保留快照/异地备份，并在克隆机验证源码
+组件能重新链接和启动。
 
 ---
 
@@ -1036,13 +1442,13 @@ MariaDB 11.8 会在直接调用旧程序名时打印弃用提示。新版安装�
 配置了异地之后自动上传：
 
 ```bash
-lnmp backup init          # 扫描已有站点、挑选后生成配置，并装好 systemd timer
-lnmp backup run all       # 立即完整跑一次
-lnmp backup run wp.example.com   # 只备份某个站点（文件与它的库）
+lnmp backup init                     # 扫描已有站点、挑选后生成配置，并装好 systemd timer
+lnmp backup run all                  # 立即完整跑一次
+lnmp backup run wp.example.com       # 只备份某个站点（文件与它的库）
 lnmp backup run db  wp.example.com   # 只备份某个站点的库
 lnmp backup run web wp.example.com   # 只备份某个站点的文件
-lnmp backup status        # 上次结果与下次计划
-lnmp backup test          # 试恢复验证：导入临时库校验后删除
+lnmp backup status                   # 上次结果与下次计划
+lnmp backup test                     # 试恢复验证：导入临时库校验后删除
 ```
 
 `init` 会扫描 nginx / apache 的 vhost 配置，反查站点目录，并从
@@ -1186,12 +1592,15 @@ Match User backupuser
 检查语法后重载：
 
 ```bash
-sshd -t && systemctl reload ssh      # Debian/Ubuntu 服务名是 ssh
-# sshd -t && systemctl reload sshd   # EL 系是 sshd
+# Debian/Ubuntu：
+sshd -t && systemctl reload ssh
+
+# EL（按需执行，不要和上一条同时执行）：
+# sshd -t && systemctl reload sshd
 ```
 
 `sshd -t` 没有输出就是通过了。**先别关掉当前的 SSH 会话**，
-另开一个连接确认自己还能登录，再关旧会话。
+另开一个连接确认登录正常，再关闭旧会话。
 
 #### 8.5.3 生产机：密钥与主机指纹
 
@@ -1282,7 +1691,7 @@ lnmp backup test
 ```bash
 systemctl list-timers lnmp-backup.timer    # 确认下次触发时间
 journalctl -u lnmp-backup.service -n 50    # 看最近一次自动执行的输出
-tail -f /var/log/lnmp/backup.log           # 备份自己的日志
+tail -f /var/log/lnmp/backup.log           # 备份任务日志
 ```
 
 #### 8.5.5 出错时对照排查
@@ -1332,8 +1741,8 @@ Remote_Ftp_CA=""              # 自签证书填 CA 路径，不要直接关校�
 
 #### 8.5.7 备份加密（age 或 GPG）
 
-默认不加密。备份要送到自己控制不了的机器上（第三方机房、对象存储、
-别人的 FTP）时才需要开，本机磁盘上的备份加密只防得住磁盘被整块拿走。
+默认不加密。备份存放在第三方机房、对象存储或外部 FTP 时应启用加密；
+本机磁盘上的加密主要降低磁盘离线泄露风险。
 
 加密在压缩之后、上传之前做：`db-<库>.sql.gz` 变成 `db-<库>.sql.gz.enc`，
 明文随即删除，`SHA256SUMS` 记的是加密后的文件。`restore` 与 `test` 会自动
@@ -1415,13 +1824,16 @@ SHA-256。大小核对能发现传输截断和文件缺失，发现不了内容�
 | 站点访问日志 | `/home/wwwlogs/<域名>.log` |
 | PHP-FPM 日志 | `/usr/local/php/var/log/php-fpm.log` |
 | MySQL 错误日志 | `/usr/local/mysql/var/<主机名>.err` |
+| MariaDB 错误日志 | `/usr/local/mariadb/var/mariadb.err` |
 | Redis 日志 | `/usr/local/redis/var/redis.log` |
 | 安装日志 | `/root/lnmp-install.log` |
 
 日志切割：
 
+在保存本项目源码的目录内执行：
+
 ```bash
-/root/lnmp2.3/tools/cut_nginx_logs.sh
+bash tools/cut_nginx_logs.sh
 ```
 
 default 站点的日志是 `/home/wwwlogs/default.log` 和
@@ -1468,7 +1880,7 @@ grep "server reached pm.max_children" /usr/local/php/var/log/php-fpm.log
 本包自带一个快速自检脚本：
 
 ```bash
-/root/lnmp2.3/tools/check502.sh
+bash tools/check502.sh
 ```
 
 ### 9.2 WordPress 后台白屏
@@ -1482,9 +1894,10 @@ SITE=/home/wwwroot/wp.example.com
 mkdir -p /var/log/wordpress && chown www:www /var/log/wordpress && chmod 750 /var/log/wordpress
 
 # 三个常量必须一起设：
-#   WP_DEBUG_DISPLAY = false  ← 关键，不设的话报错会直接打印给访客，
-#                                里面有绝对路径、SQL、插件上下文，甚至请求里的密钥
-#   WP_DEBUG_LOG 指向站外路径
+#   WP_DEBUG = true
+#   WP_DEBUG_DISPLAY = false
+#     这一项不能省略，否则绝对路径、SQL、插件上下文甚至请求密钥会直接显示给访客
+#   WP_DEBUG_LOG = 站点目录之外的日志路径
 chattr -i ${SITE}/.user.ini 2>/dev/null
 cat >> ${SITE}/wp-config-debug.snippet <<'EOF'
 define( 'WP_DEBUG', true );
@@ -1536,10 +1949,17 @@ grep client_max_body_size /usr/local/nginx/conf/nginx.conf
 ### 9.5 Redis 缓存不生效
 
 ```bash
-redis-cli ping                              # 服务是否在
-php -m | grep redis                         # 扩展是否加载
-ls -la /home/wwwroot/<域名>/wp-content/object-cache.php   # drop-in 是否部署
-redis-cli --scan --pattern "<前缀>:*" | wc -l              # 是否真的在写
+# 检查 Redis 服务
+redis-cli ping
+
+# 检查 PHP 扩展
+php -m | grep redis
+
+# 检查 drop-in 是否部署
+ls -la /home/wwwroot/<域名>/wp-content/object-cache.php
+
+# 检查对象缓存是否真的在写入
+redis-cli --scan --pattern "<前缀>:*" | wc -l
 ```
 
 ### 9.6 数据库连接失败
@@ -1550,12 +1970,14 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo
 ```
 
 - `Access denied` → 密码错误，或账号仅授权 `localhost` 而客户端连接 `127.0.0.1`
-- `Can't connect` → MySQL 没起来，`lnmp mysql start`
+- `Can't connect` → 数据库没启动；按实际分支执行 `lnmp mysql start` 或 `lnmp mariadb start`
 
 ### 9.7 忘记数据库 root 密码
 
+回到保存本项目源码的目录后执行：
+
 ```bash
-/root/lnmp2.3/tools/reset_mysql_root_password.sh
+bash tools/reset_mysql_root_password.sh
 ```
 
 该脚本重置期间会关闭网络监听、只用私有 socket，数据库不对外可见。
@@ -1564,14 +1986,16 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo
 
 ## 十、安全基线
 
+### 10.1 本项目提供的主机基线
+
 本包安装后已经做好的：
 
 | 项 | 状态 | 注意 |
 |---|---|---|
 | 防火墙 | nftables `inet lnmp` 表，放行 22/80/443 + ICMP，**3306 / 6379 / 11211 显式 drop** | **链策略是 `policy accept`**，不是默认拒绝：它仅阻断明确列出的端口，不表示只允许这些端口 |
-| MySQL | 无匿名用户；root 只能从 localhost 登录；无 test 库；**`bind-address = 127.0.0.1`** | |
-| Redis | 只监听回环；以专用低权限账号运行 | 回环是必要条件不是充分条件，多站点隔离见 3.x |
-| Memcached | 只监听回环；以专用低权限账号运行 | 协议无认证，同上 |
+| MySQL / MariaDB | 无匿名用户；root 只能从 localhost 登录；无 test 库；**`bind-address = 127.0.0.1`** | MySQL 另把 X Protocol 绑定回环；MariaDB 没有该协议 |
+| Redis | 只监听回环；以专用低权限账号运行 | 回环是必要条件但不是充分条件；认证、跨机访问和多站点隔离见“安装 Redis”一章 |
+| Memcached | 只监听回环；以专用低权限账号运行 | 协议本身不提供可靠的租户隔离，不要对公网开放；互不信任的站点应拆分实例和系统账号 |
 | PHP | `disable_functions` 禁用 exec 系列；每站点 `open_basedir` 隔离 | `open_basedir` 限制文件路径访问，**不提供**操作系统级租户隔离：多站点共用 `www` 账号时没有内核层面的边界 |
 | phpinfo / phpMyAdmin / 演示页 | **默认全部不部署** | 需在 `lnmp.conf` 显式开启 |
 | default 站点的 PHP 边界 | 只放行 `phpinfo.php` / `redis.php` / `memcached.php` 三个固定文件名与 phpMyAdmin 入口，其余 `.php` 一律拒绝 | 放行的三个文件仅在对应开关打开时才会写入，未写入时访问返回 404；往 default 根目录手工放同名文件同样会被执行，该站点是系统默认创建，其他需求 php 的请自建新站点 |
@@ -1616,7 +2040,7 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo
    移出通配符匹配范围，default 立即恢复为静态站；重新开启时原子移回。
 
    随机路径保留 `_phpmyadmin` 结尾，是为了在 default 站点配了严格访问控制时，
-   一眼能认出这条路径的用途，写放行或封禁规则时不至于误伤。
+   便于识别路径用途，配置放行或封禁规则时可减少误操作。
 
    如果还要再收紧到指定来源，编辑上述片段，在 `location ^~` 块里加白名单：
 
@@ -1646,10 +2070,61 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo
    ```
 
    也可以干脆不装 phpMyAdmin，需要时用 SSH 隧道直连数据库。
-3. **WordPress 后台加固**：限制 `wp-login.php` 的访问频率，或改用插件加两步验证
-4. **及时更新**：WordPress 核心、插件和主题漏洞是主要入侵途径，
-   远多于服务器组件本身
-5. **定期执行备份恢复测试**，确认备份文件有效
+3. **WordPress 后台加固**：为管理员启用两步验证或 passkey，并限制登录爆破
+4. **及时更新**：WordPress 核心、插件和主题漏洞是主要入侵途径，停用但未删除的代码
+   仍在磁盘上，同样需要更新或删除
+5. **定期执行异地备份恢复测试**，确认备份文件有效、密钥可用且恢复时间可接受
+
+### 10.2 WordPress 应用层基线
+
+LNMP 的防火墙、`open_basedir` 和禁用函数不能弥补 WordPress 插件漏洞。生产站至少落实
+以下各项，并保留变更记录：
+
+1. **更新策略按风险分层**。核心安全/维护更新及时应用；插件、主题和 PHP 大版本先在
+   克隆环境回归登录、下单、支付回调、计划任务和缓存清除。删除不用的插件/主题，不能
+   只“停用”。源码安装的 Nginx/PHP/MySQL 不会随 `apt upgrade` 自动升级。
+2. **账号最小权限**。日常编辑不用 Administrator；管理员启用两步验证/passkey，恢复码
+   离线保存。自动化和外部客户端使用可撤销的 Application Password，不共享后台密码。
+   改默认用户名本身不是安全控制，真正有效的是强随机密码、MFA 和速率限制。
+3. **禁止后台编辑代码**。在 `wp-config.php` 加 `DISALLOW_FILE_EDIT`，防止已取得后台权限的
+   账号直接用主题/插件编辑器落地 PHP。只有采用外部发布、能持续安装安全更新的环境才设
+   `DISALLOW_FILE_MODS=true`；普通站点盲目设置会连自动更新一起阻断。
+4. **文件写权限最小化**。本指南让核心、插件和主题归 `root:www` 且不可由 PHP 修改，
+   只给 uploads/cache/upgrade 等必要目录写权限。这会要求管理员通过受控发布流程更新代码，
+   但能显著限制 Web 进程被利用后的持久化范围。不要为解决一次更新失败递归 `chmod 777`。
+5. **数据库每站独立**。`lnmp vhost add` 创建的站点用户只授权自己的库；不要把数据库
+   root 写进 `wp-config.php`，不要多个互不信任站点共用同一个库用户。备份凭据与站点凭据
+   分开，文件权限保持 600/640。
+6. **密钥与会话**。使用 WordPress 官方 salt 服务生成唯一 Authentication Keys/Salts，
+   每套环境不同；怀疑凭据泄露时轮换会使现有会话失效。`wp-config.php` 不提交 Git，
+   不放在可下载备份目录，也不在工单/聊天中粘贴。
+7. **不要无脑禁用 REST API 或 XML-RPC**。区块编辑器、应用密码和许多插件依赖 REST；
+   XML-RPC 仍可能被移动客户端、Jetpack 或 pingback 使用。先盘点依赖：确实不用 XML-RPC
+   才在 Web 层拒绝 `/xmlrpc.php`；需要时保留并对认证失败、`system.multicall` 和来源做
+   速率限制。隐藏版本号、改登录 URL 都只能减少噪声，不是漏洞修复。
+8. **登录防护放在正确层**。优先使用能识别真实客户端 IP 的 CDN/WAF 或维护良好的
+   WordPress 限速/MFA 方案。若在 Nginx 限速，必须先正确配置可信代理地址；直接信任任何
+   `X-Forwarded-For` 会让攻击者伪造 IP 绕过限制。阈值要允许密码管理器、移动网络和多人
+   NAT，避免把登录可用性变成拒绝服务入口。
+9. **HTTPS 与代理边界**。后台启用 `FORCE_SSL_ADMIN`；使用 CDN/反向代理时只信任固定代理
+   网段传来的 scheme/IP 头，并限制源站不能被公网绕过。HSTS 只在所有子域都能长期 HTTPS
+   后启用 `includeSubDomains`；CSP 需要按实际主题/插件资源逐步收紧，不能复制一条通用值。
+10. **可恢复性和检测**。异地备份至少覆盖数据库、`wp-content`、Web 配置和证书恢复所需
+    信息，定期执行 `lnmp backup test` 并做整站恢复演练。监控核心文件变化、管理员新增、
+    插件安装、PHP-FPM/Nginx 错误和异常外连；安全插件不是替代主机日志与恢复演练的理由。
+
+建议加入 `wp-config.php`、且不会阻断正常更新的两项：
+
+```php
+define( 'DISALLOW_FILE_EDIT', true );
+define( 'FORCE_SSL_ADMIN', true );
+```
+
+WordPress 自动更新是否可写与本指南的 root-owned 发布模型存在明确取舍：保持代码不可写时，
+管理员必须建立固定的更新窗口，用 root 部署官方包/经过审计的插件，然后恢复属主权限并
+回归测试；不能既禁止 Web 写代码，又假设后台自动更新仍会成功。
+
+### 10.3 禁止上传目录执行 PHP
 
 禁止 PHP 在上传目录执行（WordPress 被上传 webshell 的常见路径）：
 
@@ -1688,7 +2163,50 @@ rm -f /home/wwwroot/<域名>/wp-content/uploads/t.php
 
 ---
 
-## 附：本次验证环境的完整结果
+## 十一、依据与校准方法
+
+本指南的数值建议不是从旧版“优化参数合集”复制而来，依据分为两类：
+
+- **项目实现事实**：版本、默认值、路径、端口、菜单和自动分档均来自当前
+  `install.sh`、`lnmp.conf`、`include/*.sh`、`conf/lnmp`、`tools/*.sh`。例如项目确实会
+  将 4~8GB 主机的 FPM `max_children` 设为 60、MySQL buffer pool 设为 512M；指南明确
+  记录该行为，但不把它直接当作混部 VPS 推荐值。
+- **容量建议**：先从整机内存预算和并发上界推导保守起点，再要求用高峰 PSS、
+  `Max_used_connections`、Redis 命中/淘汰、Swap/PSI/OOM 和恢复演练校准。没有一个百分比
+  能同时适用于静态博客、WooCommerce、页面构建器和多站点。
+
+进一步核对时优先读上游文档：
+
+- [PHP-FPM 配置指令](https://www.php.net/manual/en/install.fpm.configuration.php)与
+  [OPcache 配置](https://www.php.net/manual/en/opcache.configuration.php)：进程模型、
+  `pm.max_children`、空闲回收和 OPcache 容量的实际语义。
+- [MySQL 8.4 InnoDB Buffer Pool](https://dev.mysql.com/doc/refman/8.4/en/innodb-buffer-pool.html)
+  与[服务器系统变量](https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html)：
+  区分全局缓存、每线程/每连接 buffer 和动态/需重启参数。
+- [MariaDB InnoDB Buffer Pool](https://mariadb.com/kb/en/innodb-buffer-pool/)与
+  [Query Cache](https://mariadb.com/kb/en/query-cache/)：核对 MariaDB 自己的变量语义，
+  不把已经与 MySQL 分叉的实现混用。
+- [Redis key eviction](https://redis.io/docs/latest/develop/reference/eviction/)与
+  [内存优化](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/memory-optimization/)：
+  `maxmemory`、淘汰策略及进程额外内存的边界。
+- [WordPress Hardening](https://developer.wordpress.org/advanced-administration/security/hardening/)、
+  [WordPress 运行要求](https://wordpress.org/about/requirements/)、
+  [更新 WordPress](https://developer.wordpress.org/advanced-administration/upgrade/upgrading/)和
+  [把 WP-Cron 接入系统调度](https://developer.wordpress.org/plugins/cron/hooking-wp-cron-into-the-system-task-scheduler/)：
+  文件权限、更新、密钥、账号与定时任务。
+- [Debian Security](https://www.debian.org/security/)与
+  [Debian stable release notes](https://www.debian.org/releases/stable/releasenotes)：系统更新、
+  已知问题和升级边界；VPS 的安全组、磁盘和网络限制还要以云厂商文档为准。
+- [Nginx 核心模块](https://nginx.org/en/docs/http/ngx_http_core_module.html)与
+  [gzip 模块](https://nginx.org/en/docs/http/ngx_http_gzip_module.html)：连接、上传、location、
+  压缩等指令的真实上下文，不以博客片段替代语法和优先级规则。
+
+上游文档说明“参数是什么”，本机指标说明“应该设多少”。变更流程固定为：备份当前配置，
+记录基线，只改一组参数，做语法检查和真实请求验证，覆盖一个业务高峰，再决定保留或回滚。
+
+---
+
+## 附：验证环境的完整结果
 
 ```
 组件版本    nginx/1.30.4  PHP 8.3.33  MySQL 8.4.7  Redis 8.10.0

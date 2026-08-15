@@ -11,8 +11,7 @@ Backup_MySQL()
         echo "MySQL 数据库备份失败，请手动备份数据库！"
         exit 1
     fi
-    # 退出码为 0 不代表备份完整，另需确认结束标记；
-    # 库列表在停服前记录，供升级完成后比对是否有数据丢失。
+    # 同时确认备份结束标记，并记录升级前库列表供完成后核对。
     Check_DB_Backup "/root/mysql_all_backup${Upgrade_Date}.sql" || exit 1
     Snapshot_DB_List /usr/local/mysql/bin/mysql "${DB_List_Before}" || exit 1
     lnmp stop
@@ -40,8 +39,7 @@ Upgrade_MySQL80()
         mkdir build && cd build
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
         if ! Make_Install; then
-            # 数据库升级尚未做自动回滚，
-            # 这里至少要把恢复所需的东西指清楚，而不是丢一句 exit 1。
+            # 编译失败时列出旧程序、服务脚本和备份的人工恢复步骤。
             Echo_Red "编译失败，升级中止。此时旧数据库已被停止并移走。"
             Echo_Red "人工恢复："
             Echo_Red "  1) mv /usr/local/oldmysql${Upgrade_Date} /usr/local/mysql"
@@ -63,8 +61,7 @@ socket      = /tmp/mysql.sock
 [mysqld]
 port        = ${DB_Port}
 socket      = /tmp/mysql.sock
-# 仅监听回环地址，与全新安装保持同一监听基线（见 include/mysql.sh）。
-# 升级重写 /etc/my.cnf，此处不写则原有的本地监听限制会被静默撤销。
+# 升级后的数据库继续仅监听回环地址，避免重写配置时撤销访问限制。
 # 需要远程连库时改为具体地址，并同步调整防火墙放行与账号 Host 授权范围。
 bind-address = 127.0.0.1
 # X Protocol（33060 端口）由独立选项控制，bind-address 对其无效。
@@ -128,7 +125,7 @@ ${MySQLMAOpt}
 EOF
 
     MySQL_Opt
-    # 升到 8.4 及以上时把弃用项换成等价写法；更低版本走进去会直接返回
+    # MySQL 8.4 及以上转换弃用配置，较低版本保持原配置。
     MySQL_Deprecated_Opt
     if [ -d "${MySQL_Data_Dir}" ]; then
         rm -rf ${MySQL_Data_Dir}/*
@@ -162,8 +159,7 @@ Upgrade_MySQL84()
         mkdir build && cd build
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
         if ! Make_Install; then
-            # 数据库升级尚未做自动回滚，
-            # 这里至少要把恢复所需的东西指清楚，而不是丢一句 exit 1。
+            # 编译失败时列出旧程序、服务脚本和备份的人工恢复步骤。
             Echo_Red "编译失败，升级中止。此时旧数据库已被停止并移走。"
             Echo_Red "人工恢复："
             Echo_Red "  1) mv /usr/local/oldmysql${Upgrade_Date} /usr/local/mysql"
@@ -185,8 +181,7 @@ socket      = /tmp/mysql.sock
 [mysqld]
 port        = ${DB_Port}
 socket      = /tmp/mysql.sock
-# 仅监听回环地址，与全新安装保持同一监听基线（见 include/mysql.sh）。
-# 升级重写 /etc/my.cnf，此处不写则原有的本地监听限制会被静默撤销。
+# 升级后的数据库继续仅监听回环地址，避免重写配置时撤销访问限制。
 # 需要远程连库时改为具体地址，并同步调整防火墙放行与账号 Host 授权范围。
 bind-address = 127.0.0.1
 # X Protocol（33060 端口）由独立选项控制，bind-address 对其无效。
@@ -250,7 +245,7 @@ ${MySQLMAOpt}
 EOF
 
     MySQL_Opt
-    # 升到 8.4 及以上时把弃用项换成等价写法；更低版本走进去会直接返回
+    # MySQL 8.4 及以上转换弃用配置，较低版本保持原配置。
     MySQL_Deprecated_Opt
     if [ -d "${MySQL_Data_Dir}" ]; then
         rm -rf ${MySQL_Data_Dir}/*
@@ -295,11 +290,8 @@ Restore_Start_MySQL()
         /usr/local/mysql/bin/mysqld --user=mysql --upgrade=FORCE &
         mysqld_pid=$!
         echo "正在等待升级完成..."
-        # --upgrade=FORCE 先完成升级再开始对外服务，因此 ping 成功即表示升级结束。
-        #
-        # 原实现固定 sleep 180 后直接 shutdown：大库可能尚未升完就被中断，
-        # 小库则空等三分钟，且后台进程的退出状态从未被检查。
-        # 改为轮询实例可用性，上限 30 分钟；进程提前退出则立即结束等待。
+        # --upgrade=FORCE 完成后才接受连接，因此轮询 ping 判断结果，最长等待
+        # 30 分钟；后台进程提前退出时立即结束等待。
         upgrade_wait=0
         while [ ${upgrade_wait} -lt 1800 ]; do
             /usr/local/mysql/bin/mysqladmin --defaults-file=~/.my.cnf ping >/dev/null 2>&1 && break
@@ -328,8 +320,7 @@ Restore_Start_MySQL()
     cd ${cur_dir} && rm -rf ${cur_dir}/src/mysql-${mysql_version}
 
     lnmp start
-    # 成功判定不能只看文件是否存在：还须确认服务可连接、库列表无缺失、
-    # 本地监听基线未被重写的 /etc/my.cnf 撤销。
+    # 升级成功需确认服务可连接、数据库列表完整且仍保持本地监听限制。
     if [[ -s /usr/local/mysql/bin/mysql && -s /usr/local/mysql/bin/mysqld_safe && -s /etc/my.cnf ]] \
         && Verify_DB_Upgraded /usr/local/mysql/bin/mysql "${DB_List_Before}" "${DB_Port}" "${DB_X_Port}"; then
         Echo_Green "======== MySQL 升级完成 ======"
@@ -397,7 +388,7 @@ Upgrade_MySQL()
         Bin="n"
     fi
 
-    #do you want to install the InnoDB Storage Engine?
+    # 选择是否启用 InnoDB 存储引擎。
     echo "==========================="
 
     InstallInnodb="y"
@@ -419,7 +410,7 @@ Upgrade_MySQL()
         ;;
     esac
 
-    # mysql_short_version 已在前面的版本校验处求过，此处不再重复计算
+    # 后续下载和安装使用已验证的目标分支。
 
     echo "=================================================="
     echo "即将把 MySQL 升级到 ${mysql_version}"
@@ -440,14 +431,8 @@ Upgrade_MySQL()
 
         mysql_src="mysql-${mysql_version}.tar.gz"
     fi
-    # MySQL 是唯一没有机器可读官方校验文件的上游：cdn.mysql.com 上
-    # <file>.asc 一律 404，校验值只印在 dev.mysql.com 的下载页面上。
-    # 所以这里也走 Download_Verified，但它对 mysql 只认静态清单 ：
-    # 清单里没有就明确报错并告诉使用者怎么补，不得"拿不到校验值就照装"。
-    # 注意：这里不用 `if [ -s ]` 提前放行已存在的文件。
-    # Download_Verified 自己就处理"已存在则不重复下载"，且无论是否新下载
-    # 都会核对 SHA256。缓存文件不能绕过校验；MySQL 安装包需要同等校验，
-    # 因为它是唯一没有上游机器可读校验值的组件，静态清单是它仅有的一道防线。
+    # MySQL 未提供机器可读的官方校验文件，因此使用静态 SHA256 清单。
+    # Download_Verified 对新下载和本地缓存均执行校验，清单缺失时停止升级。
 
     Download_Verified mysql "${mysql_version}" \
         "https://cdn.mysql.com/Downloads/MySQL-${mysql_short_version}/${mysql_src}" "${mysql_src}"

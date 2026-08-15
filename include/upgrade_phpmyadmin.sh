@@ -26,8 +26,7 @@ Upgrade_phpMyAdmin()
     echo "============================ 文件检查结束 ========================"
 
     local pma_src="phpMyAdmin-${phpMyAdmin_Version}-all-languages"
-    # 线上目录与备份都在网站根目录之外：备份若落在根目录下，
-    # 旧版本的整套源码就成了可直接下载的存档。
+    # 程序目录和备份均位于网站根目录之外，防止旧版源码被直接下载。
     local pma_live="${PhpMyAdmin_Dir}"
     local pma_bak="${PhpMyAdmin_Dir}.bak.${Upgrade_Date}"
     local stage="${cur_dir}/src/.pma-stage.$$"
@@ -41,7 +40,7 @@ Upgrade_phpMyAdmin()
         rm -rf "${stage}"
         exit 1
     fi
-    # 归档顶层目录必须精确等于预期，否则说明拿到的不是预期内容
+    # 归档顶层目录和入口文件必须符合目标版本结构。
     if [ ! -s "${stage}/${pma_src}/index.php" ]; then
         Echo_Red "归档结构异常：未找到 ${pma_src}/index.php"
         Echo_Red "线上 phpMyAdmin 未做任何改动。"
@@ -49,13 +48,12 @@ Upgrade_phpMyAdmin()
         exit 1
     fi
 
-    # 配置与目录都在暂存区里准备好，确认无误后再一次性切换
+    # 在暂存目录完成配置后再切换当前版本。
     \cp "${cur_dir}/conf/config.inc.php" "${stage}/${pma_src}/config.inc.php" || {
         Echo_Red "写入 config.inc.php 失败，线上未改动。"; rm -rf "${stage}"; exit 1; }
 
     sed -i "s/LNMPORG/$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')/g" "${stage}/${pma_src}/config.inc.php"
-    # 端口取本机实际值。升级时 lnmp.conf 的 DB_Port 往往只是默认值 3306，
-    # 主栈当初若用环境变量指定过别的端口，照抄 lnmp.conf 会把能用的配置改坏。
+    # 使用数据库实际监听端口，避免 lnmp.conf 默认值覆盖安装时的自定义端口。
     local db_port
     db_port=$(Get_Actual_DB_Port) || \
         Echo_Yellow "未能从 /etc/my.cnf 读到数据库端口，按 lnmp.conf 的 ${db_port} 写入。"
@@ -67,8 +65,7 @@ Upgrade_phpMyAdmin()
         rm -rf "${stage}"
         exit 1
     fi
-    # 模板缓存目录在网站根目录之外，与 php.sh 的首装路径保持一致。
-    # 网站目录下不再建 upload/save：导出的库转储落在那里就是公网可下载的。
+    # 模板缓存位于网站根目录之外，且不创建公开的 upload/save 数据目录。
     mkdir -p /var/lib/phpmyadmin/tmp
     chown -R www:www /var/lib/phpmyadmin
     chmod 700 /var/lib/phpmyadmin/tmp
@@ -92,10 +89,7 @@ Upgrade_phpMyAdmin()
     fi
     rm -rf "${stage}"
 
-    # 访问路径记录跟着搬过来，否则升级后 lnmp status 就查不到入口了。
-    # Web 服务器上的映射片段用的还是同一个路径，无需重新生成。
-    # 属主跟着程序目录一起给 www：首装时该文件就是 www:www 600，
-    # 升级后若变成 root:root 会与首装结果不一致。
+    # 保留原随机访问路径及权限，使现有 Web 映射和 lnmp status 继续可用。
     if [ -s "${pma_bak}/.access_url" ]; then
         \cp "${pma_bak}/.access_url" "${pma_live}/.access_url"
         chown www:www "${pma_live}/.access_url"

@@ -22,8 +22,7 @@ action2=$2
 . include/opcache.sh
 . include/redis.sh
 . include/imageMagick.sh
-# ionCube 相关逻辑一直内联在本文件里，本包没有 include/ionCube.sh。
-# 下面两个内联函数：一个说明当前状态，一个供装过的机器干净卸载。
+# ionCube 未接入安装流程。以下函数用于显示状态及清理既有安装。
 . include/apcu.sh
 . include/php_exif.sh
 . include/php_fileinfo.sh
@@ -33,8 +32,7 @@ action2=$2
 . include/php_imap.sh
 . include/php_swoole.sh
 
-# Redis 与 Memcached 的独立安装入口也在这里，端口同样会进 sed 和防火墙命令，
-# 校验必须和 install.sh / upgrade.sh / pureftpd.sh 一样放在任何系统动作之前。
+# Redis 与 Memcached 的端口会写入服务配置和防火墙规则，因此必须在系统变更前校验。
 Validate_Service_Ports || exit 1
 
 ionCube_NotWired_Notice()
@@ -45,9 +43,8 @@ ionCube_NotWired_Notice()
     Echo_Yellow "现在需要的话，请到 https://www.ioncube.com/loaders.php 取官方包自行安装。"
 }
 
-# 卸载入口保留：装过的机器需要一条干净的移除路径。
-# 只删 ini 并重启 PHP，不下载、不落地任何二进制。
-# /usr/local/ioncube 保留，由使用者自行决定是否删。
+# ionCube 卸载仅删除 ini 并重启 PHP，不下载文件。
+# /usr/local/ioncube 由使用者确认内容后手工清理。
 Uninstall_ionCube()
 {
     echo "即将卸载 ionCube..."
@@ -258,12 +255,8 @@ Select_PHP()
     fi
 }
 
-# 本脚本装的都是要编进当前 PHP 的扩展，没有 PHP 就一件也装不成。
-#
-# 原先不做这个检查：机器上没有 PHP 时，memcached 的服务端、init 脚本、
-# systemd unit 和开机自启都已经装好，直到编译 PHP 扩展才失败，
-# 而那里是 `Make_Install || exit 1`，整个脚本当场退出 ——
-# 启动、防火墙和安装验收全部没执行，用户只看到一句失败，不知道装了一半。
+# 扩展需要当前 PHP 的编译环境。缺少 PHP 时必须在安装服务端、init 脚本和
+# systemd unit 之前退出，避免留下未完成的安装。
 Check_PHP_Installed()
 {
     [ -x "${PHP_Path}/bin/php-config" ] && return 0
@@ -284,10 +277,7 @@ Addons_Get_PHP_Ext_Dir()
 
 Download_PHP_Src()
 {
-    # 不使用 `if [ -s ]` 跳过已有文件；Download_Files 会处理
-    # "已存在则不重复下载"，而且无论是否新下载都会做 SHA256 校验。
-    # 原写法等于给缓存文件开了一条免检通道：只要 src/ 下先有一个同名文件
-    # （上次中断留下的、其他用户放置的、被替换过的），就会跳过整个 fail-closed 校验。
+    # Download_Files 会复用已有文件并执行 SHA256 校验，缓存文件不得绕过校验。
 
     Download_Files https://www.php.net/distributions/php-${Cur_PHP_Version}.tar.bz2 php-${Cur_PHP_Version}.tar.bz2
     if [ $? -eq 0 ] && [ -s php-${Cur_PHP_Version}.tar.bz2 ]; then
@@ -309,7 +299,7 @@ Select_PHP
 
     case "${action}" in
     install)
-        # 只拦安装：卸载要能在 PHP 已经被删掉的机器上照常清理残留。
+        # 安装依赖 PHP；卸载允许在 PHP 不存在时清理残留。
         Check_PHP_Installed || exit 1
         case "${action2}" in
             1|[mM]emcached)
@@ -361,8 +351,7 @@ Select_PHP
                 exit 1
                 ;;
             *)
-                # 子命令拼错什么都没装，不能报成功：外部自动化只看退出码，
-                # 返回 0 等于告诉它"装好了"。
+                # 非法子命令返回非零状态，便于自动化调用识别未执行安装。
                 echo "用法：./addons.sh install {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}"
                 exit 1
                 ;;
@@ -388,8 +377,7 @@ Select_PHP
             ion[cC]ube)
                 Uninstall_ionCube
                 ;;
-            # 保留卸载入口，支持移除旧版本安装。
-            # 它只删 ini 并重启 PHP，不下载、不落地任何二进制。
+            # 扩展卸载仅移除对应配置和已安装文件。
             [eE]xif)
                 Uninstall_PHP_Exif
                 ;;
@@ -426,8 +414,6 @@ Select_PHP
         ;;
     esac
 
-# 各安装函数改用 return 之后，脚本的退出码就得在这里明确交出去。
-# 靠"最后一条命令恰好是那个函数"是碰运气：以后在 esac 后面加任何一行，
-# 退出码就变成那一行的了，外部自动化再也发现不了安装失败。
+# 显式返回安装函数的状态，确保自动化调用能够识别安装失败。
 Addons_Rc=$?
 exit ${Addons_Rc}

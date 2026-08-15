@@ -23,7 +23,7 @@ __pycache__/
 *.log
 dist/
 
-# 开发期跟踪文件，不随发布包分发
+# 项目维护文件，不随发布包分发
 todo.md
 HANDOVER.md
 tests/

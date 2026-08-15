@@ -1,12 +1,6 @@
 # CentOS Stream 9 官方源，供无订阅的 RHEL 9 / CentOS Stream 9 使用。
-#
-# 改造要点（原文件走 http://mirrors.ustc.edu.cn，且 baseos/crb 是 gpgcheck=0）：
-#   - baseurl 改为官方 mirror.stream.centos.org，全程 HTTPS
-#   - 三个仓库一律 gpgcheck=1
-#   - gpgkey 使用随包分发的本地公钥文件
-#     （conf/RPM-GPG-KEY-CentOS-Official），由 Install_CentOS_GPG_Key() 核对
-#     指纹 99DB70FAE1D7CE227FB6488205B555B38483C65D 后安装到 /etc/pki/rpm-gpg/。
-#     经 HTTP 取公钥等于把「校验依据」本身交给中间人，gpgcheck=1 也就形同虚设。
+# 仓库使用官方 HTTPS 地址，软件包通过本地 CentOS 公钥校验。
+# 安装公钥前核对指纹 99DB70FAE1D7CE227FB6488205B555B38483C65D，避免联网获取密钥时被替换。
 
 [baseos]
 name=CentOS Stream 9 - BaseOS

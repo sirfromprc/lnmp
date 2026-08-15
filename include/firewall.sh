@@ -3,16 +3,13 @@
 FW_TABLE='inet lnmp'
 FW_CHAIN='input'
 
-# 本包只维护这一个文件，不得改写系统的防火墙主配置。
+# LNMP 规则单独保存在此文件，避免覆盖系统防火墙主配置。
 FW_INCLUDE_FILE='/etc/nftables.d/lnmp.nft'
 
-# 供 end.sh 汇总时提示用：防火墙没配成功时置 y
+# 防火墙配置失败时由 end.sh 汇总提示。
 FW_Failed='n'
 
-# ---------------------------------------------------------------------------
-# Firewall_Backend — 决定用哪套后端，结果放进 FW_Backend
-#   firewalld / nft / none
-# ---------------------------------------------------------------------------
+# 选择可用的防火墙后端，并将结果记录为 firewalld、nft 或 none。
 Firewall_Backend()
 {
     if [ -n "${FW_Backend}" ]; then
@@ -34,14 +31,8 @@ Firewall_Available()
     [ "${FW_Backend}" != 'none' ]
 }
 
-# ---------------------------------------------------------------------------
-# Firewall_Init — 准备后端
-#
-# firewalld：什么都不用建，直接用它的 zone。
-# nft：建自己的表和链，并写入基础放行规则。
-#      幂等：基础规则先清空再写，避免多次安装后出现重复规则。
-#      只操作 `inet lnmp` 这一个表，系统其他表原样不动。
-# ---------------------------------------------------------------------------
+# 初始化防火墙后端。firewalld 使用现有 zone；nft 使用独立的 inet lnmp
+# 表和链，重建基础规则以避免重复，并保留系统中的其他规则表。
 Firewall_Init()
 {
     Firewall_Backend
@@ -64,7 +55,7 @@ Firewall_Init()
         FW_Failed='y'
         return 1
     fi
-    # 已存在则先删掉整条链，保证规则不重复累积（只删自己这张表里的链）
+    # 重建 LNMP 专用链，防止重复安装造成规则累积。
     nft delete chain ${FW_TABLE} ${FW_CHAIN} 2>/dev/null
     if ! nft add chain ${FW_TABLE} ${FW_CHAIN} \
          '{ type filter hook input priority filter; policy accept; }' 2>/dev/null; then
@@ -79,21 +70,17 @@ Firewall_Init()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# Firewall_Allow <proto> <port> — 放行端口
-# 端口可以是 22、也可以是 20000-30000 这样的区间。
-# ---------------------------------------------------------------------------
+# 放行单个端口或 20000-30000 格式的端口范围。
 Firewall_Allow()
 {
     Firewall_Backend
     case "${FW_Backend}" in
     firewalld)
-        # firewalld 的区间写法是 20000-30000/tcp，与 nft 的一致
+        # firewalld 与 nft 使用相同的端口范围格式。
         firewall-cmd --permanent --add-port="$2/$1" >/dev/null 2>&1
         ;;
     nft)
-        # pureftpd.sh 等入口会直接调本函数而不先 Firewall_Init，
-        # 表/链不在时 nft add rule 会静默失败，所以这里补一次确保。
+        # 独立组件可能直接调用此函数，因此写入规则前需确保表和链存在。
         nft list chain ${FW_TABLE} ${FW_CHAIN} >/dev/null 2>&1 || Firewall_Init || return 1
 
         if ! nft add rule ${FW_TABLE} ${FW_CHAIN} "$1" dport "$2" accept 2>/dev/null; then
@@ -108,15 +95,13 @@ Firewall_Allow()
     esac
 }
 
-# ---------------------------------------------------------------------------
-# Firewall_Allow_ICMP — 放行 ping
-# ---------------------------------------------------------------------------
+# 放行 IPv4 和 IPv6 的 ping 请求。
 Firewall_Allow_ICMP()
 {
     Firewall_Backend
     case "${FW_Backend}" in
     firewalld)
-        # firewalld 默认就放行 echo-request，无需额外动作
+        # firewalld 默认允许 echo-request，无需追加规则。
         return 0
         ;;
     nft)
@@ -130,13 +115,8 @@ Firewall_Allow_ICMP()
     esac
 }
 
-# ---------------------------------------------------------------------------
-# Firewall_Block <proto> <port> — 挡掉端口的外部新建连接
-#
-# nft 后端：链里前两条是 lo accept 与 established accept，本机访问不受影响。
-#           先删同规则再加，避免重复执行时堆叠。
-# firewalld：它本身就是默认拒绝，"挡掉"等价于"确保这个端口没被放行"。
-# ---------------------------------------------------------------------------
+# 阻止外部新建连接。nft 保留回环及已建立连接，并在写入前清除同类规则；
+# firewalld 通过撤销端口放行实现默认拒绝。
 Firewall_Block()
 {
     Firewall_Backend
@@ -146,7 +126,7 @@ Firewall_Block()
         return 0
         ;;
     nft)
-        # 表/链可能还不存在（比如只装了 memcached 没走完整 LNMP 安装）
+        # 单独安装组件时可能尚未建立 LNMP 规则表和链。
         nft list chain ${FW_TABLE} ${FW_CHAIN} >/dev/null 2>&1 || Firewall_Init || return 1
         Firewall_Unblock "$1" "$2"
 
@@ -162,11 +142,7 @@ Firewall_Block()
     esac
 }
 
-# ---------------------------------------------------------------------------
-# Firewall_Unblock <proto> <port> — 撤销上面那条 drop
-#
-# nftables 删规则要按 handle 删，故先查 handle 再删。
-# ---------------------------------------------------------------------------
+# 撤销端口阻断；nftables 规则需先取得 handle 才能删除。
 Firewall_Unblock()
 {
     Firewall_Backend
@@ -230,7 +206,7 @@ Firewall_Save()
         nft list table ${FW_TABLE}
     } > "${tmp_file}" 2>/dev/null
 
-    # 采集失败会产生不完整文件；校验失败时保留原文件，不执行部分替换。
+    # 仅在规则采集完整且语法校验通过后替换持久化文件。
     if [ ! -s "${tmp_file}" ] || ! grep -q "chain ${FW_CHAIN}" "${tmp_file}"; then
         Echo_Red "采集 nftables 规则失败，未修改任何持久化文件。"
         rm -f "${tmp_file}"
@@ -252,7 +228,7 @@ Firewall_Save()
         return 1
     fi
 
-    # 主配置只追加一行 include，且只在确实没有的时候。已有内容一律不动。
+    # 主配置仅在缺少引用时追加 include，保留其余现有内容。
     if [ -f "${main_conf}" ]; then
         if ! grep -q "${FW_INCLUDE_FILE}" "${main_conf}"; then
             printf '\n# LNMP 安装脚本追加：加载 LNMP 自己的防火墙规则\ninclude "%s"\n' \
@@ -277,23 +253,9 @@ Firewall_Save()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# Check_SSH_Port_Policy — 装依赖/编译前，确认即将放行的 SSH 端口没问题
-#
-# Add_Iptables_Rules 只会放行 lnmp.conf 里 SSH_Port 这一个端口，而且它跑在
-# 安装流程的最后（编译完 DB/PHP/Web 之后）——真出问题用户也只能干等几十
-# 分钟到几小时后才发现。所以这一步要在真正开始装依赖前就做完：
-#   1) 探测到的实际监听端口与 SSH_Port 不一致 —— 直接拒绝，让用户把
-#      lnmp.conf 改对，不去猜哪个是对的；
-#   2) 一致但仍是 22（OpenSSH 默认值）—— 醒目提示即将放行 22，并强制
-#      二选一：继续（保持 22）或退出去改端口，不允许含糊带过；
-#   3) 一致且已不是 22 —— 只提示，不阻塞；
-#   4) 探测失败（没有 ss/netstat，也没找到 sshd_config）—— 没法比对，
-#      按 lnmp.conf 的 SSH_Port 处理，同样走上面 2/3 的判断。
-#
-# 非交互（无终端或 LNMP_Auto=y）不做比对和强制二选一，只打印提示后继续，
-# 不阻断已有自动化——那些场景往往是刚起的容器/CI，没有真实 sshd。
-# ---------------------------------------------------------------------------
+# 安装前核对实际 SSH 监听端口与 lnmp.conf，防止最终防火墙规则阻断远程登录。
+# 端口不一致时停止安装；使用默认端口 22 时要求交互确认；非默认端口仅提示。
+# 无法探测端口时以 SSH_Port 为准。非交互环境可能没有 sshd，因此只提示配置值。
 Check_SSH_Port_Policy()
 {
     local raw detect_rc p ans matched=n

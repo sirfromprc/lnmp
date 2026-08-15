@@ -1,14 +1,5 @@
-# CentOS 8.5.2111 归档源。CentOS 8 已于 2021-12-31 EOL，官方把最后一个点版本
-# 完整搬到了 vault.centos.org，这里直接用官方归档，不再走第三方镜像。
-#
-# 改造要点（原文件走 http://mirrors.aliyun.com/centos-vault/ 且启用的仓库
-# 全部是 gpgcheck=0）：
-#   - baseurl 改为官方 https://vault.centos.org/8.5.2111/
-#   - 全部 gpgcheck=1
-#   - gpgkey 用本地文件，公钥随本包分发并核对指纹，见 Install_CentOS_GPG_Key()
-#
-# 注意：CentOS 8 已停止安全更新，本包只保证依赖装得上，不保证系统本身没有已知漏洞。
-#   生产环境请用仍在支持期的发行版。
+# CentOS 8.5.2111 官方归档源，使用 HTTPS、GPG 校验和随包公钥。
+# CentOS 8 已于 2021-12-31 停止安全维护，生产环境应使用仍在支持期的发行版。
 
 [baseos]
 name=CentOS-8.5.2111 - BaseOS
@@ -31,8 +22,7 @@ gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-Official
 gpgcheck=1
 enabled=1
 
-# 编译依赖（rpcgen / re2c / oniguruma-devel 等）在这里，
-# CentOS8_Modify_Source() 会显式 --enablerepo 取用。
+# PowerTools 提供 rpcgen、re2c、oniguruma-devel 等编译依赖，安装时按需启用。
 [powertools]
 name=CentOS-8.5.2111 - PowerTools
 baseurl=https://vault.centos.org/8.5.2111/PowerTools/$basearch/os/

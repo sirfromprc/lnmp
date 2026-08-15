@@ -1,42 +1,26 @@
 #!/usr/bin/env bash
-#
-# openresty.sh — OpenResty 安装 / 卸载 / 升级
-#
+# OpenResty 安装、卸载与升级。
 # 与 nginx 官方版互斥：两者都提供 nginx 二进制、都要占 80/443，
-# 装在一起只会互相覆盖配置、抢端口。选择在菜单阶段做（Web_Selection），
-# 这里再做一次落地前的实际检查（Check_WebServer_Conflict）。
-#
-# 两条安装路径，由 OpenResty_Install_Mode 决定：
-#
+# 同时安装会覆盖配置并产生端口冲突，因此在选择和安装阶段均执行检查。
+# OpenResty_Install_Mode 支持两种安装方式：
 #   pkg     官方 apt/yum 仓库装预编译包。不编译，快。
-#           完整性由包管理器的 GPG 签名保证（apt/dnf 自己校验），
+#           完整性由包管理器的 GPG 签名保证，
 #           不写入 src/checksums.sha256；该清单仅用于下载的 tarball。
 #           限制：仓库必须有当前发行版代号对应的目录。
-#           2026-08 实测 Debian 侧只有 jessie/stretch/buster/bullseye/bookworm，
-#           没有 trixie(13)（官网博客把 13 列进了支持列表，但包尚未发布）。
-#
 #   source  下载官方源码 tarball 自行编译。慢，但不挑发行版。
 #           用 Yichun Zhang 的 PGP 公钥验签（见 Verify_OpenResty_Signature）。
-#
 # 目录约定：OpenResty 官方包/源码默认前缀都是 /usr/local/openresty，
-# 其中 nginx 部分在 /usr/local/openresty/nginx。安装完成后建一个软链
-#   /usr/local/nginx -> /usr/local/openresty/nginx
-# 于是 conf/lnmp 的 vhost 管理、init.d/nginx、rewrite 目录等现有逻辑
-# 可直接复用，因为这些脚本均引用 /usr/local/nginx/ 路径。
+# Nginx 位于其 nginx 子目录。安装后通过 /usr/local/nginx 软链接兼容现有
+# 虚拟主机、服务脚本和 rewrite 管理路径。
 
 
-# ---------------------------------------------------------------------------
-# Check_WebServer_Conflict — 落地前的互斥检查
-#
-# $1 = 即将安装的一方：nginx | openresty
-# ---------------------------------------------------------------------------
+# 安装前检查 Nginx 与 OpenResty 是否冲突；参数为 nginx 或 openresty。
 Check_WebServer_Conflict()
 {
     local want="$1"
 
     if [ "${want}" = "openresty" ]; then
-        # /usr/local/nginx 若是真实目录（不是指向 openresty 的软链），
-        # 说明已经装过源码编译的 nginx
+        # 真实的 /usr/local/nginx 目录表示已安装源码版 Nginx。
         if [ -d /usr/local/nginx ] && [ ! -L /usr/local/nginx ]; then
             Echo_Red "检测到已安装 nginx（/usr/local/nginx 是真实目录）。"
             Echo_Red "OpenResty 与 nginx 官方版互斥，不能同时安装 ——"
@@ -55,10 +39,7 @@ Check_WebServer_Conflict()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# OpenResty_Repo_Codename — 取当前发行版在 OpenResty 仓库里的代号
-# 取不到返回非零
-# ---------------------------------------------------------------------------
+# 获取当前发行版在 OpenResty 仓库中的代号，无法确定时返回非零。
 OpenResty_Repo_Codename()
 {
     local cn=''
@@ -73,9 +54,7 @@ OpenResty_Repo_Codename()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# Install_OpenResty_Pkg — 走官方仓库装预编译包（不编译）
-# ---------------------------------------------------------------------------
+# 从 OpenResty 官方仓库安装预编译包。
 Install_OpenResty_Pkg()
 {
     local codename repo_url
@@ -88,9 +67,7 @@ Install_OpenResty_Pkg()
             return 1
         fi
 
-        # 先探仓库里有没有这个代号，再动 apt 源。
-        # 不探的话，等到 apt-get update 才报 404，那时源文件已经写进
-        # /etc/apt/sources.list.d/，会连累后续所有 apt 操作报错。
+        # 写入 APT 源前确认发行版目录存在，避免无效源影响后续 apt 操作。
         repo_url="https://openresty.org/package/debian/dists/${codename}/Release"
         case "${DISTRO}" in
             Ubuntu) repo_url="https://openresty.org/package/ubuntu/dists/${codename}/Release" ;;
@@ -114,22 +91,14 @@ Install_OpenResty_Pkg()
 
         apt-get -y install --no-install-recommends wget gnupg ca-certificates lsb-release >/dev/null 2>&1
 
-        # 公钥装进 keyring 目录并用 signed-by 绑定到这一个源上，
-        # 不用早已废弃的 apt-key（它把密钥加进全局信任集，
-        # 等于让 openresty 的密钥能给任何仓库的包背书）。
-        #
-        # 注意：临时文件必须放在 mktemp -d 建的私有目录里，不能用
-        # /tmp 下的固定名字。root 执行时，本机任何低权限用户都可以预先创建
-        #     /tmp/openresty-pubkey.gpg -> /etc/shadow
-        # 这样的符号链接，curl -o / wget -O 会跟随链接去写目标文件，
-        # 造成任意文件截断/覆盖。mktemp -d 产生不可预测的目录名且是 0700，
-        # 其他用户无法预测或访问。
+        # 通过 signed-by 将公钥限定到 OpenResty 软件源，避免扩大系统信任范围。
+        # 公钥下载使用权限受限的随机临时目录，防止固定临时路径被链接替换。
         mkdir -p /usr/share/keyrings
 
         local or_tmp or_key
         or_tmp=$(umask 077; mktemp -d) || {
             Echo_Red "无法创建临时目录。"; return 1; }
-        # trap 覆盖正常返回与被信号打断两种情况，避免留下残留
+        # 正常返回或收到中断信号时均清理临时目录。
         trap 'rm -rf "${or_tmp}"' RETURN INT TERM
         or_key="${or_tmp}/pubkey.gpg"
 
@@ -138,7 +107,7 @@ Install_OpenResty_Pkg()
             return 1
         fi
         if ! gpg --dearmor < "${or_key}" > /usr/share/keyrings/openresty.gpg 2>/dev/null; then
-            # 已经是二进制格式时 --dearmor 会失败，直接用
+            # 公钥已经是二进制格式时直接安装。
             cp -f "${or_key}" /usr/share/keyrings/openresty.gpg
         fi
         chmod 644 /usr/share/keyrings/openresty.gpg
@@ -163,7 +132,7 @@ Install_OpenResty_Pkg()
         fi
 
     elif [ "${PM}" = "yum" ]; then
-        # EL9+ 用 openresty2.repo，EL8 及更早用 openresty.repo
+        # EL9 及以上使用 openresty2.repo，EL8 及更早使用 openresty.repo。
         local rf='openresty.repo'
         case "${DISTRO_Version}" in
             9*|10*) rf='openresty2.repo' ;;
@@ -192,9 +161,7 @@ Install_OpenResty_Pkg()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# Install_OpenResty_Source — 下载官方源码自行编译
-# ---------------------------------------------------------------------------
+# 下载官方源码并编译安装。
 Install_OpenResty_Source()
 {
     local tarball="${OpenResty_Ver}.tar.gz"
@@ -212,15 +179,14 @@ Install_OpenResty_Source()
         echo "${tarball} [已找到]"
     fi
 
-    # OpenResty 不提供 sha256 校验文件，只提供 PGP 签名，
-    # 所以这里走验签而不是 src/checksums.sha256。
+    # OpenResty 源码使用上游 PGP 签名验证，不使用 src/checksums.sha256。
     if ! Verify_OpenResty_Signature "${cur_dir}/src/${tarball}" "${url}"; then
         Echo_Red "OpenResty 源码包验签未通过，中止安装。"
         rm -f "${cur_dir}/src/${tarball}"
         return 1
     fi
 
-    # 自定义模块的下载、校验、解压要在 configure 之前完成
+    # configure 前完成自定义模块的下载、校验和解压。
     if ! OR_Modules_Prepare; then
         Echo_Red "自定义模块准备失败，中止安装。"
         return 1
@@ -228,9 +194,7 @@ Install_OpenResty_Source()
 
     Tar_Cd "${tarball}" "${OpenResty_Ver}"
 
-    # 编译参数与本包 nginx 的口径保持一致：PCRE JIT、IPv6、SSL。
-    # OpenResty 自带 LuaJIT 与全套 lua-resty-*，不需要本包再单独装那些 ：
-    # 这正是选它的意义。
+    # 启用 PCRE JIT、IPv6 和 SSL；OpenResty 自带 LuaJIT 及 lua-resty 组件。
     ./configure -j"$(nproc 2>/dev/null || echo 2)" \
         --prefix=/usr/local/openresty \
         --with-pcre-jit \
@@ -260,16 +224,14 @@ Install_OpenResty_Source()
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# Install_OpenResty — 对外入口
-# ---------------------------------------------------------------------------
+# OpenResty 安装入口。
 Install_OpenResty()
 {
     Echo_Blue "[+] 正在安装 OpenResty（${OpenResty_Install_Mode}）..."
 
     Check_WebServer_Conflict openresty || exit 1
 
-    # 包安装方式加不了编译期模块，配了就直接停下来说清楚
+    # 预编译包不能加入自定义编译模块，冲突时停止安装。
     if [ "${OpenResty_Install_Mode}" = "pkg" ]; then
         OR_Check_Pkg_Mode_Conflict || exit 1
     fi
@@ -284,29 +246,23 @@ Install_OpenResty()
     OpenResty_Post_Install
 }
 
-# ---------------------------------------------------------------------------
-# OpenResty_Post_Install — 铺配置、建软链、接管服务
-#
-# 这里是"让 OpenResty 长得跟本包的 nginx 一样"的关键：
-# 建立 /usr/local/nginx -> /usr/local/openresty/nginx 软链之后，
-# conf/lnmp 的全部 vhost 逻辑、init.d/nginx、tools/ 下的脚本都无需改动。
-# ---------------------------------------------------------------------------
+# 安装配置、建立兼容软链接并接入 LNMP 服务管理。
 OpenResty_Post_Install()
 {
     local ordir=/usr/local/openresty/nginx
 
     echo "配置 OpenResty ..."
 
-    # www 用户：本包的 nginx.conf 里写死了 user www www
+    # 配置模板以 www 用户和用户组运行工作进程。
     id -u www >/dev/null 2>&1 || useradd -M -U -s /sbin/nologin www 2>/dev/null
 
     mkdir -p "${ordir}/conf/vhost" /home/wwwlogs "${Default_Website_Dir}"
 
-    # 备份 OpenResty 自带的默认配置，再铺本包的模板
+    # 备份 OpenResty 默认配置后安装 LNMP 模板。
     [ -s "${ordir}/conf/nginx.conf" ] && [ ! -s "${ordir}/conf/nginx.conf.orig" ] && \
         cp -a "${ordir}/conf/nginx.conf" "${ordir}/conf/nginx.conf.orig"
 
-    # OpenResty 使用独立模板 conf/openresty.conf，不与源码版 nginx 共用 conf/nginx.conf。
+    # OpenResty 使用独立模板，避免与源码版 Nginx 的 Lua 搜索路径混用。
     # 两者的 Lua 搜索路径不同：OpenResty 指向自带的 /usr/local/openresty/lualib，
     # 源码版 nginx 指向 /usr/local/nginx/lib/lua，混用会导致 require 失败。
     \cp "${cur_dir}/conf/openresty.conf" "${ordir}/conf/nginx.conf"
@@ -322,7 +278,7 @@ OpenResty_Post_Install()
 
     Write_Nginx_Default_VHost "${ordir}/conf" || exit 1
 
-    # 关键软链：让所有引用 /usr/local/nginx 的既有代码继续工作
+    # 软链接用于兼容所有引用 /usr/local/nginx 的管理入口。
     if [ -e /usr/local/nginx ] && [ ! -L /usr/local/nginx ]; then
         Echo_Red "/usr/local/nginx 已存在且不是软链，无法建立到 OpenResty 的链接。"
         exit 1
@@ -330,12 +286,11 @@ OpenResty_Post_Install()
     ln -sfn /usr/local/openresty/nginx /usr/local/nginx
     echo "已建立软链 /usr/local/nginx -> /usr/local/openresty/nginx"
 
-    # 复用本包的 init 脚本（它调用 /usr/local/nginx/sbin/nginx，经软链落到 OpenResty）
+    # 服务脚本通过兼容路径调用 OpenResty 的 Nginx 二进制。
     \cp "${cur_dir}/init.d/init.d.nginx" /etc/init.d/nginx
     chmod +x /etc/init.d/nginx
 
-    # 包安装方式会带一个自己的 openresty.service，与本包的 init 脚本抢同一个
-    # 二进制和 pid 文件。禁用它，统一由 lnmp 管理，避免"两个管理者"的混乱。
+    # 禁用软件包自带的服务单元，避免与 LNMP 同时管理同一进程和 pid 文件。
     if systemctl list-unit-files 2>/dev/null | grep -q '^openresty\.service'; then
         systemctl stop openresty >/dev/null 2>&1
         systemctl disable openresty >/dev/null 2>&1
@@ -346,8 +301,7 @@ OpenResty_Post_Install()
     chown root:root /home/wwwlogs
     chmod 755 /home/wwwlogs
 
-    # 动态模块的 load_module 与 Lua 搜索路径由 lnmp 生成，nginx.conf 会 include 它们。
-    # 必须在 nginx -t 之前完成，否则 include 的文件不存在会直接检查失败。
+    # 在 nginx -t 前生成动态模块和 Lua 搜索路径配置，确保 include 文件存在。
     if ! OR_Modules_Post_Build; then
         Echo_Red "生成模块与 Lua 路径配置失败。"
         exit 1
@@ -359,7 +313,7 @@ OpenResty_Post_Install()
     fi
 
     StartUp nginx
-    # 记录本次的编译期配置，升级时沿用
+    # 保存编译配置供后续升级沿用。
     if ! OR_Modules_Persist; then
         Echo_Red "OpenResty 已安装，但编译期配置持久化失败，不能报告安装完成。"
         exit 1
@@ -367,9 +321,7 @@ OpenResty_Post_Install()
     Echo_Green "OpenResty 安装完成：$(/usr/local/openresty/nginx/sbin/nginx -v 2>&1)"
 }
 
-# ---------------------------------------------------------------------------
-# Uninstall_OpenResty — 由 uninstall.sh 调用
-# ---------------------------------------------------------------------------
+# OpenResty 卸载入口。
 Uninstall_OpenResty()
 {
     echo "移除 OpenResty ..."
@@ -385,7 +337,7 @@ Uninstall_OpenResty()
         rm -f /etc/yum.repos.d/openresty.repo
     fi
 
-    # 软链先删，避免后面的 rm -rf /usr/local/nginx 顺着它删到真实目录
+    # 先删除兼容软链接，再清理 OpenResty 实际目录。
     [ -L /usr/local/nginx ] && rm -f /usr/local/nginx
     rm -rf /usr/local/openresty
     Echo_Green "OpenResty 已移除。"

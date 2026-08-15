@@ -1,13 +1,7 @@
 # 下载 URL 存活探测。
 #
-# 与 upstream-check 是两件事：
-#   upstream-check  上游出新版本了吗？（每月一次就够）
-#   url-health      我们现在钉着的版本还下得到吗？（必须更勤）
-#
-# 后者是**紧急问题**：nginx.org 只保留每个分支最新的几个点版本，
-# cdn.mysql.com 也会下线旧点版本。一旦当前钉着的版本被下线，
-# 所有新安装立刻在下载那一步失败 —— 而这跟我们改没改代码毫无关系，
-# 是上游单方面动作。所以每周查一次，出问题直接开 issue。
+# upstream-check 每月检查新版本；url-health 每周确认当前固定版本仍可下载。
+# nginx.org 和 cdn.mysql.com 可能下线旧版本，失效会阻断新安装并自动创建 issue。
 
 name: 下载源存活探测
 
@@ -58,7 +52,7 @@ jobs:
                               .slice(0, 40).join('\n');
             const title = '下载源失效：部分组件已无法下载';
 
-            // 同名 issue 已存在就追加评论，避免每周刷一个新 issue
+            // 同名 issue 存在时追加评论，避免重复创建。
             const { data: issues } = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,
               state: 'open', labels: 'url-health'

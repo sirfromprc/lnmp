@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 
-# Check if user is root
+# 修改 PHP 系统配置并重启服务需要 root 权限。
 if [ $(id -u) != "0" ]; then
     echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
 fi
 
 cur_dir=$(cd "$(dirname "$0")/.." && pwd)
-# 脚本被复制到源码目录之外执行时，上面推导出的 cur_dir 是错的，加载会失败。
-# 不检查的话后面每个公共函数都会 command not found，却还继续往下跑。
+# 校验源码目录，避免在其他位置执行时因公共函数未加载而继续修改配置。
 if [ ! -f "${cur_dir}/include/main.sh" ]; then
     echo "错误：找不到 ${cur_dir}/include/main.sh。"
     echo "请在 LNMP 源码目录内执行本脚本，例如 ./tools/$(basename "$0")。"
@@ -80,8 +79,8 @@ fi
 
 if [ -s /etc/init.d/httpd ] && [ -s /usr/local/apache ]; then
 echo "正在重启 Apache..."
-# init 脚本自己会把动作转成 `httpd -k <动作>`，这里再传一个 -k，
-# case 就匹配不到任何分支，只打印一行用法 —— Apache 实际从未被重启。
+# init 脚本会将 restart 转换为 `httpd -k restart`，因此只传入动作名，
+# 避免额外的 -k 导致参数无法匹配。
 /etc/init.d/httpd restart
 else
 echo "正在重启 PHP-FPM..."

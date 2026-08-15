@@ -22,7 +22,7 @@ Upgrade_Date=$(date +"%Y%m%d%H%M%S")
 . include/init.sh
 . include/php.sh
 . include/nginx.sh
-# 通知函数：让安装/升级流程里可以直接写 tgnotice "..."
+# 提供安装和升级流程使用的 Telegram 通知函数。
 . tools/lnmp-tgnotice.sh
 . include/openresty_modules.sh
 . include/openresty.sh

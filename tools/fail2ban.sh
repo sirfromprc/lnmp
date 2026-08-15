@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 
-# Check if user is root
+# 安装软件并写入系统配置需要 root 权限。
 if [ $(id -u) != "0" ]; then
     echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
 fi
 
-# cur_dir 必须设，理由同 tools/denyhosts.sh：Download_Files 的校验会读
-# ${cur_dir}/src/checksums.sha256，没设时解析成 /src/... 直接 fail-closed 退出。
+# 从脚本路径确定源码根目录，供下载流程读取 src/checksums.sha256 校验文件。
 cur_dir=$(cd "$(dirname "$0")/.." && pwd)
 
-# 脚本被复制到源码目录之外执行时，上面推导出的 cur_dir 是错的，加载会失败。
-# 不检查的话后面每个公共函数都会 command not found，却还继续往下跑。
+# 校验源码目录，避免在其他位置执行时因公共函数未加载而继续安装。
 if [ ! -f "${cur_dir}/include/main.sh" ]; then
     echo "错误：找不到 ${cur_dir}/include/main.sh。"
     echo "请在 LNMP 源码目录内执行本脚本，例如 ./tools/$(basename "$0")。"
@@ -58,10 +56,8 @@ filter   = sshd\
 maxretry = 5\
 bantime  = 604800' /etc/fail2ban/jail.local
 
-# 封禁动作改用 nftables。本包已不再安装 iptables 及其持久化组件，
-# 若仍用默认的 iptables-multiport，fail2ban 会在首次封禁时因找不到
-# iptables 而报错，且失败是静默的（只写自己的日志），很难察觉。
-# fail2ban 1.1.0 自带 action.d/nftables.conf。
+# 使用 fail2ban 1.1.0 自带的 nftables 动作，与系统安装的防火墙组件保持一致。
+# 默认 iptables-multiport 在 iptables 未安装时无法生效，错误仅记录在 fail2ban 日志中。
 if [ -s /etc/fail2ban/action.d/nftables.conf ]; then
     if grep -q '^banaction' /etc/fail2ban/jail.local; then
         sed -i 's/^banaction *=.*/banaction = nftables[type=multiport]/' /etc/fail2ban/jail.local

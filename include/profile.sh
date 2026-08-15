@@ -1,21 +1,10 @@
 #!/usr/bin/env bash
-#
-# profile.sh — 菜单编号到版本语义的唯一映射表
-#
-# 设计约定（必须遵守）：
-#   1. 编号（DBSelect / PHPSelect / ApacheSelect）只允许出现在本文件、
-#      main.sh 的菜单读取处、multiplephp.sh 的菜单读取处。其余任何文件
-#      出现编号判断都是漏改。用 t/lint.sh 的 C1 检查。
-#   2. 其余代码一律判断语义变量：DB_Kind / DB_Branch / PHP_Branch 等。
-#   3. 增删版本、重编号，只改本文件的 case 表和对应的 *_Info 数组。
-#
-# 不用关联数组而用 case：bash 3.2 兼容，且与 version.sh 既有风格一致，
-# diff 更小、更便于人工复核。
+# 菜单编号与版本属性的统一映射表。
+# 其他安装流程使用 DB_Kind、DB_Branch、PHP_Branch 等语义变量，避免编号变化
+# 影响版本判断。case 写法用于兼容 Bash 3.2。
 
-# ---------------------------------------------------------------------------
 # 菜单显示文本。下标 0-based，菜单编号 1-based，二者相差 1。
-# 长度断言把"菜单项数与数组不匹配"从静默空字符串变成启动即失败。
-# ---------------------------------------------------------------------------
+# 数组长度不匹配时立即停止，避免菜单显示空版本。
 DB_Info=('MySQL 8.0.46' 'MySQL 8.4.7 LTS' 'MariaDB 10.11.18' 'MariaDB 11.4.12 LTS' 'MariaDB 11.8.8 LTS')
 PHP_Info=('PHP 8.0.30' 'PHP 8.1.34' 'PHP 8.2.33' 'PHP 8.3.33' 'PHP 8.4.24' 'PHP 8.5.9')
 Apache_Info=('Apache 2.4.68')
@@ -37,23 +26,9 @@ Set_DB_Profile()
     DB_Kind='' DB_Branch='' DB_Ver='' DB_Install='' DB_Bin_Archs='' DB_Bin_Default='' DB_Bin_Glibc='' DB_Needs_Boost='n' DB_Boost_Mode='' DB_Min_Mem_MB=0 DB_Service='' DB_Data_Dir='' DB_Note=''
 
     case "$1" in
-    # DB_Bin_Archs 的取值口径（2026-08 复核后收紧）：
-    #
-    # 只列出「上游确实提供二进制」且「本包能校验其完整性」的架构。
-    #
-    # 旧映射将 MySQL 8.0 标为支持 x86_64 和 aarch64，将 MariaDB 11.x 标为支持 i686；前者
-    # 上游确实有包但 src/checksums.sha256 里只有 x86_64 一条，后者上游根本不提供。
-    # 两种情况在 fail-closed 校验下的结果一样：选到那个架构将中止安装，
-    # 也就是「看着像支持、实际不支持」。
-    #
-    # 实测（MariaDB 经官方 REST API 逐个确认，MySQL 经 HEAD 请求确认）：
-    #   mysql-8.0.46    x86_64 / aarch64 都有二进制包，但 MySQL 不公布
-    #                   机器可读的校验值，aarch64 那个包无法自动核对，故不列入；
-    #   mysql-8.4.7     只有 glibc2.17-x86_64，官方未提供 aarch64/i686；
-    #   mariadb 三条 LTS  官方只提供 x86_64 的 linux-systemd 通用二进制。
-    #
-    # 非 x86_64 架构由 Select_DB_Bin 自动切换到源码编译路径，
-    # 只是少了"下个二进制包直接用"的捷径。
+    # DB_Bin_Archs 仅列出上游提供且可验证完整性的通用二进制架构。
+    # 当前所列 MySQL 和 MariaDB 版本仅对 x86_64 启用该路径，其他架构
+    # 自动使用源码编译。
     1)  DB_Kind='mysql'   DB_Branch='8.0'   DB_Ver='mysql-8.0.46'
         DB_Install='Install_MySQL_80'     DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Bin_Glibc='2.28' DB_Needs_Boost='y' DB_Boost_Mode='auto'
@@ -102,9 +77,7 @@ Set_DB_Profile()
     return 0
 }
 
-# ---------------------------------------------------------------------------
 # Set_PHP_Profile <编号>
-#
 # 产出：
 #   PHP_Branch          主版本号（如 8.3），用于拼接路径与配置文件名
 #   Php_Ver             完整版本标识（如 php-8.3.33）
@@ -117,9 +90,7 @@ Set_DB_Profile()
 #   PHP_Needs_Autoconf213  y | n，是否需要 autoconf 2.13（仅 PHP 5.2）
 #   PHP_Needs_DB        y | n，该版本是否必须与数据库同装（仅 PHP 5.2）
 #   PHP_Note            菜单后缀标注
-#
 # 返回：0 成功，1 编号非法
-# ---------------------------------------------------------------------------
 Set_PHP_Profile()
 {
     PHP_Branch='' Php_Ver='' PHP_Install='' MPHP_Install='' MPHP_Path=''
@@ -142,20 +113,14 @@ Set_PHP_Profile()
     MPHP_Install="Install_MPHP${PHP_Branch}"
     Enable_PHP_Config="enable-php${PHP_Branch}.conf"
 
-    # 保留的版本全是 PHP 8.x，Apache 模块统一为 libphp.so
+    # 当前 PHP 8.x 的 Apache 模块统一使用 libphp.so。
     PHP_Apache_Module='libphp.so'
     PhpMyAdmin_Ver='phpMyAdmin-5.2.3-all-languages'
 
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# Legacy_Selection_Hint — 对旧编号给出明确提示
-#
-# 2.3 之前 DB 编号是 1..13、PHP 编号是 1..16。重编号后若有自动化脚本沿用
-# 旧值（例如 DBSelect=12 本想装 MariaDB 11.4），静默回退到默认值会让用户
-# 装错版本且毫无察觉。这里显式报错并打印新编号表。
-# ---------------------------------------------------------------------------
+# 旧版编号无效时显示当前编号，防止自动化任务静默安装错误版本。
 Legacy_Selection_Hint()
 {
     local kind="$1" val="$2"
@@ -173,9 +138,7 @@ Legacy_Selection_Hint()
     return 0
 }
 
-# ---------------------------------------------------------------------------
 # Set_Apache_Profile <编号>
-# ---------------------------------------------------------------------------
 Set_Apache_Profile()
 {
     Apache_Branch='' Apache_Ver='' Apache_Install=''
@@ -208,10 +171,7 @@ Dispatch()
     "${func}"
 }
 
-# ---------------------------------------------------------------------------
-# DB_Bin_Available — 当前架构是否有官方通用二进制包可用
-# 返回 0 可用，1 不可用（调用方应回退到源码编译）
-# ---------------------------------------------------------------------------
+# 判断当前架构是否有可验证的官方通用二进制包；不可用时应使用源码编译。
 DB_Bin_Available()
 {
     [ -z "${DB_Bin_Archs}" ] && return 1
@@ -221,14 +181,7 @@ DB_Bin_Available()
     esac
 }
 
-# ---------------------------------------------------------------------------
-# Print_DB_Menu / Print_PHP_Menu — 由映射表生成菜单，避免菜单文本与表脱节
-#
-# 注意：这两个函数在循环里调用 Set_*_Profile 来取标注文本，会覆盖当前的
-# profile 变量。菜单只在用户尚未选择时打印，之后调用方会重新调用
-# Set_*_Profile 设定最终值，所以这里的副作用无害。但若将来在选择完成后
-# 再次调用本函数，必须先保存再恢复。
-# ---------------------------------------------------------------------------
+# 根据映射表生成数据库和 PHP 菜单。菜单显示后由调用方重新设置最终选项。
 Print_DB_Menu()
 {
     local i note
@@ -261,7 +214,7 @@ Print_PHP_Menu()
 
 Select_DB_Bin()
 {
-    # 该版本压根不提供通用二进制（如 MySQL 5.1），或当前架构没有二进制包
+    # 版本或当前架构没有可用通用二进制包时使用源码编译。
     if [ -z "${DB_Bin_Default}" ] || ! DB_Bin_Available; then
         [ -z "${DB_Bin_Default}" ] && echo "将安装 ${DB_Ver}。"
         [ -n "${DB_Bin_Default}" ] && echo "当前平台没有可用通用二进制包，将从源码编译 ${DB_Ver}。"
@@ -270,9 +223,7 @@ Select_DB_Bin()
     fi
 
     if [ -z "${Bin}" ]; then
-        # 这里问的是「用上游预编译好的二进制，还是自己编译源码」。
-        # 不说清楚代价，小内存 VPS 的用户很容易随手选源码，然后编译几小时或
-        # 直接因内存不足失败。可行性由 Check_DB_Source_Build 再把一道关。
+        # 明确展示通用二进制与源码编译的资源和时间差异。
         echo "y = 使用官方通用二进制：上游构建，校验值强制核对，几分钟装完（推荐）"
         echo "n = 自行编译源码：需要 4GB 以上内存和 15GB 以上磁盘，通常要跑数小时，"
         echo "    只有确实需要定制编译参数时才选它"

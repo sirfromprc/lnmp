@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
 
-# ---------------------------------------------------------------------------
-# Build_ImageMagick_Lib — 编译安装 ImageMagick 本体到 /usr/local/imagemagick
-#
-# 抽出来是因为有两条调用路径：addons.sh 的交互式安装，和 install.sh 里
-# 「PHP 默认扩展」的自动安装（include/php_default_ext.sh）。
-# 两边各写一份将随版本升级而漂移，故共用此函数。
-# 本函数不含任何交互（Press_Start）与 PHP 侧动作，只负责库本身。
-# ---------------------------------------------------------------------------
+# 编译 ImageMagick 库并安装到 /usr/local/imagemagick，供交互安装和 PHP
+# 默认扩展安装共用。此函数不处理用户交互或 PHP 扩展配置。
 Build_ImageMagick_Lib()
 {
     if [ "$PM" = "yum" ]; then
@@ -29,8 +23,7 @@ Build_ImageMagick_Lib()
     if [ -s /usr/local/imagemagick/bin/convert ]; then
         echo "ImageMagick 已存在。"
     else
-        # imagemagick.org/archive/releases 只保留近期几个版本，旧版本会下线
-        # （7.1.1-8 实测已 404）。GitHub 的 tag 归档是稳定可回溯的来源。
+        # GitHub 标签归档可长期定位指定版本，避免上游 releases 清理旧文件后无法下载。
         Download_Files https://github.com/ImageMagick/ImageMagick/archive/refs/tags/${ImageMagick_Ver#ImageMagick-}.tar.gz ${ImageMagick_Ver}.tar.gz
         Require_File "${ImageMagick_Ver}.tar.gz" "ImageMagick"
         Tar_Cd ${ImageMagick_Ver}.tar.gz ${ImageMagick_Ver}
@@ -54,8 +47,7 @@ Install_ImageMagic()
         rm -f "${zend_ext}"
     fi
 
-    # 库没编出来就不用继续编扩展了，否则 configure 会因为找不到
-    # /usr/local/imagemagick 而失败，报出来的又是另一回事。
+    # ImageMagick 库构建失败时停止，避免 imagick 配置阶段产生次生错误。
     Build_ImageMagick_Lib || return 1
 
     cd ${cur_dir}/src

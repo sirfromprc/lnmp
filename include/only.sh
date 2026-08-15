@@ -14,7 +14,7 @@ Nginx_Dependent()
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -y
         [[ $? -ne 0 ]] && apt-get update --allow-releaseinfo-change -y
-        # 只处理确实装着的包，理由见 init.sh 的 Deb_Purge_Installed
+        # 仅清理实际已安装的旧 Apache 软件包。
         Deb_Purge_Installed apache2 apache2-bin apache2-data apache2-utils apache2-doc \
                             libapache2-mod-php
         for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make autoconf automake wget cron openssl libssl-dev zlib1g zlib1g-dev bzip2 xz-utils gzip;
@@ -117,7 +117,7 @@ DB_Dependent()
                             mariadb-server mariadb-client mariadb-common libmariadbd-dev
         for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make cmake autoconf automake wget openssl libssl-dev zlib1g zlib1g-dev libncurses5 libncurses5-dev bison libaio-dev libtirpc-dev libsasl2-dev pkg-config libpcre2-dev libxml2-dev libtinfo-dev libnuma-dev gnutls-dev xz-utils gzip;
         do apt-get --no-install-recommends install -y $packages; done
-        # 通用二进制的客户端需要 ncurses 5 运行库，装不上时退回软链，理由见 init.sh
+        # 数据库通用二进制客户端需要 ncurses 5 兼容运行库。
         Deb_Ncurses5_Compat
     fi
 }
@@ -142,10 +142,7 @@ Install_Database()
         StartOrStop start "${DB_Service}"
     fi
 
-    # 单装数据库同样要配防火墙。原先只有完整安装和单装 nginx 走这一步，
-    # 结果最该挡的场景反而没挡：只装数据库的机器上，DB_Port 和 DB_X_Port
-    # 一条 drop 规则都没有（Debian 12 实测 nft 表里确实是空的）。
-    # 失败要如实反映到安装结果，不能只打印一行红字就当装好了。
+    # 独立安装数据库也必须限制 DB_Port 和 DB_X_Port；防火墙失败时安装返回非零。
     Add_Iptables_Rules || return 1
 
     Clean_DB_Src_Dir
@@ -153,7 +150,7 @@ Install_Database()
     if [ "${isDB}" != "ok" ]; then
         return 1
     fi
-    # 初始化 SQL 失败时不能报成功，理由见 end.sh 的 Check_DB_Init_Result
+    # 安全初始化 SQL 全部通过后才能报告数据库安装成功。
     Check_DB_Init_Result || return 1
     if [ "${DB_Kind}" != "none" ]; then
         Echo_Green "${DB_Ver} 安装完成。"
@@ -183,13 +180,11 @@ Install_Only_Database()
     fi
     Echo_Red "警告：脚本将删除通过 yum 或 apt-get 安装的 MySQL/MariaDB 及其数据库！"
     Press_Install
-    # 同 install.sh：管道退出码默认来自 tee，必须显式取左侧的。
+    # 返回安装命令的退出码，避免 tee 成功掩盖安装失败。
     Install_Database 2>&1 | tee /root/install_database.log
     local rc=${PIPESTATUS[0]}
 
-    # 密码提示放在管道外面，只进终端不进日志。
-    # DB_Root_Password / DB_Root_Password_Random 由上面的 Database_Selection
-    # 在当前 shell 里设好，管道子 shell 不影响它们。
+    # 密码提示仅输出到终端，不写入安装日志。
     if [ ${rc} -eq 0 ]; then
         Install_Current_LNMP_Command lnmp || return 1
         Print_DB_Password_Notice

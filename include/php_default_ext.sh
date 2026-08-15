@@ -1,36 +1,23 @@
 #!/usr/bin/env bash
-#
-# php_default_ext.sh — PHP 安装完成后自动装上的常用扩展
-#
-# 原因单独一个文件：addons.sh 里那套 Install_* 函数是交互式的
-# （Press_Start 等人按回车、Restart_PHP 依赖 addons.sh 自己的上下文），
-# 直接在 install.sh 无人值守流程里调用会卡住。这里重写成非交互版本，
-# 只共用真正重的部分（ImageMagick 库编译，见 Build_ImageMagick_Lib）。
-#
+# PHP 安装完成后以非交互方式安装常用扩展，适用于自动安装流程。
 # 各扩展由 lnmp.conf 的 Enable_PHP_Default_* 开关控制，默认全开。
 # 单个扩展安装失败时告警但不中止整个 LNMP 安装，
-# 但会在最后汇总打印，避免"装完了才发现少东西"。
-#
+# 并在结束时汇总未完成项，便于单独重试。
 # 编译顺序有一处硬约束：igbinary 必须在 phpredis 之前，
 # 因为 phpredis 的 --enable-redis-igbinary 需要 igbinary 的头文件。
 
 PHP_Default_Ext_Failed=''
 
-# ---------------------------------------------------------------------------
-# PHP_Ext_Dir — 取当前 PHP 的扩展目录（.so 落在哪）
-# ---------------------------------------------------------------------------
+# 获取当前 PHP 的扩展目录。
 PHP_Ext_Dir()
 {
     ${PHP_Path}/bin/php-config --extension-dir 2>/dev/null
 }
 
-# ---------------------------------------------------------------------------
 # Build_Pecl_Ext <包名带版本> <生成的.so名> <conf.d文件名> [额外configure参数...]
-#
-# pecl 扩展的编译步骤完全一致，故用一个函数收口：
+# PECL 扩展使用统一的安装流程：
 #   下载 → 校验 → 解包 → phpize → configure → make install → 写 conf.d
 # 最后核对 .so 真的生成了才写 ini，否则 PHP 启动会因加载不到扩展而告警。
-# ---------------------------------------------------------------------------
 Build_Pecl_Ext()
 {
     local pkg="$1" so="$2" ini="$3"; shift 3
@@ -71,13 +58,9 @@ EOF
     fi
 }
 
-# ---------------------------------------------------------------------------
-# Enable_Opcache_Config — 启用 opcache
-#
-# opcache 在 PHP 8.x 是编译进去的（configure 已带 --enable-opcache），
+# 启用 OPcache。PHP 8.x 构建时已包含该扩展，
 # 但默认不加载，必须在 conf.d 写 zend_extension 才生效。
-# 注意它是 zend_extension，不是 extension，写错了不会加载。
-# ---------------------------------------------------------------------------
+# OPcache 必须使用 zend_extension 指令加载。
 Enable_Opcache_Config()
 {
     local ext_dir
@@ -105,11 +88,7 @@ EOF
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# Install_PHP_Default_Ext — 装配置里开启的全部默认扩展
-#
-# 在 install.sh 的 Install_PHP 之后调用。此时 /usr/local/php 已就位。
-# ---------------------------------------------------------------------------
+# 安装配置中启用的默认扩展；调用时 /usr/local/php 已完成安装。
 Install_PHP_Default_Ext()
 {
     PHP_Path='/usr/local/php'
@@ -125,14 +104,14 @@ Install_PHP_Default_Ext()
         Enable_Opcache_Config
     fi
 
-    # igbinary 必须排在 phpredis 前面（phpredis 编译时要用它的头文件）
+    # phpredis 编译 igbinary 支持前需要先安装对应头文件。
     if [ "${Enable_PHP_Default_Igbinary}" = 'y' ]; then
         Build_Pecl_Ext "${PHPIgbinary_Ver}" igbinary.so 020-igbinary.ini
     fi
 
     if [ "${Enable_PHP_Default_Redis}" = 'y' ]; then
         if [ -s "$(PHP_Ext_Dir)/igbinary.so" ]; then
-            # 有 igbinary 就打开 igbinary 序列化支持，序列化体积和速度都更好
+            # igbinary 可用时启用更紧凑的 Redis 序列化支持。
             Build_Pecl_Ext "${PHPRedis_Ver}" redis.so 021-redis.ini --enable-redis-igbinary
         else
             Build_Pecl_Ext "${PHPRedis_Ver}" redis.so 021-redis.ini
@@ -150,8 +129,7 @@ Install_PHP_Default_Ext()
         fi
     fi
 
-    # fileinfo 是 configure 阶段决定的（--disable-fileinfo / 不传），
-    # 这里只做结果核对，装没装成在编译时就定了。
+    # fileinfo 在 PHP configure 阶段决定，此处仅核对最终加载状态。
     if [ "${Enable_PHP_Fileinfo}" = 'y' ]; then
         if ! ${PHP_Path}/bin/php -m 2>/dev/null | grep -qi '^fileinfo$'; then
             Echo_Red "fileinfo 未编入 PHP（检查 lnmp.conf 的 Enable_PHP_Fileinfo 是否在编译前就是 y）"
