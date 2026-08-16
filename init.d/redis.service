@@ -9,7 +9,7 @@ Group=redis
 # PIDFile 必须与 redis.conf 保持一致。
 PIDFile=/usr/local/redis/var/redis.pid
 ExecStart=/usr/local/redis/bin/redis-server /usr/local/redis/etc/redis.conf
-ExecStop=/usr/local/redis/bin/redis-cli shutdown
+ExecStop=-/usr/local/redis/bin/redis-cli shutdown
 PrivateTmp=true
 
 # 限制 Redis 访问不需要的系统资源。

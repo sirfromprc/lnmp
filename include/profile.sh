@@ -87,7 +87,6 @@ Set_DB_Profile()
 #   PHP_Apache_Module   Apache 模块文件名（libphp5.so / libphp7.so / libphp.so）
 #   Enable_PHP_Config   conf/ 下对应的 enable-php 配置文件名
 #   PhpMyAdmin_Ver      该 PHP 版本可用的 phpMyAdmin 版本
-#   PHP_Needs_Autoconf213  y | n，是否需要 autoconf 2.13（仅 PHP 5.2）
 #   PHP_Needs_DB        y | n，该版本是否必须与数据库同装（仅 PHP 5.2）
 #   PHP_Note            菜单后缀标注
 # 返回：0 成功，1 编号非法
@@ -95,7 +94,7 @@ Set_PHP_Profile()
 {
     PHP_Branch='' Php_Ver='' PHP_Install='' MPHP_Install='' MPHP_Path=''
     PHP_Apache_Module='' Enable_PHP_Config='' PhpMyAdmin_Ver=''
-    PHP_Needs_Autoconf213='n' PHP_Needs_DB='n' PHP_Note=''
+    PHP_Needs_DB='n' PHP_Note=''
 
     case "$1" in
     1)  PHP_Branch='8.0' Php_Ver='php-8.0.30' PHP_Install='Install_PHP_80'

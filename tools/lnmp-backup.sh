@@ -181,6 +181,34 @@ Find_Mysql_Client()
     return 1
 }
 
+# 输出数据库实际使用的 socket 路径，[client] 优先，其次 [mysqld]。
+# --defaults-file 不读 /etc/my.cnf，临时凭据必须自带 socket 才能连上。
+Get_Actual_DB_Socket()
+{
+    local conf="${1:-/etc/my.cnf}" sock=''
+
+    if [ -s "${conf}" ]; then
+        sock=$(awk '
+            /^[[:space:]]*\[/ {
+                section = $0
+                sub(/^[[:space:]]*\[[[:space:]]*/, "", section)
+                sub(/[[:space:]]*\].*$/, "", section)
+                next
+            }
+            /^[[:space:]]*socket[[:space:]]*=/ {
+                value = $0
+                sub(/^[^=]*=[[:space:]]*/, "", value)
+                sub(/[[:space:]#].*$/, "", value)
+                if (value == "") next
+                if (section == "client" && client == "") client = value
+                else if (section == "mysqld" && server == "") server = value
+            }
+            END { print (client != "" ? client : server) }
+        ' "${conf}")
+    fi
+    printf '%s' "${sock:-/run/mysqld/mysqld.sock}"
+}
+
 # ---------------------------------------------------------------------------
 # 并发锁保证同一时刻只运行一个备份任务，避免批次写入、上传和清理互相干扰。
 # ---------------------------------------------------------------------------
@@ -1354,7 +1382,7 @@ EOF
 
 Cmd_Init()
 {
-    local sites site_lines ans hour db_pass mysql_bin my_cnf_tmp
+    local sites site_lines ans hour db_pass db_sock mysql_bin my_cnf_tmp
     local backup_home="/home/backup"
 
     Say "配置文件位于：${Conf_File}，可根据实际需求修改相关参数，例如备份计划、是否上传备份文件等。"
@@ -1400,15 +1428,18 @@ Cmd_Init()
         if [ -n "${db_pass}" ]; then
             # option file 在引号内将反斜杠解析为转义符，写入前需加倍。
             db_pass="${db_pass//\\/\\\\}"
+            db_sock=$(Get_Actual_DB_Socket)
             my_cnf_tmp=$(mktemp "${My_Cnf}.XXXXXXXX") || return 1
             ( umask 077; cat > "${my_cnf_tmp}" <<EOF
 [mysqldump]
 user=root
 password='${db_pass}'
+socket=${db_sock}
 
 [client]
 user=root
 password='${db_pass}'
+socket=${db_sock}
 EOF
             )
             chmod 600 "${my_cnf_tmp}"

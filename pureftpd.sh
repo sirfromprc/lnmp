@@ -9,6 +9,16 @@ fi
 cur_dir=$(pwd)
 action=$1
 
+# 不带参数即安装；未识别的参数不能落入安装分支。
+case "${action}" in
+''|install|uninstall) ;;
+*)
+    echo "用法：./pureftpd.sh [install|uninstall]"
+    echo "      不带参数等同于 install。"
+    exit 1
+    ;;
+esac
+
 . lnmp.conf
 . include/main.sh
 . include/verify.sh
@@ -19,7 +29,7 @@ action=$1
 Validate_Service_Ports || exit 1
 Get_Dist_Name
 
-clear
+clear 2>/dev/null || true
 Print_Banner \
     "LNMP Pure-FTPd 安装工具" \
     "为现有 LNMP 环境安装 FTP 服务" \

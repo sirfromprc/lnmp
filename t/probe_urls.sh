@@ -86,7 +86,6 @@ probe openssl  "https://github.com/openssl/openssl/releases/download/${Openssl_N
 probe openssl备 "https://www.openssl.org/source/${Openssl_New_Ver}.tar.gz"
 probe pcre     "https://downloads.sourceforge.net/pcre/${Pcre_Ver}.tar.bz2"
 probe libiconv "https://ftp.gnu.org/gnu/libiconv/${Libiconv_Ver}.tar.gz"
-probe autoconf "https://ftp.gnu.org/gnu/autoconf/${Autoconf_Ver}.tar.gz"
 probe curl     "https://curl.se/download/${Curl_Ver}.tar.bz2"
 probe freetype "https://downloads.sourceforge.net/freetype/${Freetype_New_Ver}.tar.xz"
 probe libzip   "https://libzip.org/download/${Libzip_Ver}.tar.xz"

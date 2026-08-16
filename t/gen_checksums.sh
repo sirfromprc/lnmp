@@ -194,7 +194,6 @@ grab_published \
     "https://github.com/openssl/openssl/releases/download/${Openssl_New_Ver}/${Openssl_New_Ver}.tar.gz.sha256"
 grab "https://downloads.sourceforge.net/pcre/${Pcre_Ver}.tar.bz2" "${Pcre_Ver}.tar.bz2"
 grab "https://ftp.gnu.org/gnu/libiconv/${Libiconv_Ver}.tar.gz" "${Libiconv_Ver}.tar.gz"
-grab "https://ftp.gnu.org/gnu/autoconf/${Autoconf_Ver}.tar.gz" "${Autoconf_Ver}.tar.gz"
 grab "https://curl.se/download/${Curl_Ver}.tar.bz2" "${Curl_Ver}.tar.bz2"
 grab "https://downloads.sourceforge.net/freetype/${Freetype_New_Ver}.tar.xz" "${Freetype_New_Ver}.tar.xz"
 grab "https://libzip.org/download/${Libzip_Ver}.tar.xz" "${Libzip_Ver}.tar.xz"

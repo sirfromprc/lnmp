@@ -98,7 +98,7 @@ check_v3()
 check_v4()
 {
     local missing='' key val ver
-    local skip='OpenResty_Ver|OpenResty_Modules_Options|NgxBrotli_Commit|Curl_Ver|Autoconf_Ver|Libiconv_Ver|Pcre_Ver|Libzip_Ver|Freetype_New_Ver|ZendOpcache_Ver|PHPMemcached_Ver|PHP7Memcached_Ver|PHPMemcache_Ver|PHP7Memcache_Ver|PHPOldApcu_Ver|PHPApcu_Bc_Ver|PHPSodium_Ver|Libmemcached_Ver'
+    local skip='OpenResty_Ver|OpenResty_Modules_Options|NgxBrotli_Commit|Curl_Ver|Libiconv_Ver|Pcre_Ver|Libzip_Ver|Freetype_New_Ver|ZendOpcache_Ver|PHPMemcached_Ver|PHP7Memcached_Ver|PHPMemcache_Ver|PHP7Memcache_Ver|PHPOldApcu_Ver|PHPApcu_Bc_Ver|PHPSodium_Ver|Libmemcached_Ver'
 
     while IFS= read -r line; do
         key="${line%%=*}"

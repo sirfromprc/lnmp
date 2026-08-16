@@ -7,8 +7,8 @@ Type=forking
 PIDFile=/usr/local/nginx/logs/nginx.pid
 ExecStart=/usr/local/nginx/sbin/nginx -c /usr/local/nginx/conf/nginx.conf
 ExecReload=/usr/local/nginx/sbin/nginx -s reload
-# nginx -s quit 从 pid 文件定位 master，兼容 systemd 未取得 MAINPID 的服务状态。
-ExecStop=/usr/local/nginx/sbin/nginx -s quit
+# 停止交给 systemd 发信号，SIGQUIT 为优雅退出。
+KillSignal=SIGQUIT
 PrivateTmp=true
 
 [Install]

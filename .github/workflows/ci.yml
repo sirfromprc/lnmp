@@ -50,7 +50,8 @@ jobs:
           # SC2181: $? 判断风格
           shellcheck -S error -e SC1090,SC1091,SC2086,SC2181 \
             install.sh uninstall.sh upgrade.sh addons.sh pureftpd.sh \
-            include/*.sh t/*.sh tools/*.sh || exit 1
+            include/*.sh t/*.sh tools/*.sh \
+            conf/lnmp conf/lnmpa conf/lamp || exit 1
 
       - name: 不变式检查（t/lint.sh）
         run: bash t/lint.sh

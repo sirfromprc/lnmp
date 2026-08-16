@@ -8,7 +8,8 @@ Type=forking
 # systemd 通过该脚本启动服务，使进程状态与 systemctl 及运维命令一致。
 PIDFile=/run/memcached/memcached.pid
 ExecStart=/etc/init.d/memcached start
-ExecStop=/etc/init.d/memcached stop
+ExecStop=-/etc/init.d/memcached stop
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

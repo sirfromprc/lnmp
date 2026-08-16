@@ -16,7 +16,7 @@ if [ ! -f "${cur_dir}/include/main.sh" ]; then
 fi
 . "${cur_dir}/include/main.sh"
 
-clear
+clear 2>/dev/null || true
 Print_Banner \
     "LNMP PHP 禁用函数调整工具" \
     "修改 PHP 的 disable_functions 配置" \

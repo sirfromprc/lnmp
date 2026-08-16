@@ -2024,6 +2024,41 @@ bash tools/reset_mysql_root_password.sh
 
 该脚本重置期间会关闭网络监听、只用私有 socket，数据库不对外可见。
 
+### 9.8 程序提示函数被禁用
+
+本包默认在 `php.ini` 的 `disable_functions` 里禁用了 exec 系列函数。
+某些程序（如需要调用外部命令的采集、缩略图或队列组件）会因此报
+`Call to undefined function` 或 `has been disabled for security reasons`。
+
+回到源码目录执行，按菜单选择解禁范围：
+
+```bash
+bash tools/remove_disable_function.sh
+```
+
+- `1` 删除全部禁用函数（默认）
+- `2` 仅放行 `scandir`
+- `3` 仅放行 `exec`
+
+脚本会重启 PHP-FPM（LAMP/LNMPA 下同时重启 Apache）使配置生效。
+解禁范围越大，PHP 被利用后可执行的系统操作越多；只放行程序确实需要的那个函数，
+不要图省事直接选 `1`。
+
+### 9.9 程序提示 open_basedir 限制
+
+站点目录之外的路径读写会被 `.user.ini` 的 `open_basedir` 拦下，日志里是
+`open_basedir restriction in effect`。常见于把附件、缓存或字体放在站点目录之外。
+
+优先改程序路径，让它留在站点目录内。确需去掉限制时执行：
+
+```bash
+bash tools/remove_open_basedir_restriction.sh
+# 按提示输入网站根目录，例如 /home/wwwroot/example.com
+```
+
+该限制是多站点之间的目录边界，去掉后这个站点的 PHP 可以读写 `open_basedir`
+原本挡住的路径。单站点服务器影响有限，共享主机场景不建议去掉。
+
 ---
 
 ## 十、安全基线
@@ -2059,7 +2094,26 @@ bash tools/reset_mysql_root_password.sh
 
 仍需管理员完成以下配置：
 
-1. **改 SSH 端口 / 禁用密码登录**，本包不碰 SSH 配置
+1. **改 SSH 端口 / 禁用密码登录**，本包不碰 SSH 配置。
+
+   仍要保留密码登录时，可用源码目录里的两个脚本之一装 SSH 防爆破，二选一即可，
+   同时装会互相重复封禁：
+
+   ```bash
+   bash tools/fail2ban.sh      # fail2ban，封禁动作走 nftables，与本包防火墙一致
+   bash tools/denyhosts.sh     # DenyHosts，写 /etc/hosts.deny
+   ```
+
+   `fail2ban.sh` 会安装 python3 与 nftables 依赖、生成 `/etc/fail2ban/jail.local`
+   并把 `banaction` 设为 `nftables`，默认封禁时长 7 天。装完确认服务在跑：
+
+   ```bash
+   fail2ban-client status
+   fail2ban-client status sshd
+   ```
+
+   DenyHosts 误封时用严格地址入口解封（见 8.1）：`bash tools/denyhosts_removeip.sh <IP>`。
+
 2. **按需给 phpMyAdmin 追加来源限制**。
 
    本包已经做了两层处理，不需要再手工搬目录或改 default 站点的配置：

@@ -169,7 +169,9 @@ lamp_kill()
 {
     echo "正在终止 Apache 和数据库进程..."
     killall httpd
-    killall mysqld
+    # MariaDB 的进程名是 mariadbd，两者只会有一个存在。
+    killall mysqld 2>/dev/null
+    killall mariadbd 2>/dev/null
     echo "完成。"
 }
 
@@ -671,12 +673,41 @@ Check_DB()
     fi
 }
 
+# 输出数据库实际使用的 socket 路径，[client] 优先，其次 [mysqld]。
+# --defaults-file 不读 /etc/my.cnf，临时凭据必须自带 socket 才能连上。
+Get_Actual_DB_Socket()
+{
+    local conf="${1:-/etc/my.cnf}" sock=''
+
+    if [ -s "${conf}" ]; then
+        sock=$(awk '
+            /^[[:space:]]*\[/ {
+                section = $0
+                sub(/^[[:space:]]*\[[[:space:]]*/, "", section)
+                sub(/[[:space:]]*\].*$/, "", section)
+                next
+            }
+            /^[[:space:]]*socket[[:space:]]*=/ {
+                value = $0
+                sub(/^[^=]*=[[:space:]]*/, "", value)
+                sub(/[[:space:]#].*$/, "", value)
+                if (value == "") next
+                if (section == "client" && client == "") client = value
+                else if (section == "mysqld" && server == "") server = value
+            }
+            END { print (client != "" ? client : server) }
+        ' "${conf}")
+    fi
+    printf '%s' "${sock:-/run/mysqld/mysqld.sock}"
+}
+
 Make_TempMycnf()
 {
-    local pw
+    local pw sock
     # MySQL option file 会解析反斜杠转义，写入前需转义反斜杠以保持密码原值。
     # 单引号仅用于包围字段值，密码内部的单引号无需另行处理。
     pw="${1//\\/\\\\}"
+    sock=$(Get_Actual_DB_Socket)
     # 管理员已有的 ~/.my.cnf 会在凭据清理时恢复。
     if [ -s ~/.my.cnf ] && [ ! -e ~/.my.cnf.lnmp-bak ]; then
         cp -p ~/.my.cnf ~/.my.cnf.lnmp-bak
@@ -686,6 +717,7 @@ Make_TempMycnf()
 [client]
 user=root
 password='${pw}'
+socket=${sock}
 EOF
     chmod 600 ~/.my.cnf
     # 标记临时凭据，确保退出时清理。
@@ -2124,6 +2156,12 @@ Add_Dns_SSL()
     provider=$1
     if [ "${provider}" != "" ]; then
         dns_provider="dns_${provider}"
+        # acme.sh 已安装时先核对插件，免得走完交互才报错。
+        if [ -d /usr/local/acme.sh/dnsapi ] \
+            && [ ! -s "/usr/local/acme.sh/dnsapi/dns_${provider}.sh" ]; then
+            echo "未找到 DNS 服务商插件：${provider}。"
+            exit 1
+        fi
     else
         Echo_Red "DNS 手工验证模式无法自动续期，证书到期前必须手动续期。"
     fi
@@ -2207,6 +2245,12 @@ Add_Dns_SSL_Only()
     provider=$1
     if [ "${provider}" != "" ]; then
         dns_provider="dns_${provider}"
+        # acme.sh 已安装时先核对插件，免得走完交互才报错。
+        if [ -d /usr/local/acme.sh/dnsapi ] \
+            && [ ! -s "/usr/local/acme.sh/dnsapi/dns_${provider}.sh" ]; then
+            echo "未找到 DNS 服务商插件：${provider}。"
+            exit 1
+        fi
     else
         Echo_Red "DNS 手工验证模式无法自动续期，证书到期前必须手动续期。"
     fi
@@ -2345,6 +2389,15 @@ case "${arg1}" in
         Function_Vhost ${arg2}
         ;;
     database)
+        # 先认动作名，避免无效参数也要求输入数据库口令。
+        case "${arg2}" in
+        [aA][dD][dD]|[lL][iI][sS][tT]|[dD][eE][lL]|[eE][dD][iI][tT]|[eE][xX][pP][oO][rR][tT]|[iI][mM][pP][oO][rR][tT])
+            ;;
+        *)
+            Function_Database "${arg2}"
+            exit $?
+            ;;
+        esac
         Verify_DB_Password || exit 1
         Function_Database "${arg2}" "${arg3}" "${arg4}"
         db_rc=$?
@@ -2377,6 +2430,14 @@ case "${arg1}" in
         exit $?
         ;;
     ssl)
+        # 只有 add 一个动作，无效参数不进入交互。
+        case "${arg2}" in
+        ''|[aA][dD][dD]) ;;
+        *)
+            echo "用法：lnmp ssl add"
+            exit 1
+            ;;
+        esac
         info="n"
         Add_SSL_Menu || exit $?
         Add_SSL || exit $?
@@ -2402,6 +2463,7 @@ case "${arg1}" in
         echo "用法：lnmp ssl add"
         echo "用法：lnmp {dnsssl|dns} {cx|ali|cf|dp|he|gd|aws}"
         echo "用法：lnmp onlyssl {cx|ali|cf|dp|he|gd|aws}"
+        exit 1
         ;;
 esac
 exit

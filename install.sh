@@ -58,7 +58,7 @@ fi
 
 Check_LNMPConf
 
-clear
+clear 2>/dev/null || true
 Print_Banner \
     "LNMP V${LNMP_Ver} 安装程序" \
     "在 ${DISTRO} Linux 上安装 LNMP、LNMPA 或 LAMP" \

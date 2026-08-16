@@ -95,7 +95,7 @@ Restart_PHP()
     StartOrStop restart "${service}"
 }
 
-clear
+clear 2>/dev/null || true
 Print_Banner \
     "LNMP V2.3 附加组件管理" \
     "安装缓存、优化器、加速器等附加组件" \

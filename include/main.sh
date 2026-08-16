@@ -769,6 +769,34 @@ Get_Actual_DB_Port()
     return 0
 }
 
+# 输出数据库实际使用的 socket 路径，[client] 优先，其次 [mysqld]。
+# --defaults-file 不读 /etc/my.cnf，临时凭据必须自带 socket 才能连上。
+Get_Actual_DB_Socket()
+{
+    local conf="${1:-/etc/my.cnf}" sock=''
+
+    if [ -s "${conf}" ]; then
+        sock=$(awk '
+            /^[[:space:]]*\[/ {
+                section = $0
+                sub(/^[[:space:]]*\[[[:space:]]*/, "", section)
+                sub(/[[:space:]]*\].*$/, "", section)
+                next
+            }
+            /^[[:space:]]*socket[[:space:]]*=/ {
+                value = $0
+                sub(/^[^=]*=[[:space:]]*/, "", value)
+                sub(/[[:space:]#].*$/, "", value)
+                if (value == "") next
+                if (section == "client" && client == "") client = value
+                else if (section == "mysqld" && server == "") server = value
+            }
+            END { print (client != "" ? client : server) }
+        ' "${conf}" 2>/dev/null)
+    fi
+    printf '%s' "${sock:-/run/mysqld/mysqld.sock}"
+}
+
 # 探测系统当前实际监听的 SSH 端口。sshd_config 尚未重载或 ExecStart 使用
 # -o Port= 覆盖时，配置文件值可能与真实监听端口不同。
 # 优先看真实监听的 socket（ss/netstat 能看到内核当前的状态），
@@ -1350,7 +1378,7 @@ Make_TempMycnf()
 [client]
 user=root
 password='$(SQL_Escape "$1")'
-socket=/run/mysqld/mysqld.sock
+socket=$(Get_Actual_DB_Socket)
 EOF
     )
     chmod 600 ~/.my.cnf

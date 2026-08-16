@@ -9607,3 +9607,375 @@ MarkdownV2 也以全部原始保留字符纯文本到达，证明两条 400 降�
 `AUDIT-NOTIFY-003`（合法 MarkdownV2 与保留字符显示）复测通过并从 `todo.md` 删除。
 
 - **验证状态**：已实测（真实 Telegram API，2026-08-16）。
+
+## FIX-DB-016 管理命令与备份工具的临时凭据缺少 socket
+
+**问题**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的 `Make_TempMycnf` 写出的
+`~/.my.cnf` 只含 `[client] user/password`；`tools/lnmp-backup.sh` 的 `Cmd_Init`
+写出的 `/etc/lnmp/backup-mysql.cnf` 同样只含 `[mysqldump]`/`[client]` 的
+user/password。所有调用方使用 `--defaults-file`，该选项取代默认配置文件搜索，
+`/etc/my.cnf` 中的 `socket = /run/mysqld/mysqld.sock`（由 `include/mysql.sh`、
+`include/mariadb.sh` 写入）不再被读取，客户端回落到编译内置的 `/tmp/mysql.sock`。
+
+**影响**：`lnmp database` 全部子命令与 `lnmp backup init` 在三栈默认安装上均报
+`ERROR 2002 ... socket '/tmp/mysql.sock'`，口令正确也被判为校验失败。
+`include/main.sh` 的同名函数此前已写入固定 socket，安装流程不受影响。
+
+**行为变化**：临时凭据文件新增 `socket=` 行，取值来自新增的 `Get_Actual_DB_Socket`
+——解析 `/etc/my.cnf`，`[client]` 段优先，其次 `[mysqld]`，剥离行内注释，
+取不到时回落 `/run/mysqld/mysqld.sock`。`include/main.sh` 原先硬编码的 socket 改为
+调用同一解析，行为在默认安装下等价，自定义 socket 时随配置生效。
+
+**行号**：
+- `conf/lnmp:1185`、`conf/lnmpa:791`、`conf/lamp:674`：新增 `Get_Actual_DB_Socket`，
+  `Make_TempMycnf` 增加 `sock` 局部变量与 `socket=` 行。
+- `tools/lnmp-backup.sh:183`：新增 `Get_Actual_DB_Socket`；`Cmd_Init` 增加
+  `db_sock` 局部变量，option file 的两个段各写入 `socket=`。
+- `include/main.sh:772`：新增 `Get_Actual_DB_Socket`；`Make_TempMycnf` 改为调用它。
+
+**验证**（Debian 13、MariaDB 11.8.8、socket `/run/mysqld/mysqld.sock`）：
+
+解析函数单测：无配置文件回落默认值；`[client]` 与 `[mysqld]` 同时存在时取
+`[client]`；仅 `[mysqld]` 且带行内注释时取 `/var/run/mysqld/custom.sock`；
+配置无 socket 项时回落默认值。
+
+真机功能：
+
+- `lnmp database list`：口令校验通过并列出全部数据库。
+- `lnmp database add`：创建 `chk_db` 及同名用户成功。
+- `lnmp database export chk_db /tmp/chk.sql.gz`：导出成功，文件权限 600。
+- `lnmp database import chk_db /tmp/chk.sql.gz`：删表后导入，数据完整恢复。
+- `lnmp database del`：删除库与用户，`SHOW DATABASES` 不再列出。
+- `lnmp backup init`：凭据校验通过并写入 `/etc/lnmp/backup-mysql.cnf`（600），
+  systemd timer 启用成功。
+- `lnmp backup run all` / `run db` / `status` / `list`：均返回 0，数据库批次导出成功。
+- `lnmp backup test`：SHA256 校验通过，试恢复 1 张表通过。
+
+修复前同一环境下 `lnmp database list` 与 `lnmp backup init` 均失败，错误为
+`Can't connect to local server through socket '/tmp/mysql.sock'`。
+
+`bash -n` 覆盖五个改动文件均通过；`t/lint.sh` 18/18、`t/consistency.sh` 14/14。
+
+- **验证状态**：已实测（Debian 13，LNMP）。LNMPA 与 LAMP 为同一改法的相同实现，
+  本轮只做静态检查与解析函数单测。
+
+## FIX-OPS-005 管理命令的退出码与参数校验
+
+**问题**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 顶层 `case "${1}"` 的 `*)` 分支
+打印用法后直接 `exit`，退出码沿用上一条 `echo` 的 0；子级分支（`lnmp nginx foobar`、
+`lnmp vhost foo` 等）均已返回 1。`database`、`ssl`、`dnsssl`、`onlyssl` 四个分支
+在校验动作名之前就进入交互：`lnmp database foo` 先索要数据库 root 口令，
+`lnmp ssl foo` 直接进入域名输入，DNS 服务商名要走完全部交互才在签发前报错。
+
+**行为变化**：
+- 顶层 `*)` 分支返回 1，不带参数执行 `lnmp` 同样返回 1（此前为 0）。
+- `lnmp database <无效动作>` 打印 `Function_Database` 既有的用法文本并返回 1，
+  不再要求输入口令。合法动作（add/list/del/edit/export/import）行为不变。
+- `lnmp ssl <无效动作>` 打印 `用法：lnmp ssl add` 并返回 1；`lnmp ssl` 与
+  `lnmp ssl add` 行为不变。
+- `lnmp dnsssl <服务商>` / `lnmp onlyssl <服务商>` 在 `/usr/local/acme.sh/dnsapi`
+  已存在时先核对插件，缺失即返回 1；acme.sh 尚未安装时维持原有流程，
+  由原位置的检查负责。服务商名不做白名单限制，acme.sh 支持的插件均可使用。
+
+**行号**：三份管理脚本的顶层 `*)` 分支、`database)` 分支、`ssl)` 分支，
+以及 `Add_Dns_SSL` 与 `Add_Dns_SSL_Only` 的参数处理段（每份各 2 处）。
+
+**验证**（Debian 13，按发布包排除规则打包后安装的 `/bin/lnmp`）：
+
+| 命令 | 退出码 | 首行输出 |
+|---|---:|---|
+| `lnmp`（无参数） | 1 | 用法列表 |
+| `lnmp foobar` | 1 | 用法列表 |
+| `lnmp status` | 0 | 服务状态 |
+| `lnmp vhost list` | 0 | 站点列表 |
+| `lnmp vhost foo` | 1 | `用法：lnmp vhost {add\|list\|del}` |
+| `lnmp database foo` | 1 | `用法：lnmp database {add\|list\|edit\|del}` |
+| `lnmp ssl foo` | 1 | `用法：lnmp ssl add` |
+| `lnmp phpmyadmin status` | 0 | 访问地址 |
+| `lnmp backup status` | 0 | 备份状态 |
+
+DNS 插件校验：模拟 `/usr/local/acme.sh/dnsapi` 存在时，`lnmp dnsssl foo` 与
+`lnmp onlyssl foo` 立即输出 `未找到 DNS 服务商插件：foo。` 并返回 1；
+放入 `dns_cx.sh` 后 `lnmp dnsssl cx` 正常进入域名交互。目录不存在时两者维持原流程。
+
+- **验证状态**：已实测（Debian 13，LNMP）。LNMPA 与 LAMP 为同一改法，静态检查通过。
+
+## FIX-UNINSTALL-004 卸载不清理备份定时任务
+
+**问题**：`lnmp backup init` 会写入 `/etc/systemd/system/lnmp-backup.service`、
+`lnmp-backup.timer`（有 systemd 时）或 `/etc/cron.d/lnmp-backup`。三个
+`Uninstall_*` 流程删除了 `/bin/lnmp-backup`，但不处理这三个文件，timer 保持
+enabled，每天触发后因 ExecStart 不存在而失败。`lnmp backup` 也没有反向的移除子命令。
+
+**行为变化**：新增 `Remove_Backup_Schedule`，在三个卸载流程的 `Remove_Acme` 之后调用：
+停用并删除 timer 与 service、`systemctl daemon-reload`、删除 cron 文件。
+备份数据本身不在清理范围内。卸载前的删除清单同步补齐 `/bin/lnmp-phpmyadmin`、
+`/etc/profile.d/lnmp-tgnotice.sh`、phpMyAdmin 目录、acme.sh、多版本 PHP、
+备份定时任务与 `/etc/lnmp`，与实际删除范围一致。
+
+**行号**：`uninstall.sh` 新增 `Remove_Backup_Schedule`；`Uninstall_LNMP` /
+`Uninstall_LNMPA` / `Uninstall_LAMP` 各加一处调用；三处提示清单补齐。
+
+**验证**（Debian 13）：造出 enabled 状态的 `lnmp-backup.timer`、对应 service 与
+`/etc/cron.d/lnmp-backup` 后，单独执行该函数：三个文件均删除，
+`systemctl is-enabled lnmp-backup.timer` 为 `not-found`、`is-active` 为 `inactive`；
+重复执行返回 0，无报错。
+
+- **验证状态**：已实测（Debian 13）。
+
+## FIX-SVC-001 memcached 服务单元缺少临时目录隔离
+
+**问题**：`init.d/*.service` 共 8 个单元，只有 `memcached.service` 没有
+`PrivateTmp=true`。
+
+**行为变化**：`init.d/memcached.service` 增加 `PrivateTmp=true`。memcached 由
+`init.d.memcached` 以 `-l 127.0.0.1 -p 11211` 启动，pid 文件在 `/run/memcached/`，
+不使用 `/tmp` 下的 socket 或共享文件，隔离后行为不变。
+
+未增加 `ExecReload`：`init.d.memcached` 与 `init.d.pureftpd` 均只实现
+start/stop/status（pureftpd 另有 restart），memcached 与 pure-ftpd 本身不支持
+配置热重载，补一个假的 reload 反而会给出错误预期。`pureftpd.service` 未加
+`ExecStop`，systemd 默认对主进程发 SIGTERM，pure-ftpd 据此正常退出。
+
+**验证**：`systemd-analyze verify init.d/memcached.service` 除"目标机未安装
+memcached"外无告警；`nginx.service`、`redis.service` 对照校验无告警。
+
+- **验证状态**：已验证（静态，Debian 13 systemd 257）。
+
+## CLN-402 删除 autoconf 2.13 死代码与无调用者的函数
+
+**问题**：`Install_Autoconf` 没有任何调用者。`include/profile.sh` 的
+`PHP_Needs_Autoconf213` 恒为 `'n'`（仅 PHP 5.2 需要），当前支持的 PHP 为 8.0–8.5。
+`Firewall_Available` 同样没有调用者。校验清单与每周 URL 探测仍覆盖着一个实际
+不会被下载的文件。
+
+**行为变化**：安装、升级和运维路径均不涉及这些代码，外部行为无变化。
+
+**行号与删除内容**：
+- `include/init.sh`：`Install_Autoconf` 函数。
+- `include/version.sh`：`Autoconf_Ver='autoconf-2.13'`。
+- `include/profile.sh`：`PHP_Needs_Autoconf213` 的注释与初始化赋值。
+- `include/firewall.sh`：`Firewall_Available` 函数。
+- `src/checksums.sha256`：`autoconf-2.13.tar.gz` 条目，清单由 66 条变为 65 条。
+- `t/gen_checksums.sh`、`t/probe_urls.sh`：对应的采集与探测行。
+- `t/consistency.sh`：`check_v4` 跳过列表中的 `Autoconf_Ver`。
+- `t/check_upstream.sh`：固定版本说明表中的 `Autoconf_Ver` 行。
+- `init.d/init.d.fail2ban`：无部署方的孤儿文件。`tools/fail2ban.sh` 使用
+  fail2ban 源码包自带的 `files/redhat-initd` / `files/debian-initd`。
+
+**保留**：`conf/memcached1.php`、`conf/memcached2.php` 由 `include/memcached.sh`
+以 `conf/memcached${ver}.php` 拼接引用，不是孤儿文件。
+
+**验证**：全仓库 90 个脚本 `bash -n` 通过；`t/lint.sh` 全部通过（C10 记 65 条）；
+`t/consistency.sh` 14/14；`t/test_profile.sh`、`t/test_dispatch.sh`、
+`t/test_bump.sh`、`t/test_upstream.sh` 均返回 0。
+
+- **验证状态**：已验证（静态）。
+
+## DOC-702 HowtoGuides 补齐三个工具脚本的操作说明
+
+**问题**：`tools/fail2ban.sh`、`tools/remove_disable_function.sh`、
+`tools/remove_open_basedir_restriction.sh` 只在 `README.md` 的工具表里列了一行
+用途，`HowtoGuides.md` 没有执行步骤和示例。
+
+**行为变化**：仅文档。
+
+**新增内容**：
+- 9.8「程序提示函数被禁用」：`remove_disable_function.sh` 的三个菜单选项、
+  生效方式与解禁范围的取舍。
+- 9.9「程序提示 open_basedir 限制」：`remove_open_basedir_restriction.sh` 的
+  输入项，以及优先改程序路径的建议。
+- 10.1 管理员待办第 1 条：`fail2ban.sh` 与 `denyhosts.sh` 二选一的说明，
+  fail2ban 的 nftables 封禁动作、7 天封禁时长与 `fail2ban-client status` 检查方式。
+
+- **验证状态**：已验证（静态，命令与脚本实现逐项核对）。
+
+## RUN-037 Debian 13 收官复核批次
+
+**环境**：Debian 13 (trixie)、NAT 网络。沿用既有环境：nginx 1.30.4（编译版）、
+PHP 8.3.33、MariaDB 11.8.8、Redis。
+
+**复核范围与结果**：
+
+- `SecurityCheck.md` 的可证伪断言逐条对当前代码取证，全部仍成立：脚本数 87、
+  `Download_Fetch` 仅 HTTPS 且禁止重定向降级、缓存命中重新校验、校验四条件
+  fail-closed、nginx/OpenResty 固定指纹白名单、Composer SHA-384、acme.sh 固定版本
+  并关闭自动升级、三个降级入口默认关闭。生产代码最后修改时间早于该报告的审计脚本
+  执行时间，二进制重编与 HTTP 触发结论继续适用，本轮未重跑。
+- 完整性：校验清单与代码引用闭环无缺漏；无未定义函数调用；三栈子命令矩阵差异
+  与架构一致（LAMP 无 nginx/php-fpm，LNMPA 用 mod_php 故无 php-fpm）；
+  文档与实现的子命令对账无缺口。
+- GitHub Actions：5 个工作流 YAML 合法，引用的 11 个 `t/*.sh` 全部存在，
+  顶层权限为最小集，发布包排除规则正确。
+- 功能：服务启停与返回码、`vhost add/list/del`、站点级 PHP 开关、`phpmyadmin status`
+  均正常；WordPress 7.0.3 主线（首页、固定链接、REST、数据库、PHP-FPM、Redis）通过。
+- 发布包形态验证：按 `release.yml` 的排除规则打包（不含 `tests/`）后在测试机解包，
+  `t/lint.sh`、`t/consistency.sh`、全量 `bash -n`、四个入口脚本的参数校验、
+  `bumpversion.sh` 与全部管理命令均正常。产品代码、`t/` 与工作流对 `tests/` 的
+  引用数为 0，`tests/` 仅供本地开发使用，不影响使用者。
+
+**本轮修复并归档**：FIX-DB-016、FIX-OPS-005、FIX-UNINSTALL-004、FIX-SVC-001、
+CLN-402、DOC-702。
+
+**登记为待处理**：`todo.md` 的 REV-003、REV-004、REV-005（`tests/` 内三个定向测试
+脚本自身失效）与 REV-011、REV-012。`tests/` 不随发布包分发，按需修复。
+
+- **验证状态**：已实测（Debian 13，LNMP）。
+
+## GHA-011 CI 的 ShellCheck 覆盖三份运维脚本
+
+**问题**：`.github/workflows/ci.yml` 的 ShellCheck 步骤检查
+`install.sh uninstall.sh upgrade.sh addons.sh pureftpd.sh include/*.sh t/*.sh tools/*.sh`，
+不含 `conf/lnmp`、`conf/lnmpa`、`conf/lamp`。这三份是安装后作为 `/bin/lnmp` 使用的
+运维入口，合计 8000 余行，此前只有 `bash -n` 语法覆盖。
+
+**行为变化**：ShellCheck 步骤增加 `conf/lnmp conf/lnmpa conf/lamp`。三份文件均以
+`#!/bin/bash` 开头，不需要 `-s bash` 指定方言。排除项与其余文件一致
+（SC1090/SC1091/SC2086/SC2181）。
+
+`tests/` 未纳入：该目录只在本地开发使用，不随发布包分发。
+
+**连带修复**：扩容后暴露出 `include/apcu.sh` 第一行的 shebang 前有一个空格
+（SC1114 error）。该文件由 `addons.sh` 以 `source` 方式加载，运行不受影响，
+但直接执行时不会走 bash 解释器。已去掉前导空格。
+
+**验证**：在 Debian 13（shellcheck 0.10.0）按 ci.yml 的完整参数执行，
+修复 `include/apcu.sh` 前报 SC1114 并返回 1，修复后返回 0。
+全仓库 shebang 前有空白的文件数为 0。
+
+- **验证状态**：已实测（Debian 13，复现 CI 步骤）。
+
+## FIX-OPS-006 非交互执行时 clear 输出 TERM 报错
+
+**问题**：8 处 `clear` 调用在无 TERM 的环境（ssh 非交互、CI、cron）下输出
+`TERM environment variable not set.`，出现在安装、升级、卸载等脚本的首行。
+
+**行为变化**：改为 `clear 2>/dev/null || true`，并在上一行说明原因。有终端时清屏
+行为不变；无终端时不再输出报错，且清屏失败不影响后续流程与退出码。
+
+**行号**：`install.sh:61`、`addons.sh:98`、`upgrade.sh:61`、`uninstall.sh:26`、
+`pureftpd.sh:22`、`include/only.sh:27,163`、`tools/remove_disable_function.sh:19`。
+
+**验证**（Debian 13，`env -u TERM` 且 stdin 为 `/dev/null`）：
+`install.sh`、`upgrade.sh`、`addons.sh`、`uninstall.sh`、`pureftpd.sh` 与
+`tools/remove_disable_function.sh` 的 TERM 报错行数均为 0，退出码与修改前一致。
+
+- **验证状态**：已实测（Debian 13）。
+
+## FIX-OPS-007 pureftpd.sh 的无效参数会触发安装
+
+**问题**：`pureftpd.sh` 只判断 `[ "${action}" = "uninstall" ]`，其余取值一律落入
+安装分支。`./pureftpd.sh foobar` 会完整安装 Pure-FTPd 并开放 FTP 服务——
+输错一个参数就多了一个对外服务。本轮复核中实际触发过一次。
+
+**行为变化**：参数进入白名单校验，只接受空、`install`、`uninstall`；
+其余打印用法并返回 1。取值只收小写，与文件末尾既有的
+`[ "${action}" = "uninstall" ]` 判断保持一致，避免 `Uninstall` 这类写法
+通过校验后落入安装分支。不带参数仍等同安装，既有用法不变。
+
+**行号**：`pureftpd.sh:10` 之后新增参数校验段。
+
+**验证**（Debian 13）：`./pureftpd.sh foobar`、`--help`、`Uninstall` 均返回 1
+并打印 `用法：./pureftpd.sh [install|uninstall]`，未触发安装或卸载；
+`./pureftpd.sh uninstall` 正常卸载，`/usr/local/pureftpd`、`/etc/init.d/pureftpd`、
+`/etc/systemd/system/pureftpd.service` 全部删除，21 端口不再监听，返回 0。
+
+**附带覆盖**：借该次误装完成了此前因未安装而跳过的 FTP 验证——
+`lnmp ftp` 与 `lnmp ftp foo` 返回 1 并打印用法，`lnmp ftp list` 返回 0，
+`lnmp ftp add` / `del` 正常；`pureftpd.service`（含 `PrivateTmp=true`）
+active 且开机自启；`TLS 2` 生效，显式 FTPS 登录成功列目录，明文 FTP 被拒绝。
+
+- **验证状态**：已实测（Debian 13）。
+
+## FIX-SVC-002 lnmp kill 后 Web 服务被标记为 failed
+
+**问题**：`lnmp kill` 用 `killall` 直接结束进程，随后 systemd 执行 ExecStop：
+
+- `php-fpm.service` 的 `ExecStop=/bin/kill -s QUIT $MAINPID`，此时 `$MAINPID`
+  为空，`kill` 因缺少 pid 参数打印用法并返回 1。
+- `nginx.service` 的 `ExecStop=/usr/local/nginx/sbin/nginx -s quit`，master 已不存在，
+  命令同样失败。
+
+两者都使服务进入 `failed`，`lnmp stop` 清不掉，需要 `lnmp start` 或
+`systemctl reset-failed`。php-fpm 还会连带触发 `RuntimeDirectory=php-fpm` 的回收：
+`/run/php-fpm` 被删除，若仍有 php-fpm 进程存活并持有已删除的 socket，
+再次 `systemctl start` 会以 `Another FPM instance seems to already listen` 失败。
+
+`httpd.service` 的 `ExecStop=/usr/local/apache/bin/httpd -k stop` 属于同一情形，
+LNMPA 与 LAMP 的 `lnmp kill` 会 `killall httpd`。
+
+**行为变化**：三个单元不再自定义 ExecStop，改由 systemd 发送停止信号，
+信号语义与原命令一致：
+
+| 单元 | 原 ExecStop | 现配置 |
+|---|---|---|
+| `nginx.service` | `nginx -s quit`（SIGQUIT） | `KillSignal=SIGQUIT` |
+| `php-fpm.service` | `kill -s QUIT $MAINPID` | `KillSignal=SIGQUIT` |
+| `httpd.service` | `httpd -k stop`（SIGTERM） | systemd 默认 SIGTERM |
+
+`ExecReload` 保持不变：nginx 与 httpd 用自带命令，php-fpm 的 `kill -USR2 $MAINPID`
+只在服务运行时执行。
+
+**验证**（Debian 13，LNMP）：
+
+- 常规路径：`systemctl stop/start/restart/reload nginx` 与 php-fpm 均正常，
+  停止后端口释放、socket 清理，HTTP 200。
+- `lnmp kill` 后 nginx 与 php-fpm 均为 `inactive`（修改前两者均为 `failed`），
+  `lnmp start` 与 `lnmp restart` 都能直接恢复，返回 0，三个服务 active，HTTP 200，
+  无需 `reset-failed`；连续多轮 kill/start、kill/restart 结果一致。
+- `systemd-analyze verify` 对四个改动或相关单元无告警。
+
+httpd.service 为同一改法，LNMP 测试机无 Apache，只做静态校验。
+
+- **验证状态**：已实测（Debian 13，LNMP）；httpd 已验证（静态）。
+
+## FIX-SVC-003 Redis 与 Memcached 在进程被外部结束后被标记为 failed
+
+**问题**：`redis.service` 的 `ExecStop=redis-cli shutdown` 在进程已不存在时连接被拒，
+返回 1，systemd 把服务标记为 failed。`memcached.service` 的
+`ExecStop=/etc/init.d/memcached stop` 同理——`init.d.memcached` 的 stop 分支在
+pid 文件缺失或 kill 失败时 `exit 1`。与 FIX-SVC-002 同一类，但这两个服务的停止
+命令承担实际工作（Redis 存盘、memcached 等待退出），不能像 Web 服务那样改成
+由 systemd 直接发信号。
+
+**行为变化**：两个单元的 ExecStop 加 `-` 前缀，systemd 执行停止命令但忽略其退出码。
+正常停止路径不变：服务在运行时仍由 `redis-cli shutdown` 存盘退出、由 init 脚本
+等待 memcached 结束；只有"进程已不在"这种情况不再判定为失败。
+
+**数据库不在本次范围**：`mariadb.service` / `mysql.service` 的
+`ExecStop=/etc/init.d/… stop` 经实测**不受影响**。Debian 13 + MariaDB 11.8.8 上
+`killall mariadbd` 后，init 脚本打印 `ERROR! MariaDB server PID file could not be found!`
+但退出码为 0，systemd 记为 `Deactivated successfully`，服务为 `inactive` 而非 failed。
+`mysql.server` 的 stop 分支结构相同。两个单元保持原样。
+
+**验证**（Debian 13）：Redis 实测——修改前 `killall redis-server` 后服务为 `failed`
+（journal 记 `Could not connect to Redis at 127.0.0.1:6379: Connection refused`,
+`status=1/FAILURE`）；换用新单元后同一操作结果为 `inactive`，
+`systemctl start redis` 直接恢复，`redis-cli ping` 返回 PONG。
+常规 `systemctl stop/start` 正常。memcached 未在测试机安装，为同一改法，静态校验通过。
+
+- **验证状态**：已实测（Debian 13，Redis）；memcached 已验证（静态）。
+
+## FIX-OPS-008 lnmp kill 不会终止 MariaDB
+
+**问题**：`lnmp_kill` 只有 `killall mysqld`，而 MariaDB 的进程名是 `mariadbd`。
+Debian 13 + MariaDB 11.8.8 实测 `killall -0 mysqld` 返回 1、
+`killall -0 mariadbd` 返回 0。命令输出称"正在终止……数据库进程"，实际数据库仍在运行。
+
+**行为变化**：三份管理脚本各增加一行 `killall mariadbd`，并给这两行加 `2>/dev/null`
+抑制必然出现的 `no process found`（一台机器只会存在其中一个进程名）。
+`killall` 默认发 SIGTERM，数据库据此正常关闭。
+
+**行号**：`conf/lnmp:216`、`conf/lnmpa:177`、`conf/lamp:171` 附近的 `lnmp_kill` /
+`lnmpa_kill` / `lamp_kill`。
+
+**验证**（Debian 13，LNMP）：
+
+- `lnmp kill` 后数据库进程数为 0，`mariadb` 为 `inactive`；修改前该服务保持 `active`。
+- 三个服务均为 `inactive`，无 failed；输出只剩既有的 `php-cgi: no process found`。
+- `lnmp restart` 与 `lnmp start` 都返回 0，三个服务恢复 active，HTTP 200，
+  `SELECT 1` 正常。
+- MariaDB 错误日志显示正常启动（`Buffer pool(s) load completed`、
+  `ready for connections`），无崩溃恢复记录，确认 SIGTERM 为优雅关闭。
+
+- **验证状态**：已实测（Debian 13，LNMP）。LNMPA 与 LAMP 为同一改法，静态检查通过。

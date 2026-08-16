@@ -549,7 +549,6 @@ cat >> "${REPORT}" <<'EOF'
 | `NgxBrotli_Commit` | a71f9312… | 上游只有一个 2021 年的 rc tag，固定到具体 commit 才能保证 sha256 稳定 |
 | `NgxCachePurge_Ver` | 2.3 | 原仓库停更于此，用户指定 |
 | `Libmemcached_Ver` | 1.0.18 | 上游停更，且需要打 gcc7 补丁 |
-| `Autoconf_Ver` | 2.13 | 只服务少数老编译路径，升级会破坏它们 |
 | `Curl_Ver` | 7.62.0 | 仅编译期依赖的特定路径使用，升级需人工确认调用点 |
 | `Freetype_New_Ver` | freetype-2.13.0 | 本包使用 SourceForge 归档命名，迁移到新上游发布源需人工评估 |
 | `Libiconv_Ver` / `Libzip_Ver` | 1.17 / 1.3.2 | 保持现有编译基线；升级需覆盖旧 PHP/数据库组合 |

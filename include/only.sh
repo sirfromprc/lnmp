@@ -24,7 +24,7 @@ Nginx_Dependent()
 
 Install_Only_Nginx()
 {
-    clear
+    clear 2>/dev/null || true
     Print_Banner \
         "LNMP 独立安装：Nginx" \
         "仅安装 Nginx，不安装数据库和 PHP" \
@@ -160,7 +160,7 @@ Install_Database()
 
 Install_Only_Database()
 {
-    clear
+    clear 2>/dev/null || true
     Print_Banner \
         "LNMP 独立安装：MySQL/MariaDB" \
         "仅安装数据库，不安装 Web 服务器和 PHP" \

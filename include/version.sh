@@ -10,7 +10,6 @@
 # 否则 fail-closed 校验会中止安装。
 
 # --- 少数兼容路径使用的编译依赖 ---
-Autoconf_Ver='autoconf-2.13'
 Libiconv_Ver='libiconv-1.17'
 
 Freetype_New_Ver='freetype-2.13.0'

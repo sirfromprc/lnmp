@@ -11,7 +11,8 @@ RuntimeDirectory=php-fpm
 RuntimeDirectoryMode=0755
 ExecStart=/usr/local/php/sbin/php-fpm --fpm-config /usr/local/php/etc/php-fpm.conf
 ExecReload=/bin/kill -USR2 $MAINPID
-ExecStop=/bin/kill -s QUIT $MAINPID
+# 停止交给 systemd 发信号，SIGQUIT 为优雅退出。
+KillSignal=SIGQUIT
 PrivateTmp=true
 
 [Install]

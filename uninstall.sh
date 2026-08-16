@@ -23,7 +23,7 @@ shopt -s extglob
 Check_DB
 Get_Dist_Name
 
-clear
+clear 2>/dev/null || true
 Print_Banner \
     "LNMP V${LNMP_Ver} 卸载工具" \
     "卸载 LNMP、LNMPA 或 LAMP 组件" \
@@ -208,6 +208,24 @@ Remove_Multiple_PHP()
     done
 }
 
+# 清理 lnmp backup init 写入的定时任务，不动已有备份数据。
+Remove_Backup_Schedule()
+{
+    local timer='/etc/systemd/system/lnmp-backup.timer'
+    local service='/etc/systemd/system/lnmp-backup.service'
+    local cron='/etc/cron.d/lnmp-backup'
+
+    if [ -e "${timer}" ] && command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now lnmp-backup.timer >/dev/null 2>&1
+    fi
+    if [ -e "${timer}" ] || [ -e "${service}" ]; then
+        rm -f "${timer}" "${service}"
+        command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+    fi
+    rm -f "${cron}"
+    return 0
+}
+
 Remove_Acme()
 {
     [ -s /usr/local/acme.sh/acme.sh ] || return 0
@@ -266,6 +284,7 @@ Uninstall_LNMP()
     Remove_DB_Files
     Remove_Multiple_PHP
     Remove_Acme
+    Remove_Backup_Schedule
 
     rm -f /etc/init.d/nginx
     rm -f /etc/init.d/php-fpm
@@ -300,6 +319,7 @@ Uninstall_LNMPA()
     Remove_DB_Files
     Remove_Multiple_PHP
     Remove_Acme
+    Remove_Backup_Schedule
 
     rm -f /etc/init.d/nginx
     rm -f /etc/init.d/httpd
@@ -332,6 +352,7 @@ Uninstall_LAMP()
     Remove_DB_Files
     Remove_Multiple_PHP
     Remove_Acme
+    Remove_Backup_Schedule
 
     rm -f /etc/my.cnf
     rm -f /etc/init.d/httpd
@@ -374,6 +395,13 @@ ${MySQL_Dir}
 /bin/lnmp
 /bin/lnmp-backup
 /bin/lnmp-tgnotice
+/bin/lnmp-phpmyadmin
+/etc/profile.d/lnmp-tgnotice.sh
+/usr/local/phpmyadmin 与 /var/lib/phpmyadmin
+/usr/local/acme.sh 及其中的证书
+已安装的多版本 PHP（/usr/local/php8.x）
+lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
+/etc/lnmp（数据库口令文件删除，其余配置移到 /root）
 EOF
         Sleep_Sec 3
         Press_Start
@@ -396,6 +424,13 @@ ${MySQL_Dir}
 /bin/lnmp
 /bin/lnmp-backup
 /bin/lnmp-tgnotice
+/bin/lnmp-phpmyadmin
+/etc/profile.d/lnmp-tgnotice.sh
+/usr/local/phpmyadmin 与 /var/lib/phpmyadmin
+/usr/local/acme.sh 及其中的证书
+已安装的多版本 PHP（/usr/local/php8.x）
+lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
+/etc/lnmp（数据库口令文件删除，其余配置移到 /root）
 EOF
         Sleep_Sec 3
         Press_Start
@@ -416,6 +451,13 @@ ${MySQL_Dir}
 /bin/lnmp
 /bin/lnmp-backup
 /bin/lnmp-tgnotice
+/bin/lnmp-phpmyadmin
+/etc/profile.d/lnmp-tgnotice.sh
+/usr/local/phpmyadmin 与 /var/lib/phpmyadmin
+/usr/local/acme.sh 及其中的证书
+已安装的多版本 PHP（/usr/local/php8.x）
+lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
+/etc/lnmp（数据库口令文件删除，其余配置移到 /root）
 EOF
         Sleep_Sec 3
         Press_Start

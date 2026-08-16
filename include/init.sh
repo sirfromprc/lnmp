@@ -844,18 +844,6 @@ PHP_Make_Install()
     return 0
 }
 
-Install_Autoconf()
-{
-    Echo_Blue "[+] 正在安装 ${Autoconf_Ver}"
-    cd ${cur_dir}/src
-    Download_Files https://ftp.gnu.org/gnu/autoconf/${Autoconf_Ver}.tar.gz ${Autoconf_Ver}.tar.gz
-    Require_File "${Autoconf_Ver}.tar.gz" "autoconf 2.13"
-    Tar_Cd ${Autoconf_Ver}.tar.gz ${Autoconf_Ver}
-    ./configure --prefix=/usr/local/autoconf-2.13
-    Make_Install || exit 1
-    cd ${cur_dir}/src/
-    rm -rf ${cur_dir}/src/${Autoconf_Ver}
-}
 
 Install_Libiconv()
 {

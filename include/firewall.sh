@@ -25,11 +25,6 @@ Firewall_Backend()
     fi
 }
 
-Firewall_Available()
-{
-    Firewall_Backend
-    [ "${FW_Backend}" != 'none' ]
-}
 
 # 初始化防火墙后端。firewalld 使用现有 zone；nft 使用独立的 inet lnmp
 # 表和链，重建基础规则以避免重复，并保留系统中的其他规则表。

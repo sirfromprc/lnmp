@@ -58,7 +58,7 @@ Display_Upgrade_Menu()
     read -p "请选择 [1-9]，或输入 exit 退出：" action
 }
 
-clear
+clear 2>/dev/null || true
 Print_Banner \
     "LNMP V2.3 升级工具" \
     "升级 Nginx、MySQL/MariaDB 和 PHP" \
