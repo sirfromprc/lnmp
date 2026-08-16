@@ -9,7 +9,7 @@ ExecStart=/usr/local/nginx/sbin/nginx -c /usr/local/nginx/conf/nginx.conf
 ExecReload=/usr/local/nginx/sbin/nginx -s reload
 # nginx -s quit 从 pid 文件定位 master，兼容 systemd 未取得 MAINPID 的服务状态。
 ExecStop=/usr/local/nginx/sbin/nginx -s quit
-PrivateTmp=false
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

@@ -70,6 +70,13 @@ propose()
     local key="$1" cur="$2" new="$3" kind="$4" msg="${5:-}"
     [ -z "${new}" ] && return 0
     [ "${cur}" = "${new}" ] && return 0
+    case "${new}" in
+        *[!0-9A-Za-z._-]*)
+            log "  !! ${key} 的上游版本值含非法字符，拒绝写入 bumps.tsv：${new}"
+            errors=$((errors+1))
+            return 1
+            ;;
+    esac
     printf '%s\t%s\t%s\t%s\n' "${key}" "${cur}" "${new}" "${kind}" >> "${BUMPS}"
     case "${kind}" in
         AUTO)    n_auto=$((n_auto+1)) ;;
@@ -188,7 +195,7 @@ check_lua_stack()
     # 取数失败必须与"上游确实还没发布配套版本"区分开：两者都会让 matched 为空，
     # 但前者是检查没做成，不能写成结论、更不能让退出码保持 0。
     local candidates
-    candidates=$(gh_tags openresty/lua-resty-core '^0\.1\.[0-9]+' | tail -10 | tac)
+    candidates=$(gh_tags openresty/lua-resty-core '^0\.1\.[0-9]+([A-Za-z]+[0-9]*)?$' | tail -10 | tac)
     require_value 'lua-resty-core tag' "${candidates}" || return 0
 
     local candidate matched='' fetch_failed=''

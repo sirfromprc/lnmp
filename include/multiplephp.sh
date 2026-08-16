@@ -71,7 +71,7 @@ Install_MPHP8x()
     # 关闭 X-Powered-By 响应头，避免对外暴露 PHP 版本号。
     sed -i 's/^expose_php =.*/expose_php = Off/g' ${MPHP_Path}/etc/php.ini
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' ${MPHP_Path}/etc/php.ini
-    sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' ${MPHP_Path}/etc/php.ini
+    sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server,pcntl_exec/g' ${MPHP_Path}/etc/php.ini
 
     cd ${cur_dir}/src
 
@@ -83,7 +83,7 @@ error_log = ${MPHP_Path}/var/log/php-fpm.log
 log_level = notice
 
 [www]
-listen = /tmp/php-cgi${MPHP_Short_Ver}.sock
+    listen = /run/php-fpm/php-cgi${MPHP_Short_Ver}.sock
 listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
@@ -105,6 +105,8 @@ EOF
     \cp ${cur_dir}/src/${Php_Ver}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm${MPHP_Short_Ver}
     chmod +x /etc/init.d/php-fpm${MPHP_Short_Ver}
     sed -i "s@# Provides:          php-fpm@# Provides:          php-fpm${MPHP_Short_Ver}@g" /etc/init.d/php-fpm${MPHP_Short_Ver}
+    Ensure_Runtime_Directory /run/php-fpm root root || return 1
+    Patch_Init_Runtime_Directory /etc/init.d/php-fpm${MPHP_Short_Ver} /run/php-fpm root root || return 1
 
     StartUp php-fpm${MPHP_Short_Ver}
 

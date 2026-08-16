@@ -130,4 +130,11 @@ else
     bad 'libunwind 仍可能跨主版本自动升级'
 fi
 
+if grep -Fq "lua-resty-core '^0\\.1\\.[0-9]+([A-Za-z]+[0-9]*)?$'" t/check_upstream.sh &&
+   grep -Fq '*[!0-9A-Za-z._-]*' t/check_upstream.sh; then
+    ok '上游候选值有统一字符校验且 resty-core tag 完整锚定'
+else
+    bad '上游候选值校验或 resty-core tag 尾锚缺失'
+fi
+
 exit ${fail}

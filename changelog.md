@@ -7606,6 +7606,387 @@ php-8.3.33）。摘要输出 `Nginx 附加模块：Lua, Brotli, Cache Purge`、
 
 - **验证状态**：已实测（Debian 13）。
 
+## FIX-ADDONS-003 附加组件通过统一服务入口重启 PHP-FPM 或 Apache
+
+**位置**：`addons.sh` 的 `Restart_PHP`。
+
+**问题与修复**：Redis 等扩展安装完成后原先直接执行 `/etc/init.d/php-fpm restart`。
+在 systemd 管理的 LNMP 环境中，这会绕过 unit 启动新进程，使 systemd 丢失主进程跟踪，
+`php-fpm.service` 随后成为 failed，而实际 PHP-FPM 进程仍在运行。现在从所选 init 脚本
+取得服务名，并统一调用 `StartOrStop restart`：存在项目 systemd unit 时由 systemd 重启，
+否则仍回退对应 SysV 脚本。Apache 分支同样使用 `httpd` 服务名；LAMP、LNMPA 本轮只做
+静态分派检查，未重复安装实测。
+
+**验证**：`bash tests/test_security_fixes.sh` 35/35；Debian 13 上直接调用修复后的
+`Restart_PHP` 后，`php-fpm.service` 为 active、主进程由 systemd 跟踪，
+`/run/php-fpm/php-cgi.sock` 为 `www:www 0660`，`lnmp status` 返回 0。
+
+- **验证状态**：已实测（LNMP，Debian 13，2026-08-15）。
+
+## RUN-040 Debian 13 Redis 与 WordPress 主线实测
+
+**范围**：复用现有 Nginx 与 PHP 8.3，不重新编译 PHP；安装 Redis 8.10.0 服务端与
+phpredis 6.3.0，并先后在 MySQL 8.4、MariaDB 11.8 上部署一次性 WordPress 7.0.3
+测试站点。MariaDB 通过 `install.sh db` 单独安装，没有进入 Web/PHP 安装流程。
+
+**Redis 结果**：`redis-cli ping` 返回 `PONG`，服务为 active/enabled，只监听
+`127.0.0.1` 与 `::1`；PHP CLI 已加载 redis 扩展，`lnmp status` 返回 0。
+
+**WordPress 结果**：`tests/verify_wordpress_lnmp_remote.sh` 真实完成官方包校验、建库、
+HTTP 安装、文章写入和访问，首页、文章固定链接、REST API 均返回成功；请求经 PHP-FPM
+分别读写 MySQL 与 MariaDB，并由 mu-plugin 经 phpredis 写入和读回 Redis key。测试脚本
+动态选择已安装的 MySQL/MariaDB 客户端，并在 Nginx reload 后等待静态探针接管流量，
+避免把旧 worker 的短暂响应误判为应用失败。
+
+**清理**：成功和失败路径都清理独立 vhost、站点目录、日志、数据库、数据库用户、
+Redis key 与 0700 临时凭据目录；清理后 `nginx -t` 和 nginx 服务状态正常。
+
+- **验证状态**：已实测（Debian 13，2026-08-15）。
+
+## RUN-039 Debian 13 LNMPA 完整安装与 Apache 收尾验证
+
+**环境**：Debian 13 (trixie)，本项目完整源码安装 OpenResty 1.31.1.1、
+Apache 2.4.68、PHP 8.3.33 ZTS；phpMyAdmin 5.2.3 独立补装，随后用项目入口
+补装 MySQL 8.4.7 以完成真实登录验证。
+
+**验证结果**：
+
+- `tests/verify_project_apache_stack.sh lnmpa` 18/18：站点 PHP 开关、
+  `.php.bak`、同/异属主软链接、根目录外 Alias、PATH_INFO、默认演示页白名单、
+  其它 PHP 拒绝，以及 init.d、单服务和整栈失败码传播全部通过。
+- `tests/test_apache_stack_service_failures.sh` 6/6；OpenResty `nginx -t` 与
+  Apache `httpd -t` 均通过。
+- phpMyAdmin 经 OpenResty 80 与 Apache 88 双入口均返回 200；disable 后双入口
+  均为 404，enable 后恢复 200；默认站点其它 PHP 经 OpenResty 返回 404 且未执行。
+- 使用 cookie 登录流程通过 OpenResty 入口连接 MySQL：登录表单消失，页面出现
+  logout 入口和数据库导航，确认不是只验证到静态登录页。
+- 80 对外监听；Apache 88 与管理端口 1008 均只监听回环地址。测试站点、请求文件、
+  cookie 和响应临时文件均已清理。
+
+**本轮闭环并从 `todo.md` 删除**：`AUDIT-VHOST-014-APACHE`、
+`AUDIT-SERVICE-002`、`AUDIT-VHOST-013-APACHE`、`AUDIT-VHOST-012`。
+
+- **验证状态**：已实测（Debian 13，2026-08-15）。
+
+## AUDIT-SEC-002-FIX pcntl_exec 不再绕过 PHP 命令执行限制
+
+- **改动**：主 PHP 与多版本 PHP 写入的 `disable_functions` 增加
+  `pcntl_exec`。保留 `pcntl_fork`、`pcntl_signal`、`pcntl_wait` 等非执行类
+  pcntl 能力，避免影响现有队列和进程管理代码。
+- **静态回归**：`bash -n include/php.sh include/multiplephp.sh` 通过；
+  `bash tests/test_security_fixes.sh` 确认两套配置均包含 `pcntl_exec` 且没有禁用
+  `pcntl_fork`。
+- **真机验证**：2026-08-15 在 Debian 13 / PHP 8.3.33（pcntl 已编入）用新
+  `disable_functions` 启动一次性 CLI 探针，结果为
+  `pcntl_exec=0 pcntl_fork=1 pcntl_signal=1`。
+- **验证状态**：已实测（Debian 13，2026-08-15）。
+
+## AUDIT-SEC-006-FIX Redis bind 改写失败时不再静默放开监听
+
+- **改动**：`include/redis.sh` 新增 `Set_Redis_Loopback_Bind`，兼容活动、注释及
+  上游通配格式的 `bind`，统一写为 `bind 127.0.0.1 -::1`，并用
+  `Check_Conf_Applied` 回读确认；改写或核对失败会中止安装。
+- **静态回归**：`bash -n include/redis.sh` 通过；
+  `bash tests/test_security_fixes.sh` 对三类模板的定向测试通过（16/16）。
+- **真机验证**：2026-08-15 在 Debian 13 / Redis 8.10.0 上把临时配置预置为
+  通配监听，经新函数改写后以非默认端口启动真实 Redis。`ss` 仅显示
+  `127.0.0.1` 和 `::1` 两个监听地址，未出现全网卡监听；测试进程、端口及临时
+  目录已清理。
+- **验证状态**：已实测（Debian 13，2026-08-15）。
+
+## AUDIT-SEC-011-FIX Web 配置半可信输入在写文件前统一校验
+
+- **改动**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 同步新增配置名称、
+  `ServerAdmin` 邮箱和证书绝对路径校验；交互读取和最终
+  `Add_VHost_Config` / `Create_SSL_Config` 入口均检查，调用方同时传播失败返回码。
+- **兼容边界**：现有安全的 rewrite 名、日志名、管理员邮箱及真实证书路径保持
+  原行为；仅拒绝路径穿越、空白、配置元字符、不存在文件和非法邮箱。
+- **定向实测**：2026-08-15 在 Debian 13 直接调用三份脚本的最终写配置入口，
+  rewrite 路径、日志名、`ServerAdmin` 和证书路径四类注入均在文件操作前失败；
+  `bash tests/test_security_fixes.sh` 通过 16/16。
+- **验证状态**：已实测（Debian 13，2026-08-15）。
+
+## AUDIT-SEC-001-FIX Apache ServerAdmin 在安装入口拒绝注入字符
+
+- **改动**：`include/main.sh` 新增安装期 `ServerAdmin` 邮箱白名单校验，
+  `Apache_Selection` 在任何 Apache 配置写入前执行校验；`install.sh` 的 LAMP、LNMPA
+  入口传播失败返回码。正常邮箱继续写入原有两个 Apache 模板。
+- **安全边界**：只允许邮箱所需的字母、数字及 `._%+-@`，原载荷中的 `/`、`;`、
+  空白和换行均无法到达 `include/apache.sh` 的 `sed` 替换。
+- **验证**：Debian 13 上直接执行正常邮箱、空白注入和原 sed 注入载荷；正常值通过，
+  两类恶意值均在安装选择阶段返回非零。此前同批 LAMP/LNMPA 完整安装的正常配置和
+  `httpd -t` 结果继续通过；`tests/test_security_fixes.sh` 35/35。
+- **验证状态**：已实测（函数入口及既有 Apache 完整栈，Debian 13，2026-08-15）。
+
+## AUDIT-SEC-003-FIX MySQL 不再默认启用 mysql_native_password
+
+- **改动**：MySQL 8.0 模板删除 `default_authentication_plugin = mysql_native_password`，
+  MySQL 8.4 模板删除 `mysql_native_password=ON`；安装与升级路径均不再写入旧认证开关，
+  新账号使用 MySQL 8.x 上游默认认证。MariaDB 配置与账号逻辑不变。
+- **验证**：全仓库安装、升级配置中均无两个旧选项；安全回归确认配置路径无残留。
+  同批 MySQL 8.4.7 完整安装、密码登录、WordPress 数据库访问均已通过；随后
+  MariaDB 11.8.8 的安装、登录与 WordPress 回归也通过，未重复安装两种数据库。
+- **验证状态**：已实测（MySQL 8.4 与 MariaDB 11.8，Debian 13，2026-08-15）。
+
+## AUDIT-SEC-004-FIX 彩色输出不再分词或展开通配符
+
+- **改动**：`include/main.sh` 以及 `conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的四组
+  `Echo_*` 实现统一给 `Color_Text` 命令替换加双引号；原换行行为保持不变。
+- **验证**：在含多个文件的测试目录输出带 `*`、`?`、连续空白的消息，内容保持原样，
+  不再被文件名替换；四份实现一致性检查通过。
+- **验证状态**：已实测（Debian 13，2026-08-15）。
+
+## AUDIT-SEC-005-FIX MySQL 与 MariaDB 原数据目录完整搬移
+
+- **改动**：`Check_MySQL_Data_Dir`、`Check_MariaDB_Data_Dir` 不再执行非递归复制后
+  `rm -rf`，改为把整个数据目录移动到时间戳备份目录。目标冲突、移动失败或空目录
+  重建失败均返回非零，安装调用方立即停止；失败时不会继续清理原数据。
+- **验证**：Debian 13 临时数据目录同时放入顶层文件、隐藏文件和数据库子目录，
+  MySQL 与 MariaDB 两个函数均完整搬移所有内容并重建空数据目录；
+  `tests/test_security_fixes.sh` 35/35。
+- **验证状态**：已实测（真实文件系统搬移，Debian 13，2026-08-15）。
+
+## AUDIT-SEC-007-FIX TCMalloc profile 移出共享临时目录
+
+- **改动**：profile 目录由 `/tmp/tcmalloc` 改为
+  `/usr/local/nginx/var/tcmalloc`，创建前拒绝末级符号链接，并检查目录创建、属主和
+  `0750` 权限的返回码；任一步失败即停止安装，不写入 Nginx 配置。
+- **验证**：源码和配置不再引用 `/tmp/tcmalloc`，生成的指令只指向 Nginx 私有目录；
+  Debian 13 安全回归与 Nginx 配置检查通过。该目录位于 root 管理的 Nginx 前缀下，
+  普通本地账号不能再预置原共享路径改变写入落点。
+- **验证状态**：已验证（路径、权限及失败分支，Debian 13，2026-08-15）。
+
+## AUDIT-SEC-008-FIX Composer 复用安全下载策略并支持关闭
+
+- **改动**：`Install_Composer` 使用 `Download_Fetch` 下载官方 SHA384 与安装器，
+  继续保持缺少或不匹配校验值时拒绝执行；PHP 哈希调用通过 `$argv[1]` 传入路径，
+  不再把工作目录拼进 PHP 程序文本。`lnmp.conf` 新增默认为 `y` 的
+  `Enable_Composer`，设为 `n` 时明确跳过且返回成功。
+- **验证**：安全回归确认开关默认值、两个 HTTPS 下载入口、`$argv` 参数和失败关闭
+  路径全部接入；同批 PHP 8.3 环境与下载校验基础设施已实跑，本项未重复编译 PHP。
+- **验证状态**：已验证（下载与哈希函数路径，Debian 13，2026-08-15）。
+
+## AUDIT-SEC-009-FIX Nginx 版本判断与 OpenSSL 开关解耦
+
+- **改动**：`Install_Nginx` 入口无条件从 `Nginx_Ver` 初始化 `Nginx_Version`，再进入
+  OpenSSL、Lua 和 configure 分支。`Enable_Nginx_Openssl=n` 时仍会按 Nginx 真实版本
+  选择现代 HTTP/2、HTTP/3 配置，不再落入已删除的 SPDY/IPv6 参数分支。
+- **验证**：函数级回归确认关闭 OpenSSL 时版本仍为 `1.30.4`，并检查初始化发生在所有
+  分支之前；现有 Nginx 1.30.4 的配置与服务状态保持正常，未重复编译 Nginx。
+- **验证状态**：已验证（分支级回归，Debian 13，2026-08-15）。
+
+## AUDIT-SEC-010-FIX 数据库客户端显式使用 HOME 下的凭据文件
+
+- **改动**：`Do_Query`、数据库快照/升级验证、三份管理脚本及相关升级入口统一使用
+  `--defaults-file="${HOME}/.my.cnf"`，不再依赖客户端解释等号后的字面量 `~`。
+- **验证**：全仓库目标路径无 `--defaults-file=~/.my.cnf` 残留；安全回归通过。
+  同批 MySQL 8.4 与 MariaDB 11.8 环境中的数据库列表、建库、导入、导出、改密和删除
+  命令均已真实执行成功，未为本项重复切换数据库。
+- **验证状态**：已实测（MySQL 与 MariaDB 管理命令，Debian 13，2026-08-15）。
+
+## AUDIT-SEC-012-FIX 三份管理脚本统一支持长顶级域邮箱
+
+- **改动**：`conf/lnmpa`、`conf/lamp` 的 ACME 邮箱正则由顶级域 2 至 4 位改为
+  2 至 63 位，与 `conf/lnmp` 及公共 `ServerAdmin` 校验一致。
+- **验证**：三份脚本对常规邮箱和长顶级域邮箱执行同一函数级测试，均接受合法值并
+  拒绝空白及配置注入；仓库中不再残留 `{2,4}` 的旧邮箱规则。
+- **验证状态**：已实测（函数输入，Debian 13，2026-08-15）。
+
+## AUDIT-SEC-013-FIX DenyHosts 删除工具严格校验并按字面量匹配 IP
+
+- **改动**：`tools/denyhosts_removeip.sh` 在停止服务和修改文件前使用 Python 标准库
+  `ipaddress.ip_address` 校验 IPv4/IPv6。文件更新改为私有临时文件和
+  `re.escape` 字面量匹配，保留原权限/属主并检查写回返回码；退出 trap 负责清理并
+  在失败后恢复服务。
+- **验证**：原 sed 注入载荷和 `.` 均在任何服务操作前返回非零，脚本不再把参数拼入
+  sed 表达式；正常 IPv4/IPv6 校验与边界匹配回归通过。
+- **验证状态**：已实测（恶意与正常输入，Debian 13，2026-08-15）。
+
+## DOC-SEC-010 安全修复与 Debian 13 实测同步到用户文档
+
+- **README**：补充数据库/PHP-FPM `/run` socket、MySQL 上游默认认证、Apache 配置边界、
+  Composer 开关、Pure-FTPd `TLS 2`、数据库目录完整搬移；
+  Debian 13 验证矩阵改为包含 LNMP + MySQL/MariaDB、LAMP、LNMPA 与 WordPress 主链路，
+  删除 Apache 系“未做真机验证”的过时说法。
+- **HowtoGuides**：补充 `Enable_Composer`、Apache `ServerAdmin`、数据目录失败行为、
+  MySQL/MariaDB 认证差异、DenyHosts 解封入口、Pure-FTPd 显式 FTPS，
+  并更新安装后检查、安全基线和完整验证结果。
+- **复核**：两份文档不再含 LAMP/LNMPA 未实测、旧 TLS 默认值或验证机密码、地址、
+  路径信息；详细逐项证据仍以本文件对应 `AUDIT-SEC-*-FIX` 记录为准。
+- **验证状态**：已完成文档一致性复核（2026-08-15）。
+
+## AUDIT-SEC-014-FIX Apache 只把末尾 `.php` 交给 mod_php
+
+- **改动**：`conf/httpd24-lamp.conf` 与 `conf/httpd24-lnmpa.conf` 删除 PHP
+  `AddType` 及 `.phps` 源码映射，改为行尾锚定的
+  `<FilesMatch "\.php$">` + `SetHandler application/x-httpd-php`。
+- **兼容验证**：2026-08-15 在 Debian 13 / Apache 2.4.68 / mod_php 8.4.24
+  启动隔离实例，LAMP 与 LNMPA 两份实际配置均能正常执行末尾 `.php`；
+  `.php.bak` 请求返回原始静态内容而没有执行。`tests/verify_apache_security_remote.sh`
+  总计通过 12/12。
+- **项目 LAMP 复验**：同日在本项目完整源码安装的 Apache 2.4.68 +
+  PHP 8.3.33 ZTS 上运行 `tests/verify_project_apache_stack.sh lamp`，正常 `.php`
+  执行且 `.php.bak` 仅返回静态源码文本，未被 PHP 处理。
+- **环境边界**：处理器对照组确认 mod_php 可执行；但 Debian 当前的 mod_php 8.4
+  不再把单独 `AddType` 当作 PHP handler，因此旧配置下 `.php.bak` 执行行为在该环境
+  未复现。修复后的正向 `.php` 与反向 `.php.bak` 请求边界均已真实验证。
+- **验证状态**：已实测（Debian 13，2026-08-15）。
+
+## AUDIT-SEC-015-FIX Apache 根目录和符号链接边界收紧
+
+- **改动**：两份 Apache 主模板的 `<Directory />` 恢复
+  `AllowOverride None` 与 `Require all denied`；静态 vhost、LAMP/LNMPA 动态
+  vhost、示例配置和 phpMyAdmin Alias 均使用绝对的
+  `Options SymLinksIfOwnerMatch`。
+- **漏洞对照**：2026-08-15 在 Debian 13 / Apache 2.4.68 使用旧的根目录放行与
+  `FollowSymLinks` 组合，真实请求成功读取了异属主测试文件，确认测试夹具可复现越界。
+- **修复验证**：LAMP 与 LNMPA 两份实际配置对异属主软链接均返回 403，对根目录
+  Alias 均返回 403；同属主软链接仍返回 200，确认安全边界收紧且保留预期功能。
+  `tests/verify_apache_security_remote.sh` 总计通过 12/12。
+- **项目 LAMP 复验**：同日在本项目完整源码安装的 Apache 2.4.68 上复验，
+  异属主软链接和根目录外 Alias 均为 403，同属主软链接为 200；测试路径和配置
+  已由脚本恢复清理。
+- **验证状态**：已实测（Debian 13，2026-08-15）。
+
+## AUDIT-SEC-016-FIX 数据库与 PHP-FPM socket 移出共享临时目录
+
+**位置**：`include/dbcommon.sh`、`include/main.sh`、`include/mysql.sh`、
+`include/mariadb.sh`、`include/php.sh`、`include/multiplephp.sh`、相关升级脚本与
+`init.d/*.service`。
+
+**修复**：MySQL 与 MariaDB 的正式 socket 统一为 `/run/mysqld/mysqld.sock`，
+PHP-FPM 主版本与多版本 socket 统一放入 `/run/php-fpm/`。systemd unit 使用
+`RuntimeDirectory` 在启动前创建运行目录并恢复 `PrivateTmp=true`；SysV init 脚本也会
+安全创建目录，遇到软链接或非目录对象时失败退出。当前处于开发期，不增加旧 `/tmp`
+socket 的兼容迁移逻辑。
+
+**首次密码**：数据库初始化完成后不再把空口令实例暴露到正式 socket。安装函数创建
+0700 私有目录，在其中以 `--skip-networking` 启动临时实例，预建 0600 且属于数据库
+服务账号的错误日志，设置 root 密码并验证后关闭，再启动正式服务。独占客户端配置明确
+写入 `/run/mysqld/mysqld.sock`，不会回退编译期 socket。
+
+**定向测试**：`tests/test_security_fixes.sh` 35/35，`tests/test_db_port.sh` 13/13；
+`systemd-analyze verify`、`nginx -t`、`php-fpm -t` 通过。
+
+**MySQL 8.4 真机**：禁网私有实例成功设密并关闭；正式 socket、回环监听和密码登录正常，
+空口令拒绝，匿名账号、远程 root 与 test 库均为 0；删除 `/run/mysqld` 后 systemd 能重建。
+
+**MariaDB 11.8 真机**：通过 `install.sh db` 使用官方通用二进制独立安装，未重新编译
+Nginx 或 PHP。非特权 `www` 用户空口令登录 root 被拒绝，安全对象计数为 `0,0,0`，
+正式 socket 与监听地址正确；删除 `/run/mysqld` 后服务重建目录并恢复登录。
+
+**PHP 与应用**：PHP-FPM socket 为 `/run/php-fpm/php-cgi.sock`、`www:www 0660`；删除
+`/run/php-fpm` 后可重建。Nginx、PHP-FPM、数据库均显示 `PrivateTmp=yes`。WordPress 7.0.3
+在 MySQL 8.4 与 MariaDB 11.8 上分别完成首页、固定链接、REST、数据库及 Redis 实测；
+MariaDB 环境下 phpMyAdmin 随机入口返回 200，`lnmp status` 返回 0。
+
+- **验证状态**：已实测（MySQL、MariaDB、PHP-FPM，Debian 13，2026-08-15）。
+
+## AUDIT-SEC-017-FIX Pure-FTPd 新安装默认拒绝明文 FTP
+
+- **改动**：`conf/pure-ftpd.conf` 的新安装默认值由 `TLS 1` 改为 `TLS 2`。
+  `pureftpd.sh` 仍生成自签证书并复制该模板；不迁移、不覆盖已有服务器当前部署的
+  `/usr/local/pureftpd/etc/pure-ftpd.conf`。
+- **兼容边界**：FTP 账号、目录、主动/被动模式和 FTPS 上传功能保持不变；以后新装
+  的 Pure-FTPd 客户端必须使用显式 FTPS。管理员仍可在部署配置中手工改为 `TLS 1`，
+  但会重新允许明文口令。
+- **静态回归**：`bash -n pureftpd.sh`、`bash tests/test_security_fixes.sh` 通过。
+- **真机验证**：2026-08-15 在 Debian 13 源码编译安装 Pure-FTPd 1.0.54，实际配置
+  回读为 `TLS 2`。普通 FTP 在发送 `USER` 后收到 `421`，明确拒绝 cleartext；
+  `curl --ssl-reqd --insecure` 的显式 FTPS 列目录和上传均返回 0，上传内容逐字节一致。
+  测试后已停止服务，删除临时账号与安装目录，并恢复 `/bin/lnmp`、systemd 和
+  nftables 配置。
+- **验证状态**：已实测（Debian 13，2026-08-15）。
+
+## AUDIT-SEC-018-FIX 校验清单生成与自动刷新强制核对上游依据
+
+**位置**：`t/gen_checksums.sh`、`t/refresh_checksums.sh`、`include/verify.sh`、
+`.github/workflows/upstream-check.yml`。
+
+**修复**：PHP、MariaDB 和 phpMyAdmin 采集改用 `Upstream_SHA256`；Nginx 使用随包公钥
+和固定指纹白名单验证 PGP 签名；OpenSSL、Apache 与 APR 使用上游 `.sha256`。自动刷新
+统一通过 `Download_Fetch`，只允许 HTTPS 且禁止重定向降级。能取得机器可读上游依据的
+组件若取值失败或与下载文件不一致，工作流返回非零，不写回 `src/checksums.sha256`。
+
+**防损坏检查**：刷新只精确替换目标组件的完整清单行；写回前验证每行格式和文件名唯一，
+避免版本号碰撞、换行破坏或非法哈希覆盖信任清单。
+
+**真实交叉核对**：Debian 13 上复用实际安装包，PHP 8.3.33 与 MariaDB 11.8.8 的
+上游 API SHA256、实际文件 SHA256 和仓库清单三方一致；另行下载 Nginx 1.30.4 小包及
+`.asc`，PGP 验签通过，签名者主密钥命中固定白名单。
+
+**回归**：`t/test_bump.sh` 的组件碰撞、清单碰撞和坏清单拒绝写回用例通过；
+`t/lint.sh` 18/18、`t/consistency.sh` 14/14。
+
+- **验证状态**：已实测（真实上游 SHA256/PGP，Debian 13，2026-08-15）。
+
+## AUDIT-SEC-019-FIX 八个动态升级入口统一校验版本号
+
+**位置**：`include/main.sh` 的 `Check_Version_String`，以及 Nginx、OpenResty、PHP、
+多版本 PHP、MySQL、MariaDB、MySQL 到 MariaDB、phpMyAdmin 八个升级入口。
+
+**修复**：版本值在用于 URL 或落地文件名之前统一限制为非空的
+`[0-9A-Za-z._-]`，拒绝 `/`、反斜杠、空白、shell 元字符和路径片段。各入口原有的
+受支持分支/主版本判断继续保留在公共字符校验之后，未改变可升级版本范围。
+
+**验证**：`tests/test_security_fixes.sh` 对正常 Nginx/OpenResty 版本及
+`../../outside`、`8.4.7/extra`、`8.4.7;touch` 执行公共函数测试，并确认八个入口全部
+调用该函数；35 项全过。完整 `bash -n`、lint 与 consistency 同时通过。
+
+- **验证状态**：已验证（函数级输入与八入口接入，Debian 13，2026-08-15）。
+
+## AUDIT-SEC-020-FIX 自动升版不再把上游值拼入 Perl 程序
+
+**位置**：`t/check_upstream.sh`、`t/bump_version.sh`。
+
+**修复**：候选值写入 `bumps.tsv` 前统一限制为 `[0-9A-Za-z._-]`，
+lua-resty-core tag 正则补完整尾锚。升版脚本再次校验 key、旧值、新值、类别和列数；
+Perl 替换通过环境变量传值，变量内容不再成为 `-e` 程序文本。普通版本变量写回也只匹配
+指定 key 的完整赋值行。
+
+**恶意输入验证**：`t/test_bump.sh` 构造包含 `/e;system("touch ...")` 的上游值，
+脚本返回非零，标记文件未创建，版本文件未改变。该套件 16 项全部通过；
+`t/test_upstream.sh` 11 项通过，包括统一候选值校验、resty-core 尾锚和上游取数失败
+传播；两个脚本均为 GitHub Actions 直接调用的 CI 检查。
+
+- **验证状态**：已验证（恶意输入与 CI 回归，Debian 13，2026-08-15）。
+
+## AUDIT-SEC-021-FIX MariaDB 11.8.8 二进制包校验条目恢复可读取
+
+- **改动**：清除 `src/checksums.sha256` 中混入的 CR 字节及文件头、MariaDB
+  条目后的异常空行；哈希值本身不变，清单现为 66 条有效记录。
+- **行为恢复**：`mariadb-11.8.8-linux-systemd-x86_64.tar.gz` 的文件名不再带隐藏
+  `\r`，`Verify_Download_File` 的精确 awk 查询可取得已登记 SHA256，不会再把该安装包
+  误判为未登记文件。
+- **验证**：2026-08-15 在 Debian 13 干净副本执行 `bash t/lint.sh` 18/18、
+  `bash t/consistency.sh` 14/14；其中 C10、V7、V14 均为 ok，清单 CR 字节数为 0。
+- **验证状态**：已实测（Debian 13，2026-08-15）。
+
+## AUDIT-PMA-001-FIX LAMP 补装 phpMyAdmin 可读取真实 HTTP 端口
+
+- **问题确认**：项目源码编译的 Apache 2.4.68 执行
+  `httpd -t -D DUMP_RUN_CFG` 不输出 `Listen`，原 LAMP 分支始终取不到端口，
+  会在 HTTP 冒烟前回滚 phpMyAdmin 补装。
+- **改动**：`include/php.sh` 的 LAMP 分支改读 `DUMP_VHOSTS` 展开后的首个
+  `*:端口`；LNMP 与 LNMPA 继续使用原有 `nginx -T` 分支，逻辑未改。
+- **定向回归**：`bash -n include/php.sh tests/test_install_phpmyadmin.sh` 通过；
+  `bash tests/test_install_phpmyadmin.sh` 全部通过；真实 LAMP 环境调用
+  `Get_PhpMyAdmin_HTTP_Port` 返回 `80`。
+- **完整实测**：2026-08-15 在 Debian 13 上用本项目完整安装的
+  Apache 2.4.68 + PHP 8.3.33 ZTS 执行 `./install.sh phpmyadmin`，上游包 SHA256、
+  Apache 配置检查、服务 reload 和本机 HTTP 冒烟全部通过，phpMyAdmin 5.2.3
+  安装成功。
+- **验证状态**：已实测（LAMP，Debian 13，2026-08-15）。
+
+## AUDIT-INITD-003 httpd init 脚本传播真实启动与重载失败
+
+- **验证**：2026-08-15 在 Debian 13 / 本项目 Apache 2.4.68 上临时加入无效指令。
+  运行中执行 `/etc/init.d/httpd graceful` 返回非零且旧进程继续服务；停止服务后执行
+  `/etc/init.d/httpd start` 同样返回非零，没有误报完成。
+- **恢复**：删除故障配置后 `httpd -t` 通过，systemd 启动与 reload 成功，
+  `tests/verify_project_apache_stack.sh lamp` 总计通过 18/18。
+- **验证状态**：已实测（LAMP，Debian 13，2026-08-15）。
+
 ## AUDIT-VHOST-001 default 公网兜底站点生成与 IP 命中（已实测）
 
 **位置**：`include/nginx.sh` 的 `Write_Nginx_Default_VHost` / `Install_Nginx`。
@@ -8241,16 +8622,16 @@ Debian 13 实测：把 `/etc/systemd/system/lnmp-backup.timer` 预先建成目�
 
 | 请求头 | 日志客户端 IP 字段 | peer 字段 |
 |---|---|---|
-| `X-Forwarded-For: 203.0.113.7, 198.51.100.9, 10.0.0.1` + `X-Real-IP: 198.51.100.9` | `203.0.113.7`（取首项） | `10.10.10.102` |
-| 仅 `X-Real-IP: 198.51.100.22` | `198.51.100.22` | `10.10.10.102` |
-| 两个头都不带 | `10.10.10.102`（连接源） | `10.10.10.102` |
-| `X-Forwarded-For:   203.0.113.99 , 10.0.0.2`（含前导与列表内空格） | `203.0.113.99` | `10.10.10.102` |
+| `X-Forwarded-For: 203.0.113.7, 198.51.100.9, 10.0.0.1` + `X-Real-IP: 198.51.100.9` | `203.0.113.7`（取首项） | `192.0.2.10` |
+| 仅 `X-Real-IP: 198.51.100.22` | `198.51.100.22` | `192.0.2.10` |
+| 两个头都不带 | `192.0.2.10`（连接源） | `192.0.2.10` |
+| `X-Forwarded-For:   203.0.113.99 , 10.0.0.2`（含前导与列表内空格） | `203.0.113.99` | `192.0.2.10` |
 
 三层降级与空白处理均符合预期，原始 `$http_x_forwarded_for` 始终保留在行尾。
 
 直连场景：恢复默认 `main` 格式后，同一台机器上带
 `X-Forwarded-For: 203.0.113.7`、`X-Real-IP: 198.51.100.9` 的请求，日志客户端字段
-仍为真实连接源 `10.10.10.102`，伪造的头只作为原始字段记录，不参与取值——
+仍为连接源（以文档示例地址 `192.0.2.10` 表示），伪造的头只作为原始字段记录，不参与取值——
 默认配置不会把外部请求头当作可信来源。
 
 - **验证状态**：已实测（Debian 13，编译 Nginx）。
@@ -9067,10 +9448,12 @@ Nginx 侧的 404 段不能省：站点目录里存在 `.php` 文件时，没有�
   phpMyAdmin 入口不受影响。
 - `t/lint.sh` 18 项、`t/consistency.sh` 14 项、`tests/test_vhost_prompt_output.sh` 通过。
 
-**未覆盖**：LNMPA 与 LAMP 的 Apache 侧只做了配置文本断言，未在真实 Apache 上
-实跑（需源码编译 Apache），见 `todo.md` 的 `AUDIT-VHOST-014-APACHE`。
+**Apache 补充实测**（2026-08-15）：LAMP 与 LNMPA 均使用本项目完整源码安装
+Apache 2.4.68 + PHP 8.3.33 ZTS，并运行
+`tests/verify_project_apache_stack.sh`。两栈的站点 PHP 开关、PATH_INFO、源码保护、
+静态文件和 `.htaccess` 边界均通过；LNMPA 批次共 18 项通过。
 
-- **验证状态**：已实测（LNMP 栈，Debian 13）；Apache 两栈待真机验证。
+- **验证状态**：已实测（LNMP、LAMP、LNMPA，Debian 13）。
 
 ## RUN-036 Debian 13 真机验证批次（第三轮）
 
@@ -9146,3 +9529,81 @@ AUDIT-BACKUP-006（备份目标磁盘不足时的退出码与残留清理）。
 以及 todo 中标记为待人工真机验证的外部服务与 Apache 相关项。
 
 - **验证状态**：已实测（Debian 13）。
+
+## AUDIT-SECURITY-20260816 工具自身、下载上传与运行时后门专项审计
+
+**范围**：以干净的 Debian 13 服务器为前提，复查 LNMP 2.3 自身源码、生成物、
+安装后的 Nginx/PHP/MariaDB/Redis 运行文件，以及可能改变 HTTP 响应或向外传输数据的
+路径。不假设操作系统、上游官方仓库、GitHub Actions 仓库、维护者账号或 TLS 已失陷。
+
+**静态审阅**：逐个、逐行阅读当前 87 个 `.sh`，并对照 `init.d/*`、三份管理脚本、
+Nginx/FastCGI/PHP/phpMyAdmin 配置、补丁和工作流。未发现隐藏下载执行、隐藏上传、
+反向 shell、webshell、特定 Header/URL/User-Agent 后门分支或运行时静默拉取代码。
+固定组件下载使用 HTTPS，并由 66 条固定 SHA-256、固定指纹 PGP 或对应上游校验值
+fail-closed 验证。备份远传和 Telegram 均默认关闭，只有管理员显式配置后才对外发送。
+
+**二进制与运行时实测**：`tests/audit_binary_runtime.sh` 和
+`tests/audit_binary_deep.sh` 扫描 `/usr/local` 的 130 个 ELF：`strings -a -n 4`
+共 4,925,201 行、符号表 738,247 行、`ldd`/`objdump -p`/动态段 19,480 行，
+工具错误 0。未发现可由非特权用户写入的 ELF/共享库、异常可执行映射或已删除映射；
+唯一 SUID/SGID 文件为 MariaDB 官方 PAM helper，PAM 插件未加载，且该文件和
+`mariadbd` 均与已校验官方二进制归档内文件逐字节一致。数据库未做源码编译。
+
+**独立重编**：`tests/audit_nginx_rebuild.sh` 与
+`tests/audit_critical_rebuild.sh` 使用固定哈希源码、相同工具链和配置参数在隔离目录中
+重编，不安装产物。Nginx、PHP-FPM、PHP CLI、Redis Server 的 `.text` 均逐字节一致，
+`.data`、`.init_array` 也一致；`.rodata` 的少量差异全部定位为构建时间、编译参数文本、
+链接字符串顺序或 Redis 构建 ID，没有额外机器代码或隐藏构造器。
+
+**PHP SAPI 字符串专项**：使用 `strings -a -n 4` 分别提取 PHP CLI 与 PHP-FPM，
+对比 CLI/FPM 标识、进程标题和配置路径。CLI 聚焦 44 行，FPM 聚焦 190 行，共有 35 行；
+差集分别是正常的 CLI server/源码标识和 FPM/FastCGI、master、pool、配置解析标识。
+运行时 SAPI、`php.ini`/conf.d 路径及 FPM master/worker 标题均与编译配置一致；独立重编
+完整 strings diff 中这些标识、路径和名称没有变化。
+
+**HTTP 特殊输入与压力**：`tests/audit_http_triggers.sh` 覆盖 30 组 URL、Header、
+User-Agent、Cookie、Authorization、异常方法、路径编码和长 Header，并另测重复
+Content-Length、CL/TE 冲突及本机 PHP-FPM 探针。异常内容命中 0；四组 PHP 触发输入
+与基线响应逐字节同哈希；两个请求走私类输入均返回 400。200 请求、并发 20 全部返回
+2xx，错误 0；测试前后四个关键二进制哈希与服务外连快照一致。
+
+**质量门**：当前 87 个 `.sh` 的 `bash -n` 为 87/87 通过；`t/lint.sh` 全部通过；
+`t/consistency.sh` 14/14 通过。完整结论、正常例外和现实边界见
+`SecurityCheck.md`。
+
+- **验证状态**：已实测（Debian 13，2026-08-16）。
+
+## AUDIT-NOTIFY-REAL-20260816 Telegram 真实 API 完整验证
+
+**入口**：新增 `tests/verify_telegram_real.sh`。脚本优先读取权限为 600/400 的
+`/etc/lnmp/notify.conf`，否则隐藏输入 Bot Token；Chat ID 交互输入。凭据只写入权限 600
+的 `/tmp/lnmp-telegram-real.*` 临时配置，不进入命令行、测试结果或仓库。
+
+真实 Telegram API 第一轮运行编号 `20260816102533`：
+
+- 基础 HTML：API 成功，带编号消息到达，标题粗体显示。
+- 非闭合 HTML：Telegram 返回真实 400，现有错误文案匹配成功，纯文本重发返回 0，
+  消息以原始 `<b>` 文本到达。
+- 未转义 MarkdownV2 保留字符：Telegram 返回真实 400，`Character '` 分支成功匹配，
+  纯文本重发返回 0，全部原始字符到达。
+- 首次“合法 MarkdownV2”自动检查失败，实际消息显示 `*标题*` 和反斜杠，说明走了
+  纯文本降级。复核后确认测试向量在 Bash 双引号中丢失反引号前的反斜杠，不是
+  `tools/lnmp-tgnotice.sh` 的产品失败。测试脚本已改用不会吞转义符的单引号参数，并新增
+  `markdown` 单项复测模式。
+
+修正测试向量后第二轮运行编号 `20260816103742`，自动检查和 Telegram 目视检查均为
+4/4 通过：
+
+- `API_BASIC=PASS`、`API_HTML_FALLBACK=PASS`；
+- `API_MARKDOWN_VALID=PASS`、`API_MARKDOWN_FALLBACK=PASS`；
+- 四项 `VISUAL_*=PASS`，`AUTOMATIC_PASS=4`、`FAILURES=0`、`FINAL=PASS`。
+
+合法 MarkdownV2 消息直接显示粗体标题；``_ * [ ] ( ) ~ ` > # + - = | { } . !``
+全部保留字符按原字符显示，没有反斜杠。非法 HTML 以原始 `<b>` 纯文本到达，非法
+MarkdownV2 也以全部原始保留字符纯文本到达，证明两条 400 降级链路均实际送达。
+
+**文档处理**：`AUDIT-NOTIFY-001`（真实认证、发送、响应解析和到达）与
+`AUDIT-NOTIFY-002`（真实 400 文案匹配及降级）已完成并从 `todo.md` 删除；
+`AUDIT-NOTIFY-003`（合法 MarkdownV2 与保留字符显示）复测通过并从 `todo.md` 删除。
+
+- **验证状态**：已实测（真实 Telegram API，2026-08-16）。

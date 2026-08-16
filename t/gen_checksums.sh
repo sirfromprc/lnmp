@@ -25,6 +25,12 @@
 cd "$(dirname "$0")/.." || exit 1
 . include/version.sh
 
+cur_dir=$(pwd)
+Echo_Red()    { printf '%s\n' "$*" >&2; }
+Echo_Yellow() { printf '%s\n' "$*" >&2; }
+Echo_Green()  { printf '%s\n' "$*" >&2; }
+. include/verify.sh
+
 SCOPE="${1:-all}"
 WORK=$(mktemp -d /tmp/lnmp-sums.XXXXXX)
 trap 'rm -rf "${WORK}"' EXIT
@@ -44,7 +50,7 @@ XCHECK_LOG=''
 # ---------------------------------------------------------------------------
 grab()
 {
-    local url="$1" name="$2" want="$3" sum
+    local url="$1" name="$2" want="${3:-}" sum
 
     # LIST_ONLY=1：只把「URL 落地文件名」打印出来，不下载、不算哈希。
     # t/refresh_checksums.sh 通过该模式读取本文件维护的下载地址。
@@ -53,7 +59,7 @@ grab()
         return 0
     fi
 
-    if ! wget -q --timeout=60 --tries=2 --max-redirect=10 -O "${WORK}/${name}" "${url}"; then
+    if ! Download_Fetch "${url}" "${WORK}/${name}" >/dev/null; then
         echo "# !! 下载失败: ${name}  <- ${url}" >&2
         bad=$((bad+1))
         rm -f "${WORK}/${name}"
@@ -80,6 +86,69 @@ grab()
     ok=$((ok+1))
 }
 
+# 官方为该文件提供 SHA256 时，取不到或不匹配都必须失败。
+grab_upstream()
+{
+    local project="$1" ver="$2" url="$3" name="$4" want
+
+    if [ -n "${LIST_ONLY:-}" ]; then
+        grab "${url}" "${name}"
+        return $?
+    fi
+    want=$(Upstream_SHA256 "${project}" "${ver}" "${name}")
+    if ! echo "${want}" | grep -Eq '^[0-9a-f]{64}$'; then
+        echo "# !! 无法取得 ${name} 的上游 SHA256" >&2
+        bad=$((bad+1))
+        return 1
+    fi
+    grab "${url}" "${name}" "${want}"
+}
+
+grab_published()
+{
+    local url="$1" name="$2" sum_url="$3" want
+
+    if [ -n "${LIST_ONLY:-}" ]; then
+        grab "${url}" "${name}"
+        return $?
+    fi
+    want=$(fetch_sum "${sum_url}")
+    if ! echo "${want}" | grep -Eq '^[0-9a-f]{64}$'; then
+        echo "# !! 无法取得 ${name} 的上游 SHA256" >&2
+        bad=$((bad+1))
+        return 1
+    fi
+    grab "${url}" "${name}" "${want}"
+}
+
+grab_nginx()
+{
+    local url="$1" name="$2" sum
+
+    if [ -n "${LIST_ONLY:-}" ]; then
+        grab "${url}" "${name}"
+        return $?
+    fi
+    if ! Download_Fetch "${url}" "${WORK}/${name}" >/dev/null; then
+        echo "# !! 下载失败: ${name}  <- ${url}" >&2
+        bad=$((bad+1))
+        rm -f "${WORK}/${name}"
+        return 1
+    fi
+    if ! Verify_Nginx_Signature "${WORK}/${name}" "${url}" >/dev/null; then
+        echo "# !! PGP 交叉核对失败: ${name}" >&2
+        bad=$((bad+1))
+        rm -f "${WORK}/${name}"
+        return 1
+    fi
+    sum=$(sha256sum "${WORK}/${name}" | awk '{print $1}')
+    rm -f "${WORK}/${name}"
+    printf '%s  %s\n' "${sum}" "${name}"
+    XCHECK_LOG="${XCHECK_LOG}
+#   [x-check ok] ${name} (PGP)"
+    ok=$((ok+1))
+}
+
 grab_mysql()
 {
     # 与 DB_Download_Files 一致：先用当前下载区，失败后查 archives。
@@ -97,12 +166,18 @@ grab_mysql()
     fi
 }
 
-# 获取上游公布的校验值；获取失败时不执行交叉核对
+# 获取上游公布的校验值。
 fetch_sum()
 {
+    local tmp sum=''
     # LIST_ONLY 模式不联网
     [ -n "${LIST_ONLY:-}" ] && return 0
-    wget -qO- --timeout=30 --tries=2 "$1" 2>/dev/null | grep -oiE '[0-9a-f]{64}' | head -1
+    tmp=$(mktemp "${WORK}/published.XXXXXX") || return 1
+    if Download_Fetch "$1" "${tmp}" >/dev/null 2>&1; then
+        sum=$(grep -oiE '[0-9a-f]{64}' "${tmp}" | head -1)
+    fi
+    rm -f "${tmp}"
+    printf '%s' "${sum}"
 }
 
 echo "# ======================================================================"
@@ -112,9 +187,11 @@ echo "# ======================================================================"
 echo
 
 echo "# --- 基础库 ---"
-grab "https://nginx.org/download/${Nginx_Ver}.tar.gz" "${Nginx_Ver}.tar.gz"
-grab "https://github.com/openssl/openssl/releases/download/${Openssl_New_Ver}/${Openssl_New_Ver}.tar.gz" "${Openssl_New_Ver}.tar.gz" \
-     "$(fetch_sum https://github.com/openssl/openssl/releases/download/${Openssl_New_Ver}/${Openssl_New_Ver}.tar.gz.sha256)"
+grab_nginx "https://nginx.org/download/${Nginx_Ver}.tar.gz" "${Nginx_Ver}.tar.gz"
+grab_published \
+    "https://github.com/openssl/openssl/releases/download/${Openssl_New_Ver}/${Openssl_New_Ver}.tar.gz" \
+    "${Openssl_New_Ver}.tar.gz" \
+    "https://github.com/openssl/openssl/releases/download/${Openssl_New_Ver}/${Openssl_New_Ver}.tar.gz.sha256"
 grab "https://downloads.sourceforge.net/pcre/${Pcre_Ver}.tar.bz2" "${Pcre_Ver}.tar.bz2"
 grab "https://ftp.gnu.org/gnu/libiconv/${Libiconv_Ver}.tar.gz" "${Libiconv_Ver}.tar.gz"
 grab "https://ftp.gnu.org/gnu/autoconf/${Autoconf_Ver}.tar.gz" "${Autoconf_Ver}.tar.gz"
@@ -125,7 +202,7 @@ grab "https://libzip.org/download/${Libzip_Ver}.tar.xz" "${Libzip_Ver}.tar.xz"
 echo
 echo "# --- PHP（php.net 官方 releases API 有公布 sha256，逐个交叉核对）---"
 for v in 8.0.30 8.1.34 8.2.33 8.3.33 8.4.24 8.5.9; do
-    grab "https://www.php.net/distributions/php-${v}.tar.bz2" "php-${v}.tar.bz2"
+    grab_upstream php "${v}" "https://www.php.net/distributions/php-${v}.tar.bz2" "php-${v}.tar.bz2"
 done
 
 echo
@@ -138,8 +215,12 @@ grab_mysql 8.4 mysql-8.4.7-linux-glibc2.17-x86_64.tar.xz
 echo
 echo "# --- MariaDB ---"
 for v in 10.11.18 11.4.12 11.8.8; do
-    grab "https://downloads.mariadb.org/rest-api/mariadb/${v}/mariadb-${v}.tar.gz" "mariadb-${v}.tar.gz"
-    grab "https://downloads.mariadb.org/rest-api/mariadb/${v}/mariadb-${v}-linux-systemd-x86_64.tar.gz" "mariadb-${v}-linux-systemd-x86_64.tar.gz"
+    grab_upstream mariadb "${v}" \
+        "https://downloads.mariadb.org/rest-api/mariadb/${v}/mariadb-${v}.tar.gz" \
+        "mariadb-${v}.tar.gz"
+    grab_upstream mariadb "${v}" \
+        "https://downloads.mariadb.org/rest-api/mariadb/${v}/mariadb-${v}-linux-systemd-x86_64.tar.gz" \
+        "mariadb-${v}-linux-systemd-x86_64.tar.gz"
 done
 
 echo
@@ -153,7 +234,8 @@ if [ "${SCOPE}" = "core" ]; then
     echo
     echo "# （core 模式，可选组件未采集）"
     echo "# 成功 ${ok} 项，失败 ${bad} 项" >&2
-    exit 0
+    [ ${bad} -eq 0 ]
+    exit $?
 fi
 
 echo
@@ -162,15 +244,18 @@ echo "# --- Apache / phpMyAdmin ---"
 # 了 version.sh，因此从映射表中读取，避免重复维护版本号。
 PMA_FULL=$(grep -oE 'phpMyAdmin-[0-9.]+-all-languages' include/profile.sh | head -1)
 PMA_NUM="${PMA_FULL#phpMyAdmin-}"; PMA_NUM="${PMA_NUM%-all-languages}"
-grab "https://archive.apache.org/dist/httpd/httpd-2.4.68.tar.bz2" "httpd-2.4.68.tar.bz2" \
-     "$(fetch_sum https://archive.apache.org/dist/httpd/httpd-2.4.68.tar.bz2.sha256)"
-grab "https://archive.apache.org/dist/apr/${APR_Ver}.tar.bz2" "${APR_Ver}.tar.bz2" \
-     "$(fetch_sum https://archive.apache.org/dist/apr/${APR_Ver}.tar.bz2.sha256)"
-grab "https://archive.apache.org/dist/apr/${APR_Util_Ver}.tar.bz2" "${APR_Util_Ver}.tar.bz2" \
-     "$(fetch_sum https://archive.apache.org/dist/apr/${APR_Util_Ver}.tar.bz2.sha256)"
-grab "https://files.phpmyadmin.net/phpMyAdmin/${PMA_NUM}/phpMyAdmin-${PMA_NUM}-all-languages.tar.xz" \
-     "phpMyAdmin-${PMA_NUM}-all-languages.tar.xz" \
-     "$(fetch_sum https://files.phpmyadmin.net/phpMyAdmin/${PMA_NUM}/phpMyAdmin-${PMA_NUM}-all-languages.tar.xz.sha256)"
+grab_published "https://archive.apache.org/dist/httpd/httpd-2.4.68.tar.bz2" \
+    "httpd-2.4.68.tar.bz2" \
+    "https://archive.apache.org/dist/httpd/httpd-2.4.68.tar.bz2.sha256"
+grab_published "https://archive.apache.org/dist/apr/${APR_Ver}.tar.bz2" \
+    "${APR_Ver}.tar.bz2" \
+    "https://archive.apache.org/dist/apr/${APR_Ver}.tar.bz2.sha256"
+grab_published "https://archive.apache.org/dist/apr/${APR_Util_Ver}.tar.bz2" \
+    "${APR_Util_Ver}.tar.bz2" \
+    "https://archive.apache.org/dist/apr/${APR_Util_Ver}.tar.bz2.sha256"
+grab_upstream phpmyadmin "${PMA_NUM}" \
+    "https://files.phpmyadmin.net/phpMyAdmin/${PMA_NUM}/phpMyAdmin-${PMA_NUM}-all-languages.tar.xz" \
+    "phpMyAdmin-${PMA_NUM}-all-languages.tar.xz"
 
 echo
 echo "# --- 内存分配器 ---"

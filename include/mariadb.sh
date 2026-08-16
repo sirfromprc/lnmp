@@ -110,7 +110,7 @@ Rewrite_MariaDB_Initd_Names()
 
 Mariadb_Sec_Setting()
 {
-    local mariadb_client mariadb_admin
+    local mariadb_client
 
     cat > /etc/ld.so.conf.d/mariadb.conf<<EOF
     /usr/local/mariadb/lib
@@ -129,6 +129,7 @@ EOF
     if command -v systemctl >/dev/null 2>&1; then
         systemctl enable mariadb.service
     fi
+    Ensure_Runtime_Directory /run/mysqld mariadb mariadb || return 1
     Clean_Stale_DB_Socket || return 1
     StartUp mariadb
     /etc/init.d/mariadb start
@@ -147,54 +148,14 @@ EOF
   - 检测 MariaDB 客户端"
         return 1
     }
-    mariadb_admin=$(First_Executable /usr/local/mariadb/bin/mariadb-admin /usr/local/mariadb/bin/mysqladmin) || {
-        Echo_Red "找不到可执行的 MariaDB 管理客户端。"
-        DB_Init_Failed='y'
-        DB_Init_Errors="${DB_Init_Errors}
-  - 检测 MariaDB 管理客户端"
-        return 1
-    }
-
     /etc/init.d/mariadb restart
     sleep 2
 
     # 安全初始化依赖可用的客户端，因此在执行 SQL 前先验证运行能力。
     Check_DB_Client_Runnable "${mariadb_client}"
 
-    # 仅加载 /etc/my.cnf，避免残留的 ~/.my.cnf 携带旧密码；失败时再尝试
-    # 通过空密码连接完成首次密码设置。
-    local first_error
-    first_error=$("${mariadb_admin}" --defaults-file=/etc/my.cnf \
-                  -u root password "${DB_Root_Password}" 2>&1)
-
-    /etc/init.d/mariadb restart
-
+    # root 密码已在禁网私有 socket 上设置；正式实例只做登录与权限收尾。
     Make_TempMycnf "${DB_Root_Password}"
-    Do_Query ""
-    if [ $? -ne 0 ]; then
-        echo "mysqladmin 方式未生效，改用空密码连接设置（安装流程的正常分支）。"
-        [ -n "${first_error}" ] && echo "（mysqladmin 的报错留作诊断：${first_error}）"
-        /etc/init.d/mariadb restart
-        ( umask 077; cat >"${HOME}/.emptymy.cnf"<<EOF
-[client]
-user=root
-password=''
-socket=/tmp/mysql.sock
-EOF
-        )
-        if "${mariadb_client}" --defaults-file="${HOME}/.emptymy.cnf" -e "SET PASSWORD = PASSWORD('$(SQL_Escape "${DB_Root_Password}")');"; then
-            echo "root 密码设置成功。"
-        else
-            echo "root 密码设置失败！"
-            DB_Init_Failed='y'
-            DB_Init_Errors="${DB_Init_Errors}
-  - 设置 root 密码"
-        fi
-        "${mariadb_client}" --defaults-file="${HOME}/.emptymy.cnf" -e "FLUSH PRIVILEGES;"
-        [ $? -eq 0 ] && echo "权限表刷新成功。" || echo "权限表刷新失败！"
-        rm -f "${HOME}/.emptymy.cnf"
-    fi
-
     Do_Query ""
     if [ $? -eq 0 ]; then
         echo "数据库 root 密码验证通过。"
@@ -214,13 +175,21 @@ EOF
 
 Check_MariaDB_Data_Dir()
 {
+    local datetime backup_dir
     if [ -d "${MariaDB_Data_Dir}" ]; then
         datetime=$(date +"%Y%m%d%H%M%S")
-        mkdir /root/mariadb-data-dir-backup${datetime}/
-        \cp ${MariaDB_Data_Dir}/* /root/mariadb-data-dir-backup${datetime}/
-        rm -rf ${MariaDB_Data_Dir}/*
+        backup_dir="/root/mariadb-data-dir-backup${datetime}"
+        if [ -e "${backup_dir}" ] || ! mv -- "${MariaDB_Data_Dir}" "${backup_dir}"; then
+            Echo_Red "MariaDB 数据目录备份失败，未清理原目录：${MariaDB_Data_Dir}"
+            return 1
+        fi
+        if ! mkdir -p -- "${MariaDB_Data_Dir}"; then
+            Echo_Red "无法重新创建 MariaDB 数据目录；原数据保留在 ${backup_dir}。"
+            return 1
+        fi
+        Echo_Green "原 MariaDB 数据目录已完整移动到 ${backup_dir}。"
     else
-        mkdir -p ${MariaDB_Data_Dir}
+        mkdir -p -- "${MariaDB_Data_Dir}" || return 1
     fi
 }
 
@@ -237,7 +206,7 @@ Install_MariaDB_1011()
         rm -f /etc/my.cnf
         Tar_Cd ${Mariadb_Ver}.tar.gz ${Mariadb_Ver}
         MariaDB_WITHSSL
-        cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mariadb -DMYSQL_UNIX_ADDR=/tmp/mysql.sock -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_READLINE=1 -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 -DWITHOUT_TOKUDB=1 ${MariaDBWITHSSL}
+        cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mariadb -DMYSQL_UNIX_ADDR=/run/mysqld/mysqld.sock -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_READLINE=1 -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 -DWITHOUT_TOKUDB=1 ${MariaDBWITHSSL}
         Make_Install || exit 1
     fi
 
@@ -248,11 +217,11 @@ cat > /etc/my.cnf<<EOF
 [client]
 #password   = your_password
 port        = ${DB_Port}
-socket      = /tmp/mysql.sock
+socket      = /run/mysqld/mysqld.sock
 
 [mysqld]
 port        = ${DB_Port}
-socket      = /tmp/mysql.sock
+socket      = /run/mysqld/mysqld.sock
 # 仅监听回环地址，防止防火墙失效时数据库直接暴露到公网。
 # 远程访问应绑定具体地址，并按来源 IP 配置防火墙和账号 Host 权限。
 bind-address = 127.0.0.1
@@ -322,7 +291,7 @@ EOF
         sed -i '/skip-external-locking/i\default_storage_engine = MyISAM\nloose-skip-innodb' /etc/my.cnf
     fi
     MySQL_Opt
-    Check_MariaDB_Data_Dir
+    Check_MariaDB_Data_Dir || return 1
     chown -R mariadb:mariadb /usr/local/mariadb
     install_db=$(First_Executable \
         /usr/local/mariadb/scripts/mariadb-install-db \
@@ -335,12 +304,14 @@ EOF
     "${install_db}" --defaults-file=/etc/my.cnf --basedir=/usr/local/mariadb \
         --datadir="${MariaDB_Data_Dir}" --user=mariadb || return 1
     chown -R mariadb:mariadb ${MariaDB_Data_Dir}
+    Secure_Initial_DB_Password mariadb mariadb || return 1
     \cp /usr/local/mariadb/support-files/mysql.server /etc/init.d/mariadb
     \cp ${cur_dir}/init.d/mariadb.service /etc/systemd/system/mariadb.service
     chmod 755 /etc/init.d/mariadb
     Rewrite_MariaDB_Initd_Names /etc/init.d/mariadb /usr/local/mariadb/bin
+    Patch_Init_Runtime_Directory /etc/init.d/mariadb /run/mysqld mariadb mariadb || return 1
 
-    Mariadb_Sec_Setting
+    Mariadb_Sec_Setting || return 1
 }
 
 Install_MariaDB_114()

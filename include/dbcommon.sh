@@ -75,7 +75,7 @@ Clean_Stale_DB_Socket()
                     sec ~ /\[mysqld\]/ && /^[[:space:]]*socket[[:space:]]*=/ \
                     {gsub(/[[:space:]]/, "", $2); print $2; exit}' \
            /etc/my.cnf 2>/dev/null)
-    [ -n "${sock}" ] || sock=/tmp/mysql.sock
+    [ -n "${sock}" ] || sock=/run/mysqld/mysqld.sock
     [ -S "${sock}" ] || return 0
 
     if fuser "${sock}" >/dev/null 2>&1 \
@@ -89,6 +89,123 @@ Clean_Stale_DB_Socket()
     rm -f "${sock}"
     return 0
 }
+
+# Secure_Initial_DB_Password <mysql|mariadb> <服务账号>
+# 初始化工具建出的 root 尚无密码。正式服务启动前，先在 0700 私有目录中启动
+# 禁网临时实例，设置并验证密码，关闭后才允许切换到正式 socket 和监听配置。
+Secure_Initial_DB_Password()
+(
+    local kind="$1" db_user="$2" basedir safe admin
+    local tmp sock pid_file log_file auth_file launcher_pid='' db_pid ready='n'
+
+    case "${kind}" in
+    mysql)
+        basedir=/usr/local/mysql
+        safe=/usr/local/mysql/bin/mysqld_safe
+        admin=/usr/local/mysql/bin/mysqladmin
+        ;;
+    mariadb)
+        basedir=/usr/local/mariadb
+        safe=$(First_Executable "${basedir}/bin/mariadbd-safe" "${basedir}/bin/mysqld_safe") || return 1
+        admin=$(First_Executable "${basedir}/bin/mariadb-admin" "${basedir}/bin/mysqladmin") || return 1
+        ;;
+    *)
+        Echo_Red "未知数据库类型：${kind}"
+        return 1
+        ;;
+    esac
+    [ -x "${safe}" ] && [ -x "${admin}" ] || {
+        Echo_Red "缺少数据库安全初始化所需程序。"
+        return 1
+    }
+
+    tmp=$(mktemp -d /run/lnmp-db-init.XXXXXX) || return 1
+    sock="${tmp}/mysqld.sock"
+    pid_file="${tmp}/mysqld.pid"
+    log_file="${tmp}/mysqld.log"
+    auth_file="${tmp}/client.cnf"
+    chown "${db_user}:${db_user}" "${tmp}" || { rm -rf "${tmp}"; return 1; }
+    chmod 0700 "${tmp}" || { rm -rf "${tmp}"; return 1; }
+    install -o "${db_user}" -g "${db_user}" -m 0600 /dev/null "${log_file}" || {
+        rm -rf "${tmp}"
+        return 1
+    }
+
+    cleanup_initial_db()
+    {
+        [ -n "${launcher_pid}" ] && kill "${launcher_pid}" >/dev/null 2>&1 || true
+        if [ -s "${pid_file}" ]; then
+            db_pid=$(cat "${pid_file}" 2>/dev/null)
+            case "${db_pid}" in
+                ''|*[!0-9]*) ;;
+                *)
+                    case "$(basename "$(readlink -f "/proc/${db_pid}/exe" 2>/dev/null)")" in
+                        mysqld|mariadbd) kill -TERM "${db_pid}" >/dev/null 2>&1 || true ;;
+                    esac
+                    ;;
+            esac
+        fi
+        rm -rf "${tmp}"
+    }
+    trap cleanup_initial_db EXIT HUP INT TERM
+
+    "${safe}" --defaults-file=/etc/my.cnf --basedir="${basedir}" --user="${db_user}" \
+        --skip-networking --socket="${sock}" --pid-file="${pid_file}" \
+        --log-error="${log_file}" >"${tmp}/launcher.log" 2>&1 &
+    launcher_pid=$!
+
+    for _wait in $(seq 1 60); do
+        if "${admin}" --no-defaults --protocol=socket --socket="${sock}" -u root ping >/dev/null 2>&1; then
+            ready='y'
+            break
+        fi
+        kill -0 "${launcher_pid}" >/dev/null 2>&1 || break
+        sleep 1
+    done
+    if [ "${ready}" != 'y' ]; then
+        Echo_Red "数据库禁网临时实例未能就绪，拒绝启动正式服务。"
+        [ -s "${log_file}" ] && tail -20 "${log_file}" >&2
+        return 1
+    fi
+
+    if ! "${admin}" --no-defaults --protocol=socket --socket="${sock}" \
+         -u root password "${DB_Root_Password}"; then
+        Echo_Red "无法在禁网临时实例上设置数据库 root 密码。"
+        return 1
+    fi
+
+    ( umask 077; cat >"${auth_file}" <<EOF
+[client]
+user=root
+password='$(SQL_Escape "${DB_Root_Password}")'
+protocol=socket
+socket=${sock}
+EOF
+    ) || return 1
+    if ! "${admin}" --defaults-file="${auth_file}" ping >/dev/null 2>&1; then
+        Echo_Red "数据库 root 密码设置后验证失败。"
+        return 1
+    fi
+    if ! "${admin}" --defaults-file="${auth_file}" shutdown; then
+        Echo_Red "无法关闭数据库禁网临时实例。"
+        return 1
+    fi
+    for _wait in $(seq 1 30); do
+        [ ! -S "${sock}" ] && break
+        sleep 1
+    done
+    if [ -S "${sock}" ]; then
+        Echo_Red "数据库禁网临时实例未按时退出。"
+        return 1
+    fi
+
+    wait "${launcher_pid}" >/dev/null 2>&1 || true
+    launcher_pid=''
+    trap - EXIT HUP INT TERM
+    rm -rf "${tmp}"
+    Echo_Green "数据库 root 密码已在禁网私有 socket 上完成设置。"
+    return 0
+)
 
 Install_DB_Bin_Tarball()
 {
@@ -231,7 +348,7 @@ Snapshot_DB_List()
 {
     local bin="$1" out="$2"
 
-    "${bin}" --defaults-file=~/.my.cnf -N -B -e "SHOW DATABASES;" 2>/dev/null \
+    "${bin}" --defaults-file="${HOME}/.my.cnf" -N -B -e "SHOW DATABASES;" 2>/dev/null \
         | grep -Ev '^(information_schema|performance_schema|sys)$' \
         | LC_ALL=C sort > "${out}"
     if [ ! -s "${out}" ]; then
@@ -247,18 +364,18 @@ Verify_DB_Upgraded()
     local bin="$1" before="$2" port="${3:-3306}" xport="${4:-}"
     local after missing actual_port actual_xport rc=0
 
-    if ! "${bin}" --defaults-file=~/.my.cnf -e "SELECT 1;" >/dev/null 2>&1; then
+    if ! "${bin}" --defaults-file="${HOME}/.my.cnf" -e "SELECT 1;" >/dev/null 2>&1; then
         Echo_Red "升级后无法连接数据库。"
         return 1
     fi
 
-    actual_port=$("${bin}" --defaults-file=~/.my.cnf -N -B -e "SELECT @@port;" 2>/dev/null)
+    actual_port=$("${bin}" --defaults-file="${HOME}/.my.cnf" -N -B -e "SELECT @@port;" 2>/dev/null)
     if [ "${actual_port}" != "${port}" ]; then
         Echo_Red "升级后数据库实际端口为 ${actual_port:-未知}，期望 ${port}。"
         rc=1
     fi
     if [ -n "${xport}" ]; then
-        actual_xport=$("${bin}" --defaults-file=~/.my.cnf -N -B -e "SELECT @@mysqlx_port;" 2>/dev/null)
+        actual_xport=$("${bin}" --defaults-file="${HOME}/.my.cnf" -N -B -e "SELECT @@mysqlx_port;" 2>/dev/null)
         if [ "${actual_xport}" != "${xport}" ]; then
             Echo_Red "升级后 MySQL X Protocol 实际端口为 ${actual_xport:-未知}，期望 ${xport}。"
             rc=1

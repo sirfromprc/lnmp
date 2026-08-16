@@ -15,6 +15,12 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
+cur_dir=$(pwd)
+Echo_Red()    { printf '%s\n' "$*" >&2; }
+Echo_Yellow() { printf '%s\n' "$*" >&2; }
+Echo_Green()  { printf '%s\n' "$*" >&2; }
+. include/verify.sh
+
 SUMS='src/checksums.sha256'
 CHANGED="${OUT_DIR:-.upstream}/changed.tsv"
 
@@ -23,6 +29,7 @@ CHANGED="${OUT_DIR:-.upstream}/changed.tsv"
 # 收集 key->old->new 三元组
 PAIRS=''
 if [ $# -ge 3 ]; then
+    [ $(( $# % 3 )) -eq 0 ] || { echo "参数必须按 key old new 三元组传入" >&2; exit 1; }
     while [ $# -ge 3 ]; do
         PAIRS="${PAIRS}$1	$2	$3
 "
@@ -40,13 +47,17 @@ trap 'rm -rf "${WORK}"' EXIT
 
 # 通过 gen_checksums.sh 的只读模式取得 URL，避免重复维护下载地址。
 declare -A URL_OF
+url_count=0
 while IFS= read -r line; do
     # 形如：<URL> <落地文件名>
-    set -- ${line}
-    [ $# -ge 2 ] && URL_OF["$2"]="$1"
+    read -r url name extra <<< "${line}"
+    if [ -n "${url}" ] && [ -n "${name}" ] && [ -z "${extra}" ]; then
+        URL_OF["${name}"]="${url}"
+        url_count=$((url_count+1))
+    fi
 done < <(LIST_ONLY=1 bash t/gen_checksums.sh 2>/dev/null | grep -E '^https?://')
 
-if [ ${#URL_OF[@]} -eq 0 ]; then
+if [ ${url_count} -eq 0 ]; then
     echo "!! 无法从 t/gen_checksums.sh 取得 URL 清单（需要它支持 LIST_ONLY=1）" >&2
     exit 1
 fi
@@ -63,28 +74,82 @@ checksum_prefix()
         MySQL_*) echo 'mysql-' ;;
         MariaDB_*) echo 'mariadb-' ;;
         Apache_Ver) echo 'httpd-' ;;
-        PhpMyAdmin_Ver) echo 'phpMyAdmin-' ;;
+        PhpMyAdmin_Ver) echo '' ;;
         *) echo '' ;;
     esac
 }
 
-while IFS=$'\t' read -r key old new; do
-    [ -z "${old}" ] && continue
-    prefix=$(checksum_prefix "${key}")
-    escaped_old=$(printf '%s' "${old}" | sed 's/[][\\.^$*+?{}|()]/\\&/g')
-    # profile 组件用文件名前缀限定；version.sh 组件使用自身带前缀的完整值。
-    if [ -n "${prefix}" ]; then
-        pattern="${prefix}[^[:space:]]*${escaped_old}"
-    else
-        pattern="${escaped_old}"
+valid_key()
+{
+    case "$1" in ''|[0-9]*|*[!0-9A-Za-z_.-]*) return 1 ;; *) return 0 ;; esac
+}
+
+valid_version_value()
+{
+    case "$1" in ''|*[!0-9A-Za-z._-]*) return 1 ;; *) return 0 ;; esac
+}
+
+published_sum()
+{
+    local url="$1" tmp sum=''
+    tmp=$(mktemp "${WORK}/published.XXXXXX") || return 1
+    if Download_Fetch "${url}" "${tmp}" >/dev/null 2>&1; then
+        sum=$(grep -oiE '[0-9a-f]{64}' "${tmp}" | head -1)
     fi
+    rm -f "${tmp}"
+    printf '%s' "${sum}"
+}
+
+# 对已有机器可读官方依据的组件强制交叉核对。
+verify_upstream_file()
+{
+    local key="$1" new="$2" name="$3" file="$4" url="$5"
+    local project='' ver="${new}" expected=''
+
+    case "${key}" in
+    PHP_*) project=php ;;
+    MariaDB_*) project=mariadb ;;
+    PhpMyAdmin_Ver)
+        project=phpmyadmin
+        ver="${new#phpMyAdmin-}"; ver="${ver%-all-languages}"
+        ;;
+    Openssl_New_Ver|Apache_Ver|APR_Ver|APR_Util_Ver)
+        expected=$(published_sum "${url}.sha256")
+        ;;
+    Nginx_Ver)
+        Verify_Nginx_Signature "${file}" "${url}" >/dev/null
+        return $?
+        ;;
+    *) return 0 ;;
+    esac
+
+    if [ -n "${project}" ]; then
+        expected=$(Upstream_SHA256 "${project}" "${ver}" "${name}")
+    fi
+    if ! echo "${expected}" | grep -Eq '^[0-9a-f]{64}$'; then
+        echo "!! 无法取得 ${name} 的上游 SHA256" >&2
+        return 1
+    fi
+    Verify_SHA256_Value "${file}" "${expected}" >/dev/null
+}
+
+while IFS=$'\t' read -r key old new extra; do
+    [ -z "${old}" ] && continue
+    if ! valid_key "${key}" || ! valid_version_value "${old}" ||
+       ! valid_version_value "${new}" || [ -n "${extra}" ]; then
+        echo "!! 拒绝非法版本变更：key=${key}, old=${old}, new=${new}" >&2
+        failed=$((failed+1))
+        continue
+    fi
+    prefix=$(checksum_prefix "${key}")
     while IFS= read -r stale; do
         [ -z "${stale}" ] && continue
         old_name=$(printf '%s' "${stale}" | awk '{print $2}')
-        new_name=$(printf '%s' "${old_name}" | sed "s/$(printf '%s' "${old}" | sed 's/[.[\*^$]/\\&/g')/${new}/g")
+        new_name=$(printf '%s' "${old_name}" | OLD_VALUE="${old}" NEW_VALUE="${new}" \
+            perl -pe 's/\Q$ENV{OLD_VALUE}\E/$ENV{NEW_VALUE}/g')
         [ "${old_name}" = "${new_name}" ] && continue
 
-        url="${URL_OF[${new_name}]:-}"
+        url="${URL_OF["${new_name}"]:-}"
         if [ -z "${url}" ]; then
             echo "!! ${new_name} 在 gen_checksums.sh 里没有对应 URL，跳过（需手工补）" >&2
             failed=$((failed+1))
@@ -92,26 +157,42 @@ while IFS=$'\t' read -r key old new; do
         fi
 
         echo "重算 ${new_name}"
-        if ! wget -q --timeout=90 --tries=2 --max-redirect=10 -O "${WORK}/f" "${url}"; then
+        if ! Download_Fetch "${url}" "${WORK}/f" >/dev/null; then
             echo "!! 下载失败：${url}" >&2
+            failed=$((failed+1))
+            continue
+        fi
+        if ! verify_upstream_file "${key}" "${new}" "${new_name}" "${WORK}/f" "${url}"; then
+            echo "!! ${new_name} 与上游公布值或签名不一致" >&2
+            rm -f "${WORK}/f"
             failed=$((failed+1))
             continue
         fi
         sum=$(sha256sum "${WORK}/f" | awk '{print $1}')
         rm -f "${WORK}/f"
 
-        # 原位替换并保持清单行序。
-        # 行尾只能用水平空白 \h，不能用 \s：\s 含换行，贪婪匹配会把行尾的 \n
-        # 一起吃掉，替换串又不带换行，结果是本行与下一行被拼成一行 ——
-        # 两条校验值同时失效，而 Verify_Download_File 按 awk '$2 == 文件名'
-        # 精确取值，合并行一条都匹配不到，安装会在下载后 fail-closed 中止。
-        if ! perl -pi -e "s|^[0-9a-f]{64}\h+\Q${old_name}\E\h*\$|${sum}  ${new_name}|" "${TMP}"; then
+        if ! echo "${sum}" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo "!! ${new_name} 的本地 SHA256 计算结果非法" >&2
+            failed=$((failed+1))
+            continue
+        fi
+
+        # 以两列精确匹配原条目，并用 awk 重写完整行，保持清单行序和换行边界。
+        NEXT="${WORK}/sums.next"
+        if ! awk -v old_name="${old_name}" -v new_name="${new_name}" -v sum="${sum}" '
+            $1 ~ /^[0-9a-f]{64}$/ && $2 == old_name { print sum "  " new_name; changed++; next }
+            { print }
+            END { if (changed != 1) exit 1 }
+        ' "${TMP}" > "${NEXT}" || ! mv "${NEXT}" "${TMP}"; then
             echo "!! 替换 ${old_name} 失败" >&2
             failed=$((failed+1))
             continue
         fi
         updated=$((updated+1))
-    done < <(grep -E "^[0-9a-f]{64}[[:space:]]+${pattern}" "${SUMS}")
+    done < <(awk -v prefix="${prefix}" -v old="${old}" '
+        $1 ~ /^[0-9a-f]{64}$/ && index($2, old) > 0 &&
+        (prefix == "" || index($2, prefix) == 1) { print }
+    ' "${SUMS}")
 done <<< "${PAIRS}"
 
 # 写回前先核对格式：清单是 fail-closed 校验的唯一依据，一旦被写坏，

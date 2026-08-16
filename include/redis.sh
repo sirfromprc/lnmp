@@ -1,5 +1,19 @@
 #!/usr/bin/env bash
 
+Set_Redis_Loopback_Bind()
+{
+    local conf="$1"
+
+    if grep -Eq '^[[:space:]]*bind[[:space:]]+' "${conf}"; then
+        sed -i -E 's/^[[:space:]]*bind[[:space:]].*/bind 127.0.0.1 -::1/' "${conf}"
+    else
+        printf '\n# LNMP: Redis 仅监听本机回环地址。\nbind 127.0.0.1 -::1\n' >> "${conf}"
+    fi
+    Check_Conf_Applied "${conf}" \
+        '^bind[[:space:]]+127\.0\.0\.1([[:space:]]+-::1)?[[:space:]]*$' \
+        'Redis 回环监听地址' || return 1
+}
+
 Install_Redis()
 {
     echo "====== 正在安装 Redis ======"
@@ -67,9 +81,7 @@ Install_Redis()
         chmod 750 /usr/local/redis/var
         chown root:redis /usr/local/redis/etc/redis.conf
         chmod 640 /usr/local/redis/etc/redis.conf
-        if ! grep -Eqi '^bind[[:space:]]*127.0.0.1' /usr/local/redis/etc/redis.conf; then
-            sed -i 's/^# bind 127.0.0.1/bind 127.0.0.1/g' /usr/local/redis/etc/redis.conf
-        fi
+        Set_Redis_Loopback_Bind /usr/local/redis/etc/redis.conf || return 1
         # pidfile 放入 Redis 可写目录，满足降权运行要求。
         sed -i 's#^pidfile .*#pidfile /usr/local/redis/var/redis.pid#g' /usr/local/redis/etc/redis.conf
         cd ../

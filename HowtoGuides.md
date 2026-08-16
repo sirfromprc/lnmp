@@ -4,8 +4,10 @@
 > **Debian 12、Debian 13 / x86_64 / 6G 内存 / 4 核** 上实测，文中的“实测输出”来自
 > 这些环境。1~2GB、3~4GB 和 5GB 以上的容量表依据当前配置生成逻辑与内存预算给出
 > 保守起点，未对每个容量档进行同等真机压测。
-> 环境组合：nginx 1.30.4 + PHP 8.3.33 + MySQL 8.4.7（官方通用二进制）
-> + Redis 8.10.0 + phpMyAdmin 5.2.3 + WordPress 7.0.3。
+> LNMP 环境组合：nginx 1.30.4 + PHP 8.3.33 + MySQL 8.4.7 或
+> MariaDB 11.8.8（均为官方通用二进制）+ Redis 8.10.0 + phpMyAdmin 5.2.3 +
+> WordPress 7.0.3；WordPress 主链路已分别在两种数据库上完成。
+> LAMP 与 LNMPA 另用 Apache 2.4.68 + PHP 8.3.33 完整安装验证。
 >
 > 与其他文档的分工：本文讲**怎么做**；`README.md` 讲各组件与开关的含义；
 > `changelog.md` 记录本包相对上游做过哪些改动以及为什么。
@@ -106,6 +108,9 @@ bash install.sh lnmp
 编译参数、即将放行/阻断的端口），要求输入 `y` 确认后才真正开始装依赖、
 编译。最终确认前可用 Ctrl+C 退出并重新选择，此时尚未开始系统变更。
 
+安装 LAMP/LNMPA 时还会询问 Apache `ServerAdmin`，这里只接受合法邮箱；空白、斜杠、
+分号和配置片段会在写 Apache 配置前被拒绝。ACME 邮箱支持最长 63 位顶级域，三种栈规则一致。
+
 ### 2.2 非交互安装（站群自动部署）
 
 常用标量选择可以用环境变量传入；OpenResty 数组选项仍需编辑 `lnmp.conf`：
@@ -120,6 +125,7 @@ PHPSelect=4 \
 SelectMalloc=1 \
 InstallInnodb=y \
 Enable_PhpMyAdmin=y \
+Enable_Composer=y \
 bash install.sh lnmp
 unset DB_Root_Password
 ```
@@ -135,6 +141,7 @@ unset DB_Root_Password
 | `SelectMalloc` | `1`~`3` | 1=不装 2=Jemalloc 3=TCMalloc |
 | `InstallInnodb` | `y` | WordPress 必须用 InnoDB |
 | `Enable_PhpMyAdmin` | `y`/`n` | **默认 `n`**（安全考虑）。要 phpMyAdmin 必须显式开启 |
+| `Enable_Composer` | `y`/`n` | 默认 `y`；不需要 Composer 时设 `n`，不会下载或执行安装器 |
 | `DB_Root_Password` | 字符串 | 留空则随机生成 |
 
 > **`Enable_PhpMyAdmin` 只控制整包安装，默认仍为 `n`。** 主栈装好后如需补装，
@@ -287,6 +294,16 @@ PHP 8.3.33 (cli) (built: Aug 10 2026 08:46:50) (NTS)
 mysql  Ver 8.4.7 for Linux on x86_64 (MySQL Community Server - GPL)
 ```
 
+选择 MariaDB 11.8 时，最后一项会显示 MariaDB 版本；项目同时保留 `mysql` 兼容入口。
+本轮 Debian 13 验证覆盖：
+
+| 栈/数据库 | 实测结果 |
+|---|---|
+| LNMP + MySQL 8.4.7 | WordPress 安装、首页、固定链接、REST、PHP-FPM、数据库、Redis 通过 |
+| LNMP + MariaDB 11.8.8 | 同一组 WordPress 链路通过；phpMyAdmin 和数据库管理命令通过 |
+| LAMP / LNMPA | Apache 正常 PHP、PATH_INFO、`.php.bak`、符号链接、default 边界和服务失败码通过 |
+| Pure-FTPd | 新安装 `TLS 2`；明文登录拒绝，显式 FTPS 列目录与上传通过 |
+
 确认编入的模块：
 
 ```bash
@@ -342,6 +359,7 @@ curl http://127.0.0.1:1008/lua
 | `Enable_Ngx_CachePurge` | `y` | 编译缓存清除模块；不使用 Nginx/FastCGI 缓存可关闭 |
 | `Enable_Ngx_FancyIndex` | `n` | 目录美化索引；公开生产站一般保持关闭 |
 | `Enable_Swap` | `y` | 缺少 Swap 时创建 swapfile；它只缓冲突发内存，不是增加 FPM worker 的理由 |
+| `Enable_Composer` | `y` | 安装主 PHP 时同时安装 Composer；不需要时设 `n` |
 | `Enable_PHP_Default_Opcache` | `y` | WordPress 必需的主要 PHP 性能层，保持开启 |
 | `Enable_PHP_Default_Igbinary` | `y` | phpredis 紧凑序列化支持；使用 Redis 时建议保留 |
 | `Enable_PHP_Default_Redis` | `y` | 安装 phpredis 扩展，不等于安装 Redis 服务端 |
@@ -373,6 +391,14 @@ curl http://127.0.0.1:1008/lua
 `Pureftpd_Data_Port` 当前用于防火墙规则，FTP 被动模式主要依赖端口范围。Nginx 的
 80/443 不在 `lnmp.conf`：这两个端口分布在主配置、虚拟主机和证书流程里，项目明确
 不提供统一改端口开关。
+
+Pure-FTPd 的 TLS 模式不在 `lnmp.conf` 中；新安装模板固定为
+`TLS 2`，运行期值在 `/usr/local/pureftpd/etc/pure-ftpd.conf`。
+
+`MySQL_Data_Dir` / `MariaDB_Data_Dir` 是**新安装的数据落点**，不是在线迁移开关。
+安装入口发现目录已存在时，会先把整个目录（含隐藏文件和数据库子目录）移动到
+`/root/<数据库>-data-dir-backup<时间戳>`，再创建空目录；移动或创建失败会返回非零并停止。
+已有业务迁移仍应使用逻辑备份和恢复演练，不能靠重新执行安装脚本完成。
 
 #### `CheckMirror` 的准确作用
 
@@ -419,7 +445,7 @@ CheckMirror=n Bin=y bash install.sh lnmp
 | `InstallInnodb` | `y` / `n` | WordPress 必须 `y` |
 | `PHPSelect` | `1`~`6` 对应 PHP 8.0~8.5 | 新站优先仍在上游安全支持期且插件已兼容的 8.3/8.4；不要仅因“版本最新”跳过兼容测试 |
 | `SelectMalloc` | `1` 无；`2` Jemalloc；`3` TCMalloc | VPS 默认 1；没有分配器碎片证据就不要增加变量 |
-| `ApacheSelect` | 当前仅 `1`=2.4 | 只在 LNMPA/LAMP 询问；Apache 栈未做同等真机覆盖 |
+| `ApacheSelect` | 当前仅 `1`=2.4 | 只在 LNMPA/LAMP 询问；Debian 13 已实测，其它发行版仍需复验 |
 
 #### 2.5.3 安装后的配置位置
 
@@ -843,7 +869,7 @@ php -l wp-config.php
 几个要点：
 
 - **`DB_HOST` 用 `127.0.0.1` 而不是 `localhost`**：后者会走 unix socket，
-  而 PHP 的 `mysqli.default_socket` 未必指向 `/tmp/mysql.sock`。
+  而 PHP 的 `mysqli.default_socket` 未必指向 `/run/mysqld/mysqld.sock`。
   用 TCP 最省事；建站时创建的库用户对 `localhost` 和 `127.0.0.1` 都授了权。
 - **`WP_REDIS_PREFIX` 一定要设**：多站点共用一个 Redis 实例时，
   未设置前缀时会发生键名冲突。
@@ -1065,6 +1091,12 @@ MySQL 与 MariaDB 安装都调用项目的 `MySQL_Opt`：按总内存把
 同时固定 `max_connections=500`，并随内存放大 `sort_buffer_size`、`read_buffer_size` 等
 连接级 buffer。这是程序实际生成值，不代表两种引擎在 WordPress 混部 VPS 上都应保持
 500 个连接。FPM worker 才是主要数据库并发来源，连接级 buffer 会在活跃连接上叠加。
+
+认证配置也必须按引擎区分。MySQL 8.x 模板不再开启已废弃的
+`mysql_native_password`，新用户使用 MySQL 上游默认认证；不要为了兼容单个旧客户端在服务端
+全局降级，优先升级客户端。MariaDB 使用自己的认证插件和账号语义，不读取 MySQL 8.4 的
+旧插件开关。两种引擎的 socket 均为 `/run/mysqld/mysqld.sock`，首次 root 密码在禁网的
+私有 socket 上设置，之后才启动正式服务。
 
 建议从下面关系开始：
 
@@ -1392,6 +1424,13 @@ lnmp php-fpm {start|stop|reload|restart}
 > `lnmp restart` **不包含 Redis**（它是 addon）。Redis 单独管：
 > `/etc/init.d/redis {start|stop|restart|status}`
 
+DenyHosts 误封时使用源码目录里的严格地址入口；参数必须是完整 IPv4 或 IPv6，非法值会在
+停止服务和修改列表前退出：
+
+```bash
+bash tools/denyhosts_removeip.sh <被误封的IP>
+```
+
 ### 8.2 站点管理
 
 ```bash
@@ -1718,6 +1757,9 @@ tail -f /var/log/lnmp/backup.log           # 备份任务日志
 | `ftps` | 账号口令 | TLS 加密 | 需要对端支持 AUTH TLS，并校验证书 |
 | `ftp` | 账号口令 | **全程明文** | 口令和整包备份数据在链路上任何一跳都可读 |
 
+如果对端也是本项目新装的 Pure-FTPd，必须选 `ftps`：其默认配置是 `TLS 2`，普通
+`ftp` 会在登录阶段被拒绝。外部旧 FTP 服务仍可显式选 `ftp`，但这不会获得任何传输加密。
+
 改 `/etc/lnmp/backup.conf`：
 
 ```bash
@@ -1865,7 +1907,7 @@ log_format main '$time_iso8601 $status "$request_time" $remote_addr $scheme://$h
 lnmp status
 
 # 2. socket 是否存在、权限是否对
-ls -la /tmp/php-cgi.sock          # 应为 www:www 0660
+ls -la /run/php-fpm/php-cgi.sock  # 应为 www:www 0660
 
 # 3. 看 php-fpm 日志
 tail -50 /usr/local/php/var/log/php-fpm.log
@@ -1993,10 +2035,12 @@ bash tools/reset_mysql_root_password.sh
 | 项 | 状态 | 注意 |
 |---|---|---|
 | 防火墙 | nftables `inet lnmp` 表，放行 22/80/443 + ICMP，**3306 / 6379 / 11211 显式 drop** | **链策略是 `policy accept`**，不是默认拒绝：它仅阻断明确列出的端口，不表示只允许这些端口 |
-| MySQL / MariaDB | 无匿名用户；root 只能从 localhost 登录；无 test 库；**`bind-address = 127.0.0.1`** | MySQL 另把 X Protocol 绑定回环；MariaDB 没有该协议 |
+| MySQL / MariaDB | 无匿名用户；root 只能从 localhost 登录；无 test 库；**`bind-address = 127.0.0.1`**；socket 位于 `/run/mysqld/` | MySQL 另把 X Protocol 绑定回环且不默认启用 `mysql_native_password`；MariaDB 没有 X Protocol，使用自身认证逻辑 |
 | Redis | 只监听回环；以专用低权限账号运行 | 回环是必要条件但不是充分条件；认证、跨机访问和多站点隔离见“安装 Redis”一章 |
 | Memcached | 只监听回环；以专用低权限账号运行 | 协议本身不提供可靠的租户隔离，不要对公网开放；互不信任的站点应拆分实例和系统账号 |
-| PHP | `disable_functions` 禁用 exec 系列；每站点 `open_basedir` 隔离 | `open_basedir` 限制文件路径访问，**不提供**操作系统级租户隔离：多站点共用 `www` 账号时没有内核层面的边界 |
+| PHP | `disable_functions` 禁用 exec 系列（含 `pcntl_exec`）；FPM socket 位于 `/run/php-fpm/` 且为 0660；每站点 `open_basedir` 隔离 | `open_basedir` 限制文件路径访问，**不提供**操作系统级租户隔离：多站点共用 `www` 账号时没有内核层面的边界 |
+| Apache（LAMP/LNMPA） | 只把末尾 `.php` 交给 mod_php；根目录默认拒绝；站点使用 `SymLinksIfOwnerMatch` | 已在 Debian 13 两种栈实测；其它发行版部署前仍需复验模块与目录边界 |
+| Pure-FTPd | 新安装默认 `TLS 2`，拒绝明文登录 | 客户端选择显式 FTPS；既有部署需直接核对运行配置，不会被源码更新自动改写 |
 | phpinfo / phpMyAdmin / 演示页 | **默认全部不部署** | 需在 `lnmp.conf` 显式开启 |
 | default 站点的 PHP 边界 | 只放行 `phpinfo.php` / `redis.php` / `memcached.php` 三个固定文件名与 phpMyAdmin 入口，其余 `.php` 一律拒绝 | 放行的三个文件仅在对应开关打开时才会写入，未写入时访问返回 404；往 default 根目录手工放同名文件同样会被执行，该站点是系统默认创建，其他需求 php 的请自建新站点 |
 | phpMyAdmin（已开启时） | 装在网站根目录之外（`/usr/local/phpmyadmin`）；访问路径随机生成 | 挡的是批量扫描与源码直接下载，**不等于**做了访问控制；对外服务仍建议加来源白名单 |
@@ -2209,8 +2253,8 @@ rm -f /home/wwwroot/<域名>/wp-content/uploads/t.php
 ## 附：验证环境的完整结果
 
 ```
-组件版本    nginx/1.30.4  PHP 8.3.33  MySQL 8.4.7  Redis 8.10.0
-            phpMyAdmin 5.2.3  WordPress 7.0.3
+组件版本    nginx/1.30.4  PHP 8.3.33  MySQL 8.4.7 / MariaDB 11.8.8
+            Redis 8.10.0  phpMyAdmin 5.2.3  WordPress 7.0.3
 安装耗时    9 分钟（MySQL 走官方通用二进制）
 nginx 模块  lua-nginx-module 0.10.31 / ngx_brotli / ngx_cache_purge 2.3
             http_v2 / http_v3 / OpenSSL 3.5.7
@@ -2220,6 +2264,8 @@ PHP 扩展    mysqli pdo_mysql gd curl mbstring xml zip intl fileinfo
             opcache redis igbinary imagick  （WordPress 所需全部就位）
 站点状态    首页 200 / 文章页 200 / 分类页 200 / wp-admin 301 补斜杠
 Redis 缓存  49 个 wpdemo:* 键，igbinary 序列化正常
-数据库      wpdemo 用户仅可见自身库，权限隔离正确
+数据库      MySQL 与 MariaDB 均完成 WordPress 主链路；wpdemo 用户仅可见自身库
+Apache 栈   LAMP / LNMPA 均完成源码安装与 PHP、PATH_INFO、目录边界、失败码实测
+Pure-FTPd   TLS 2；明文登录拒绝，显式 FTPS 列目录与上传成功
 防火墙      inet lnmp 表；22/80/443 放行，3306/6379 drop；未动系统主表
 ```

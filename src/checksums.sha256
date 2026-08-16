@@ -1,5 +1,3 @@
-
-
 # ---------------------------------------------------------------------------
 # PHP
 # ---------------------------------------------------------------------------
@@ -65,7 +63,6 @@ a46852c68075be7c31c7b33fee233c5b5a00c8c28117f5204d124e4f2fd56fa8  mariadb-10.11.
 afb81282f977c599ecbb0390588b0005b304b4e87d64615a2649ecd2bd1dc16f  mariadb-11.4.12-linux-systemd-x86_64.tar.gz
 bd023a4959faf012db7f0ebfc0d276729e67e5443df193163f98d80fdfc524c9  mariadb-11.8.8.tar.gz
 fbd4e8d05946c974b0560c94f01ce4c687291b6528074c2e001fb8f35c0d2762  mariadb-11.8.8-linux-systemd-x86_64.tar.gz
-
 fc9f85fc030e233142908241af7a846e60630aa7388de9a5fafb1f3a26840854  boost_1_77_0.tar.bz2
 cc4b893acf645c9d4b698e9a0f08ca8846aa5d6c68275c14c3e7949c24109454  boost_1_84_0.tar.bz2
 

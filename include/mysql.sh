@@ -23,6 +23,7 @@ MySQL_Sec_Setting()
     if command -v systemctl >/dev/null 2>&1; then
         systemctl enable mysql.service
     fi
+    Ensure_Runtime_Directory /run/mysqld mysql mysql || return 1
     Clean_Stale_DB_Socket || return 1
     /etc/init.d/mysql start
 
@@ -38,35 +39,7 @@ MySQL_Sec_Setting()
     # 安全初始化依赖可用的客户端，因此在执行 SQL 前先验证运行能力。
     Check_DB_Client_Runnable /usr/local/mysql/bin/mysql
 
-    # 仅加载 /etc/my.cnf，避免残留的 ~/.my.cnf 携带旧密码。第一种设置方式
-    # 失败时尝试空密码连接，两种方式均失败才显示原始错误。
-    local first_error
-    first_error=$(/usr/local/mysql/bin/mysqladmin --defaults-file=/etc/my.cnf \
-                  -u root password "${DB_Root_Password}" 2>&1)
-    if [ $? -ne 0 ]; then
-        echo "mysqladmin 方式未生效，改用空密码连接设置（安装流程的正常分支）。"
-        /etc/init.d/mysql restart
-        ( umask 077; cat >"${HOME}/.emptymy.cnf"<<EOF
-[client]
-user=root
-password=''
-socket=/tmp/mysql.sock
-EOF
-        )
-        if /usr/local/mysql/bin/mysql --defaults-file="${HOME}/.emptymy.cnf" \
-             -e "SET PASSWORD FOR 'root'@'localhost' = '$(SQL_Escape "${DB_Root_Password}")';"; then
-            echo "root 密码设置成功。"
-        else
-            Echo_Red "root 密码设置失败，两种方式均未成功。"
-            Echo_Red "mysqladmin 的报错：${first_error}"
-            DB_Init_Failed='y'
-            DB_Init_Errors="${DB_Init_Errors}
-  - 设置 root 密码"
-        fi
-        rm -f "${HOME}/.emptymy.cnf"
-    fi
-    /etc/init.d/mysql restart
-
+    # root 密码已在禁网私有 socket 上设置；正式实例只做登录与权限收尾。
     Make_TempMycnf "${DB_Root_Password}"
     Do_Query ""
     if [ $? -eq 0 ]; then
@@ -202,13 +175,21 @@ MySQL_Deprecated_Opt()
 
 Check_MySQL_Data_Dir()
 {
+    local datetime backup_dir
     if [ -d "${MySQL_Data_Dir}" ]; then
         datetime=$(date +"%Y%m%d%H%M%S")
-        mkdir -p /root/mysql-data-dir-backup${datetime}/
-        \cp ${MySQL_Data_Dir}/* /root/mysql-data-dir-backup${datetime}/
-        rm -rf ${MySQL_Data_Dir}/*
+        backup_dir="/root/mysql-data-dir-backup${datetime}"
+        if [ -e "${backup_dir}" ] || ! mv -- "${MySQL_Data_Dir}" "${backup_dir}"; then
+            Echo_Red "MySQL 数据目录备份失败，未清理原目录：${MySQL_Data_Dir}"
+            return 1
+        fi
+        if ! mkdir -p -- "${MySQL_Data_Dir}"; then
+            Echo_Red "无法重新创建 MySQL 数据目录；原数据保留在 ${backup_dir}。"
+            return 1
+        fi
+        Echo_Green "原 MySQL 数据目录已完整移动到 ${backup_dir}。"
     else
-        mkdir -p ${MySQL_Data_Dir}
+        mkdir -p -- "${MySQL_Data_Dir}" || return 1
     fi
 }
 
@@ -235,11 +216,11 @@ Install_MySQL_80()
 [client]
 #password   = your_password
 port        = ${DB_Port}
-socket      = /tmp/mysql.sock
+socket      = /run/mysqld/mysqld.sock
 
 [mysqld]
 port        = ${DB_Port}
-socket      = /tmp/mysql.sock
+socket      = /run/mysqld/mysqld.sock
 # 仅监听回环地址，防止防火墙失效时数据库直接暴露到公网。
 # 远程访问应绑定具体地址，并按来源 IP 配置防火墙和账号 Host 权限。
 bind-address = 127.0.0.1
@@ -265,8 +246,6 @@ explicit_defaults_for_timestamp = true
 max_connections = 500
 max_connect_errors = 100
 open_files_limit = 65535
-default_authentication_plugin = mysql_native_password
-
 log-bin=mysql-bin
 binlog_format=mixed
 server-id   = 1
@@ -306,7 +285,7 @@ EOF
     MySQL_Opt
     # MySQL 8.4 及以上转换弃用配置，8.0 保持原配置。
     MySQL_Deprecated_Opt
-    Check_MySQL_Data_Dir
+    Check_MySQL_Data_Dir || return 1
     chown -R mysql:mysql /usr/local/mysql
     # 数据目录初始化失败时停止，避免继续执行无效的启动和安全设置。
     if ! /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql; then
@@ -315,9 +294,11 @@ EOF
         return 1
     fi
     chown -R mysql:mysql ${MySQL_Data_Dir}
+    Secure_Initial_DB_Password mysql mysql || return 1
     \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
     \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service
     chmod 755 /etc/init.d/mysql
+    Patch_Init_Runtime_Directory /etc/init.d/mysql /run/mysqld mysql mysql || return 1
     cat > /etc/ld.so.conf.d/mysql.conf<<EOF
     /usr/local/mysql/lib
     /usr/local/lib
@@ -326,7 +307,7 @@ EOF
     ln -sf /usr/local/mysql/lib/mysql /usr/lib/mysql
     ln -sf /usr/local/mysql/include/mysql /usr/include/mysql
 
-    MySQL_Sec_Setting
+    MySQL_Sec_Setting || return 1
 }
 
 Install_MySQL_84()
@@ -352,11 +333,11 @@ Install_MySQL_84()
 [client]
 #password   = your_password
 port        = ${DB_Port}
-socket      = /tmp/mysql.sock
+socket      = /run/mysqld/mysqld.sock
 
 [mysqld]
 port        = ${DB_Port}
-socket      = /tmp/mysql.sock
+socket      = /run/mysqld/mysqld.sock
 # 仅监听回环地址，防止防火墙失效时数据库直接暴露到公网。
 # 远程访问应绑定具体地址，并按来源 IP 配置防火墙和账号 Host 权限。
 bind-address = 127.0.0.1
@@ -382,8 +363,6 @@ explicit_defaults_for_timestamp = true
 max_connections = 500
 max_connect_errors = 100
 open_files_limit = 65535
-mysql_native_password=ON
-
 log-bin=mysql-bin
 binlog_format=mixed
 server-id   = 1
@@ -423,7 +402,7 @@ EOF
     MySQL_Opt
     # MySQL 8.4 及以上转换弃用配置，8.0 保持原配置。
     MySQL_Deprecated_Opt
-    Check_MySQL_Data_Dir
+    Check_MySQL_Data_Dir || return 1
     chown -R mysql:mysql /usr/local/mysql
     # 数据目录初始化失败时停止，避免继续执行无效的启动和安全设置。
     if ! /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql; then
@@ -432,9 +411,11 @@ EOF
         return 1
     fi
     chown -R mysql:mysql ${MySQL_Data_Dir}
+    Secure_Initial_DB_Password mysql mysql || return 1
     \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
     \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service
     chmod 755 /etc/init.d/mysql
+    Patch_Init_Runtime_Directory /etc/init.d/mysql /run/mysqld mysql mysql || return 1
     cat > /etc/ld.so.conf.d/mysql.conf<<EOF
     /usr/local/mysql/lib
     /usr/local/lib
@@ -443,5 +424,5 @@ EOF
     ln -sf /usr/local/mysql/lib/mysql /usr/lib/mysql
     ln -sf /usr/local/mysql/include/mysql /usr/include/mysql
 
-    MySQL_Sec_Setting
+    MySQL_Sec_Setting || return 1
 }

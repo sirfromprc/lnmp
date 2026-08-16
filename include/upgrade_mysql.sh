@@ -4,7 +4,7 @@ Backup_MySQL()
 {
     echo "正在备份全部数据库..."
     echo "数据库较大时，备份所需时间会更长。"
-    /usr/local/mysql/bin/mysqldump --defaults-file=~/.my.cnf --all-databases > /root/mysql_all_backup${Upgrade_Date}.sql
+    /usr/local/mysql/bin/mysqldump --defaults-file="${HOME}/.my.cnf" --all-databases > /root/mysql_all_backup${Upgrade_Date}.sql
     if [ $? -eq 0 ]; then
         echo "MySQL 数据库备份成功。";
     else
@@ -56,11 +56,11 @@ cat > /etc/my.cnf<<EOF
 [client]
 #password   = your_password
 port        = ${DB_Port}
-socket      = /tmp/mysql.sock
+socket      = /run/mysqld/mysqld.sock
 
 [mysqld]
 port        = ${DB_Port}
-socket      = /tmp/mysql.sock
+socket      = /run/mysqld/mysqld.sock
 # 升级后的数据库继续仅监听回环地址，避免重写配置时撤销访问限制。
 # 需要远程连库时改为具体地址，并同步调整防火墙放行与账号 Host 授权范围。
 bind-address = 127.0.0.1
@@ -87,8 +87,6 @@ explicit_defaults_for_timestamp = true
 max_connections = 500
 max_connect_errors = 100
 open_files_limit = 65535
-default_authentication_plugin = mysql_native_password
-
 log-bin=mysql-bin
 binlog_format=mixed
 server-id   = 1
@@ -133,8 +131,9 @@ EOF
         mkdir -p ${MySQL_Data_Dir}
     fi
     chown -R mysql:mysql /usr/local/mysql/
-    /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql
+    /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql || exit 1
     chown -R mysql:mysql ${MySQL_Data_Dir}
+    Secure_Initial_DB_Password mysql mysql || exit 1
     cat > /etc/ld.so.conf.d/mysql.conf<<EOF
 /usr/local/mysql/lib
 /usr/local/lib
@@ -176,11 +175,11 @@ cat > /etc/my.cnf<<EOF
 [client]
 #password   = your_password
 port        = ${DB_Port}
-socket      = /tmp/mysql.sock
+socket      = /run/mysqld/mysqld.sock
 
 [mysqld]
 port        = ${DB_Port}
-socket      = /tmp/mysql.sock
+socket      = /run/mysqld/mysqld.sock
 # 升级后的数据库继续仅监听回环地址，避免重写配置时撤销访问限制。
 # 需要远程连库时改为具体地址，并同步调整防火墙放行与账号 Host 授权范围。
 bind-address = 127.0.0.1
@@ -207,8 +206,6 @@ explicit_defaults_for_timestamp = true
 max_connections = 500
 max_connect_errors = 100
 open_files_limit = 65535
-mysql_native_password=ON
-
 log-bin=mysql-bin
 binlog_format=mixed
 server-id   = 1
@@ -253,8 +250,9 @@ EOF
         mkdir -p ${MySQL_Data_Dir}
     fi
     chown -R mysql:mysql /usr/local/mysql/
-    /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql
+    /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql || exit 1
     chown -R mysql:mysql ${MySQL_Data_Dir}
+    Secure_Initial_DB_Password mysql mysql || exit 1
     cat > /etc/ld.so.conf.d/mysql.conf<<EOF
 /usr/local/mysql/lib
 /usr/local/lib
@@ -269,15 +267,17 @@ Restore_Start_MySQL()
 {
     chgrp -R mysql /usr/local/mysql/.
     \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
+    \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service
     chmod 755 /etc/init.d/mysql
+    Patch_Init_Runtime_Directory /etc/init.d/mysql /run/mysqld mysql mysql || exit 1
 
     ldconfig
 
-    MySQL_Sec_Setting
+    MySQL_Sec_Setting || exit 1
     /etc/init.d/mysql start
 
     echo "正在恢复数据库备份..."
-    if ! /usr/local/mysql/bin/mysql --defaults-file=~/.my.cnf < /root/mysql_all_backup${Upgrade_Date}.sql; then
+    if ! /usr/local/mysql/bin/mysql --defaults-file="${HOME}/.my.cnf" < /root/mysql_all_backup${Upgrade_Date}.sql; then
         Echo_Red "备份导入失败，数据未完整恢复。"
         DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/oldmysql${Upgrade_Date}"
         exit 1
@@ -294,21 +294,21 @@ Restore_Start_MySQL()
         # 30 分钟；后台进程提前退出时立即结束等待。
         upgrade_wait=0
         while [ ${upgrade_wait} -lt 1800 ]; do
-            /usr/local/mysql/bin/mysqladmin --defaults-file=~/.my.cnf ping >/dev/null 2>&1 && break
+            /usr/local/mysql/bin/mysqladmin --defaults-file="${HOME}/.my.cnf" ping >/dev/null 2>&1 && break
             kill -0 ${mysqld_pid} 2>/dev/null || break
             sleep 1
             upgrade_wait=$((upgrade_wait + 1))
         done
-        if ! /usr/local/mysql/bin/mysqladmin --defaults-file=~/.my.cnf ping >/dev/null 2>&1; then
+        if ! /usr/local/mysql/bin/mysqladmin --defaults-file="${HOME}/.my.cnf" ping >/dev/null 2>&1; then
             Echo_Red "MySQL 强制升级未能完成，等待 ${upgrade_wait} 秒后实例仍无响应。"
             kill ${mysqld_pid} 2>/dev/null
             DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/oldmysql${Upgrade_Date}"
             exit 1
         fi
-        /usr/local/mysql/bin/mysqladmin --defaults-file=~/.my.cnf shutdown
+        /usr/local/mysql/bin/mysqladmin --defaults-file="${HOME}/.my.cnf" shutdown
         wait ${mysqld_pid}
     else
-        if ! /usr/local/mysql/bin/mysql_upgrade --defaults-file=~/.my.cnf; then
+        if ! /usr/local/mysql/bin/mysql_upgrade --defaults-file="${HOME}/.my.cnf"; then
             Echo_Red "mysql_upgrade 执行失败。"
             DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/oldmysql${Upgrade_Date}"
             exit 1
@@ -353,6 +353,7 @@ Upgrade_MySQL()
         echo "错误：必须输入 MySQL 版本号！"
         exit 1
     fi
+    Check_Version_String "${mysql_version}" "MySQL 版本号" || exit 1
 
     if [ "${mysql_version}" == "${cur_mysql_version}" ]; then
         echo "错误：目标 MySQL 版本与当前版本相同！"

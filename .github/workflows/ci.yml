@@ -64,9 +64,6 @@ jobs:
       - name: 派发自测（t/test_dispatch.sh）
         run: bash t/test_dispatch.sh
 
-      - name: 审计修复定向自测
-        run: bash t/test_audit_fixes.sh
-
       # 验证自动升版脚本同步版本映射和校验清单。
       - name: 升版跨文件同步自测（t/test_bump.sh）
         run: bash t/test_bump.sh

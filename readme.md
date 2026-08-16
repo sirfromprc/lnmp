@@ -58,6 +58,11 @@
 
 - **SELinux 默认保持启用状态**，仅在显式配置后关闭。
 - `/home/wwwlogs` 权限从 777 收紧为 755；PHP-FPM socket 从 0666 收紧为 0660。
+- MySQL/MariaDB socket 固定在 `/run/mysqld/`，PHP-FPM socket 固定在
+  `/run/php-fpm/`；systemd 负责重建运行目录并保持 `PrivateTmp=true`，不再依赖
+  共享 `/tmp`。首次数据库 root 密码只在禁网的私有 socket 上设置。
+- MySQL 8.x 不再强制开启 `mysql_native_password`，新账号使用上游默认认证；
+  MariaDB 保持自身认证逻辑，不套用 MySQL 专用选项。
 - 数据库 root 随机密码由 `/dev/urandom` 生成，不显示在屏幕或安装日志中，
   仅写入 `/root/.lnmp_db_root_password`（0600）。
 - 默认**不部署** phpinfo、phpMyAdmin、探针等页面，需要时在 `lnmp.conf` 里开启。
@@ -70,6 +75,11 @@
   关闭时脚本会自动撤掉 Web 服务器上的映射。
 - 管理脚本 `/bin/lnmp` 的域名、目录、数据库名等输入加了严格校验；
   临时文件改用 `mktemp`；SQL 参数做转义。
+- Apache 安装的 `ServerAdmin`、三栈 ACME 邮箱和 DenyHosts 解封 IP 均在写配置或
+  停服务前严格校验；LAMP/LNMPA 的 Apache 模板只把末尾 `.php` 交给 PHP，默认拒绝
+  根目录访问并限制异属主符号链接。
+- Pure-FTPd **新安装默认 `TLS 2`**，明文 FTP 登录被拒绝；账号管理和显式 FTPS
+  保持可用。该默认值不迁移或覆盖既有服务器上的部署配置。
 - 重置数据库 root 密码使用 `--init-file` 流程，并在临时实例上禁用网络监听。
 
 ### 可靠性
@@ -78,6 +88,8 @@
 - 安装和升级失败返回非零退出码，可供自动化流程判断结果。
 - Nginx、PHP、多版本 PHP 和 phpMyAdmin 采用**构建验证、切换、失败回滚**流程。
   数据库升级暂未提供自动回滚，失败时会打印人工恢复步骤；升级前必须完成备份。
+- 安装入口遇到已有 MySQL/MariaDB 数据目录时会整体移动到时间戳备份目录，
+  包括隐藏文件和数据库子目录；移动或重建空目录失败就停止，不再非递归复制后删除原数据。
 - 包管理器繁忙时等待锁释放，不终止包管理进程或删除 yum/dpkg 锁文件。
 
 > **验证情况**：
@@ -85,12 +97,17 @@
 > - **已在 Debian 12 实测**：`install.sh lnmp` 完整安装（Nginx + MySQL 8.4 + PHP 8.3）、
 >   WordPress 主线、`install.sh db`、`pureftpd.sh`、`addons.sh` 的 Redis/Memcached、
 >   OpenResty 官方包安装、自定义端口、数据库升级、phpMyAdmin 升级、备份与恢复。
-> - **已在 Debian 13 实测**：完整安装与独立安装入口、卸载与重装回归、
->   OpenResty 源码编译（官方仓库尚无 trixie 包，只能走 `ORMode=2`）、
->   `Enable_Nginx_Lua=n` 的编译版 Nginx、default 站点与 phpMyAdmin 的访问边界、
->   `lnmp backup` 的本地备份与恢复、age 与 GPG 加密、SFTP 与 FTP/FTPS 异地上传。
-> - **未实测**：LNMPA / LAMP（Apache 系）、CentOS/RHEL 系、非 x86_64 架构、
->   Telegram 通知的真实 API 链路、公网环境下的 IP 证书签发。
+> - **已在 Debian 13 实测**：LNMP 分别搭配 MySQL 8.4.7 与 MariaDB 11.8.8，
+>   WordPress 7.0.3 的安装、首页、固定链接、REST、PHP-FPM、数据库和 Redis 均通过；
+>   phpMyAdmin 随机入口与数据库管理命令同时覆盖两种数据库。
+> - **Apache 系已在 Debian 13 实测**：LAMP 与 LNMPA 均使用本项目完整源码安装的
+>   Apache 2.4.68 + PHP 8.3.33，覆盖正常 PHP、PATH_INFO、`.php.bak`、符号链接、
+>   default 站点边界、phpMyAdmin 以及服务失败码传播。
+> - **同批其它实测**：OpenResty 源码编译、`Enable_Nginx_Lua=n` 的编译版 Nginx、
+>   Pure-FTPd `TLS 2` 下明文拒绝与显式 FTPS 上传、备份恢复、age/GPG 加密、
+>   SFTP 与 FTP/FTPS 异地上传。安全定向回归 35/35，lint 18/18、一致性 14/14。
+> - **未实测**：CentOS/RHEL 系、非 x86_64 架构、Telegram 通知的真实 API 链路、
+>   公网环境下的 IP 证书签发。
 >
 > 无论哪种情况，部署到生产环境前都请先在测试机走一遍。
 
@@ -98,7 +115,7 @@
 
 | 项目 | 状态 |
 |---|---|
-| LNMPA / LAMP（Apache 系） | 代码保留，但**未做真机验证**，请自行充分测试 |
+| LNMPA / LAMP（Apache 系） | 已在 Debian 13 / x86_64 完整安装并实测；其它发行版仍需自行验证 |
 | CentOS / RHEL 系 | 代码保留，无额外验证轮次 |
 | 非 x86_64 架构 | 本项目只对 x86_64 通用数据库包提供完整自动校验路径，其余架构回退源码编译 |
 | Nginx 的 80 / 443 端口 | **不可统一配置**，分别由主配置、站点配置和证书签发流程管理 |
@@ -237,7 +254,7 @@ Default_Website_Dir=/data/wwwroot Enable_PhpMyAdmin=y bash install.sh lnmp
 | Web 工具 | `Enable_PHPInfo_Page`、`Enable_PhpMyAdmin`、`Enable_Memcached_Test_Page`、`Enable_Redis_Test_Page` | 生产环境保持默认 `n`；需要 phpMyAdmin 时优先临时启用并限制来源 |
 | Nginx 能力 | `Enable_Nginx_Openssl`、`Enable_Nginx_Lua`、`Enable_Ngx_Brotli`、`Enable_Ngx_CachePurge`、`Enable_Ngx_FancyIndex` | 保留 TLS；不用 Lua/缓存清除/目录索引就关闭相应模块，fancyindex 默认 `n` |
 | Swap | `Enable_Swap` | 小内存 VPS 保持 `y` 作为 OOM 缓冲；Swap 不能替代降低 FPM/数据库内存 |
-| PHP 默认扩展 | `Enable_PHP_Default_Opcache`、`Enable_PHP_Default_Igbinary`、`Enable_PHP_Default_Redis`、`Enable_PHP_Default_Imagick` | WordPress 通常保留默认 `y`；不用 Redis/Imagick 时可关闭以缩小依赖面 |
+| PHP 工具与默认扩展 | `Enable_Composer`、`Enable_PHP_Default_Opcache`、`Enable_PHP_Default_Igbinary`、`Enable_PHP_Default_Redis`、`Enable_PHP_Default_Imagick` | Composer 与四个扩展默认 `y`；不用 Composer/Redis/Imagick 时可关闭以缩小依赖面 |
 | PHP 可选扩展 | `Enable_PHP_Exif`、`Enable_PHP_Fileinfo`、`Enable_PHP_Ldap`、`Enable_PHP_Bz2`、`Enable_PHP_Sodium`、`Enable_PHP_Imap` | `fileinfo` 保持 `y`；其余只按应用依赖开启 |
 | 下载策略 | `Download_Insecure`、`Enable_Download_Checksum`、`CheckMirror` | 前两项保持 `n`/`y`；`CheckMirror=n` 只跳过源修改、NTP 与 DNS 预检，并让未指定的 `Bin` 默认源码编译；APT 依赖安装和组件下载仍会联网 |
 | 服务端口 | `SSH_Port`、`DB_Port`、`DB_X_Port`、`Redis_Port`、`Memcached_Port`、`Pureftpd_Port`、`Pureftpd_Data_Port`、`Pureftpd_Passive_Min`、`Pureftpd_Passive_Max` | `SSH_Port` 必须与 sshd 实际监听一致；数据库和缓存优先保持回环监听，不靠改端口防护 |
@@ -470,6 +487,15 @@ MariaDB 安装会优先使用 `mariadb`、`mariadb-dump` 等新程序名，同�
 `mysql`、`mysqldump` 等旧入口作为兼容包装器；已有脚本无需立即改名，且
 MariaDB 11.8 不会再因为旧入口打印 `Deprecated program name`。
 
+MySQL 8.x 使用上游默认认证，不再由模板强制启用已废弃的
+`mysql_native_password`。需要连接 MySQL 8.4 的旧客户端应升级客户端；本项目不为旧客户端
+全局降低新账号认证强度。两种数据库的 socket 都是 `/run/mysqld/mysqld.sock`，管理脚本
+显式读取 `${HOME}/.my.cnf`，MySQL 与 MariaDB 的数据库增删、导入导出和改密均已实测。
+
+不要用重新运行安装脚本代替数据迁移。安装入口发现数据目录已经存在时，会先把整个目录
+移动到 `/root/mysql-data-dir-backup<时间戳>` 或
+`/root/mariadb-data-dir-backup<时间戳>`；移动失败就停止，不会继续初始化或删除原数据。
+
 两者安装后都由同一内存分档生成 buffer pool 和 500 个最大连接，但这只是项目默认，
 不等于生产推荐。MariaDB 还会生成 query cache 配置，而 MySQL 8 已删除该功能；现代
 WordPress 不应照搬旧教程放大 query cache。三档内存值、MariaDB 优化及与 MySQL 8.4 的
@@ -523,6 +549,14 @@ bash tools/reset_mysql_root_password.sh
 | `/usr/local/php/conf.d/` | 扩展的 ini 片段 |
 | `/usr/local/php/var/log/` | FPM 日志、慢日志 |
 | `/usr/local/php8.4/` | 多版本 PHP（`bash install.sh mphp` 装的） |
+
+主 PHP 安装默认同时安装 Composer；不需要时，在安装前设置：
+
+```bash
+Enable_Composer=n bash install.sh lnmp
+```
+
+该开关只影响本次 PHP 安装，不会删除已经安装的 `/usr/local/bin/composer`。
 
 **日常命令**
 
@@ -637,6 +671,15 @@ lnmp ftp {add|list|edit|del|show}
 /etc/init.d/pureftpd {start|stop|restart}
 ```
 
+`bash pureftpd.sh` 的新安装配置默认 `TLS 2`：客户端必须使用**显式 FTPS**，普通 FTP
+会在登录阶段被拒绝。若连接失败，先确认客户端选择的是 FTP over TLS（Explicit），而不是
+明文 FTP 或隐式 FTPS。既有安装不会因更新源码自动改写
+`/usr/local/pureftpd/etc/pure-ftpd.conf`；实际值用下面命令核对：
+
+```bash
+grep '^TLS' /usr/local/pureftpd/etc/pure-ftpd.conf
+```
+
 ### 3.9 其他运维脚本（`tools/` 目录）
 
 | 脚本 | 用途 |
@@ -650,7 +693,7 @@ lnmp ftp {add|list|edit|del|show}
 | `remove_open_basedir_restriction.sh` | 去掉防跨目录限制 |
 | `remove_disable_function.sh` | 解除 PHP 禁用函数 |
 | `denyhosts.sh` / `fail2ban.sh` | SSH 防爆破 |
-| `denyhosts_removeip.sh` | 解封被误封的 IP |
+| `denyhosts_removeip.sh` | 解封被误封的 IPv4/IPv6；非法地址会在停服务和改文件前拒绝 |
 
 
 ### 3.10 备份：`lnmp backup`
@@ -1203,6 +1246,10 @@ lnmp ftp show      # 查看用户详情
 
 数据库源码编译中途失败最常见的两个原因是内存不足和磁盘不足，见“数据库：通用二进制
 还是源码编译”一节的实测表。
+
+如果失败前已经存在数据库数据目录，先看安装输出中的时间戳备份路径，不要连续重跑。
+当前版本会整体移动原目录并在成功后重建空目录；备份移动失败时会立即停止，原目录不删。
+确认备份内容、当前 `/etc/my.cnf` 和实际服务状态后再决定恢复还是重装。
 
 ### 想换 Web 服务器（Nginx ↔ OpenResty）怎么办？
 

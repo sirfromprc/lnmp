@@ -134,7 +134,7 @@ LNMP_Stack()
     Init_Install || return 1
     Install_PHP
     LNMP_PHP_Opt
-    Install_WebServer
+    Install_WebServer || return 1
     Creat_PHP_Tools || return 1
     Add_Iptables_Rules
     Add_LNMP_Startup || return 1
@@ -143,11 +143,11 @@ LNMP_Stack()
 
 LNMPA_Stack()
 {
-    Apache_Selection
+    Apache_Selection || return 1
     Init_Install || return 1
     Dispatch "${Apache_Install}"
     Install_PHP
-    Install_WebServer
+    Install_WebServer || return 1
     Creat_PHP_Tools || return 1
     Add_Iptables_Rules
     Add_LNMPA_Startup || return 1
@@ -156,7 +156,7 @@ LNMPA_Stack()
 
 LAMP_Stack()
 {
-    Apache_Selection
+    Apache_Selection || return 1
     Init_Install || return 1
     Dispatch "${Apache_Install}"
     Install_PHP

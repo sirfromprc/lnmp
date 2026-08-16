@@ -7,10 +7,12 @@ After=network.target
 # lnmp status 使用同一服务状态依据。
 Type=forking
 PIDFile=/usr/local/php/var/run/php-fpm.pid
+RuntimeDirectory=php-fpm
+RuntimeDirectoryMode=0755
 ExecStart=/usr/local/php/sbin/php-fpm --fpm-config /usr/local/php/etc/php-fpm.conf
 ExecReload=/bin/kill -USR2 $MAINPID
 ExecStop=/bin/kill -s QUIT $MAINPID
-PrivateTmp=false
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

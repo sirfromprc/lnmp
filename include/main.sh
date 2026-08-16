@@ -271,9 +271,9 @@ Apache_Selection()
 {
     echo "==========================="
     # 设置 Apache 服务器管理员邮箱。
-    if [ -z ${ServerAdmin} ]; then
+    if [ -z "${ServerAdmin}" ]; then
         ServerAdmin=""
-        read -p "请输入服务器管理员邮箱（默认 webmaster@example.com）: " ServerAdmin
+        read -r -p "请输入服务器管理员邮箱（默认 webmaster@example.com）: " ServerAdmin
     fi
     if [ "${ServerAdmin}" == "" ]; then
         echo "未输入，服务器管理员邮箱将设为 webmaster@example.com。"
@@ -283,6 +283,7 @@ Apache_Selection()
         echo "服务器管理员邮箱：${ServerAdmin}"
         echo "==========================="
     fi
+    Check_Server_Admin_Email "${ServerAdmin}" || return 1
     echo "==========================="
 
     # Apache 仅支持 2.4；保留 ApacheSelect 以兼容命令行参数。
@@ -1193,6 +1194,19 @@ Version_GE()
     [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
 }
 
+# Check_Version_String <值> [组件名]
+# 升级入口只接受三段或四段数字版本，防止版本值改变下载与解压路径。
+Check_Version_String()
+{
+    local value="$1" label="${2:-版本号}"
+
+    if [[ ! "${value}" =~ ^[0-9]+(\.[0-9]+){2,3}$ ]]; then
+        Echo_Red "${label}格式无效：'${value}'（只接受三段或四段数字版本）"
+        return 1
+    fi
+    return 0
+}
+
 
 Version_Compare()
 {
@@ -1205,6 +1219,16 @@ Version_Compare()
     fi
 }
 
+Check_Server_Admin_Email()
+{
+    local value="$1"
+    if [[ ! "${value}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$ ]]; then
+        Echo_Red "管理员邮箱格式无效：'${value}'"
+        return 1
+    fi
+    return 0
+}
+
 Color_Text()
 {
   echo -e " \e[0;$2m$1\e[0m"
@@ -1212,22 +1236,22 @@ Color_Text()
 
 Echo_Red()
 {
-  echo $(Color_Text "$1" "31")
+  echo "$(Color_Text "$1" "31")"
 }
 
 Echo_Green()
 {
-  echo $(Color_Text "$1" "32")
+  echo "$(Color_Text "$1" "32")"
 }
 
 Echo_Yellow()
 {
-  echo $(Color_Text "$1" "33")
+  echo "$(Color_Text "$1" "33")"
 }
 
 Echo_Blue()
 {
-  echo $(Color_Text "$1" "34")
+  echo "$(Color_Text "$1" "34")"
 }
 
 Get_PHP_Ext_Dir()
@@ -1298,7 +1322,7 @@ Do_Query()
     chmod 600 "${sql_file}"
     printf '%s\n' "$1" > "${sql_file}"
     Check_DB
-    ${MySQL_Bin} --defaults-file=~/.my.cnf < "${sql_file}"
+    ${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" < "${sql_file}"
     rc=$?
     rm -f "${sql_file}"
     return ${rc}
@@ -1326,6 +1350,7 @@ Make_TempMycnf()
 [client]
 user=root
 password='$(SQL_Escape "$1")'
+socket=/run/mysqld/mysqld.sock
 EOF
     )
     chmod 600 ~/.my.cnf
@@ -1385,6 +1410,51 @@ StartOrStop()
     else
         /etc/init.d/${service} ${action}
     fi
+}
+
+# Ensure_Runtime_Directory <目录> <用户> <组>
+# /run 会在重启后清空，服务启动前必须安全地重建专属目录。
+Ensure_Runtime_Directory()
+{
+    local dir="$1" owner="$2" group="$3"
+
+    if [ -L "${dir}" ] || { [ -e "${dir}" ] && [ ! -d "${dir}" ]; }; then
+        Echo_Red "运行目录不是安全的实体目录：${dir}"
+        return 1
+    fi
+    install -d -o "${owner}" -g "${group}" -m 0755 "${dir}" || return 1
+    [ ! -L "${dir}" ] && [ -d "${dir}" ]
+}
+
+# Patch_Init_Runtime_Directory <init脚本> <目录> <用户> <组>
+# SysV 和 systemd 生成的兼容服务都可能直接执行 init 脚本，因此把重建逻辑
+# 写进入口；固定标记保证升级或回滚时重复调用不会重复插入。
+Patch_Init_Runtime_Directory()
+{
+    local initd="$1" dir="$2" owner="$3" group="$4" tmp
+
+    [ -f "${initd}" ] || return 1
+    grep -q '^# LNMP runtime directory$' "${initd}" && return 0
+    tmp=$(mktemp "${initd}.lnmp.XXXXXX") || return 1
+    if ! {
+        IFS= read -r first || exit 1
+        printf '%s\n' "${first}"
+        printf '%s\n' \
+            '# LNMP runtime directory' \
+            "if [ -L '${dir}' ] || { [ -e '${dir}' ] && [ ! -d '${dir}' ]; }; then" \
+            "    echo 'Unsafe runtime directory: ${dir}' >&2" \
+            '    exit 1' \
+            'fi' \
+            "install -d -o '${owner}' -g '${group}' -m 0755 '${dir}' || exit 1"
+        cat
+    } < "${initd}" > "${tmp}" ||
+       ! chmod --reference="${initd}" "${tmp}" ||
+       ! chown --reference="${initd}" "${tmp}" ||
+       ! mv -f "${tmp}" "${initd}"; then
+        rm -f "${tmp}"
+        return 1
+    fi
+    return 0
 }
 
 Check_Openssl()

@@ -44,6 +44,22 @@ done
 CHANGED=''      # 记录 key->old->new，供 refresh_checksums.sh 按组件筛选
 applied=0
 
+valid_key()
+{
+    case "$1" in
+        ''|[0-9]*|*[!0-9A-Za-z_.-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+valid_version_value()
+{
+    case "$1" in
+        ''|*[!0-9A-Za-z._-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 # 仅在指定文件中替换完整版本值，避免修改注释和示例中的版本片段。
 subst()
 {
@@ -55,8 +71,8 @@ subst()
             if [ -n "${DRY}" ]; then
                 echo "    [dry] ${f}: ${old} -> ${new}"
             else
-                # 使用 perl 的 \Q..\E 对 old 执行字面量匹配
-                perl -pi -e "s/\Q${old}\E/${new}/g" "${f}"
+                OLD_VALUE="${old}" NEW_VALUE="${new}" \
+                    perl -pi -e 's/\Q$ENV{OLD_VALUE}\E/$ENV{NEW_VALUE}/g' "${f}"
                 echo "    ${f}"
             fi
         fi
@@ -67,17 +83,24 @@ subst()
 subst_probe()
 {
     local family="$1" old="$2" new="$3"
-    local expr
-    case "${family}" in
-        php)     expr="if (/^PHP_VERS=/ || /probe php /) { s/\\Q${old}\\E/${new}/g }" ;;
-        mysql)   expr="if (/^MYSQL_VERS=/ || /mysql-/) { s/\\Q${old}\\E/${new}/g }" ;;
-        mariadb) expr="if (/^MARIADB_VERS=/ || /mariadb-/) { s/\\Q${old}\\E/${new}/g }" ;;
-        *) return 1 ;;
-    esac
     if [ -n "${DRY}" ]; then
         echo "    [dry] ${PROBE}: ${family} ${old} -> ${new}"
     else
-        perl -pi -e "${expr}" "${PROBE}"
+        case "${family}" in
+        php)
+            OLD_VALUE="${old}" NEW_VALUE="${new}" perl -pi -e \
+                'if (/^PHP_VERS=/ || /probe php /) { s/\Q$ENV{OLD_VALUE}\E/$ENV{NEW_VALUE}/g }' "${PROBE}"
+            ;;
+        mysql)
+            OLD_VALUE="${old}" NEW_VALUE="${new}" perl -pi -e \
+                'if (/^MYSQL_VERS=/ || /mysql-/) { s/\Q$ENV{OLD_VALUE}\E/$ENV{NEW_VALUE}/g }' "${PROBE}"
+            ;;
+        mariadb)
+            OLD_VALUE="${old}" NEW_VALUE="${new}" perl -pi -e \
+                'if (/^MARIADB_VERS=/ || /mariadb-/) { s/\Q$ENV{OLD_VALUE}\E/$ENV{NEW_VALUE}/g }' "${PROBE}"
+            ;;
+        *) return 1 ;;
+        esac
         echo "    ${PROBE}"
     fi
 }
@@ -88,8 +111,17 @@ PROBE='t/probe_urls.sh'
 GENSUM='t/gen_checksums.sh'
 TESTPF='t/test_profile.sh'
 
-while IFS=$'\t' read -r key old new kind; do
+while IFS=$'\t' read -r key old new kind extra; do
     [ -z "${key}" ] && continue
+    if ! valid_key "${key}" || ! valid_version_value "${old}" ||
+       ! valid_version_value "${new}" || [ -n "${extra}" ]; then
+        echo "拒绝非法升级建议：key=${key}, old=${old}, new=${new}" >&2
+        exit 1
+    fi
+    case "${kind}" in
+        AUTO|COUPLED|MANUAL) ;;
+        *) echo "拒绝非法升级类别：${kind}" >&2; exit 1 ;;
+    esac
     case ",${KINDS}," in *",${kind},"*) ;; *) continue ;; esac
 
     echo "==> ${key}: ${old} -> ${new}  (${kind})"
@@ -127,8 +159,13 @@ while IFS=$'\t' read -r key old new kind; do
         if [ -n "${DRY}" ]; then
             echo "    [dry] ${VERSION_SH}: ${key}='${new}'"
         else
-            if grep -qE "^${key}='" "${VERSION_SH}"; then
-                perl -pi -e "s/^${key}='.*'/${key}='${new}'/" "${VERSION_SH}"
+            if awk -v prefix="${key}='" 'index($0, prefix) == 1 { found=1 } END { exit !found }' "${VERSION_SH}"; then
+                VERSION_KEY="${key}" NEW_VALUE="${new}" perl -pi -e '
+                    BEGIN { $key=$ENV{"VERSION_KEY"}; $new=$ENV{"NEW_VALUE"} }
+                    if (index($_, $key . "=") == 0) {
+                        $_=$key . "=" . chr(39) . $new . chr(39) . "\n"
+                    }
+                ' "${VERSION_SH}"
                 echo "    ${VERSION_SH}"
             else
                 echo "    !! ${VERSION_SH} 里找不到 ${key}=，跳过" >&2

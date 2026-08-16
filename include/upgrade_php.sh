@@ -27,6 +27,7 @@ Start_Upgrade_PHP()
         echo "错误：必须输入正确的 PHP 版本号！"
         exit 1
     fi
+    Check_Version_String "${php_version}" "PHP 版本号" || exit 1
 
     if ! echo "${php_version}" | grep -Eq '^8\.[0-9]+\.[0-9]+$'; then
         Echo_Red "仅支持 PHP 8.0.0 及以上版本，输入值：${php_version}"
@@ -322,7 +323,7 @@ error_log = /usr/local/php/var/log/php-fpm.log
 log_level = notice
 
 [www]
-listen = /tmp/php-cgi.sock
+listen = /run/php-fpm/php-cgi.sock
 listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
@@ -345,6 +346,8 @@ EOF
     echo "正在复制 php-fpm init.d 服务脚本..."
     \cp ${cur_dir}/src/php-${php_version}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm
     chmod +x /etc/init.d/php-fpm
+    Ensure_Runtime_Directory /run/php-fpm root root || exit 1
+    Patch_Init_Runtime_Directory /etc/init.d/php-fpm /run/php-fpm root root || exit 1
     LNMP_PHP_Opt
 fi
     if [ "${Stack}" != "lnmp" ]; then

@@ -82,13 +82,17 @@ Display_Addons_Menu()
 
 Restart_PHP()
 {
+    local service
+
     if [ -s /usr/local/apache/bin/httpd ] && [ -s /usr/local/apache/conf/httpd.conf ] && [ -s /etc/init.d/httpd ]; then
         echo "正在重启 Apache......"
-        /etc/init.d/httpd restart
+        service='httpd'
     else
         echo "正在重启 php-fpm......"
-        ${PHPFPM_Initd} restart
+        service="${PHPFPM_Initd##*/}"
     fi
+
+    StartOrStop restart "${service}"
 }
 
 clear

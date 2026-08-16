@@ -285,7 +285,7 @@ Write_Nginx_Default_VHost()
             include proxy.conf;'
     else
         demo_php_block='            try_files $uri =404;
-            fastcgi_pass  unix:/tmp/php-cgi.sock;
+            fastcgi_pass  unix:/run/php-fpm/php-cgi.sock;
             fastcgi_index index.php;
             include fastcgi.conf;'
     fi
@@ -345,6 +345,7 @@ EOF
 
 Install_Nginx()
 {
+    Nginx_Version="${Nginx_Ver#nginx-}"
     Echo_Blue "[+] 正在安装 ${Nginx_Ver}... "
     groupadd www
     useradd -s /sbin/nologin -g www www
@@ -433,10 +434,15 @@ EOF
     chmod +x /etc/init.d/nginx
 
     if [ "${SelectMalloc}" = "3" ]; then
-        mkdir /tmp/tcmalloc
-        chown -R www:www /tmp/tcmalloc
+        if [ -L /usr/local/nginx/var/tcmalloc ] ||
+           ! mkdir -p /usr/local/nginx/var/tcmalloc ||
+           ! chown www:www /usr/local/nginx/var/tcmalloc ||
+           ! chmod 0750 /usr/local/nginx/var/tcmalloc; then
+            Echo_Red "无法安全创建 TCMalloc profile 目录。"
+            return 1
+        fi
         sed -i '/nginx.pid/a\
-google_perftools_profiles /tmp/tcmalloc;' /usr/local/nginx/conf/nginx.conf
+google_perftools_profiles /usr/local/nginx/var/tcmalloc;' /usr/local/nginx/conf/nginx.conf
     fi
 
 }

@@ -187,20 +187,34 @@ Pear_Pecl_Set()
 
 Install_Composer()
 {
-    local expected actual installer tmpdir
+    local expected actual installer signature tmpdir php_bin
 
-    if ! command -v php >/dev/null 2>&1 && [ ! -x /usr/local/php/bin/php ]; then
+    if [ "${Enable_Composer:-y}" != 'y' ]; then
+        echo "已按 Enable_Composer=${Enable_Composer} 跳过 Composer 安装。"
+        return 0
+    fi
+
+    if command -v php >/dev/null 2>&1; then
+        php_bin=$(command -v php)
+    elif [ -x /usr/local/php/bin/php ]; then
+        php_bin=/usr/local/php/bin/php
+    else
         Echo_Red "未找到 PHP，跳过 Composer 安装。"
         return 1
     fi
 
     tmpdir=$(mktemp -d "${cur_dir}/src/composer.XXXXXX") || return 1
     installer="${tmpdir}/composer-setup.php"
+    signature="${tmpdir}/installer.sig"
 
     # 先取得官方 SHA384；缺少校验依据时不执行远程安装程序。
     echo "正在从 composer.github.io 获取 Composer 安装程序签名..."
-    expected=$(wget -q --max-redirect=3 -O- https://composer.github.io/installer.sig)
-    expected=$(echo "${expected}" | tr -d '[:space:]')
+    if ! Download_Fetch https://composer.github.io/installer.sig "${signature}"; then
+        Echo_Red "Composer 安装程序签名下载失败，拒绝继续。"
+        rm -rf "${tmpdir}"
+        return 1
+    fi
+    expected=$(tr -d '[:space:]' < "${signature}")
     if ! echo "${expected}" | grep -Eq '^[0-9a-f]{96}$'; then
         Echo_Red "Composer 安装程序签名不是有效的 SHA384，拒绝继续。"
         Echo_Red "实际获取：${expected:0:120}"
@@ -209,14 +223,14 @@ Install_Composer()
     fi
 
     echo "正在从 getcomposer.org 下载 Composer 安装程序..."
-    if ! wget -q --max-redirect=3 -O "${installer}" https://getcomposer.org/installer \
-        || [ ! -s "${installer}" ]; then
+    if ! Download_Fetch https://getcomposer.org/installer "${installer}" \
+       || [ ! -s "${installer}" ]; then
         Echo_Red "Composer 安装程序下载失败，跳过 Composer 安装。"
         rm -rf "${tmpdir}"
         return 1
     fi
 
-    actual=$(php -r "echo hash_file('sha384', '${installer}');")
+    actual=$("${php_bin}" -r 'echo hash_file("sha384", $argv[1]);' "${installer}")
     if [ "${expected}" != "${actual}" ]; then
         Echo_Red "Composer 安装程序 SHA384 不匹配，拒绝执行。"
         Echo_Red "预期值=${expected}"
@@ -226,7 +240,7 @@ Install_Composer()
     fi
     Echo_Green "Composer 安装程序 SHA384 校验通过。"
 
-    php "${installer}" --install-dir=/usr/local/bin --filename=composer
+    "${php_bin}" "${installer}" --install-dir=/usr/local/bin --filename=composer
     rm -rf "${tmpdir}"
     if [ -s /usr/local/bin/composer ]; then
         chmod +x /usr/local/bin/composer
@@ -281,7 +295,7 @@ Install_PHP_8x()
     # 关闭 X-Powered-By 响应头，避免对外暴露 PHP 版本号。
     sed -i 's/^expose_php =.*/expose_php = Off/g' /usr/local/php/etc/php.ini
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
-    sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
+    sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server,pcntl_exec/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
     Install_Composer
 
@@ -297,7 +311,7 @@ error_log = /usr/local/php/var/log/php-fpm.log
 log_level = notice
 
 [www]
-listen = /tmp/php-cgi.sock
+    listen = /run/php-fpm/php-cgi.sock
 listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
@@ -321,6 +335,8 @@ EOF
     \cp ${cur_dir}/src/${Php_Ver}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm
     \cp ${cur_dir}/init.d/php-fpm.service /etc/systemd/system/php-fpm.service
     chmod +x /etc/init.d/php-fpm
+    Ensure_Runtime_Directory /run/php-fpm root root || return 1
+    Patch_Init_Runtime_Directory /etc/init.d/php-fpm /run/php-fpm root root || return 1
 fi
 }
 
@@ -512,7 +528,7 @@ EOF
 
             location ~ ^/${pma_url}/(.+\.php)\$ {
                 alias ${PhpMyAdmin_Dir}/\$1;
-                fastcgi_pass  unix:/tmp/php-cgi.sock;
+                fastcgi_pass  unix:/run/php-fpm/php-cgi.sock;
                 fastcgi_index index.php;
                 include fastcgi.conf;
                 fastcgi_param SCRIPT_FILENAME ${PhpMyAdmin_Dir}/\$1;
@@ -530,7 +546,7 @@ EOF
 Alias /${pma_url} "${PhpMyAdmin_Dir}"
 
 <Directory "${PhpMyAdmin_Dir}">
-    Options -Indexes +FollowSymLinks
+    Options SymLinksIfOwnerMatch
     AllowOverride None
     Require all granted
     php_admin_value open_basedir "${PhpMyAdmin_Dir}/:/var/lib/phpmyadmin/:/tmp/:/proc/"
@@ -668,9 +684,10 @@ Get_PhpMyAdmin_HTTP_Port()
                 value=$2; sub(/;.*/, "", value); print value; exit
             }')
     else
-        port=$(/usr/local/apache/bin/httpd -t -D DUMP_RUN_CFG 2>/dev/null | \
-            awk '/Listen:/ && $0 !~ /127\.0\.0\.1:/ {
-                value=$2; sub(/^.*:/, "", value); print value; exit
+        # 读取 Apache 展开 include 后的公网虚拟主机地址。
+        port=$(/usr/local/apache/bin/httpd -t -D DUMP_VHOSTS 2>/dev/null | \
+            awk '/^[[:space:]]*\*:[0-9]+[[:space:]]/ {
+                value=$1; sub(/^\*:/, "", value); print value; exit
             }')
     fi
     case "${port}" in

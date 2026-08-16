@@ -92,9 +92,7 @@ Upgrade_OpenResty_Source()
         Echo_Red "必须输入版本号。"
         return 1
     fi
-    case "${ver}" in
-        *[!0-9.]*) Echo_Red "版本号只允许数字和点：'${ver}'"; return 1 ;;
-    esac
+    Check_Version_String "${ver}" "OpenResty 版本号" || return 1
 
     tarball="openresty-${ver}.tar.gz"
     url="https://openresty.org/download/${tarball}"

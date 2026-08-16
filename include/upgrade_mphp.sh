@@ -67,6 +67,7 @@ Upgrade_Multiplephp()
         Echo_Red "错误：必须输入正确的 PHP 版本号！"
         exit 1
     fi
+    Check_Version_String "${php_version}" "PHP 版本号" || exit 1
 
     # 仅接受与当前主次版本一致的 PHP 8.x 完整版本号。
     if ! echo "${php_version}" | grep -Eq '^8\.[0-9]+\.[0-9]+$'; then
@@ -203,7 +204,7 @@ error_log = ${Cur_MPHP_Path}/var/log/php-fpm.log
 log_level = notice
 
 [www]
-listen = /tmp/php-cgi${Cur_MPHP_Big_Ver}.sock
+listen = /run/php-fpm/php-cgi${Cur_MPHP_Big_Ver}.sock
 listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
@@ -225,6 +226,8 @@ EOF
     \cp ${cur_dir}/src/php-${php_version}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm${Cur_MPHP_Big_Ver}
     chmod +x /etc/init.d/php-fpm${Cur_MPHP_Big_Ver}
     sed -i "s@# Provides:          php-fpm@# Provides:          php-fpm${Cur_MPHP_Big_Ver}@g" /etc/init.d/php-fpm${Cur_MPHP_Big_Ver}
+    Ensure_Runtime_Directory /run/php-fpm root root || exit 1
+    Patch_Init_Runtime_Directory /etc/init.d/php-fpm${Cur_MPHP_Big_Ver} /run/php-fpm root root || exit 1
 
     StartUp php-fpm${Cur_MPHP_Big_Ver}
 

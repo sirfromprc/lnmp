@@ -33,7 +33,7 @@ run_case()
 
     work=$(mktemp -d) || { echo "FAIL 无法创建临时目录"; fail=1; return 1; }
     mkdir -p "${work}/include" "${work}/t" "${work}/.upstream"
-    cp include/main.sh include/version.sh include/profile.sh "${work}/include/"
+    cp include/main.sh include/version.sh include/profile.sh include/verify.sh "${work}/include/"
     cp t/bump_version.sh t/test_profile.sh t/probe_urls.sh t/gen_checksums.sh "${work}/t/"
     [ -f lnmp.conf ] && cp lnmp.conf "${work}/"
 
@@ -65,7 +65,7 @@ run_collision_case()
     local work same='8.3.33' next='8.3.77777'
     work=$(mktemp -d) || { fail=1; return 1; }
     mkdir -p "${work}/include" "${work}/t" "${work}/.upstream"
-    cp include/main.sh include/version.sh include/profile.sh "${work}/include/"
+    cp include/main.sh include/version.sh include/profile.sh include/verify.sh "${work}/include/"
     cp t/bump_version.sh t/test_profile.sh t/probe_urls.sh t/gen_checksums.sh "${work}/t/"
     cp lnmp.conf "${work}/"
 
@@ -88,10 +88,11 @@ run_collision_case()
 
 run_checksum_collision_case()
 {
-    local work old='8.3.33' new='8.3.77777' php_sum maria_sum
+    local work old='8.3.33' new='8.3.77777' php_sum maria_sum archive_sum out
     work=$(mktemp -d) || { fail=1; return 1; }
-    mkdir -p "${work}/src" "${work}/t" "${work}/.upstream" "${work}/bin"
+    mkdir -p "${work}/src" "${work}/t" "${work}/include" "${work}/.upstream" "${work}/bin"
     cp t/refresh_checksums.sh "${work}/t/"
+    cp include/verify.sh "${work}/include/"
     php_sum=$(printf 'a%.0s' {1..64})
     maria_sum=$(printf 'b%.0s' {1..64})
     printf '%s  php-%s.tar.bz2\n%s  mariadb-%s.tar.gz\n' \
@@ -103,21 +104,25 @@ run_checksum_collision_case()
 echo 'https://example.invalid/php-${new}.tar.bz2 php-${new}.tar.bz2'
 echo 'https://example.invalid/mariadb-${new}.tar.gz mariadb-${new}.tar.gz'
 EOF
-    cat > "${work}/bin/wget" <<'EOF'
+    archive_sum=$(printf 'php archive' | sha256sum | awk '{print $1}')
+    cat > "${work}/bin/curl" <<EOF
 #!/usr/bin/env bash
+url="\${!#}"
 out=''
-while [ $# -gt 0 ]; do
-    [ "$1" = '-O' ] && { out="$2"; shift 2; continue; }
+while [ \$# -gt 0 ]; do
+    [ "\$1" = '-o' ] && { out="\$2"; shift 2; continue; }
     shift
 done
-printf 'php archive' > "${out}"
+case "\${url}" in
+    *releases*) printf '%s' '{"source":[{"filename":"php-${new}.tar.gz","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"filename":"php-${new}.tar.bz2","sha256":"${archive_sum}"}]}' > "\${out}" ;;
+    *) printf 'php archive' > "\${out}" ;;
+esac
 EOF
-    chmod +x "${work}/t/gen_checksums.sh" "${work}/bin/wget"
+    chmod +x "${work}/t/gen_checksums.sh" "${work}/bin/curl"
 
     # 断言必须逐行整行匹配，不能用子串：两行被拼成一行时，子串 grep 仍然全部命中，
     # 会把被写坏的清单判成通过（refresh_checksums.sh 的行尾正则曾因此漏检）。
-    if ( cd "${work}" && PATH="${work}/bin:${PATH}" bash t/refresh_checksums.sh ) \
-        >/dev/null 2>&1 &&
+    if out=$( cd "${work}" && PATH="${work}/bin:${PATH}" bash t/refresh_checksums.sh 2>&1 ) &&
        [ "$(wc -l < "${work}/src/checksums.sha256")" -eq 2 ] &&
        [ "$(grep -cE "^[0-9a-f]{64}  [^[:space:]]+$" "${work}/src/checksums.sha256")" -eq 2 ] &&
        grep -qE "^${maria_sum}  mariadb-${old}\.tar\.gz$" "${work}/src/checksums.sha256" &&
@@ -125,6 +130,7 @@ EOF
         printf 'ok   %-30s %s\n' '校验值版本碰撞隔离' '只更新 PHP，清单仍为 2 条合法行'
     else
         printf 'FAIL %-30s %s\n' '校验值版本碰撞隔离' 'MariaDB 被误选、PHP 未更新或清单行被写坏'
+        printf '%s\n' "${out}" | sed 's/^/         /'
         printf '       实际清单：\n'; sed 's/^/         /' "${work}/src/checksums.sha256"
         fail=1
     fi
@@ -136,8 +142,9 @@ run_checksum_guard_case()
 {
     local work old='8.3.33' new='8.3.77777'
     work=$(mktemp -d) || { fail=1; return 1; }
-    mkdir -p "${work}/src" "${work}/t" "${work}/.upstream" "${work}/bin"
+    mkdir -p "${work}/src" "${work}/t" "${work}/include" "${work}/.upstream" "${work}/bin"
     cp t/refresh_checksums.sh "${work}/t/"
+    cp include/verify.sh "${work}/include/"
     printf '%s  php-%s.tar.bz2\n' "$(printf 'a%.0s' {1..64})" "${old}" \
         > "${work}/src/checksums.sha256"
     printf 'PHP_8.3\t%s\t%s\n' "${old}" "${new}" > "${work}/.upstream/changed.tsv"
@@ -150,13 +157,17 @@ EOF
 #!/usr/bin/env bash
 echo "not a valid sha256  $1"
 EOF
-    cat > "${work}/bin/wget" <<'EOF'
+    cat > "${work}/bin/curl" <<'EOF'
 #!/usr/bin/env bash
+url="${!#}"
 out=''
-while [ $# -gt 0 ]; do [ "$1" = '-O' ] && { out="$2"; shift 2; continue; }; shift; done
-printf 'php archive' > "${out}"
+while [ $# -gt 0 ]; do [ "$1" = '-o' ] && { out="$2"; shift 2; continue; }; shift; done
+case "${url}" in
+    *releases*) printf '{"source":[{"filename":"php-8.3.77777.tar.gz","sha256":"%064d"},{"filename":"php-8.3.77777.tar.bz2","sha256":"%064d"}]}' 0 0 > "${out}" ;;
+    *) printf 'php archive' > "${out}" ;;
+esac
 EOF
-    chmod +x "${work}/t/gen_checksums.sh" "${work}/bin/wget" "${work}/bin/sha256sum"
+    chmod +x "${work}/t/gen_checksums.sh" "${work}/bin/curl" "${work}/bin/sha256sum"
 
     if ! ( cd "${work}" && PATH="${work}/bin:${PATH}" bash t/refresh_checksums.sh ) \
             >/dev/null 2>&1 &&
@@ -164,6 +175,29 @@ EOF
         printf 'ok   %-30s %s\n' '坏清单拒绝写回' '返回非零且原清单未被覆盖'
     else
         printf 'FAIL %-30s %s\n' '坏清单拒绝写回' '格式非法的清单仍被写回或返回 0'
+        fail=1
+    fi
+    rm -rf "${work}"
+}
+
+run_untrusted_value_case()
+{
+    local work marker payload
+    work=$(mktemp -d) || { fail=1; return 1; }
+    marker="${work}/perl-injection-ran"
+    mkdir -p "${work}/include" "${work}/t" "${work}/.upstream"
+    cp include/version.sh "${work}/include/"
+    cp t/bump_version.sh "${work}/t/"
+    printf -v payload 'x/e;system("touch %s");#' "${marker}"
+    printf 'Redis_Stable_Ver\tredis-8.10.0\t%s\tAUTO\n' "${payload}" \
+        > "${work}/.upstream/bumps.tsv"
+
+    if ! ( cd "${work}" && bash t/bump_version.sh --kinds AUTO ) >/dev/null 2>&1 &&
+       [ ! -e "${marker}" ] &&
+       grep -qF "Redis_Stable_Ver='redis-8.10.0'" "${work}/include/version.sh"; then
+        printf 'ok   %-30s %s\n' '非法上游值拒绝执行' '返回非零且文件未改动'
+    else
+        printf 'FAIL %-30s %s\n' '非法上游值拒绝执行' '输入未被拒绝、触发命令或改写了版本文件'
         fail=1
     fi
     rm -rf "${work}"
@@ -197,6 +231,7 @@ done < <(awk '/^expect_db /{v=$4; sub(/^[a-z]+-/,"",v); print $3, v}' "${TESTPF}
 run_collision_case
 run_checksum_collision_case
 run_checksum_guard_case
+run_untrusted_value_case
 
 echo
 if [ ${fail} -eq 0 ]; then

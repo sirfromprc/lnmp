@@ -138,25 +138,31 @@ Check_Svc_State()
 
 lamp_start()
 {
+    local failed=0
     echo "正在启动 LAMP..."
-    Svc_If_Installed Apache "${APACHE_SERVICE}" start
-    Svc_If_Installed Database "${DB_SERVICE}" start
-    Check_Svc_State "${APACHE_SERVICE}" "${DB_SERVICE}"
+    Svc_If_Installed Apache "${APACHE_SERVICE}" start || failed=1
+    Svc_If_Installed Database "${DB_SERVICE}" start || failed=1
+    Check_Svc_State "${APACHE_SERVICE}" "${DB_SERVICE}" || failed=1
+    return ${failed}
 }
 
 lamp_stop()
 {
+    local failed=0
     echo "正在停止 LAMP..."
-    Svc_If_Installed Apache "${APACHE_SERVICE}" stop
-    Svc_If_Installed Database "${DB_SERVICE}" stop
+    Svc_If_Installed Apache "${APACHE_SERVICE}" stop || failed=1
+    Svc_If_Installed Database "${DB_SERVICE}" stop || failed=1
+    return ${failed}
 }
 
 lamp_reload()
 {
+    local failed=0
     echo "正在重载 LAMP..."
     # httpd.service 的 ExecReload 执行 httpd -k graceful。
-    Svc_If_Installed Apache "${APACHE_SERVICE}" reload
-    Svc_If_Installed Database "${DB_SERVICE}" reload
+    Svc_If_Installed Apache "${APACHE_SERVICE}" reload || failed=1
+    Svc_If_Installed Database "${DB_SERVICE}" reload || failed=1
+    return ${failed}
 }
 
 lamp_kill()
@@ -335,6 +341,8 @@ Add_VHost_Config()
 {
     local apache_open_basedir apache_php_off apache_dir_index
 
+    Check_Config_Name "${al_name}" "访问日志文件名" || return 1
+    Check_Server_Admin_Email "${email}" || return 1
     apache_open_basedir="php_admin_value open_basedir \"${vhostdir}:/tmp/:/var/tmp/:/proc/\""
     apache_php_off=""
     apache_dir_index="DirectoryIndex index.html index.php"
@@ -355,7 +363,7 @@ ErrorLog "/home/wwwlogs/${al_name}-error_log"
 CustomLog "/home/wwwlogs/${al_name}-access_log" combined
 ${apache_php_off}
 <Directory "${vhostdir}">
-    Options FollowSymLinks
+    Options SymLinksIfOwnerMatch
     AllowOverride All
     Require all granted
     ${apache_dir_index}
@@ -452,6 +460,7 @@ Add_VHost()
         if [ "${al_name}" == "" ]; then
             al_name="${domain}"
         fi
+        Check_Config_Name "${al_name}" "访问日志文件名" || exit 1
         echo "访问日志文件名：${al_name}-access_log"
     fi
 
@@ -462,6 +471,7 @@ Add_VHost()
         echo "未输入，管理员邮箱将设为 webmaster@example.com。"
         email='webmaster@example.com'
     else
+        Check_Server_Admin_Email "${email}" || exit 1
         echo "服务器管理员邮箱：${email}"
     fi
 
@@ -503,7 +513,7 @@ Add_VHost()
     chmod -R 755 "${vhostdir}"
     chown -R www:www "${vhostdir}"
 
-    Add_VHost_Config
+    Add_VHost_Config || exit 1
 
     if [ "${create_database}" == "y" ]; then
         Add_Database
@@ -834,6 +844,47 @@ Check_More_Domains()
     return 0
 }
 
+# rewrite 与日志名会成为文件名或配置片段，只允许单个安全文件名。
+Check_Config_Name()
+{
+    local value="$1" what="${2:-配置名称}"
+    if [ -z "${value}" ] || [ "${value}" = '.' ] || [ "${value}" = '..' ] \
+       || [[ ! "${value}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        Echo_Red "${what}不合法：'${value}'"
+        Echo_Red "只允许字母、数字、点、下划线和连字符，不允许路径或配置元字符。"
+        return 1
+    fi
+    return 0
+}
+
+Check_Server_Admin_Email()
+{
+    local value="$1"
+    if [[ ! "${value}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$ ]]; then
+        Echo_Red "管理员邮箱格式无效：'${value}'"
+        return 1
+    fi
+    return 0
+}
+
+# Web 配置中的证书路径不加 shell 转义，必须是已存在且无配置元字符的绝对路径。
+Check_Config_File_Path()
+{
+    local value="$1" what="${2:-配置文件}"
+    if [[ ! "${value}" =~ ^/[A-Za-z0-9._/+@,:=-]+$ ]] \
+       || [[ "/${value#/}/" == *'/../'* ]] \
+       || [[ "/${value#/}/" == *'/./'* ]] \
+       || [[ "${value}" == *'//'* ]]; then
+        Echo_Red "${what}必须是无空白和配置元字符的绝对路径：'${value}'"
+        return 1
+    fi
+    if [ ! -s "${value}" ]; then
+        Echo_Red "${what}不存在或为空：'${value}'"
+        return 1
+    fi
+    return 0
+}
+
 # 站点目录必须是无元字符的绝对路径，并位于允许的网站根目录内。
 # 该限制防止递归 chmod 或 chown 影响系统目录及其它用户数据。
 Check_Vhost_Dir()
@@ -931,7 +982,7 @@ Do_Query()
     chmod 600 "${sql_file}"
     printf '%s\n' "$1" > "${sql_file}"
     Check_DB
-    ${MySQL_Bin} --defaults-file=~/.my.cnf < "${sql_file}"
+    ${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" < "${sql_file}"
     rc=$?
     rm -f "${sql_file}"
     return ${rc}
@@ -1005,7 +1056,7 @@ GRANT ALL PRIVILEGES ON \`${database_name}\`.* TO '${database_name}'@'127.0.0.1'
 FLUSH PRIVILEGES;
 EOF
 
-    ${MySQL_Bin} --defaults-file=~/.my.cnf < "${sql_file}"
+    ${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" < "${sql_file}"
     rc=$?
     rm -f "${sql_file}"
     if [ ${rc} -ne 0 ]; then
@@ -1019,7 +1070,7 @@ EOF
 List_Database()
 {
     local rc
-    ${MySQL_Bin} --defaults-file=~/.my.cnf -e "SHOW DATABASES;"
+    ${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" -e "SHOW DATABASES;"
     rc=$?
     if [ ${rc} -ne 0 ]; then
         Echo_Red "数据库列表读取失败。"
@@ -1088,7 +1139,7 @@ DROP USER IF EXISTS '${database_name}'@'localhost';
 DROP DATABASE \`${database_name}\`;
 FLUSH PRIVILEGES;
 EOF
-    ${MySQL_Bin} --defaults-file=~/.my.cnf < "${del_sql_file}"
+    ${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" < "${del_sql_file}"
     rc=$?
     rm -f "${del_sql_file}"
     if [ ${rc} -ne 0 ]; then
@@ -1129,7 +1180,7 @@ Database_Exists()
 {
     local name_q out
     name_q=$(Sql_Quote "$1")
-    out=$(${MySQL_Bin} --defaults-file=~/.my.cnf -N -B -e \
+    out=$(${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" -N -B -e \
         "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${name_q}';") || return 1
     [ -n "${out}" ]
 }
@@ -1187,7 +1238,7 @@ Export_Database()
         return 1
     }
     echo "正在导出数据库 ${database_name} ..."
-    ${MySQL_Dump_Bin} --defaults-file=~/.my.cnf \
+    ${MySQL_Dump_Bin} --defaults-file="${HOME}/.my.cnf" \
         --single-transaction --quick --routines --triggers --events \
         --default-character-set=utf8mb4 \
         "${database_name}" | gzip -c > "${tmp_file}"
@@ -1244,7 +1295,7 @@ Import_Database()
     echo "正在导入数据库 ${database_name} ..."
     # 按文件内容识别压缩格式，未压缩的 SQL 文件也可直接导入。
     if gzip -t "${in_file}" 2>/dev/null; then
-        gzip -dc "${in_file}" | ${MySQL_Bin} --defaults-file=~/.my.cnf \
+        gzip -dc "${in_file}" | ${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" \
             --default-character-set=utf8mb4 "${database_name}"
         pipe_st=("${PIPESTATUS[@]}")
         gz_rc=${pipe_st[0]}
@@ -1253,7 +1304,7 @@ Import_Database()
         [ "${gz_rc}" -ne 0 ] && rc=1
         [ "${mysql_rc}" -ne 0 ] && rc=1
     else
-        ${MySQL_Bin} --defaults-file=~/.my.cnf \
+        ${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" \
             --default-character-set=utf8mb4 "${database_name}" < "${in_file}"
         rc=$?
     fi
@@ -1496,6 +1547,7 @@ Add_SSL_Info_Menu()
         if [ "${al_name}" == "" ]; then
             al_name="${domain}"
         fi
+        Check_Config_Name "${al_name}" "访问日志文件名" || exit 1
         al="access_log  /home/wwwlogs/${al_name}.log;"
         echo "访问日志文件名：${al_name}.log"
     fi
@@ -1507,6 +1559,7 @@ Add_SSL_Info_Menu()
         echo "未输入，管理员邮箱将设为 webmaster@example.com。"
         email='webmaster@example.com'
     else
+        Check_Server_Admin_Email "${email}" || exit 1
         echo "服务器管理员邮箱：${email}"
     fi
 }
@@ -1589,7 +1642,7 @@ Check_Acme_EMail()
         while :;do
             Echo_Yellow "请输入证书账户邮箱: "
             Read_Input email_address "邮箱地址"
-            if [[ "${email_address}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,4}$ ]]; then
+            if [[ "${email_address}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$ ]]; then
                 echo "邮箱地址 ${email_address} 格式有效。"
                 break
             else
@@ -1672,18 +1725,14 @@ Add_SSL_Menu()
             while :;do
                 Echo_Yellow "请输入 SSL 证书文件的完整路径: "
                 Read_Input ssl_certificate "SSL 证书路径"
-                if [ "${ssl_certificate}" == "" ]; then
-                    Echo_Red "SSL 证书文件路径不能为空。"
-                else
+                if Check_Config_File_Path "${ssl_certificate}" "SSL 证书文件"; then
                     break
                 fi
             done
             while :;do
                 Echo_Yellow "请输入 SSL 私钥文件的完整路径: "
                 Read_Input ssl_certificate_key "SSL 私钥路径"
-                if [ "${ssl_certificate_key}" == "" ]; then
-                    Echo_Red "SSL 私钥文件路径不能为空。"
-                else
+                if Check_Config_File_Path "${ssl_certificate_key}" "SSL 私钥文件"; then
                     break
                 fi
             done
@@ -1695,7 +1744,7 @@ Add_SSL_Menu()
                     echo
                     Conf_SSLChain="#SSLCertificateChainFile /path/to/your/chain.pem"
                     break
-                else
+                elif Check_Config_File_Path "${ssl_chain}" "SSL 证书链文件"; then
                     Conf_SSLChain="SSLCertificateChainFile ${ssl_chain}"
                     break
                 fi
@@ -1879,6 +1928,13 @@ Create_SSL_Config()
     local backup httpd_conf_backup
     local ssl_server_name="${domain}" ssl_open_basedir ssl_directory_options ssl_php_off
 
+    Check_Config_Name "${al_name}" "访问日志文件名" || return 1
+    Check_Server_Admin_Email "${email}" || return 1
+    Check_Config_File_Path "${ssl_certificate}" "SSL 证书文件" || return 1
+    Check_Config_File_Path "${ssl_certificate_key}" "SSL 私钥文件" || return 1
+    if [ "${ssl_choice}" = '1' ] && [ -n "${ssl_chain:-}" ]; then
+        Check_Config_File_Path "${ssl_chain}" "SSL 证书链文件" || return 1
+    fi
     ssl_open_basedir="php_admin_value open_basedir \"${vhostdir}:/tmp/:/var/tmp/:/proc/\""
     ssl_directory_options='    AllowOverride All
     Require all granted
@@ -1938,7 +1994,7 @@ ErrorLog "/home/wwwlogs/${al_name}-error_log"
 CustomLog "/home/wwwlogs/${al_name}-access_log" combined
 ${ssl_php_off}
 <Directory "${vhostdir}">
-    Options FollowSymLinks
+    Options SymLinksIfOwnerMatch
 ${ssl_directory_options}
 </Directory>
 </VirtualHost>
@@ -2130,11 +2186,11 @@ Add_Dns_SSL()
         fi
 
         if [ ! -s "/usr/local/apache/conf/vhost/${domain}.conf" ]; then
-            Add_VHost_Config
+            Add_VHost_Config || return 1
         fi
         ssl_certificate="/usr/local/apache/conf/ssl/${domain}/${domain}.cer"
         ssl_certificate_key="/usr/local/apache/conf/ssl/${domain}/${domain}.key"
-        Create_SSL_Config
+        Create_SSL_Config || return 1
         Print_Banner \
             "SSL 证书信息" \
             "域名：${domain} ${moredomain}" \
@@ -2220,22 +2276,22 @@ Color_Text()
 
 Echo_Red()
 {
-  echo $(Color_Text "$1" "31")
+  echo "$(Color_Text "$1" "31")"
 }
 
 Echo_Green()
 {
-  echo $(Color_Text "$1" "32")
+  echo "$(Color_Text "$1" "32")"
 }
 
 Echo_Yellow()
 {
-  echo -n $(Color_Text "$1" "33")
+  echo -n "$(Color_Text "$1" "33")"
 }
 
 Echo_Blue()
 {
-  echo $(Color_Text "$1" "34")
+  echo "$(Color_Text "$1" "34")"
 }
 
 Sleep_Sec()

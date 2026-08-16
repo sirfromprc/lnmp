@@ -20,6 +20,7 @@ Upgrade_Nginx()
         echo "错误：必须输入 Nginx 版本号！"
         exit 1
     fi
+    Check_Version_String "${Nginx_Version}" "Nginx 版本号" || exit 1
     Print_Banner "即将把 Nginx 升级到 ${Nginx_Version}"
 
     Press_Start

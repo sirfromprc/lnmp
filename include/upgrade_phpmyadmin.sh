@@ -9,6 +9,7 @@ Upgrade_phpMyAdmin()
         echo "错误：必须输入 phpMyAdmin 版本号！"
         exit 1
     fi
+    Check_Version_String "${phpMyAdmin_Version}" "phpMyAdmin 版本号" || exit 1
     Print_Banner "即将把 phpMyAdmin 升级到 ${phpMyAdmin_Version}"
 
     Press_Start
