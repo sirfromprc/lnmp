@@ -39,7 +39,7 @@ jobs:
     name: 静态检查
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: bash t/lint.sh
       - run: bash t/consistency.sh
       - run: bash t/test_profile.sh
@@ -66,7 +66,7 @@ jobs:
       id-token: write      # 构建证明要用 OIDC
       attestations: write  # 写构建证明
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -119,7 +119,7 @@ jobs:
           cat SHA256SUMS
 
       - name: 构建证明（GitHub 原生，无需管理密钥）
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v3
         with:
           subject-path: dist/*.tar.gz
 
@@ -197,7 +197,7 @@ jobs:
           cat /tmp/notes.md
 
       - name: 发布
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: LNMP ${{ steps.ver.outputs.product }} (${{ steps.ver.outputs.stamp }})

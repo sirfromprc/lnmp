@@ -44,7 +44,7 @@ jobs:
       has_changes: ${{ steps.apply.outputs.has_changes }}
       branch: ${{ steps.apply.outputs.branch }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 检查上游版本
         env:
@@ -92,7 +92,7 @@ jobs:
 
       - name: 暂存改动供后续 job 使用
         if: steps.apply.outputs.has_changes == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: bumped-tree
           path: |
@@ -126,15 +126,15 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: bumped-tree
           path: .
 
       - name: 生成 PR
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           branch: ${{ needs.check.outputs.branch }}
           base: ${{ github.event.repository.default_branch }}

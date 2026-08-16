@@ -52,11 +52,11 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends git ca-certificates
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 覆盖为待验证的改动
         if: inputs.artifact != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: ${{ inputs.artifact }}
           path: .
@@ -78,7 +78,7 @@ jobs:
           cp -a /usr/local/nginx-luatest/logs /tmp/artifacts/ 2>/dev/null || true
           cp -a /usr/local/nginx-luatest/conf/nginx.conf /tmp/artifacts/ 2>/dev/null || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: lua-build-logs
@@ -96,10 +96,10 @@ jobs:
       - run: |
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends git ca-certificates
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: 覆盖为待验证的改动
         if: inputs.artifact != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: ${{ inputs.artifact }}
           path: .
@@ -117,10 +117,10 @@ jobs:
       - run: |
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends git ca-certificates
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: 覆盖为待验证的改动
         if: inputs.artifact != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: ${{ inputs.artifact }}
           path: .

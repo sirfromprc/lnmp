@@ -22,7 +22,7 @@ jobs:
     name: 静态检查
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 语法检查（bash -n）
         run: |
@@ -48,6 +48,7 @@ jobs:
           # SC1090/SC1091: 动态 source，本项目大量使用，无法静态解析
           # SC2086: 未加引号的展开由专项检查处理
           # SC2181: $? 判断风格
+          # tests/ 只在本地开发使用，不随发布包分发，不纳入检查。
           shellcheck -S error -e SC1090,SC1091,SC2086,SC2181 \
             install.sh uninstall.sh upgrade.sh addons.sh pureftpd.sh \
             include/*.sh t/*.sh tools/*.sh \

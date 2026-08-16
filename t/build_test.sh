@@ -96,6 +96,12 @@ build_lua()
     make -j"${JOBS}" PREFIX=/usr/local/luajit >/dev/null || die "LuaJIT 编译失败"
     make install PREFIX=/usr/local/luajit >/dev/null || die "LuaJIT 安装失败"
 
+    # 与 include/nginx.sh 一致：注册动态库搜索路径，
+    # 否则 nginx 启动时报 libluajit-5.1.so.2: cannot open shared object file
+    mkdir -p /etc/ld.so.conf.d
+    echo /usr/local/luajit/lib > /etc/ld.so.conf.d/luajit.conf
+    ldconfig || die "ldconfig 失败"
+
     export LUAJIT_LIB=/usr/local/luajit/lib
     export LUAJIT_INC=/usr/local/luajit/include/luajit-2.1
 
@@ -103,6 +109,7 @@ build_lua()
     cd "${WORK}/${Nginx_Ver}" || exit 1
     ./configure --prefix=/usr/local/nginx-luatest \
         --with-http_ssl_module --with-http_stub_status_module \
+        --with-ld-opt="-Wl,-rpath,/usr/local/luajit/lib" \
         --add-module="${WORK}/${d_ndk}" \
         --add-module="${WORK}/${d_mod}" \
         >/dev/null || die "nginx configure 失败"
@@ -136,7 +143,8 @@ http {
                 local lru = require "resty.lrucache"
                 local c = lru.new(8)
                 c:set("k", "v")
-                ngx.say("resty-core-ok:", c:get("k"))
+                -- get 返回 data, stale_data, flags，用括号截断成单值
+                ngx.say("resty-core-ok:", (c:get("k")))
             }
         }
     }
@@ -144,7 +152,7 @@ http {
 EOF
 
     /usr/local/nginx-luatest/sbin/nginx -t || die "nginx -t 未通过"
-    /usr/local/nginx-luatest/sbin/nginx
+    /usr/local/nginx-luatest/sbin/nginx || die "nginx 启动失败"
     sleep 2
 
     step "真发请求（这一步才会触发 base.lua 的版本断言）"

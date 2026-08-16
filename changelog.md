@@ -9979,3 +9979,94 @@ Debian 13 + MariaDB 11.8.8 实测 `killall -0 mysqld` 返回 1、
   `ready for connections`），无崩溃恢复记录，确认 SIGTERM 为优雅关闭。
 
 - **验证状态**：已实测（Debian 13，LNMP）。LNMPA 与 LAMP 为同一改法，静态检查通过。
+
+## GHA-012 `t/build_test.sh` 的 Lua 验证缺少 LuaJIT 运行时库路径
+
+**问题**：Build Test 工作流 lua 作业在 `写测试配置并启动` 步骤失败：
+
+```
+/usr/local/nginx-luatest/sbin/nginx: error while loading shared libraries:
+libluajit-5.1.so.2: cannot open shared object file: No such file or directory
+!! nginx -t 未通过
+```
+
+LuaJIT 装在 `/usr/local/luajit/lib`，该路径不在动态链接器搜索范围内。
+`t/build_test.sh` 只导出了 `LUAJIT_LIB` / `LUAJIT_INC` 供 configure 使用，
+既没有写 `/etc/ld.so.conf.d` 也没有给 nginx 加 rpath，因此编译和安装都成功，
+执行 `nginx -t` 时才失败。同一批次里 nginx 全模块与 PHP 作业不涉及 LuaJIT，正常通过。
+
+**根因**：验证脚本与产品安装流程不一致。`include/nginx.sh` 装完 LuaJIT 后
+写 `/etc/ld.so.conf.d/luajit.conf` 并执行 `ldconfig`（第 54-62 行），
+configure 另带 `--with-ld-opt=-Wl,-rpath,/usr/local/luajit/lib`（第 121-130 行），
+两重保障；`t/build_test.sh` 两者都缺。产品代码本身无此缺陷。
+
+**行为变化**：`t/build_test.sh` 的 `build_lua` 对齐产品流程：
+
+- `make install` 后写 `/etc/ld.so.conf.d/luajit.conf` 并 `ldconfig`，失败即中止。
+- nginx configure 增加 `--with-ld-opt="-Wl,-rpath,/usr/local/luajit/lib"`。
+- `nginx` 启动命令补 `|| die`，避免启动失败后仍继续发请求、把问题表现成空响应。
+
+**连带修复**：库路径修好后第一次跑到发请求这一步，`/restycore` 返回
+`resty-core-ok:vnil0` 判定为失败。原因是 `resty.lrucache` 的 `get` 返回
+`data, stale_data, flags` 三个值，`ngx.say("resty-core-ok:", c:get("k"))`
+把三个值全部输出。测试配置改为 `ngx.say("resty-core-ok:", (c:get("k")))`，
+用括号截断成单值。Lua 运行本身正常，是断言写法有误。
+
+**验证**（Debian 13，先移走 `/etc/ld.so.conf.d/luajit.conf` 和
+`/lib64/libluajit-5.1.so.2` 并 `ldconfig`，使 `ldconfig -p` 中 luajit 条目为 0，
+以复现 CI 的干净环境）：
+
+- 修复前的脚本：编译与安装成功，`nginx -t` 报
+  `libluajit-5.1.so.2: cannot open shared object file`，与 CI 日志一致。
+- 修复后的脚本：`nginx -t` 通过，`/lua` 返回 `lua-ok`，
+  `/restycore` 返回 `resty-core-ok:v`，脚本返回 0。
+- 两层保障各自有效：`readelf -d` 显示 nginx 带
+  `RUNPATH [/usr/local/luajit/lib]`；再次移走 ld 配置并 `ldconfig` 后
+  `nginx -t` 仍通过，说明仅靠 rpath 即可启动。
+
+- **验证状态**：已实测（Debian 13，lua 模式完整执行）。
+
+## GHA-013 工作流 action 升级到 Node 24 运行时
+
+**问题**：GitHub Actions 运行日志提示 Node.js 20 已弃用，`actions/checkout@v4` 等
+被强制运行在 Node.js 24 上。
+
+**行为变化**：`.github/workflows/` 全部第三方 action 升到各自首个 `runs.using: node24`
+的主版本，避免跨过带行为变更的版本：
+
+| action | 原版本 | 现版本 |
+|---|---|---|
+| `actions/checkout` | v4 | v5 |
+| `actions/upload-artifact` | v4 | v6 |
+| `actions/download-artifact` | v4 | v7 |
+| `actions/github-script` | v7 | v8 |
+| `actions/attest-build-provenance` | v1 | v3 |
+| `peter-evans/create-pull-request` | v6 | v8 |
+| `softprops/action-gh-release` | v2 | v3 |
+
+未取更高主版本的原因：`upload-artifact` v7 改为 ESM 并引入直传，
+`download-artifact` v8 默认强制校验哈希且不再无条件解压，均非本项目所需。
+
+已核对与本项目用法相关的破坏性变更：`download-artifact` v5 只改变按 artifact ID
+下载时的落地路径，本项目按 `name` 下载，不受影响；`create-pull-request` v7 把
+`git-token` 更名为 `branch-token` 并移除 `PULL_REQUEST_NUMBER` 输出，
+`upstream-check.yml` 两者都未使用。node24 要求 Actions Runner 2.327.1 以上，
+本项目全部作业运行在 GitHub 托管 runner 上。
+
+- **验证状态**：YAML 解析通过；待各工作流实跑确认。
+
+## GHA-014 Issues 限定协作者后，探测失败不再被静默丢弃
+
+**背景**：仓库把 Issues 的交互限制设为 collaborators only。该限制作用于用户账号，
+不影响工作流内的 `GITHUB_TOKEN`：`url-health.yml` 已在工作流级声明
+`permissions: issues: write`，`github-actions[bot]` 仍可创建 issue 与追加评论。
+
+**问题**：`url-health.yml` 的开 issue 步骤没有错误处理。若 Issues 被整体关闭
+（API 返回 410）或 token 权限被收紧（403），探测到的失效下载源只留在 Actions 日志里，
+作业仍为成功，失效结果实际被丢弃。
+
+**行为变化**：创建 issue 与追加评论包进 `try/catch`。失败时把原本要写进 issue 的
+正文写入作业摘要（`core.summary`），并 `core.setFailed`，让作业红灯。
+探测本身成功时行为不变。
+
+- **验证状态**：YAML 解析通过；错误分支需在 Issues 关闭的仓库状态下触发，未实跑。

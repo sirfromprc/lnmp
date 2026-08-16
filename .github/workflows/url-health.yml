@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 探测
         id: probe
@@ -42,7 +42,7 @@ jobs:
 
       - name: 有失效链接就开 issue
         if: steps.probe.outputs.rc != '0'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const fs = require('fs');
@@ -73,14 +73,25 @@ jobs:
               '并确认 `src/checksums.sha256` 一并更新。',
             ].join('\n');
 
-            if (issues.length > 0) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: issues[0].number, body
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner, repo: context.repo.repo,
-                title, body, labels: ['url-health', 'bug']
-              });
+            // 仓库关闭 Issues 或收紧权限时 API 返回 403/410。
+            // 此时不能静默吞掉探测结果，改为写进作业摘要并让作业失败。
+            try {
+              if (issues.length > 0) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: issues[0].number, body
+                });
+              } else {
+                await github.rest.issues.create({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  title, body, labels: ['url-health', 'bug']
+                });
+              }
+            } catch (e) {
+              await core.summary
+                .addHeading('下载源失效（issue 创建失败）', 2)
+                .addRaw(`创建 issue 被拒绝：${e.status || ''} ${e.message}`)
+                .addCodeBlock(body, 'text')
+                .write();
+              core.setFailed(`下载源失效，且无法创建 issue：${e.message}`);
             }
