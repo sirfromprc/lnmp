@@ -10070,3 +10070,211 @@ configure 另带 `--with-ld-opt=-Wl,-rpath,/usr/local/luajit/lib`（第 121-130 
 探测本身成功时行为不变。
 
 - **验证状态**：YAML 解析通过；错误分支需在 Issues 关闭的仓库状态下触发，未实跑。
+
+## FEAT-VHOST-002 站点错误日志与自定义配置区块
+
+**问题**：`lnmp vhost add` 生成的站点配置只有 default 站点带错误日志。普通站点在
+访问日志开关选 `n` 时，Nginx 侧没有 `error_log`，Apache 侧的 `ErrorLog` 也被
+一并注释掉，站点级错误只能落到 `nginx_error.log` 或 Apache 主错误日志。
+
+**行为变化**：
+
+1. 错误日志与访问日志开关解耦，一律写入：
+
+| 位置 | 写入内容 |
+|---|---|
+| `conf/lnmp` `Add_VHost_Config`、`Create_SSL_Config` | `error_log   /home/wwwlogs/<域名>.error.log;` |
+| `conf/lnmpa` `Add_VHost_Config`、`Create_SSL_Config` 的 Nginx 配置 | 同上 |
+| `conf/lnmpa`、`conf/lamp` 的 Apache 配置 | `ErrorLog "/home/wwwlogs/<日志名>-error_log"` 不再被注释 |
+
+   访问日志开关选 `n` 时仍只注释 `CustomLog`（Apache）或写 `access_log off;`（Nginx）。
+
+2. 站点配置和随包配置模板加入 `# 自定义配置--开始` / `# 自定义配置--结束` 成对注释：
+
+| 文件 | 位置 |
+|---|---|
+| 三栈生成的站点配置、SSL 追加块 | `server {}` 与 `<VirtualHost>` 末尾 |
+| `include/nginx.sh`、`conf/lnmp` 的 default 站点 | `server {}` 末尾 |
+| `conf/nginx.conf`、`conf/nginx_a.conf`、`conf/openresty.conf` | `http {}` 内、`include vhost/*.conf;` 之前 |
+| `conf/httpd24-lamp.conf`、`conf/httpd24-lnmpa.conf` | `IncludeOptional conf/vhost/*.conf` 之前 |
+| `conf/httpd-vhosts-lamp.conf`、`conf/httpd-vhosts-lnmpa.conf` | 默认 `<VirtualHost>` 末尾 |
+
+3. `tools/cut_nginx_logs.sh` 对 `log_files_name` 中的每个名字同时切割
+   `<名字>.log` 和 `<名字>.error.log`，归档名分别为 `<名字>_<日期>.log`
+   与 `<名字>.error_<日期>.log`。此前 `default.error.log` 不参与切割。
+
+**验证**：
+
+```bash
+bash tests/test_vhost_error_log.sh    # 31 项全部通过
+bash tests/test_vhost_php_switch.sh   # 全部通过
+bash t/lint.sh                        # 全部通过
+bash t/consistency.sh                 # 14 项通过
+```
+
+`tests/test_vhost_error_log.sh` 覆盖三栈 `Add_VHost_Config` 与 `Create_SSL_Config`
+在访问日志关闭时的错误日志写入、Apache `ErrorLog` 不被注释、`CustomLog` 仍被注释，
+以及站点配置、随包模板和 default 站点的自定义标记成对。
+
+**顺带修复**：`tests/test_vhost_php_switch.sh` 此前未加载
+`Check_Config_Name`、`Check_Server_Admin_Email`、`Check_Config_File_Path`，
+`Add_VHost_Config` 与 `Create_SSL_Config` 一进函数就返回 1，配置文件从未生成，
+29 项断言长期失败。补齐函数加载并把证书桩换成沙箱内的真实文件后全部通过。
+
+- **验证状态**：已验证（静态）。生成的配置未在目标系统实跑 `nginx -t` 与
+  `httpd configtest`。
+
+---
+
+## CONF-010 Nginx 配置统一为 4 空格阶梯缩进
+
+**问题**：随包模板与自动生成的站点配置沿用旧排版，块内第一层用 8 空格、
+闭合花括号用 4 空格，与内层 `location` 的 4 空格步进不一致；
+`conf/rewrite/*.conf` 另有制表符、1 空格、6 空格和缺失缩进混用。
+缩进不影响 nginx 解析，属排版问题。
+
+**行为变化**：生成配置的文本缩进变化，指令与层级结构不变。
+
+1. 缩进规则统一为：每层 4 空格，闭合花括号与其所属块的起始行同列。
+   被 `include` 进 `server {}` 的片段以 4 空格为第一层，与展开位置对齐。
+
+| 范围 | 文件 |
+|---|---|
+| 主配置 | `conf/nginx.conf`、`conf/nginx_a.conf`、`conf/openresty.conf` |
+| include 片段 | `conf/enable-php.conf`、`conf/enable-php-pathinfo.conf`、`conf/enable-php8.0`–`8.5.conf`、`conf/proxy-pass-php.conf`、`conf/rewrite/*.conf` |
+| 示例配置 | `conf/example/` 下 9 个 Nginx 示例 |
+| 生成模板 | `conf/lnmp` `Add_VHost_Config`/`Create_SSL_Config`/`Site_PHP_Off_Block`/default 补建块、`conf/lnmpa` 同名函数、`include/nginx.sh` `Write_Nginx_Default_VHost`、`include/php.sh` 的 phpMyAdmin 片段 |
+| `sed` 插入串 | `conf/lnmp`、`conf/lnmpa` 的 301 跳转块，`include/nginx.sh` 的 `lua_package_path`/`lua_package_cpath`/`brotli`，`include/upgrade_nginx.sh` 的 `lua_package_path` |
+
+2. `conf/nginx.conf`、`conf/nginx_a.conf`、`conf/openresty.conf` 中原本顶格的
+   `server {}` 与 `include vhost/*.conf;` 移入 `http {}` 的缩进层级；
+   `conf/nginx.conf` 中两行制表符缩进改为空格。
+
+3. `conf/rewrite/*.conf` 按花括号深度重排，制表符改为空格，补齐缺失的行尾换行；
+   `conf/rewrite/zblog.conf` 的 `){` 改为 `) {`。
+
+4. `include/upgrade_nginx.sh` 补建 `/lua` 块的插入串保持 8/12 空格：该块位于
+   `server {}` 内第二层，缩进值不随本次调整变化。
+
+**连带修复**：模板闭合花括号改为顶格后，`sed -n "/^name()/,/^}/p"` 会在
+heredoc 内的 `}` 处提前截断函数体。新增 `tests/extract_func.sh` 按 heredoc
+状态提取函数定义，替换 `tests/test_vhost_php_switch.sh`、
+`tests/test_vhost_error_log.sh`、`tests/test_vhost_prompt_output.sh`、
+`tests/test_security_fixes.sh`、`tests/test_apache_stack_service_failures.sh`
+中的同类 `sed` 提取。`tests/verify_vhost_php_remote.sh` 插入的测试用
+`location /api/` 同步改为 4 空格。
+
+**新增检查脚本**：
+
+- `tests/check_nginx_indent.sh [-b 基准列数] <文件>...`：校验缩进等于基准列数加
+  花括号深度乘 4，识别指令参数续行与注释行。
+- `tests/render_vhost_preview.sh <脚本> <起始行> <结束行>`：用固定假值渲染
+  heredoc 模板，输出实际生成的配置。
+
+**验证**：
+
+```bash
+bash tests/check_nginx_indent.sh conf/nginx.conf conf/nginx_a.conf \
+     conf/openresty.conf conf/example/*.conf          # 通过（Apache 示例除外）
+bash tests/check_nginx_indent.sh -b 4 conf/enable-php*.conf \
+     conf/proxy-pass-php.conf conf/rewrite/*.conf     # 通过
+bash tests/test_vhost_php_switch.sh                   # 全部通过
+bash tests/test_vhost_error_log.sh                    # 全部通过
+bash tests/test_apache_stack_service_failures.sh      # 6 项通过
+bash t/lint.sh                                        # 全部通过
+bash t/consistency.sh                                 # 14 项通过
+```
+
+六处 heredoc 模板经 `tests/render_vhost_preview.sh` 渲染后通过缩进校验；
+301 跳转块、`lua_package_path`/`lua_package_cpath`/`brotli` 插入、升级脚本补建
+`/lua` 块的 `sed` 均在渲染结果上实跑并复校缩进。
+
+`tests/test_vhost_prompt_output.sh` 有既有失败 2 项、`tests/test_security_fixes.sh`
+有既有失败 1 项，用改动前的 `conf/`、`include/` 对比确认失败项完全一致，
+见 `todo.md` 的 REV-005、REV-006。
+
+- **验证状态**：已验证（静态）。生成的配置未在目标系统实跑 `nginx -t`。
+
+---
+
+## REV-003 ~ REV-006 定向测试脚本与产品实现对齐
+
+**背景**：`todo.md` 登记的四条 REV 均为测试侧问题，产品实现无需改动。
+
+### REV-003 `tests/test_vhost_php_switch.sh`
+
+复核结论：三条记录均已不复现。`Check_Config_File_Path`、`Check_Config_Name`
+已随 `Create_SSL_Config` 的依赖一并由 `Load_Funcs` 加载（第 183、253、281 行），
+第 5 节的沙箱路径改写使 `Add_SSL_Only_Info_Menu` 的站点存在性检查命中
+`${tmproot}/usr/local/nginx/conf/vhost/`。非 root 与 Debian 13 测试机 root 下
+各执行一次，均 61 项全部通过，不需要 root 前置检查。本条无代码改动。
+
+### REV-004 `tests/verify_vhost_php_remote.sh` 自签证书路径
+
+**行为变化**：第 7 节自签证书由 `mktemp -d /tmp/...` 改写到
+`/usr/local/nginx/conf/ssl/<域名>/<域名>.{cer,key}`，目录 0700、私钥 0600，
+`phpoff.example.com` 与 `phpon.example.com` 各自一套。
+
+**原因**：`init.d/nginx.service` 含 `PrivateTmp=true`，nginx 进程看到的是私有
+`/tmp`，`ssl_certificate` 指向宿主 `/tmp` 路径时 reload/start 报
+`cannot load certificate ... No such file or directory`，443 不监听，
+4 项 HTTPS 用例返回 000；`KEEP=1` 时该配置残留并阻止 nginx 启动。
+
+**行号**：`tests/verify_vhost_php_remote.sh:267-289`。`Cleanup` 已含
+`rm -rf /usr/local/nginx/conf/ssl/${d}`，无需新增清理路径。
+`${tmpdir}` 仍用于 `ssl add` 日志，不被 nginx 读取。
+
+**根因对照**（Debian 13 测试机，nginx 1.30.4 编译版 + PHP 8.3.33 + MariaDB 11.8.8）：
+临时 vhost 的 `ssl_certificate` 指向 `/tmp/rev004-repro.XXXXXX/t.cer` 时，
+`nginx -t` 在普通 shell 中通过，`systemctl reload nginx` 失败：
+
+```
+nginx: [emerg] cannot load certificate "/tmp/rev004-repro.YwLxTD/t.cer":
+BIO_new_file() failed (SSL: ... No such file or directory ...)
+```
+
+对应端口不进入 LISTEN。改用 `conf/ssl/<域名>/` 后同一流程正常。
+
+### REV-005 `tests/test_vhost_prompt_output.sh` 期望值与覆盖
+
+**行为变化**：第 2 节两行提示的期望文本补上 `Color_Text`（`echo -e " \e[0;$2m..."`）
+固有的前导空格；循环由 `conf/lnmp conf/lamp` 扩到含 `conf/lnmpa`。
+
+**行号**：`tests/test_vhost_prompt_output.sh:48-58`。
+
+### REV-006 `tests/test_security_fixes.sh` 的 Make_TempMycnf 断言
+
+**行为变化**：断言由字面量 `socket=/run/mysqld/mysqld.sock` 改为校验
+`Make_TempMycnf` 中的 `socket=$(Get_Actual_DB_Socket)`，并额外校验
+`Get_Actual_DB_Socket` 保留 `/run/mysqld/mysqld.sock` 兜底，
+覆盖 MySQL 与 MariaDB 各自的 socket 路径。
+
+**行号**：`tests/test_security_fixes.sh:366-372`，对应实现
+`include/main.sh:1381`、`include/main.sh:774`。
+
+**验证**：
+
+```bash
+bash -n tests/test_vhost_php_switch.sh tests/verify_vhost_php_remote.sh \
+        tests/test_vhost_prompt_output.sh tests/test_security_fixes.sh   # 通过
+bash tests/test_vhost_php_switch.sh        # 61 项全部通过
+bash tests/test_vhost_prompt_output.sh     # 15 项全部通过（含新增 conf/lnmpa 2 项）
+bash tests/test_security_fixes.sh          # 35 项通过，0 项失败
+bash t/lint.sh                             # 全部通过
+bash t/consistency.sh                      # 14 项通过
+```
+
+上述三个测试在 Debian 13 测试机以 root 复跑一次，结果一致（61 / 15 / 35 项全通过）。
+
+REV-004 在 Debian 13 测试机以 root 实跑 `bash tests/verify_vhost_php_remote.sh`：
+
+- 默认清理模式连跑两次，均 43 项 ok、0 FAIL、0 skip，其中第 7 节 11 项 HTTPS
+  用例全部通过（修复前该节 4 项返回 000）。
+- `KEEP=1` 保留现场后 `systemctl restart nginx` 返回 active，重启后
+  `https://phpoff.example.com/real.php` 为 404、`https://phpon.example.com/real.php`
+  输出 `PHP-EXECUTED`；证书目录 0700、私钥 0600。
+- 默认模式收尾后 `conf/vhost`、`conf/ssl`、`/home/wwwroot` 下测试域名残留均为 0，
+  `nginx -t` 通过。`KEEP=1` 会按设计保留 `/tmp/lnmp-php-verify.*` 中的
+  `ssl add` 日志供排查，不影响 nginx。
+
+- **验证状态**：REV-003、REV-005、REV-006 已验证（静态）；REV-004 已实测。

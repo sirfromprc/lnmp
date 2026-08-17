@@ -653,6 +653,28 @@ lnmp vhost add
 
 成功后会打印站点信息，并且能看到 `数据库创建成功。`。
 
+**第 8 步只控制访问日志。** 错误日志一律写入，Nginx 站点是
+`error_log /home/wwwlogs/<域名>.error.log;`，Apache 站点是
+`ErrorLog "/home/wwwlogs/<日志名>-error_log"`：
+
+```bash
+tail -f /home/wwwlogs/wp.example.com.error.log
+```
+
+**自己加的配置写在自定义区块里。** 站点配置末尾留有两行注释，指令写在中间：
+
+```nginx
+        # 自定义配置--开始
+        client_max_body_size 64m;
+        # 自定义配置--结束
+```
+
+改完执行 `/usr/local/nginx/sbin/nginx -t` 和 `/usr/local/nginx/sbin/nginx -s reload`；
+Apache 用 `/etc/init.d/httpd configtest` 和 `/etc/init.d/httpd graceful`。
+`conf/nginx.conf`、`conf/nginx_a.conf`、`conf/openresty.conf`、`conf/httpd24-*.conf`、
+`conf/httpd-vhosts-*.conf` 中也有同样的区块，位置分别在 `http {}` 内和
+默认 VirtualHost 内。
+
 ### 4.2 非交互创建
 
 **带 PHP 的站点**（WordPress 场景，与 4.1 的问答一一对应）：
@@ -1864,6 +1886,8 @@ SHA-256。大小核对能发现传输截断和文件缺失，发现不了内容�
 |---|---|
 | nginx 错误日志 | `/home/wwwlogs/nginx_error.log` |
 | 站点访问日志 | `/home/wwwlogs/<域名>.log` |
+| 站点错误日志（Nginx） | `/home/wwwlogs/<域名>.error.log` |
+| 站点错误日志（Apache） | `/home/wwwlogs/<域名>-error_log` |
 | PHP-FPM 日志 | `/usr/local/php/var/log/php-fpm.log` |
 | MySQL 错误日志 | `/usr/local/mysql/var/<主机名>.err` |
 | MariaDB 错误日志 | `/usr/local/mariadb/var/mariadb.err` |
@@ -1876,6 +1900,14 @@ SHA-256。大小核对能发现传输截断和文件缺失，发现不了内容�
 
 ```bash
 bash tools/cut_nginx_logs.sh
+```
+
+脚本按 `log_files_name` 数组切割，每个名字同时处理 `<名字>.log` 和
+`<名字>.error.log`，归档为 `<名字>_<日期>.log` 与 `<名字>.error_<日期>.log`。
+`lnmp vhost add` 建的站点用域名作日志名，需要手动加进该数组，例如：
+
+```bash
+log_files_name=(default access www.example.com)
 ```
 
 default 站点的日志是 `/home/wwwlogs/default.log` 和

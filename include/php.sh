@@ -505,36 +505,36 @@ Config_PhpMyAdmin_Access()
             # LNMPA 仅将 phpMyAdmin 路径反向代理到 Apache，避免全站 PHP 规则
             # 使默认站点中的其他 PHP 文件可执行。
             cat >"${nginx_frag}"<<EOF || return 1
-        location = /${pma_url} {
-            return 301 /${pma_url}/;
-        }
+    location = /${pma_url} {
+        return 301 /${pma_url}/;
+    }
 
-        location ^~ /${pma_url}/ {
-            proxy_pass http://127.0.0.1:88;
-            include proxy.conf;
-        }
+    location ^~ /${pma_url}/ {
+        proxy_pass http://127.0.0.1:88;
+        include proxy.conf;
+    }
 EOF
         else
             # phpMyAdmin 位于网站根目录外，需单独设置 open_basedir 和 FastCGI；
             # 独立前缀规则不会放开默认站点中的其他 PHP 文件。
             cat >"${nginx_frag}"<<EOF || return 1
-        location = /${pma_url} {
-            return 301 /${pma_url}/;
-        }
+    location = /${pma_url} {
+        return 301 /${pma_url}/;
+    }
 
-        location ^~ /${pma_url}/ {
-            alias ${PhpMyAdmin_Dir}/;
-            index index.php;
+    location ^~ /${pma_url}/ {
+        alias ${PhpMyAdmin_Dir}/;
+        index index.php;
 
-            location ~ ^/${pma_url}/(.+\.php)\$ {
-                alias ${PhpMyAdmin_Dir}/\$1;
-                fastcgi_pass  unix:/run/php-fpm/php-cgi.sock;
-                fastcgi_index index.php;
-                include fastcgi.conf;
-                fastcgi_param SCRIPT_FILENAME ${PhpMyAdmin_Dir}/\$1;
-                fastcgi_param PHP_ADMIN_VALUE "open_basedir=${PhpMyAdmin_Dir}/:/var/lib/phpmyadmin/:/tmp/:/proc/";
-            }
+        location ~ ^/${pma_url}/(.+\.php)\$ {
+            alias ${PhpMyAdmin_Dir}/\$1;
+            fastcgi_pass  unix:/run/php-fpm/php-cgi.sock;
+            fastcgi_index index.php;
+            include fastcgi.conf;
+            fastcgi_param SCRIPT_FILENAME ${PhpMyAdmin_Dir}/\$1;
+            fastcgi_param PHP_ADMIN_VALUE "open_basedir=${PhpMyAdmin_Dir}/:/var/lib/phpmyadmin/:/tmp/:/proc/";
         }
+    }
 EOF
         fi
         chmod 644 "${nginx_frag}" || return 1

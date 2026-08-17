@@ -7,9 +7,10 @@
 # Nginx 日志目录。
 log_files_path="/home/wwwlogs/"
 
-# 需要切割的日志名，可在数组中添加虚拟主机日志名。
+# 需要切割的日志名，可在数组中添加虚拟主机日志名。每个名字同时处理
+# `<名字>.log` 和 `<名字>.error.log`。
 #
-# 默认处理 default 站点和本机管理端口的 access 日志。`lnmp vhost add`
+# 默认处理 default 站点和本机管理端口的日志。`lnmp vhost add`
 # 创建的站点使用域名作为日志名，需手动加入数组才会定期切割。
 log_files_name=(default access)
 
@@ -28,13 +29,15 @@ log_files_dir="${log_files_path}$(date -d "yesterday" +"%Y")/$(date -d "yesterda
 
 mkdir -p "${log_files_dir}" || exit 1
 
-# 移动前一天的日志到归档目录。
+# 移动前一天的日志到归档目录，访问日志和错误日志一并处理。
 for name in "${log_files_name[@]}"; do
-    src="${log_files_path}${name}.log"
-    # 未生成日志的站点无需归档。
-    [ -f "${src}" ] || continue
     logfile="${name##*/}"
-    mv "${src}" "${log_files_dir}/${logfile}_${yesterday}.log"
+    for suffix in "" ".error"; do
+        src="${log_files_path}${name}${suffix}.log"
+        # 未生成日志的站点无需归档。
+        [ -f "${src}" ] || continue
+        mv "${src}" "${log_files_dir}/${logfile}${suffix}_${yesterday}.log"
+    done
 done
 
 find "${log_files_path}" -mindepth 1 -type f -name '*.log' \

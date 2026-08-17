@@ -370,11 +370,15 @@ ${apache_php_off}
     Require all granted
     ${apache_dir_index}
 </Directory>
+
+# 自定义配置--开始
+
+# 自定义配置--结束
 </VirtualHost>
 EOF
 
+    # 错误日志始终保留，仅访问日志随开关关闭。
     if [ "${access_log}" != 'y' ]; then
-        sed -i 's/^ErrorLog/#ErrorLog/g' /usr/local/apache/conf/vhost/${domain}.conf
         sed -i 's/^CustomLog/#CustomLog/g' /usr/local/apache/conf/vhost/${domain}.conf
     fi
 
@@ -2029,11 +2033,15 @@ ${ssl_php_off}
     Options SymLinksIfOwnerMatch
 ${ssl_directory_options}
 </Directory>
+
+# 自定义配置--开始
+
+# 自定义配置--结束
 </VirtualHost>
 EOF
 
+    # 错误日志始终保留，仅访问日志随开关关闭。
     if [ "${access_log}" != 'y' ]; then
-        sed -i 's/^ErrorLog/#ErrorLog/g' "${vhost_conf}"
         sed -i 's/^CustomLog/#CustomLog/g' "${vhost_conf}"
     fi
 

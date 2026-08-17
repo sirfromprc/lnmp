@@ -392,7 +392,7 @@ Pureftpd_Port=2121 Redis_Port=6380 bash install.sh lnmp
 | `/usr/local/nginx/conf/rewrite/` | 伪静态规则 |
 | `/usr/local/nginx/conf/enable-php.conf` | PHP 处理（默认版本） |
 | `/usr/local/nginx/conf/enable-php8.4.conf` | 多版本 PHP 时按版本选用 |
-| `/home/wwwlogs/` | 访问与错误日志 |
+| `/home/wwwlogs/` | 访问与错误日志，站点错误日志为 `<域名>.error.log` |
 
 default 站点默认不加载 PHP，`.php` 请求返回 404；`/.well-known/` 使用高优先级
 规则放行 ACME HTTP-01 验证。启用 phpMyAdmin 后，访问片段才会带入 PHP 处理配置；
@@ -421,6 +421,15 @@ lnmp vhost del     # 删除站点（只删配置，不删网站文件）
 **是否开启 PHP** → Pathinfo → 是否写访问日志 → IPv6 → 是否建库 → 是否申请 SSL 证书。
 新站点配置写入 `/usr/local/nginx/conf/vhost/<域名>.conf`。
 **配置语法检查不通过会自动删除并报错退出**，不会留下一个起不来的 Nginx。
+
+**站点错误日志**：访问日志由问答控制，错误日志一律写入，不受该开关影响。
+LNMP 与 LNMPA 的 Nginx 站点写 `error_log /home/wwwlogs/<域名>.error.log;`，
+LNMPA 与 LAMP 的 Apache 站点写 `ErrorLog "/home/wwwlogs/<日志名>-error_log"`，
+`lnmp ssl add` 追加的 443 配置同样带错误日志。
+
+**自定义配置区块**：站点配置和随包的 Nginx、Apache 主配置模板中都留有
+`# 自定义配置--开始` 与 `# 自定义配置--结束` 两行注释，自己加的指令写在两行之间，
+便于与本包生成的内容区分。
 
 **站点级 PHP 开关**：`是否开启 PHP? (Y/n，默认 y)` 默认开启，与原有建站流程一致。
 选 `n` 时跳过 Pathinfo 和 PHP 版本询问，站点配置中不写 PHP 执行入口

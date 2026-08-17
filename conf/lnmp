@@ -383,10 +383,10 @@ Site_PHP_Off_Block()
 {
     cat <<'EOF'
 # 本站点未开启 PHP，.php 及其 PATH_INFO 请求统一返回 404，防止源码泄露。
-        # 整站反向代理需要由后端处理 .php 路径时，可删除此 location。
-        location ~ [^/]\.php(/|$) {
-            return 404;
-        }
+    # 整站反向代理需要由后端处理 .php 路径时，可删除此 location。
+    location ~ [^/]\.php(/|$) {
+        return 404;
+    }
 EOF
 }
 
@@ -419,38 +419,43 @@ Add_VHost_Config()
     fi
     cat >"/usr/local/nginx/conf/vhost/${domain}.conf"<<EOF
 server {
-        listen 80;
-        #listen [::]:80;
-        server_name ${domain} ${moredomain};
-        ${vhost_index}
-        root  ${vhostdir};
+    listen 80;
+    #listen [::]:80;
+    server_name ${domain} ${moredomain};
+    ${vhost_index}
+    root  ${vhostdir};
 
-        include rewrite/${rewrite}.conf;
-        #error_page   404   /404.html;
+    include rewrite/${rewrite}.conf;
+    #error_page   404   /404.html;
 
-        # Deny access to PHP files in specific directory
-        #location ~ /(wp-content|uploads|wp-includes|images)/.*\.php$ { deny all; }
+    # Deny access to PHP files in specific directory
+    #location ~ /(wp-content|uploads|wp-includes|images)/.*\.php$ { deny all; }
 
-        ${include_enable_php}
+    ${include_enable_php}
 
-        location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)$ {
-            expires      30d;
-        }
-
-        location ~ .*\.(js|css)$ {
-            expires      12h;
-        }
-
-        location ^~ /.well-known/ {
-            allow all;
-        }
-
-        location ~ /\. {
-            deny all;
-        }
-
-        ${al}
+    location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)$ {
+        expires      30d;
     }
+
+    location ~ .*\.(js|css)$ {
+        expires      12h;
+    }
+
+    location ^~ /.well-known/ {
+        allow all;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+
+    ${al}
+    error_log   /home/wwwlogs/${domain}.error.log;
+
+    # 自定义配置--开始
+
+    # 自定义配置--结束
+}
 EOF
 
     if [ "${enable_ipv6}" == "y" ]; then
@@ -778,50 +783,54 @@ Add_VHost_Default()
     chmod 755 /home/wwwroot/default
     cat >/usr/local/nginx/conf/vhost/default.conf<<EOF
 server {
-        listen 80 default_server${listen_extra};
-        #listen [::]:80 default_server ipv6only=on;
-        server_name _;
-        index index.html index.htm;
-        root  /home/wwwroot/default;
+    listen 80 default_server${listen_extra};
+    #listen [::]:80 default_server ipv6only=on;
+    server_name _;
+    index index.html index.htm;
+    root  /home/wwwroot/default;
 
-        #error_page   404   /404.html;
+    #error_page   404   /404.html;
 
-        # phpMyAdmin 启用时载入访问入口及其 PHP 或反向代理配置。
-        include phpmyadmin.*.conf;
+    # phpMyAdmin 启用时载入访问入口及其 PHP 或反向代理配置。
+    include phpmyadmin.*.conf;
 
-        # 仅允许已启用的 phpinfo、Redis 和 Memcached 演示页执行 PHP。
-        location ~ ^/(phpinfo|redis|memcached)\.php\$ {
-            try_files \$uri =404;
-            fastcgi_pass  unix:/run/php-fpm/php-cgi.sock;
-            fastcgi_index index.php;
-            include fastcgi.conf;
-        }
-
-        # default 根目录中的其它 PHP 文件返回 404，防止源码作为静态文件下载。
-        # phpMyAdmin 使用独立的优先前缀 location，不受此规则影响。
-        location ~ [^/]\.php(/|\$) {
-            return 404;
-        }
-
-        location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)\$ {
-            expires      30d;
-        }
-
-        location ~ .*\.(js|css)\$ {
-            expires      12h;
-        }
-
-        location ^~ /.well-known/ {
-            allow all;
-        }
-
-        location ~ /\. {
-            deny all;
-        }
-
-        access_log  /home/wwwlogs/default.log main;
-        error_log   /home/wwwlogs/default.error.log;
+    # 仅允许已启用的 phpinfo、Redis 和 Memcached 演示页执行 PHP。
+    location ~ ^/(phpinfo|redis|memcached)\.php\$ {
+        try_files \$uri =404;
+        fastcgi_pass  unix:/run/php-fpm/php-cgi.sock;
+        fastcgi_index index.php;
+        include fastcgi.conf;
     }
+
+    # default 根目录中的其它 PHP 文件返回 404，防止源码作为静态文件下载。
+    # phpMyAdmin 使用独立的优先前缀 location，不受此规则影响。
+    location ~ [^/]\.php(/|\$) {
+        return 404;
+    }
+
+    location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)\$ {
+        expires      30d;
+    }
+
+    location ~ .*\.(js|css)\$ {
+        expires      12h;
+    }
+
+    location ^~ /.well-known/ {
+        allow all;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+
+    access_log  /home/wwwlogs/default.log main;
+    error_log   /home/wwwlogs/default.error.log;
+
+    # 自定义配置--开始
+
+    # 自定义配置--结束
+}
 EOF
     echo "正在检查 Nginx 配置..."
     if ! /usr/local/nginx/sbin/nginx -t; then
@@ -2467,9 +2476,9 @@ Create_SSL_Config()
         ssl_index='index index.html index.htm index.php default.html default.htm default.php;'
         ssl_php_block='include phpmyadmin.*.conf;
 
-        location ~ [^/]\.php(/|$) {
-            return 404;
-        }'
+    location ~ [^/]\.php(/|$) {
+        return 404;
+    }'
     fi
     if [ "${enable_ipv6}" = "y" ]; then
         if [ "${domain}" = "default" ]; then
@@ -2492,65 +2501,70 @@ Create_SSL_Config()
     cat >>"${vhost_conf}"<<EOF
 
 server {
-        ${ssl_listen}
-        ${ssl_ipv6_listen}
-        # Nginx 1.25.1 及以上使用独立的 http2 指令。
-        http2 on;
-        server_name ${ssl_server_name};
-        ${ssl_index}
-        root  ${vhostdir};
+    ${ssl_listen}
+    ${ssl_ipv6_listen}
+    # Nginx 1.25.1 及以上使用独立的 http2 指令。
+    http2 on;
+    server_name ${ssl_server_name};
+    ${ssl_index}
+    root  ${vhostdir};
 
-        ssl_certificate ${ssl_certificate};
-        ssl_certificate_key ${ssl_certificate_key};
-        # TLS 1.0 和 1.1 已被 RFC 8996 弃用。
-        ssl_protocols TLSv1.2 TLSv1.3;
-        # 仅保留支持前向保密的 AEAD 套件，排除 3DES、静态 RSA 和 CBC。
-        # TLS 1.3 使用 OpenSSL 独立的默认套件配置。
-        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-        # 由客户端选择套件，可优先使用设备具备硬件加速的算法。
-        ssl_prefer_server_ciphers off;
-        # 10 MB 会话缓存约可保存 4 万个握手结果，减少重复完整握手。
-        ssl_session_cache shared:SSL:10m;
-        ssl_session_timeout 5m;
-        # 关闭 session ticket，避免长期票据密钥泄露影响历史会话的前向保密。
-        ssl_session_tickets off;
-        # DHE 套件使用 lnmp ssl add 首次生成的 DH 参数。
-        ssl_dhparam /usr/local/nginx/conf/ssl/dhparam.pem;
+    ssl_certificate ${ssl_certificate};
+    ssl_certificate_key ${ssl_certificate_key};
+    # TLS 1.0 和 1.1 已被 RFC 8996 弃用。
+    ssl_protocols TLSv1.2 TLSv1.3;
+    # 仅保留支持前向保密的 AEAD 套件，排除 3DES、静态 RSA 和 CBC。
+    # TLS 1.3 使用 OpenSSL 独立的默认套件配置。
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    # 由客户端选择套件，可优先使用设备具备硬件加速的算法。
+    ssl_prefer_server_ciphers off;
+    # 10 MB 会话缓存约可保存 4 万个握手结果，减少重复完整握手。
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 5m;
+    # 关闭 session ticket，避免长期票据密钥泄露影响历史会话的前向保密。
+    ssl_session_tickets off;
+    # DHE 套件使用 lnmp ssl add 首次生成的 DH 参数。
+    ssl_dhparam /usr/local/nginx/conf/ssl/dhparam.pem;
 
-        # HSTS 会在有效期内强制浏览器使用 HTTPS。启用前须确认主域名和所有
-        # 子域名均可持续提供有效证书，否则浏览器无法回退到 HTTP。
-        #add_header Strict-Transport-Security "max-age=31536000" always;
+    # HSTS 会在有效期内强制浏览器使用 HTTPS。启用前须确认主域名和所有
+    # 子域名均可持续提供有效证书，否则浏览器无法回退到 HTTP。
+    #add_header Strict-Transport-Security "max-age=31536000" always;
 
-        ${ssl_rewrite_line}
-        #error_page   404   /404.html;
+    ${ssl_rewrite_line}
+    #error_page   404   /404.html;
 
-        # 可按需禁止指定目录执行 PHP。
-        #location ~ /(wp-content|uploads|wp-includes|images)/.*\.php$ { deny all; }
+    # 可按需禁止指定目录执行 PHP。
+    #location ~ /(wp-content|uploads|wp-includes|images)/.*\.php$ { deny all; }
 
-        ${ssl_php_block}
+    ${ssl_php_block}
 
-        location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)$ {
-            expires      30d;
-        }
-
-        location ~ .*\.(js|css)$ {
-            expires      12h;
-        }
-
-        location ^~ /.well-known/ {
-            allow all;
-        }
-
-        location ~ /\. {
-            deny all;
-        }
-
-        ${al}
+    location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)$ {
+        expires      30d;
     }
+
+    location ~ .*\.(js|css)$ {
+        expires      12h;
+    }
+
+    location ^~ /.well-known/ {
+        allow all;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+
+    ${al}
+    error_log   /home/wwwlogs/${domain}.error.log;
+
+    # 自定义配置--开始
+
+    # 自定义配置--结束
+}
 EOF
 
     if [ "${using_301}" == "y" ]; then
-        sed -i '0,/access_log/!b;//i\        location / {\n            return 301 https://$host$request_uri;\n        }\n' /usr/local/nginx/conf/vhost/${domain}.conf
+        sed -i '0,/access_log/!b;//i\    location / {\n        return 301 https://$host$request_uri;\n    }\n' /usr/local/nginx/conf/vhost/${domain}.conf
         sed -i "0,/include rewrite\/${rewrite}.conf;/s//#include rewrite\/${rewrite}.conf;/" /usr/local/nginx/conf/vhost/${domain}.conf
     fi
 

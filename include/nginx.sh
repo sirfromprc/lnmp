@@ -281,13 +281,13 @@ Write_Nginx_Default_VHost()
 
     # LNMPA 将 PHP 请求反向代理到 Apache，其余安装栈连接 PHP-FPM。
     if [ "${Stack}" = 'lnmpa' ]; then
-        demo_php_block='            proxy_pass http://127.0.0.1:88;
-            include proxy.conf;'
+        demo_php_block='        proxy_pass http://127.0.0.1:88;
+        include proxy.conf;'
     else
-        demo_php_block='            try_files $uri =404;
-            fastcgi_pass  unix:/run/php-fpm/php-cgi.sock;
-            fastcgi_index index.php;
-            include fastcgi.conf;'
+        demo_php_block='        try_files $uri =404;
+        fastcgi_pass  unix:/run/php-fpm/php-cgi.sock;
+        fastcgi_index index.php;
+        include fastcgi.conf;'
     fi
 
     if ! mkdir -p "${conf_dir}/vhost"; then
@@ -297,48 +297,52 @@ Write_Nginx_Default_VHost()
 
     cat >"${conf_dir}/vhost/default.conf"<<EOF || { Echo_Red "生成 Nginx default 站点失败。"; return 1; }
 server {
-        listen 80 default_server${listen_extra};
-        #listen [::]:80 default_server ipv6only=on;
-        server_name _;
-        index index.html index.htm;
-        root  ${Default_Website_Dir};
+    listen 80 default_server${listen_extra};
+    #listen [::]:80 default_server ipv6only=on;
+    server_name _;
+    index index.html index.htm;
+    root  ${Default_Website_Dir};
 
-        #error_page   404   /404.html;
+    #error_page   404   /404.html;
 
-        # phpMyAdmin 片段按安装开关生成，关闭时默认站点保持静态。
-        include phpmyadmin.*.conf;
+    # phpMyAdmin 片段按安装开关生成，关闭时默认站点保持静态。
+    include phpmyadmin.*.conf;
 
-        # 仅允许按开关部署的 phpinfo、redis 和 memcached 固定测试页执行 PHP；
-        # 文件未部署时返回 404。
-        location ~ ^/(phpinfo|redis|memcached)\.php\$ {
+    # 仅允许按开关部署的 phpinfo、redis 和 memcached 固定测试页执行 PHP；
+    # 文件未部署时返回 404。
+    location ~ ^/(phpinfo|redis|memcached)\.php\$ {
 ${demo_php_block}
-        }
-
-        # 默认站点除指定测试页外不执行 PHP，避免源码泄露；phpMyAdmin 使用
-        # 独立的 ^~ 前缀规则，不会放开网站根目录中的其他 PHP 文件。
-        location ~ [^/]\.php(/|\$) {
-            return 404;
-        }
-
-        location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)\$ {
-            expires      30d;
-        }
-
-        location ~ .*\.(js|css)\$ {
-            expires      12h;
-        }
-
-        location ^~ /.well-known/ {
-            allow all;
-        }
-
-        location ~ /\. {
-            deny all;
-        }
-
-        access_log  /home/wwwlogs/default.log main;
-        error_log   /home/wwwlogs/default.error.log;
     }
+
+    # 默认站点除指定测试页外不执行 PHP，避免源码泄露；phpMyAdmin 使用
+    # 独立的 ^~ 前缀规则，不会放开网站根目录中的其他 PHP 文件。
+    location ~ [^/]\.php(/|\$) {
+        return 404;
+    }
+
+    location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)\$ {
+        expires      30d;
+    }
+
+    location ~ .*\.(js|css)\$ {
+        expires      12h;
+    }
+
+    location ^~ /.well-known/ {
+        allow all;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+
+    access_log  /home/wwwlogs/default.log main;
+    error_log   /home/wwwlogs/default.error.log;
+
+    # 自定义配置--开始
+
+    # 自定义配置--结束
+}
 EOF
     return 0
 }
@@ -391,11 +395,11 @@ Install_Nginx()
     \cp -ra conf/example /usr/local/nginx/conf/example
     if [ "${Enable_Nginx_Lua}" = 'y' ]; then
         if ! grep -q 'lua_package_path "/usr/local/nginx/lib/lua/?.lua";' /usr/local/nginx/conf/nginx.conf; then
-            sed -i "/server_tokens off;/i\        lua_package_path \"/usr/local/nginx/lib/lua/?.lua\";\n" /usr/local/nginx/conf/nginx.conf
+            sed -i "/server_tokens off;/i\    lua_package_path \"/usr/local/nginx/lib/lua/?.lua\";\n" /usr/local/nginx/conf/nginx.conf
         fi
         # cjson.so 通过 cpath 加载，末尾的 ";;" 保留 LuaJIT 默认搜索路径。
         if ! grep -q 'lua_package_cpath' /usr/local/nginx/conf/nginx.conf; then
-            sed -i "/server_tokens off;/i\        lua_package_cpath \"/usr/local/luajit/lib/lua/5.1/?.so;;\";\n" /usr/local/nginx/conf/nginx.conf
+            sed -i "/server_tokens off;/i\    lua_package_cpath \"/usr/local/luajit/lib/lua/5.1/?.so;;\";\n" /usr/local/nginx/conf/nginx.conf
         fi
         # 编译阶段已检查 Lua 运行库，无需在公网默认站点暴露 /lua 自检接口。
     elif grep -q 'location /lua' /usr/local/nginx/conf/nginx.conf; then
@@ -405,7 +409,7 @@ Install_Nginx()
     fi
     # 启用已编译的 Brotli 模块；静态 Brotli 与 gzip 由浏览器协商选择。
     if [ "${Enable_Ngx_Brotli}" = 'y' ] && ! grep -q '^\s*brotli on;' /usr/local/nginx/conf/nginx.conf; then
-        sed -i "/gzip on;/i\        brotli on;\n        brotli_static on;\n        brotli_comp_level 6;\n        brotli_min_length 1k;\n        brotli_types text/plain text/css application/json application/javascript application/x-javascript text/javascript application/xml application/xml+rss image/svg+xml;\n" /usr/local/nginx/conf/nginx.conf
+        sed -i "/gzip on;/i\    brotli on;\n    brotli_static on;\n    brotli_comp_level 6;\n    brotli_min_length 1k;\n    brotli_types text/plain text/css application/json application/javascript application/x-javascript text/javascript application/xml application/xml+rss image/svg+xml;\n" /usr/local/nginx/conf/nginx.conf
     fi
 
     mkdir -p ${Default_Website_Dir}
