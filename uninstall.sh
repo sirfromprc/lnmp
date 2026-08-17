@@ -294,6 +294,7 @@ Uninstall_LNMP()
     rm -f /bin/lnmp-phpmyadmin
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
+    Firewall_Purge
     echo "LNMP 卸载完成。"
 }
 
@@ -329,6 +330,7 @@ Uninstall_LNMPA()
     rm -f /bin/lnmp-phpmyadmin
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
+    Firewall_Purge
     echo "LNMPA 卸载完成。"
 }
 
@@ -362,6 +364,7 @@ Uninstall_LAMP()
     rm -f /bin/lnmp-phpmyadmin
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
+    Firewall_Purge
     echo "LAMP 卸载完成。"
 }
 
@@ -402,6 +405,7 @@ ${MySQL_Dir}
 已安装的多版本 PHP（/usr/local/php8.x）
 lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
 /etc/lnmp（数据库口令文件删除，其余配置移到 /root）
+inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
         Sleep_Sec 3
         Press_Start
@@ -431,6 +435,7 @@ ${MySQL_Dir}
 已安装的多版本 PHP（/usr/local/php8.x）
 lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
 /etc/lnmp（数据库口令文件删除，其余配置移到 /root）
+inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
         Sleep_Sec 3
         Press_Start
@@ -458,6 +463,7 @@ ${MySQL_Dir}
 已安装的多版本 PHP（/usr/local/php8.x）
 lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
 /etc/lnmp（数据库口令文件删除，其余配置移到 /root）
+inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
         Sleep_Sec 3
         Press_Start

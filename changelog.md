@@ -10278,3 +10278,197 @@ REV-004 在 Debian 13 测试机以 root 实跑 `bash tests/verify_vhost_php_remo
   `ssl add` 日志供排查，不影响 nginx。
 
 - **验证状态**：REV-003、REV-005、REV-006 已验证（静态）；REV-004 已实测。
+
+---
+
+## FIX-INSTALL-002 独立安装 Nginx 后 nginx.conf 出现未知指令 brotli
+
+**现象**：`bash install.sh nginx` 安装完成，收尾检查显示"Nginx：正常"，但服务起不来：
+
+```
+nginx: [emerg] unknown directive "brotli" in /usr/local/nginx/conf/nginx.conf:75
+nginx: configuration file /usr/local/nginx/conf/nginx.conf test failed
+```
+
+**根因**（三处叠加）：
+
+1. `include/only.sh` 的 `Nginx_Dependent` 不安装 brotli 开发包（完整安装走
+   `include/init.sh` 的列表，其中有 `libbrotli-dev` / `brotli-devel`）。缺少
+   `/usr/include/brotli/encode.h` 时 `Link_System_Brotli` 返回 1，
+   `Install_Ngx_Brotli` 随之返回 1，但 `Install_Nginx` 未处理该返回值，
+   `Ngx_Brotli` 保持为空，configure 不含 `--add-module=.../ngx_brotli`。
+2. `Install_Nginx` 写入 brotli 指令的条件是开关 `Enable_Ngx_Brotli`，
+   与模块是否真的编译进二进制无关，因此模块缺失时仍写入五行 brotli 指令。
+3. `Check_Nginx_Files` 只判断 `nginx.conf` 与 `sbin/nginx` 非空，
+   配置语法错误也报"Nginx：正常"。
+
+**关联缺陷**（同一条升级/独立安装链路上发现并一并修复）：
+
+- `include/upgrade_nginx.sh` 的两条 `./configure` 不含 `${Ngx_Brotli}`
+  `${Ngx_CachePurge}`，升级会丢掉这两个模块；此时 `nginx.conf` 中的
+  `brotli` / `proxy_cache_purge` 指令使升级前预检失败，升级无法完成。
+- `Nginx_Dependent` 不装 gnupg，`upgrade.sh nginx` 的 nginx PGP 签名校验
+  直接中止（`系统缺少 gpg（--dearmor 需要它）`）。
+- 替换二进制用 `cp` 覆盖 `sbin/nginx`，nginx 正在运行时返回
+  `Text file busy`（ETXTBSY），升级失败；`Rollback_Nginx` 的 `cp -p` 写回
+  备份同样失败。
+
+**修改**：
+
+| 文件 | 改动 |
+|---|---|
+| `include/only.sh` | `Nginx_Dependent` 的 apt 列表加 `libbrotli-dev gnupg gpgv`，yum 列表加 `brotli-devel gnupg2` |
+| `include/nginx.sh` | `Install_Nginx` 处理 `Install_Ngx_Brotli` 返回值，失败时清空 `Ngx_Brotli` 并提示；brotli 指令写入条件由 `Enable_Ngx_Brotli` 改为 `[ -n "${Ngx_Brotli}" ]` |
+| `include/upgrade_nginx.sh` | 调用 `Install_Ngx_Brotli` / `Install_Ngx_CachePurge`，两条 configure 补 `${Ngx_Brotli} ${Ngx_CachePurge}`；开头按现有二进制 `nginx -V` 保留已编译的 brotli、cache_purge、fancyindex；二进制替换与回滚改为同目录写新文件后 `mv -f` 换名 |
+| `include/end.sh` | `Check_Nginx_Files` 增加 `nginx -t` |
+
+**行为变化**：Brotli 依赖不可用时模块与配置指令一起跳过，安装继续完成并打印
+提示，`nginx -t` 通过；依赖可用时行为与之前一致。收尾检查在配置语法错误时
+报错而不是"正常"。升级保留现有二进制已编译的第三方模块。
+
+**验证**（Debian 13 trixie 测试机，root）：
+
+```bash
+bash tests/test_nginx_brotli_guard.sh   # 13 项全部通过
+bash t/lint.sh                          # 全部通过
+```
+
+`tests/test_nginx_brotli_guard.sh` 用 `Install_Nginx` 的真实代码片段在临时文件
+上验证两种取值：把写入条件改回 `Enable_Ngx_Brotli` 时第 1 项复现旧行为并失败。
+
+实机 `bash install.sh nginx`（安装前无 nginx，未装 libbrotli-dev）：
+
+- 依赖阶段自动安装 `libbrotli-dev 1.1.0-2+b7`，`ngx_brotli: 使用系统 brotli 库
+  （头文件 /usr/include/brotli，库目录 /usr/lib/x86_64-linux-gnu）`，
+  configure 输出 `+ ngx_brotli was configured`。
+- 安装后 `nginx -t` 通过，`ldd sbin/nginx` 含 `libbrotlienc.so.1`、
+  `libbrotlicommon.so.1`，`nginx.conf` 第 75-79 行为 brotli 指令，服务 active。
+- 对 4KB 以上静态文件带 `Accept-Encoding: br` 请求，响应含 `Content-Encoding: br`。
+
+实机 `bash upgrade.sh nginx`（1.30.4 → 1.30.3 → 1.30.4）：
+
+- PGP 签名验证通过（签名者主密钥 43387825DDB1BB97EC36BA5D007C8D7C15D87369）。
+- 升级后 `--add-module` 仍含 lua-nginx-module、ngx_devel_kit、ngx_brotli、
+  ngx_cache_purge 四项，`nginx -t` 通过，服务 active，`Content-Encoding: br` 正常。
+- 旧二进制保留为 `sbin/nginx.<时间戳>`，无 `Text file busy`。
+- 单独对照：服务运行时 `cp -p 备份 sbin/nginx` 报 `Text file busy`，
+  同目录写 `sbin/nginx.rollback` 后 `mv -f` 换名成功且服务不受影响。
+
+- **验证状态**：已实测。
+
+## AUDIT-FW-002 inet lnmp 表改由 systemd 单元加载，不再写入 nftables.conf
+
+**位置**：`include/firewall.sh` 的 `Firewall_Save`、`init.d/lnmp-nftables.service`
+
+原实现把规则写入 `/etc/nftables.d/lnmp.nft`，并在 `/etc/nftables.conf` 末尾追加
+一行 `include`，该 include 是唯一加载路径。用户自行改写 `/etc/nftables.conf`
+（如只保留自己的 `inet filter` 表）后，`systemctl restart nftables` 执行
+`flush ruleset` 并按新文件重建规则，`inet lnmp` 表随即消失且不再恢复。
+
+新增 `lnmp-nftables.service`：`After` + `PartOf` `nftables.service`，
+`ExecStart` 为 `nft -f /etc/nftables.d/lnmp.nft`，`ExecStop` 删除 `inet lnmp` 表；
+`DefaultDependencies=no` 与 `Before=network-pre.target` 使其与 `nftables.service`
+同阶段启动；`WantedBy=sysinit.target nftables.service`。
+`Firewall_Save` 部署该单元成功后不再改动系统主配置，并清除旧版本追加的
+include 行及其注释行（`Firewall_Remove_Include`，删除后经 `nft -c -f` 校验，
+覆盖写回以保留原属主与权限）；单元不可用（无 systemd）时退回 include
+方式（`Firewall_Add_Include`）。
+
+| 文件 | 改动 |
+|---|---|
+| `init.d/lnmp-nftables.service` | 新增 |
+| `include/firewall.sh` | 新增 `FW_UNIT_NAME`、`FW_UNIT_FILE`、`Firewall_Install_Unit`、`Firewall_Add_Include`、`Firewall_Remove_Include`；`Firewall_Save` 按单元是否可用二选一 |
+| `t/consistency.sh` | V11 增加单元文件存在、`PartOf=nftables.service`、`Firewall_Save` 中已调用三项检查 |
+| `tests/test_firewall_unit.sh` | 新增 |
+
+**行为变化**：有 systemd 的系统上 `/etc/nftables.conf` 不再被写入，已有的
+include 行在下次安装或组件安装时被移除，规则改由 `lnmp-nftables.service` 加载；
+规则内容、链策略和端口不变。手工执行 `nft flush ruleset`（不经 systemd）
+仍需自行 `nft -f /etc/nftables.d/lnmp.nft`。
+
+**验证**（Debian 13 trixie 测试机，root）：
+
+```bash
+bash tests/test_firewall_unit.sh   # 10 项全部通过
+bash t/lint.sh                     # 全部通过
+bash t/consistency.sh              # 14 项全部通过
+```
+
+`tests/test_firewall_unit.sh` 先把 `/etc/nftables.conf` 置为含 include 行的用户
+配置，执行 `Firewall_Save` 后确认 include 与注释行被删除、`inet filter` 表内容
+保留，`systemctl restart nftables` 两次后 `inet lnmp` 表仍在且无重复链。
+
+对照复现：`systemctl disable --now lnmp-nftables` 并删掉 include 行后
+`systemctl restart nftables`，`nft list tables` 只剩 `table inet filter`；
+重新 `enable --now` 该单元后同样操作，`table inet lnmp` 仍在。
+
+实机执行 `Add_Iptables_Rules` 后 `/etc/nftables.conf` 无本包内容，
+`systemctl reboot`：`lnmp-nftables` 与 `nftables` 均为 active，
+`inet lnmp` 表含 22/80/443 accept、ICMP accept 及 3306/33060 drop，
+本次启动日志无 ordering cycle。
+
+- **验证状态**：已实测（Debian 13，2026-08-17）。
+
+## AUDIT-FW-004 SSH 放行端口改为自动探测，移除 SSH_Port 配置项
+
+**位置**：`lnmp.conf`、`include/firewall.sh`、`include/end.sh`、`include/main.sh`
+
+放行端口原本取自 `lnmp.conf` 的 `SSH_Port`，`Check_SSH_Port_Policy` 在安装前
+比对探测值与配置值，不一致直接返回 1 终止安装，要求用户改配置后重跑。
+`Get_Actual_SSH_Port` 本身已能返回系统实际监听的全部 SSH 端口，配置项与
+一致性校验都是多余的一步。
+
+`Resolve_SSH_Ports` 探测并过滤出合法端口存入 `SSH_Ports`；`Add_Iptables_Rules`
+遍历该数组逐个放行，探测不到就不写 SSH 放行规则（链策略为 accept，不影响
+现有连接）。`Check_SSH_Port_Policy` 只保留提示：列出将放行的端口，监听 22 时
+提示爆破风险并要求交互确认，非交互执行不追问。
+
+| 文件 | 改动 |
+|---|---|
+| `lnmp.conf` | 删除 `SSH_Port` |
+| `include/firewall.sh` | 新增 `SSH_Ports` 与 `Resolve_SSH_Ports`；`Check_SSH_Port_Policy` 去掉一致性比对与终止分支 |
+| `include/end.sh` | `Add_Iptables_Rules` 遍历 `SSH_Ports` 放行 |
+| `include/main.sh` | `Validate_Service_Ports` 去掉 `SSH_Port`；`Print_APP_Ver` 打印探测结果；`Confirm_LNMPConf_Reviewed` 文案 |
+| `t/consistency.sh` | V8 端口清单与 V10 用例去掉 `SSH_Port` |
+| `tests/test_install_confirm.sh` | 改测探测结果驱动的分支，新增 `Resolve_SSH_Ports` 用例 |
+
+**行为变化**：`lnmp.conf` 不再有 `SSH_Port`，防火墙按系统实际监听放行，监听
+多个端口时全部放行；端口与配置不一致不再终止安装。监听 22 时的交互确认保留。
+
+**验证**（Debian 13 trixie 测试机，root）：
+
+```bash
+bash tests/test_install_confirm.sh   # 全部通过
+bash t/lint.sh                       # 全部通过
+bash t/consistency.sh                # 14 项全部通过
+```
+
+实机改 sshd 监听端口后执行 `Add_Iptables_Rules`：同时监听 22 与 52222 时两个
+端口都出现 `accept`；只监听 52222 时规则只有 `tcp dport 52222 accept`，
+`Print_APP_Ver` 输出 `SSH 端口（防火墙将放行）：52222`。
+
+- **验证状态**：已实测（Debian 13，2026-08-17）。
+
+## AUDIT-FW-003 卸载不清理防火墙持久化文件与单元
+
+**位置**：`include/firewall.sh` 的 `Firewall_Purge`、`uninstall.sh`
+
+卸载流程只 source `include/firewall.sh`，不移除 `inet lnmp` 表、
+`/etc/nftables.d/lnmp.nft`、`lnmp-nftables.service` 及主配置中历史追加的
+include 行。卸载后系统仍会随 nftables 加载本包规则。
+
+新增 `Firewall_Purge`：停用并删除单元、`daemon-reload`、删除 `inet lnmp` 表与
+规则文件、目录为空时移除、复用 `Firewall_Remove_Include` 清掉主配置里的
+include 行。`Uninstall_LNMP`、`Uninstall_LNMPA`、`Uninstall_LAMP` 在
+`Remove_Lnmp_Conf_Dir` 之后调用，三处待删清单同步列出这些内容。
+firewalld 后端不自动撤销端口放行，只打印 `firewall-cmd` 的撤销命令。
+
+**行为变化**：卸载后 `inet lnmp` 表、规则文件与单元不再残留，用户主配置的
+其余内容不受影响。
+
+**验证**（Debian 13 trixie 测试机，root）：`tests/test_firewall_unit.sh` 17 项
+全部通过，其中清理部分覆盖：表已删除、规则文件已删除、单元文件已删除且
+`is-enabled` 为假、`systemctl restart nftables` 后不再出现 `inet lnmp`、
+用户主配置的 `inet filter` 保留、清理后重新执行 `Firewall_Save` 可再次生效。
+
+- **验证状态**：已实测（Debian 13，2026-08-17）。

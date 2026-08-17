@@ -101,8 +101,8 @@ bash install.sh lnmp
 ```
 
 先提醒检查 `lnmp.conf`（端口、目录等）并要求输入 `y` 才继续，然后自动探测
-系统实际监听的 SSH 端口：和 `lnmp.conf` 的 `SSH_Port` 对不上会直接拒绝；
-一致但仍是默认的 22 会提示改端口的步骤并要求再输入一次 `y`。
+系统实际监听的 SSH 端口并按此放行；监听 22 时会提示改端口的步骤并要求再输入
+一次 `y`。
 之后依次会问：数据库版本 → 是否用通用二进制 → 数据库 root 密码 →
 是否启用 InnoDB → PHP 版本 → Nginx/OpenResty → 内存分配器。选完会打印一份完整摘要（版本、
 编译参数、即将放行/阻断的端口），要求输入 `y` 确认后才真正开始装依赖、
@@ -134,7 +134,7 @@ unset DB_Root_Password
 
 | 变量 | 值 | 含义 |
 |---|---|---|
-| `LNMP_Auto` | `y` | 跳过安装前的所有交互确认（检查 lnmp.conf、SSH 端口核对、最终摘要确认） |
+| `LNMP_Auto` | `y` | 跳过安装前的所有交互确认（检查 lnmp.conf、SSH 端口提示、最终摘要确认） |
 | `DBSelect` | `1`~`5` | 1=MySQL8.0 **2=MySQL8.4(默认)** 3=MariaDB10.11 4=MariaDB11.4 5=MariaDB11.8 |
 | `Bin` | `y`/`n` | `y`=下载官方通用二进制（快，几分钟）；`n`=源码编译（慢，30-60 分钟） |
 | `PHPSelect` | `1`~`6` | 1=8.0 2=8.1 3=8.2 **4=8.3(默认)** 5=8.4 6=8.5 |
@@ -355,7 +355,7 @@ curl http://127.0.0.1:1008/lua
 | `Enable_Redis_Test_Page` | `n` | 无鉴权且会写 Redis 的演示页；生产保持关闭 |
 | `Enable_Nginx_Openssl` | `y` | Nginx TLS 构建；公开站点保持开启 |
 | `Enable_Nginx_Lua` | `y` | LuaJIT、lua-nginx-module 和常用 resty 库；不用 Lua 可设 `n` 缩短构建、减小攻击面 |
-| `Enable_Ngx_Brotli` | `y` | 编译 Brotli 模块；低 CPU VPS 仍可编译，是否对响应启用由 Nginx 配置决定 |
+| `Enable_Ngx_Brotli` | `y` | 编译 Brotli 模块；系统缺 `libbrotli-dev` / `brotli-devel` 时跳过该模块并同时不写 `nginx.conf` 的 brotli 指令 |
 | `Enable_Ngx_CachePurge` | `y` | 编译缓存清除模块；不使用 Nginx/FastCGI 缓存可关闭 |
 | `Enable_Ngx_FancyIndex` | `n` | 目录美化索引；公开生产站一般保持关闭 |
 | `Enable_Swap` | `y` | 缺少 Swap 时创建 swapfile；它只缓冲突发内存，不是增加 FPM worker 的理由 |
@@ -372,7 +372,6 @@ curl http://127.0.0.1:1008/lua
 | `Enable_PHP_Imap` | `n` | Debian 13 已移除旧 uw-imap 开发库，非邮件应用不要开启 |
 | `Download_Insecure` | `n` | 关闭 TLS 校验；除临时定位证书链问题外不得开启，更不能用于生产安装 |
 | `Enable_Download_Checksum` | `y` | 项目完整性校验总开关；保持开启 |
-| `SSH_Port` | `22` | 只生成防火墙放行规则，不修改 sshd；必须与真实监听端口一致 |
 | `DB_Port` | `3306` | 写入 `/etc/my.cnf` 并生成防火墙规则；安全依靠回环监听和来源控制，不靠换端口 |
 | `DB_X_Port` | `33060` | MySQL X Protocol 端口及阻断规则；MariaDB 不使用 |
 | `Redis_Port` | `6379` | 写 Redis 配置、init 脚本、测试页及防火墙规则 |
@@ -466,7 +465,7 @@ CheckMirror=n Bin=y bash install.sh lnmp
 | OpenResty 构建记录 | `/etc/lnmp/openresty-build.conf`，运行期 Lua 路径 `/usr/local/nginx/conf/lua_paths.conf` | 升级会沿用构建记录；改 Lua 路径后 `nginx -t` |
 | 备份 | `/etc/lnmp/backup.conf`、数据库凭据 `/etc/lnmp/backup-mysql.cnf` | 权限必须 600；`lnmp backup run` 后执行 `lnmp backup test` |
 | Telegram | `/etc/lnmp/notify.conf` | `lnmp tgnotice --status`、`--test`；Token 文件必须 600/400 |
-| 防火墙 | Debian `/etc/nftables.d/lnmp.nft`，运行期 `inet lnmp` 表 | `nft list table inet lnmp`，并从外部主机实测端口 |
+| 防火墙 | Debian `/etc/nftables.d/lnmp.nft`，由 `lnmp-nftables.service` 加载，不写入 `/etc/nftables.conf`；运行期 `inet lnmp` 表 | `nft list table inet lnmp`、`systemctl status lnmp-nftables`，并从外部主机实测端口 |
 | WordPress | `<站点>/wp-config.php`、`<站点>/.user.ini` | `wp config list`（有 WP-CLI 时）和真实 HTTP 请求 |
 | 日志 | `/home/wwwlogs/`、`/usr/local/php/var/log/`、数据库数据目录中的错误日志、`/var/log/lnmp/backup.log` | 结合 systemd journal；不要只看单一日志 |
 
@@ -2120,8 +2119,17 @@ bash tools/remove_open_basedir_restriction.sh
 >
 > ```bash
 > nft list table inet lnmp                    # 确认规则存在
+> systemctl is-enabled lnmp-nftables          # 确认规则随 nftables 自动加载
 > ss -lntp | grep -E ':3306|:6379|:11211'     # 确认端口仅监听回环地址
 > ps -o user,cmd -C redis-server -C memcached # 确认进程不以 root 运行
+> ```
+>
+> 本包规则由 `lnmp-nftables.service` 加载，不写入 `/etc/nftables.conf`，
+> 自行维护主配置（如只保留自己的 `inet filter` 表）不会让 `inet lnmp` 表丢失。
+> 手工执行 `nft flush ruleset` 不经过 systemd，需自行恢复：
+>
+> ```bash
+> nft -f /etc/nftables.d/lnmp.nft     # 或 systemctl restart nftables
 > ```
 
 仍需管理员完成以下配置：
@@ -2353,5 +2361,5 @@ Redis 缓存  49 个 wpdemo:* 键，igbinary 序列化正常
 数据库      MySQL 与 MariaDB 均完成 WordPress 主链路；wpdemo 用户仅可见自身库
 Apache 栈   LAMP / LNMPA 均完成源码安装与 PHP、PATH_INFO、目录边界、失败码实测
 Pure-FTPd   TLS 2；明文登录拒绝，显式 FTPS 列目录与上传成功
-防火墙      inet lnmp 表；22/80/443 放行，3306/6379 drop；未动系统主表
+防火墙      inet lnmp 表；实际 SSH 端口与 80/443 放行，3306/6379 drop；未动系统主表
 ```

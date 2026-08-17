@@ -217,7 +217,7 @@ check_v7()
 check_v8()
 {
     local v missing=""
-    for v in SSH_Port DB_Port DB_X_Port Redis_Port Memcached_Port              Pureftpd_Port Pureftpd_Data_Port Pureftpd_Passive_Min Pureftpd_Passive_Max; do
+    for v in DB_Port DB_X_Port Redis_Port Memcached_Port              Pureftpd_Port Pureftpd_Data_Port Pureftpd_Passive_Min Pureftpd_Passive_Max; do
         grep -q "^${v}=" lnmp.conf || missing="${missing} ${v}"
     done
     if [ -z "${missing}" ]; then
@@ -273,7 +273,7 @@ check_v10()
     {
         bash -c '
             . include/main.sh
-            SSH_Port=22 DB_Port=3306 DB_X_Port=33060 Redis_Port=6379
+            DB_Port=3306 DB_X_Port=33060 Redis_Port=6379
             Memcached_Port=11211 Pureftpd_Port=21 Pureftpd_Data_Port=20
             Pureftpd_Passive_Min=20000 Pureftpd_Passive_Max=30000
             eval "$1"
@@ -318,6 +318,13 @@ check_v11()
     # 自造 systemctl 判断会漏掉 WSL/容器，必须复用 Use_Systemd_Unit
     grep -q 'Use_Systemd_Unit pureftpd' pureftpd.sh \
         || missing="${missing} pureftpd-未复用Use_Systemd_Unit"
+    # inet lnmp 表靠该单元跟随 nftables 重新加载，单元丢失或未部署即等于只剩
+    # /etc/nftables.conf 的 include 一条路径
+    [ -s init.d/lnmp-nftables.service ] || missing="${missing} lnmp-nftables.service"
+    grep -q 'PartOf=nftables.service' init.d/lnmp-nftables.service 2>/dev/null \
+        || missing="${missing} lnmp-nftables-未跟随nftables"
+    grep -q 'if Firewall_Install_Unit; then' include/firewall.sh \
+        || missing="${missing} lnmp-nftables-未在Firewall_Save部署"
     if [ -z "${missing}" ]; then
         ok V11 "服务启动统一走 systemd 判断"
     else

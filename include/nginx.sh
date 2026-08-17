@@ -357,7 +357,11 @@ Install_Nginx()
     cd ${cur_dir}/src
     Install_Nginx_Openssl
     Install_Nginx_Lua
-    Install_Ngx_Brotli
+    # 依赖缺失时模块不参与编译，Ngx_Brotli 置空使后续配置写入保持一致。
+    if ! Install_Ngx_Brotli; then
+        Echo_Red "ngx_brotli 依赖不满足，本次安装跳过 Brotli 模块。"
+        Ngx_Brotli=""
+    fi
     Install_Ngx_CachePurge
     Install_Ngx_FancyIndex
     Tar_Cd ${Nginx_Ver}.tar.gz ${Nginx_Ver}
@@ -408,7 +412,8 @@ Install_Nginx()
         sed -i '/location \/lua/,/^[[:space:]]*}[[:space:]]*$/d' /usr/local/nginx/conf/nginx.conf
     fi
     # 启用已编译的 Brotli 模块；静态 Brotli 与 gzip 由浏览器协商选择。
-    if [ "${Enable_Ngx_Brotli}" = 'y' ] && ! grep -q '^\s*brotli on;' /usr/local/nginx/conf/nginx.conf; then
+    # 条件取实际参与编译的 Ngx_Brotli，避免模块缺失时写入未知指令。
+    if [ -n "${Ngx_Brotli}" ] && ! grep -q '^\s*brotli on;' /usr/local/nginx/conf/nginx.conf; then
         sed -i "/gzip on;/i\    brotli on;\n    brotli_static on;\n    brotli_comp_level 6;\n    brotli_min_length 1k;\n    brotli_types text/plain text/css application/json application/javascript application/x-javascript text/javascript application/xml application/xml+rss image/svg+xml;\n" /usr/local/nginx/conf/nginx.conf
     fi
 

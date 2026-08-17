@@ -2,6 +2,8 @@
 
 Add_Iptables_Rules()
 {
+    local port
+
     echo "正在配置防火墙..."
 
     if ! Firewall_Init; then
@@ -9,7 +11,12 @@ Add_Iptables_Rules()
         return 1
     fi
 
-    Firewall_Allow tcp "${SSH_Port}"
+    # SSH 按系统实际监听放行，探测不到就不写规则。
+    if Resolve_SSH_Ports; then
+        for port in "${SSH_Ports[@]}"; do
+            Firewall_Allow tcp "${port}"
+        done
+    fi
     Firewall_Allow tcp 80
     Firewall_Allow tcp 443
     Firewall_Allow_ICMP
@@ -176,8 +183,13 @@ Check_Nginx_Files()
     echo "============================== 检查安装结果 =============================="
     echo "正在检查..."
     if [[ -s /usr/local/nginx/conf/nginx.conf && -s /usr/local/nginx/sbin/nginx ]]; then
-        Echo_Green "Nginx：正常"
-        isNginx="ok"
+        # 文件存在不代表可用，配置语法错误会导致 nginx 无法启动。
+        if /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1; then
+            Echo_Green "Nginx：正常"
+            isNginx="ok"
+        else
+            Echo_Red "错误：Nginx 配置检查未通过，执行 /usr/local/nginx/sbin/nginx -t 查看详情。"
+        fi
     else
         Echo_Red "错误：Nginx 安装失败。"
     fi

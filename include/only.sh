@@ -5,7 +5,7 @@ Nginx_Dependent()
     if [ "$PM" = "yum" ]; then
         rpm -e httpd httpd-tools --nodeps
         yum -y remove httpd*
-        for packages in make gcc gcc-c++ gcc-g77 wget crontabs zlib zlib-devel openssl openssl-devel perl patch bzip2 initscripts xz gzip;
+        for packages in make gcc gcc-c++ gcc-g77 wget crontabs zlib zlib-devel openssl openssl-devel perl patch bzip2 initscripts xz gzip brotli-devel gnupg2;
         do yum -y install $packages; done
         if [ "${DISTRO}" = "Fedora" ] || echo "${CentOS_Version}" | grep -Eqi "^9"; then
             dnf install chkconfig -y
@@ -17,7 +17,7 @@ Nginx_Dependent()
         # 仅清理实际已安装的旧 Apache 软件包。
         Deb_Purge_Installed apache2 apache2-bin apache2-data apache2-utils apache2-doc \
                             libapache2-mod-php
-        for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make autoconf automake wget cron openssl libssl-dev zlib1g zlib1g-dev bzip2 xz-utils gzip;
+        for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make autoconf automake wget cron openssl libssl-dev zlib1g zlib1g-dev bzip2 xz-utils gzip libbrotli-dev gnupg gpgv;
         do apt-get --no-install-recommends install -y $packages; done
     fi
 }

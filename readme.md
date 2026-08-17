@@ -119,7 +119,7 @@
 | CentOS / RHEL 系 | 代码保留，无额外验证轮次 |
 | 非 x86_64 架构 | 本项目只对 x86_64 通用数据库包提供完整自动校验路径，其余架构回退源码编译 |
 | Nginx 的 80 / 443 端口 | **不可统一配置**，分别由主配置、站点配置和证书签发流程管理 |
-| SSH 端口 | 只用于生成放行规则，**不会改 `sshd_config`** |
+| SSH 端口 | 按系统实际监听自动放行，**不会改 `sshd_config`** |
 | 数据库升级 | 无自动回滚 |
 | IP 证书 | 仅 IPv4 公网地址，有效期 7 天，依赖自动续期 |
 | ionCube Loader | 未接入安装流程，需要请自行从官方获取 |
@@ -257,7 +257,7 @@ Default_Website_Dir=/data/wwwroot Enable_PhpMyAdmin=y bash install.sh lnmp
 | PHP 工具与默认扩展 | `Enable_Composer`、`Enable_PHP_Default_Opcache`、`Enable_PHP_Default_Igbinary`、`Enable_PHP_Default_Redis`、`Enable_PHP_Default_Imagick` | Composer 与四个扩展默认 `y`；不用 Composer/Redis/Imagick 时可关闭以缩小依赖面 |
 | PHP 可选扩展 | `Enable_PHP_Exif`、`Enable_PHP_Fileinfo`、`Enable_PHP_Ldap`、`Enable_PHP_Bz2`、`Enable_PHP_Sodium`、`Enable_PHP_Imap` | `fileinfo` 保持 `y`；其余只按应用依赖开启 |
 | 下载策略 | `Download_Insecure`、`Enable_Download_Checksum`、`CheckMirror` | 前两项保持 `n`/`y`；`CheckMirror=n` 只跳过源修改、NTP 与 DNS 预检，并让未指定的 `Bin` 默认源码编译；APT 依赖安装和组件下载仍会联网 |
-| 服务端口 | `SSH_Port`、`DB_Port`、`DB_X_Port`、`Redis_Port`、`Memcached_Port`、`Pureftpd_Port`、`Pureftpd_Data_Port`、`Pureftpd_Passive_Min`、`Pureftpd_Passive_Max` | `SSH_Port` 必须与 sshd 实际监听一致；数据库和缓存优先保持回环监听，不靠改端口防护 |
+| 服务端口 | `DB_Port`、`DB_X_Port`、`Redis_Port`、`Memcached_Port`、`Pureftpd_Port`、`Pureftpd_Data_Port`、`Pureftpd_Passive_Min`、`Pureftpd_Passive_Max` | 数据库和缓存优先保持回环监听，不靠改端口防护 |
 | OpenResty 源码构建 | `OpenResty_Custom_Modules`、`OpenResty_Modules_Options`、`OpenResty_Custom_Lualib`、`OpenResty_Opm_Packages`、`OpenResty_Luarocks_Packages` | 仅 `ORMode=2` 生效；模块必须 HTTPS 下载并固定 SHA256；数组直接编辑 `lnmp.conf` |
 | SELinux | `Disable_Selinux` | 默认 `n`；先读审计日志并修策略，不把关闭 SELinux 当常规优化 |
 
@@ -350,7 +350,6 @@ inactive，后续运维命令判断不了服务状态。init 脚本仍然保留�
 端口统一在 `lnmp.conf` 里配置，安装时会**同时**写进服务自己的配置文件和nftables 规则：
 
 ```bash
-SSH_Port=22                  # 仅用于放行；本包不改 sshd_config
 DB_Port=3306                 # 写进 /etc/my.cnf，并按此端口阻断
 DB_X_Port=33060              # MySQL X Protocol，同样写进配置并阻断
 Redis_Port=6379              # 写进 redis.conf、init 脚本与自测页
@@ -370,15 +369,11 @@ Pureftpd_Port=2121 Redis_Port=6380 bash install.sh lnmp
 覆写之后脚本会回读确认写进去了；模板结构变化导致没写成会直接报错停下，
 不会出现"服务监听老端口、防火墙放行新端口"这种两边对不上又没有报错的情况。
 
-> **改 `SSH_Port` 要格外小心**：本包只用它生成放行规则，不会去改
-> `sshd_config`。SSH 使用非默认端口时必须同步设置，否则防火墙不会放行实际监听端口。
+> SSH 放行端口取自系统实际监听（`ss` / `netstat`，取不到时读 `sshd_config`
+> 及其 `Include` 目录），监听多个端口就全部放行，探测不到就不写放行规则。
+> 监听 22 时交互式安装会提示改端口的步骤并要求显式确认才继续。
 >
-> `bash install.sh lnmp|lnmpa|lamp|nginx|db` 在装依赖前会自动探测系统实际
-> 监听的 SSH 端口，和这里的 `SSH_Port` 对不上会直接拒绝安装；一致但仍是
-> 默认的 22 时会提示改端口的具体步骤，并要求显式确认才继续（交互式）。
-> `LNMP_Auto=y` 或无终端执行时跳过这一步，按 `SSH_Port` 的值直接放行。
->
-> Nginx 的 80/443 不在其中，分别由 nginx.conf、站点配置和 SSL 签发流程管理。
+> Nginx 的 80/443 分别由 nginx.conf、站点配置和 SSL 签发流程管理。
 
 ### 3.2 Nginx
 
@@ -769,10 +764,21 @@ nft list table inet lnmp        # 查看本包加的规则
 nft list ruleset                # 查看全部规则
 ```
 
-默认放行 `SSH_Port`（默认 22）、80、443 和 ping，挡掉数据库、Redis、Memcached
-端口的外部访问；具体端口跟随 `lnmp.conf` 里的变量（见 3.1.1），不是写死的。
+默认放行系统实际监听的 SSH 端口、80、443 和 ping，挡掉数据库、Redis、Memcached
+端口的外部访问；被挡的端口跟随 `lnmp.conf` 里的变量（见 3.1.1），不是写死的。
 链的默认策略为 `accept`，避免安装过程阻断现有管理连接。
-持久化文件：Debian 系 `/etc/nftables.d/lnmp.nft`，由 `nftables.service` 加载。
+持久化文件：Debian 系 `/etc/nftables.d/lnmp.nft`，由 `lnmp-nftables.service` 加载。
+该服务 `After` 并 `PartOf` `nftables.service`，在 nftables 启动或重启后重新加载
+`inet lnmp` 表，因此**系统主配置 `/etc/nftables.conf` 不会被改动**，自行改写它
+（例如只保留自己的 `inet filter` 表）也不会导致本包规则丢失。旧版本在主配置里
+追加的 `include` 行会在安装时一并清除。
+
+```bash
+systemctl status lnmp-nftables     # 查看加载状态
+nft -f /etc/nftables.d/lnmp.nft    # 手工 flush ruleset 后立即恢复本包规则
+```
+
+系统没有 systemd 时退回旧方式：在 `/etc/nftables.conf` 末尾追加一行 `include`。
 
 ### 3.12 Telegram 通知
 
@@ -1298,8 +1304,7 @@ systemctl start nginx && systemctl is-active nginx
 2. 确认云服务器安全组放行了 80/443；
 3. `lnmp backup init` 把备份配起来，并验证一次 `lnmp backup test`；
 4. 有域名就 `lnmp vhost add` 建站并签证书，别长期用默认站点；
-5. 如果 SSH 不在 22 端口，**装之前**就要在 `lnmp.conf` 里改 `SSH_Port`——
-   交互式安装时脚本会自动核对，对不上会直接拒绝安装。
+5. 装完用 `nft list table inet lnmp` 核对实际 SSH 端口已被放行。
 
 ### 性能优化从哪里入手？
 

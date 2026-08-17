@@ -862,9 +862,9 @@ Get_Sshd_Config_Ports()
 # 非数字、越界或互相冲突都应在下载、停服务或改系统之前直接拒绝。
 Validate_Service_Ports()
 {
-    local names=(SSH_Port DB_Port DB_X_Port Redis_Port Memcached_Port
+    local names=(DB_Port DB_X_Port Redis_Port Memcached_Port
                  Pureftpd_Port Pureftpd_Data_Port)
-    local values=("${SSH_Port}" "${DB_Port}" "${DB_X_Port}" "${Redis_Port}"
+    local values=("${DB_Port}" "${DB_X_Port}" "${Redis_Port}"
                   "${Memcached_Port}" "${Pureftpd_Port}" "${Pureftpd_Data_Port}")
     local i j name value
 
@@ -969,16 +969,15 @@ Check_LNMPConf()
     fi
 }
 
-# 选择版本前提醒核对 lnmp.conf。SSH 端口错误可能使防火墙阻断远程登录，
-# 数据库目录、网站目录和 phpMyAdmin 开关也应在安装前确认。非交互执行仅提示。
+# 选择版本前提醒核对 lnmp.conf 中的端口、数据库目录、网站目录和
+# phpMyAdmin 开关。非交互执行仅提示。
 Confirm_LNMPConf_Reviewed()
 {
     local ans
 
     Echo_Yellow "=========================================================================="
     Echo_Yellow "开始安装前，请根据实际需求检查并确认 ${cur_dir}/lnmp.conf 中的配置："
-    Echo_Yellow "  - SSH_Port 等端口是否与系统实际配置一致；已经改过 SSH 端口的话，这里必须"
-    Echo_Yellow "    跟着改，否则装完防火墙会把当前的 SSH 连接方式关在门外。"
+    Echo_Yellow "  - DB_Port 等端口是否与系统实际配置一致。"
     Echo_Yellow "  - Default_Website_Dir / MySQL_Data_Dir 等目录是否符合预期。"
     Echo_Yellow "  - Enable_PhpMyAdmin 等开关是否需要现在就打开。"
     Echo_Yellow "=========================================================================="
@@ -1000,7 +999,7 @@ Confirm_LNMPConf_Reviewed()
 
 Print_APP_Ver()
 {
-    local nginx_modules='' php_modules=''
+    local nginx_modules='' php_modules='' ssh_ports
 
     echo "将安装 ${Stack} 技术栈。"
     if [ "${Stack}" != "lamp" ]; then
@@ -1083,7 +1082,8 @@ Print_APP_Ver()
         echo "数据库目录：${DB_Data_Dir}"
     fi
     echo "默认网站目录：${Default_Website_Dir}"
-    echo "SSH 端口（防火墙将放行）：${SSH_Port}"
+    ssh_ports=$(Get_Actual_SSH_Port | paste -sd ' ' -)
+    echo "SSH 端口（防火墙将放行）：${ssh_ports:-未探测到，不处理}"
     if [ "${DB_Kind}" != "none" ]; then
         echo "数据库端口（防火墙将阻止公网访问）：${DB_Port} / ${DB_X_Port}"
     fi
