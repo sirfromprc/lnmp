@@ -2490,14 +2490,6 @@ Create_SSL_Config()
 
     backup=$(mktemp /tmp/lnmp-ssl-vhost.XXXXXXXX) || return 1
     \cp -p "${vhost_conf}" "${backup}" || { rm -f "${backup}"; return 1; }
-    if [ ! -s /usr/local/nginx/conf/ssl/dhparam.pem ]; then
-        echo "正在创建 dhparam.pem..."
-        mkdir -p /usr/local/nginx/conf/ssl/
-        openssl dhparam -out /usr/local/nginx/conf/ssl/dhparam.pem 2048 || {
-            rm -f "${backup}"
-            return 1
-        }
-    fi
     cat >>"${vhost_conf}"<<EOF
 
 server {
@@ -2513,9 +2505,9 @@ server {
     ssl_certificate_key ${ssl_certificate_key};
     # TLS 1.0 和 1.1 已被 RFC 8996 弃用。
     ssl_protocols TLSv1.2 TLSv1.3;
-    # 仅保留支持前向保密的 AEAD 套件，排除 3DES、静态 RSA 和 CBC。
+    # 仅保留基于 ECDHE 的 AEAD 套件，排除 3DES、静态 RSA、CBC 和需要 DH 参数的 DHE。
     # TLS 1.3 使用 OpenSSL 独立的默认套件配置。
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
     # 由客户端选择套件，可优先使用设备具备硬件加速的算法。
     ssl_prefer_server_ciphers off;
     # 10 MB 会话缓存约可保存 4 万个握手结果，减少重复完整握手。
@@ -2523,8 +2515,6 @@ server {
     ssl_session_timeout 5m;
     # 关闭 session ticket，避免长期票据密钥泄露影响历史会话的前向保密。
     ssl_session_tickets off;
-    # DHE 套件使用 lnmp ssl add 首次生成的 DH 参数。
-    ssl_dhparam /usr/local/nginx/conf/ssl/dhparam.pem;
 
     # HSTS 会在有效期内强制浏览器使用 HTTPS。启用前须确认主域名和所有
     # 子域名均可持续提供有效证书，否则浏览器无法回退到 HTTP。

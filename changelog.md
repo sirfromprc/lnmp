@@ -8661,10 +8661,12 @@ shortlived 证书流程；写入 443 配置前备份现有 vhost，失败时恢�
 失败后 `conf/ssl/<IP>_ecc/` 下会留下 acme.sh 自己的 `<IP>.conf`（无证书内容），
 属 acme.sh 的正常产物，重试时复用。
 
-**遗留**：真实 IP 证书的签发、安装到 `ssl/default` 固定路径、续期与 HTTPS 访问，
-需要 80 端口可从公网访问的主机，NAT 测试环境无法完成，保留为待人工真机验证。
+真实签发已在 80 端口可从公网访问的主机上人工验证：`default` 站点通过 Let's Encrypt
+取得 IP 证书，acme.sh 完成 HTTP-01 验证与 reload，443 配置写入后 `nginx -t` 通过。
+`--days 6` 的续期在有效期内触发，未随本次验证观察。
 
-- **验证状态**：已实测（Debian 13，菜单与前置检查、失败回滚）；真实签发待人工验证。
+- **验证状态**：已实测（Debian 13，菜单与前置检查、失败回滚；真实 IP 证书签发由
+  公网主机人工验证，2026-08-17）。
 
 ## AUDIT-I18N-001 终端中文提示与 banner 对齐
 
@@ -10470,5 +10472,37 @@ firewalld 后端不自动撤销端口放行，只打印 `firewall-cmd` 的撤销
 全部通过，其中清理部分覆盖：表已删除、规则文件已删除、单元文件已删除且
 `is-enabled` 为假、`systemctl restart nftables` 后不再出现 `inet lnmp`、
 用户主配置的 `inet filter` 保留、清理后重新执行 `Firewall_Save` 可再次生效。
+
+- **验证状态**：已实测（Debian 13，2026-08-17）。
+
+## CONF-011 移除 SSL 虚拟主机的 dhparam.pem 依赖
+
+**位置**：`conf/lnmp`、`conf/lnmpa` 的 `Create_SSL_Config`，`conf/example/*.conf`
+
+`Create_SSL_Config` 首次添加 SSL 时执行 `openssl dhparam -out ... 2048`，该命令
+把素数搜索进度直接打到终端；生成的 `dhparam.pem` 只服务于套件列表末尾的
+`DHE-RSA-AES128-GCM-SHA256`、`DHE-RSA-AES256-GCM-SHA384`。
+
+删除生成步骤与 `ssl_dhparam` 指令，并从 `ssl_ciphers` 移除两个 DHE 套件，
+只保留 ECDHE 套件（TLS 1.3 仍由 OpenSSL 默认套件控制）。`conf/example/` 下 8 个
+Nginx 示例配置同步移除 `ssl_dhparam` 与相关注释。Apache 侧未涉及此文件。
+
+**行为变化**：`lnmp ssl add` 不再生成 `dhparam.pem`，也不再输出 DH 参数生成过程；
+TLS 1.2 只协商 ECDHE 套件，不再提供 DHE 回退。已安装环境中已有的
+`dhparam.pem` 与已写入的 vhost 配置不受影响。
+
+**验证**（Debian 13 trixie 测试机，root）：
+
+```bash
+bash tests/test_ssl_vhost_no_dhparam.sh   # 9 项全部通过
+bash t/lint.sh                            # 全部通过
+bash t/consistency.sh                     # 14 项全部通过
+```
+
+实机对 default 站执行 `lnmp ssl add`（自有证书路径）：输出中无 dhparam 相关内容，
+`nginx -t` 通过并 reload 成功，写入的 443 段无 `ssl_dhparam`。握手验证：
+TLS 1.3 得到 `TLS_AES_256_GCM_SHA384`，`-tls1_2` 得到
+`ECDHE-RSA-AES256-GCM-SHA384`，指定 `-cipher DHE-RSA-AES256-GCM-SHA384` 时
+handshake failure。
 
 - **验证状态**：已实测（Debian 13，2026-08-17）。
