@@ -380,7 +380,6 @@ Creat_PHP_Tools()
     cd ${cur_dir}/src
 
     \cp ${cur_dir}/conf/index.html ${Default_Website_Dir}/index.html
-    \cp ${cur_dir}/conf/lnmp.gif ${Default_Website_Dir}/lnmp.gif
 
     if [ "${Enable_PHPInfo_Page}" = "y" ]; then
         echo "正在创建 PHP 信息页面..."

@@ -1,42 +1,76 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
-<title>LNMP一键安装包 by Licess</title>
 <meta charset="utf-8">
-<meta name="author" content="Licess">
-<meta name="keywords" content="lnmp,lnmp一键安装包,一键安装包">
-<meta name="description" content="您已成功安装LNMP一键安装包！">
-<style type="text/css">
-<!--
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Welcome</title>
+<style>
+:root {
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --fg: #1f2328;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115;
+    --card: #171a21;
+    --fg: #e6e8eb;
+    --muted: #9aa3af;
+    --line: #262b33;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
 body {
-color:#333333;
-font-family:"Helvetica Neue", Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Heiti SC", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+  line-height: 1.6;
 }
-.links {color: #009900}
-#main {
-    margin-top: 50px;
-    margin-right: auto;
-    margin-left: auto;
-    width: 80%;
+.card {
+  width: 100%;
+  max-width: 520px;
+  padding: 40px 32px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  text-align: center;
 }
--->
+h1 {
+  margin: 0 0 12px;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: .2px;
+}
+p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+}
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-bottom: 18px;
+  border-radius: 50%;
+  background: #22c55e;
+}
 </style>
 </head>
 <body>
-<div id="main">
-<div align="center"><b>恭喜您，LNMP一键安装包安装成功！</b></div>
-<div align="center"><img src="lnmp.gif" alt="LNMP一键安装包"></div>
-<br><h2 style="word-break:break-all;">LNMP 一键安装包是一个用 Linux Shell 编写的可以为CentOS/RHEL/Fedora/Aliyun/Amazon Linux、Debian/Ubuntu/Raspbian/Deepin/Mint Linux VPS或独立主机安装LNMP(Nginx/MySQL/PHP)、LNMPA(Nginx/MySQL/PHP/Apache)、LAMP(Apache/MySQL/PHP)生产环境的Shell程序。</h2>
-<h3>支持自定义Nginx、PHP编译参数及网站和数据库目录、支持生成Let’s Ecrypt免费证书及自备证书、支持HTTP2、TLS 1.3等新特性、LNMP模式支持多PHP版本、支持单独安装Nginx/MySQL/MariaDB/Pureftpd服务器、支持无人值守安装，同时提供一些实用的辅助工具如：虚拟主机管理、FTP用户管理、Nginx/MySQL/MariaDB/PHP/PHPMyAdmin的升级、常用缓存组件Redis/Memcached等的安装、重置MySQL root密码、502自动重启、日志切割、SSH防护DenyHosts/Fail2Ban、备份等许多实用脚本。</h3>
-
-<p>探针(p.php)已移除，phpinfo 与 phpMyAdmin 默认不部署，因此这里不再放它们的链接。<br>如确需启用，改 lnmp.conf 的 Enable_PHPInfo_Page / Enable_PhpMyAdmin 后重装对应组件；phpMyAdmin 请务必改名为不易猜到的目录。</p>
-
-<p>文档与常见问题请查随包的 README.md 与 changelog.md。</p>
-  <!-- 本页部署在公开站点根目录，不包含站外链接。 -->
-
-<div align="center"><b>声明：出现该页面只说明您当前访问的域名/网站使用了 LNMP 一键安装包搭建的环境，与本站点内容的提供者无关。</b></div>
-
-<div align="center"><h3>LNMP 一键安装包 by Licess</h3></div>
+<div class="card">
+<span class="dot"></span>
+<h1>Welcome</h1>
+<p>站点已就绪，内容尚未发布。</p>
+<p>This site is up and running. No content has been published yet.</p>
 </div>
 </body>
 </html>

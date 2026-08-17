@@ -7,6 +7,8 @@
 原始项目作者：licess。本包是 LNMP 2.3 的安全加固与精简分支，
 每一处改动都逐条记录在随包的 `changelog.md`。
 
+![Nginx / MySQL / PHP](conf/lnmp.gif)
+
 ---
 
 ## 目录

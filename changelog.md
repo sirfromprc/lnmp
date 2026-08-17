@@ -10506,3 +10506,46 @@ TLS 1.3 得到 `TLS_AES_256_GCM_SHA384`，`-tls1_2` 得到
 handshake failure。
 
 - **验证状态**：已实测（Debian 13，2026-08-17）。
+
+## CONF-012 默认首页改为中性欢迎页
+
+**位置**：`conf/index.html`（整页重写）、`include/php.sh` 的 `Creat_PHP_Tools`
+
+原 `conf/index.html` 含项目标题、`author` / `keywords` / `description` 元信息、
+`lnmp.gif` 徽标、组件功能介绍与署名，部署到站点根目录后可被外部识别出所用环境。
+
+改为无标识欢迎页：仅保留 `Welcome` 标题与一句中英文说明，无图片、无站外链接、
+无组件与配置信息，附 `noindex, nofollow`；内联 CSS，响应式并适配深浅色。
+`Creat_PHP_Tools` 中 `\cp conf/lnmp.gif` 一行删除（页面已不引用），
+`conf/index.html` 的部署行不变。`include/only.sh`（单独安装 Nginx）复制同一文件。
+
+**行为变化**：新安装的默认首页不再包含项目标识，站点根目录不再出现 `lnmp.gif`。
+已安装环境需重装对应组件或手工替换才会更新，旧 `lnmp.gif` 需自行删除。
+
+**验证**（Debian 13 trixie 测试机，root）：
+
+```bash
+bash t/lint.sh          # 全部通过
+bash t/consistency.sh   # 14 项全部通过
+```
+
+实机按 `Creat_PHP_Tools` 中的部署语句复制后经 nginx 访问：`HTTP/1.1 200`、
+`Content-Length: 1525`；正文对 `lnmp|vpser|licess|一键安装|phpinfo|phpmyadmin`
+及 `http(s)://` 均无匹配，无任何 `src=` / `href=` 外部资源引用；
+`/lnmp.gif` 返回 404；重复执行复制语句返回码为 0，结果一致。
+
+- **验证状态**：已实测（Debian 13，2026-08-17）。
+
+## DOC-703 README 顶部引用 conf/lnmp.gif
+
+**位置**：`README.md`（"每一处改动都逐条记录在随包的 `changelog.md`" 一句下方）
+
+`conf/lnmp.gif`（GIF89a，400×50，5683 字节）在 `CONF-012` 后不再部署到站点根目录，
+文件仍随包保留。在 README 顶部以相对路径引用，供仓库页面展示。
+
+**行为变化**：仅文档展示变化，安装流程与部署文件不变，默认首页仍不含该图。
+
+**验证**：`conf/lnmp.gif` 存在且路径相对仓库根有效；`README.md` 无其它图片引用，
+未引入站外资源。
+
+- **验证状态**：已验证（静态）。
