@@ -1355,7 +1355,7 @@ Let's Encrypt 会直接拒绝并报 `invalidContact`）。
 > 有效期将从 90 天减半至 45 天。**
 >
 > **对本包的影响：经核实，不需要做任何改动。** 依据（基于本包内置的
-> acme.sh 3.1.5 源码）：
+> acme.sh 3.1.4 源码）：
 >
 > - **默认续期阈值是 30 天**（`DEFAULT_RENEW="${DEFAULT_RENEW:-30}"`）。
 >   45 天有效期下，第 30 天就会触发续期，仍留 15 天余量。
@@ -1414,9 +1414,112 @@ Let's Encrypt 后，本包会自动转为 **IP 地址证书**流程，
 > 公信 TLS 证书有效期将从 90 天减半至 45 天**（见 7.1 节）。
 > 即便如此，45 天相对 7 天仍有数量级上的容错优势。
 
-### 7.3 强制 HTTPS
+### 7.3 三条签发命令怎么选
 
-`lnmp ssl add` 最后一步问 `Using 301 to Redirect HTTP to HTTPS?` 选 `y` 即可。
+```bash
+lnmp ssl add                          # HTTP 验证，为已有站点签发
+lnmp dnsssl  {ali|cf|dp|he|gd|aws}    # DNS 验证，为已有站点签发，支持泛域名
+lnmp onlyssl {ali|cf|dp|he|gd|aws}    # DNS 验证，只签证书，不动任何站点配置
+```
+
+| | `lnmp ssl add` | `lnmp dnsssl` | `lnmp onlyssl` |
+|---|---|---|---|
+| 验证方式 | HTTP-01 | DNS-01 | DNS-01 |
+| 要求站点已存在 | 是 | 是 | 否 |
+| 修改 Nginx 配置 | 是，追加 443 server | 是，追加 443 server | 否 |
+| 支持泛域名 | 否 | 是 | 是 |
+| 要求 80 端口公网可达 | 是 | 否 | 否 |
+| 要求 DNS API 凭据 | 否 | 是（手工 TXT 模式除外） | 是（手工 TXT 模式除外） |
+| 可选 CA | Let's Encrypt / BuyPass / ZeroSSL | Let's Encrypt / ZeroSSL | Let's Encrypt / ZeroSSL |
+| 自动续期 | 是 | 是（手工 TXT 模式不可自动续期） | 是（同左） |
+| 证书目录 | `/usr/local/nginx/conf/ssl/<域名>/` | 同左 | 同左 |
+
+**共同点**：都用 acme.sh，都默认 EC-256 密钥，签发后都会把证书安装到
+`/usr/local/nginx/conf/ssl/<域名>/`（`fullchain.cer` 与 `<域名>.key`），
+续期任务由 acme.sh 的 cron 统一处理。
+
+**HTTP 验证 (`lnmp ssl add`)**
+
+CA 访问 `http://<域名>/.well-known/acme-challenge/...` 来验证控制权，因此域名必须
+已解析到本机且 80 端口从公网可达。不需要任何 API 凭据，是最省事的一条路。
+不能签泛域名——ACME 规定泛域名只接受 DNS-01，输入 `*.example.com` 会被直接拒绝
+并提示改用 `lnmp dnsssl`。
+
+站点按站点名或配置里的 `server_name` 定位：输入 `www.example.com`，会命中
+`server_name` 含该域名的站点 `example.com`。**不做 `dnsssl` 那样的根域回退**——
+HTTP 验证要求该域名由现有网站直接服务，输入站点没有声明的子域会被要求改正。
+
+交互顺序：域名 → 证书来源(1-4) → 是否 301 跳转。
+
+**DNS 验证 + 写站点配置 (`lnmp dnsssl <服务商>`)**
+
+CA 校验 `_acme-challenge.<域名>` 的 TXT 记录，本命令通过服务商 API 自动加删该记录。
+80 端口不通、站点还没上线、需要泛域名证书时用这条。
+
+站点定位按**根域名**：输入 `test.example.com` 或 `*.example.com`，会匹配到同根域的
+现有网站 `example.com`，不需要为泛域名单独建一个带 `*` 的虚拟主机。若同根域下有多个
+站点，会列出来要求输入准确域名；若一个都没有，会提示先 `lnmp vhost add` 建站，或者
+改用 `lnmp onlyssl`。
+
+交互顺序：域名 → 更多域名 → CA 选择 → 是否 301 跳转 → API 凭据。
+
+```
+# lnmp dnsssl nsone
+DNS 验证，请输入域名（示例：www.example.com）: test.example.com
+test.example.com 与现有网站 example.com 同属根域 example.com，按该网站申请证书。
+您的域名：example.com
+站点现有域名：www.example.com
+请输入更多域名（支持泛域名，示例：*.example.com sub.example.com，留空跳过）: *.example.com
+附加域名：www.example.com *.example.com
+1: 使用 Let's Encrypt 签发 SSL 证书（DNS 验证）
+2: 使用 ZeroSSL 签发 SSL 证书（DNS 验证）
+请选择 [1-2]：1
+是否将 HTTP 301 跳转到 HTTPS [y/N]（默认 n）: y
+请输入 nsone 的 API 凭据，acme.sh 会保存供续期复用。
+NS1_Key（API Key）: <粘贴 API Key>
+证书域名：example.com *.example.com
+```
+
+泛域名会覆盖同级子域名，`*.example.com` 与 `www.example.com` 同时出现时只申请前者，
+少一次 TXT 验证；主域名 `example.com` 不在泛域名覆盖范围内，始终保留。
+
+`更多域名` 只接受该站点根域下的域名，或站点配置里已有的域名。输入其它根域的域名会先
+列出来要求确认——它们既要求 DNS 服务商能管理对应解析，又会被写进这个站点的 HTTPS
+配置，多数情况是输错了。`lnmp onlyssl` 不写站点配置，跨根域只提示不拦截。
+
+**只要证书 (`lnmp onlyssl <服务商>`)**
+
+不检查站点、不生成也不修改任何 Nginx 配置，只把证书签下来放到
+`/usr/local/nginx/conf/ssl/`。适合证书要给别的服务用（邮件、反向代理、
+另一台机器）或者站点还没建好的情况。泛域名目录名中的 `*.` 会写成 `_wildcard.`。
+
+**服务商参数**
+
+`{ali|cf|dp|he|gd|aws}` 只是常用几个，参数实际取 acme.sh 的 dnsapi 插件名，
+`/usr/local/acme.sh/dnsapi/dns_<名字>.sh` 存在即可用，例如 `nsone`、`gcloud`、
+`namesilo`。命令会读插件声明的变量逐项提示输入，例如：
+
+| 服务商 | 参数 | 需要的凭据 |
+|---|---|---|
+| 阿里云 | `ali` | `Ali_Key`、`Ali_Secret` |
+| Cloudflare | `cf` | `CF_Key`+`CF_Email`，或 `CF_Token`+`CF_Account_ID` |
+| DNSPod | `dp` | `DP_Id`、`DP_Key` |
+| HE.net | `he` | `HE_Username`、`HE_Password` |
+| GoDaddy | `gd` | `GD_Key`、`GD_Secret` |
+| AWS Route53 | `aws` | `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY` |
+| NS1 | `nsone` | `NS1_Key` |
+
+一个服务商有两套凭据时（如 Cloudflare 的 Key/Email 与 Token/Account_ID），
+会先让你选用哪一套。凭据由 acme.sh 保存在 `/usr/local/acme.sh/account.conf`，
+续期时自动复用，再次执行命令时直接回车即可沿用已保存的值。
+
+**不带服务商参数**（`lnmp dnsssl` / `lnmp onlyssl`）进入手工 TXT 模式：
+屏幕上打印 TXT 记录，给 120 秒去 DNS 面板添加，然后继续验证。
+**该模式不能自动续期**，证书到期前必须再手工执行一次。
+
+### 7.4 强制 HTTPS
+
+`lnmp ssl add`、`lnmp dnsssl` 最后一步问 `是否将 HTTP 301 跳转到 HTTPS [y/N]` 选 `y` 即可。
 WordPress 侧还要把站点地址改成 https：
 
 ```bash

@@ -10549,3 +10549,154 @@ bash t/consistency.sh   # 14 项全部通过
 未引入站外资源。
 
 - **验证状态**：已验证（静态）。
+
+## FIX-INSTALL-003 默认站点缺少 favicon.ico 导致错误日志反复记录 404
+
+**位置**：`conf/favicon.ico`（新增）、`include/php.sh`（`Creat_PHP_Tools`）、
+`include/only.sh`（`Install_Only_Nginx`）
+
+安装只往 `${Default_Website_Dir}` 写入 `index.html`，浏览器自动请求 `/favicon.ico`
+时命中不存在的路径，`/home/wwwlogs/default.error.log` 每次访问都记录一条
+`open() "/home/wwwroot/default/favicon.ico" failed (2: No such file or directory)`。
+
+随包新增 `conf/favicon.ico`（16×16 ICO 占位图标，可直接替换为自有图标，
+路径与文件名不变，部署流程不受影响），并在两个部署 `index.html` 的位置之后各加一行
+复制语句：`Creat_PHP_Tools` 覆盖 lnmp、lnmpa、lamp 三栈完整安装（含 OpenResty，
+`install.sh` 的 `LNMP_Stack`、`LNMPA_Stack`、`LAMP_Stack` 均调用），
+`Install_Only_Nginx` 覆盖独立安装 Nginx。favicon 非关键资源，复制失败时经
+`Echo_Red` 明确降级提示，不改变函数返回码、不中断安装。权限沿用 `\cp` 结果
+（root:root 644），Nginx 与 Apache 的 www worker 可读。
+
+**行为变化**：新安装的默认站点根目录多一个 `favicon.ico`，`/favicon.ico` 返回 200，
+默认站点错误日志不再出现该条 404。已安装环境需重装对应组件或手工复制该文件。
+虚拟主机模板、静态缓存规则和管理命令均未改动。
+
+**验证**（Debian 13 trixie 测试机，root）：
+
+```bash
+bash t/lint.sh                        # 全部通过
+bash tests/test_default_favicon.sh    # 10 项全部通过
+```
+
+`tests/test_default_favicon.sh` 断言两个入口的函数体在 `index.html` 之后部署
+`favicon.ico`，并执行源码中的复制语句：目标文件与源文件逐字节一致、返回码 0、
+无多余提示；源文件缺失时返回码仍为 0 并输出降级提示。反向验证——移除
+`Creat_PHP_Tools` 中的复制语句后该脚本报 FAIL。
+
+实机按部署语句复制后经 nginx 访问 `/favicon.ico`：改动前 `HTTP/1.1 404` 且
+`default.error.log` 新增一条 `open() ... failed`；改动后 `HTTP/1.1 200`、
+`Content-Type: image/x-icon`、`Content-Length` 与占位文件大小一致（1150），
+响应体与源文件逐字节一致，错误日志行数不变。
+
+- **验证状态**：已实测（Debian 13，2026-08-17）。
+
+## FIX-SSL-001 DNS 验证签发缺少 API 凭据交互与证书安装步骤
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp`（`Add_Dns_SSL`、`Add_Dns_SSL_Only`、
+`Add_SSL_Only_Info_Menu`、`Add_DNS_SSL_Only_Info_Menu`、`Function_Vhost` 的 SSL 提示）
+
+`lnmp dnsssl` 与 `lnmp onlyssl` 存在四个问题：
+
+1. **不索取 DNS 服务商 API 凭据**。签发命令直接调用 `acme.sh --dns dns_<服务商>`，
+   凭据须由使用者事先 `export`，未设置时签发在 acme.sh 内部失败。
+2. **缺少 `--install-cert`**。acme.sh 默认密钥类型为 EC-256，证书落在
+   `<certhome>/<域名>_ecc/`，而两个函数按 `<certhome>/<域名>/fullchain.cer`
+   判断结果并写入服务配置。HTTP 验证路径 `Add_SSL` 有该步骤，DNS 路径没有，
+   结果是签发成功也会写出指向不存在文件的 443 配置。
+3. **`dnsssl` 重复整套建站问答**。该函数调用 `Add_SSL_Info_Menu`，逐项询问网站目录、
+   伪静态、访问日志、PHP、Pathinfo、IPv6，与 `lnmp vhost add` 重复，并在站点不存在时
+   自行 `Add_VHost_Config` 建站。
+4. **提示不区分验证方式**。`lnmp ssl add`、`lnmp dnsssl`、`lnmp onlyssl` 与
+   `lnmp vhost add` 的证书提示文案相同，无法判断走 HTTP-01 还是 DNS-01。
+
+改动：
+
+- 新增 `Parse_DNS_API_Options` / `Prompt_DNS_API_Credentials`：从 acme.sh 插件头部的
+  `dns_<服务商>_info` 元数据读取 `Options:` 与 `OptionsAlt:` 段，按声明逐项提示输入并
+  `export`，变量名和说明来自插件本身，新增服务商无需改脚本。标注 `Optional.` 的可留空；
+  存在两套凭据时（如 Cloudflare 的 `CF_Key`+`CF_Email` 与 `CF_Token`+`CF_Account_ID`）
+  先选组；`account.conf` 中已有 `SAVED_<变量>` 时提示回车沿用，此时不导出，由 acme.sh
+  读取自身保存值；元数据解析不到时降级为提示自行 `export`，不阻断流程。
+  不带服务商参数的手工 TXT 模式不提示。
+- 两个 DNS 函数在签发成功后执行 `--install-cert -d <主域名> --ecc`，
+  与 `Add_SSL` 一致地把证书安装到 `<certhome>/<域名>/`。`onlyssl` 不写站点配置，
+  该步骤不带 `--reloadcmd`。
+- 拆出 `Load_Vhost_Params`（原 `Add_SSL_Only_Info_Menu` 的站点参数读取部分），
+  `ssl add` 与 `dnsssl` 共用。新增 `Add_DNS_SSL_Site_Info_Menu`：`dnsssl` 只对已存在的
+  站点签发，按**根域名**定位站点（`Get_Domain_Base` + `Find_Site_For_SSL`，先比对站点名，
+  再比对配置内的 `server_name`/`ServerName`+`ServerAlias`，最后比对根域）。
+  同根域唯一站点时直接采用并说明；同根域有多个站点时要求输入准确域名；一个都没有时提示
+  先 `lnmp vhost add`，或改用 `lnmp onlyssl`。`dnsssl` 不再创建虚拟主机。
+- 泛域名不需要单独建站：输入 `*.example.com` 按根域匹配到 `example.com`，
+  泛域名并入证书域名列表。新增 `Filter_Cert_Domains` 去重并剔除已被泛域名覆盖的
+  同级子域名（主域名始终保留，acme.sh 按第一个 `-d` 决定证书目录），
+  替换原先「泛域名不能同时添加 www 子域名」的直接中止。
+- 证书目录名对泛域名做转换（`*.` → `_wildcard.`），删除已有证书改为引号包裹的定路径，
+  不再出现通配符参与的 `rm -rf`。
+- 证书域名改用数组传给 acme.sh，拆分期间 `set -f`，泛域名的 `*` 不再参与路径展开。
+- `dnsssl` 的附加域名做范围校验：与站点根域不同、且不在站点现有域名中的，
+  列出后要求确认（`y/N`，默认 n，拒绝则重新输入）。这些域名既要 DNS 服务商能管理解析，
+  又会被写入该站点的 HTTPS 配置，输错时签发必然失败。`onlyssl` 不写站点配置，
+  跨根域是合法用法，只打印提示不拦截。
+- 信息类提示补换行：`Echo_Yellow` 是 `echo -n`（供提示符使用），
+  新增的多行提示原先会挤在一行并紧贴 shell 提示符。
+- `lnmp ssl add` 同步三处：输入泛域名时明确拒绝并指向 `lnmp dnsssl`
+  （HTTP-01 不能签发泛域名，原先会以「未找到网站 `*.example.com`」这种误导性提示退出）；
+  站点定位改用 `Find_Site_For_SSL`，输入 `www.example.com` 能命中 `server_name`
+  含该域名的站点 `example.com`，但**不做 dnsssl 那样的根域回退**——HTTP 验证要求该域名
+  由现有网站直接服务，同根域的其它子域会被要求输入准确域名；站点不存在时补上
+  `lnmp onlyssl` 这条出路。证书来源菜单上方增加一行 HTTP 验证前提说明
+  （`default` 站点显示 IP 版本的措辞）。
+- 提示文案：`ssl add` 为「HTTP 验证，请输入域名」，`dnsssl`/`onlyssl` 为
+  「DNS 验证，请输入域名」，证书来源菜单各项标注验证方式，`vhost add` 的证书提示
+  标注「HTTP 验证，需 80 端口可从公网访问」。
+- `dnsssl`/`onlyssl` 输入 `default` 时明确拒绝：DNS-01 无法为 IP 地址签发，
+  提示改用 `lnmp ssl add`。
+- 用法与文档中的 `cx`（CloudXNS）移除：acme.sh 3.1.4 已删除 `dnsapi/dns_cx.sh`，
+  传入该值只会得到「未找到 DNS 服务商插件」。用法补一行说明服务商参数取 acme.sh
+  插件名（如 `nsone`）。
+
+**行为变化**：`lnmp dnsssl` 不再询问建站参数、不再创建虚拟主机，站点不存在直接退出；
+两个 DNS 命令会索取 API 凭据；签发成功后证书安装到 `<certhome>/<域名>/`；
+泛域名与其覆盖的子域名同时出现时只申请泛域名（不再中止）。
+`lnmp ssl add` 与 HTTP 验证流程的逻辑未改动，只改提示文案。
+
+**验证**：
+
+```bash
+bash t/lint.sh                          # 全部通过
+bash t/consistency.sh                   # 14 项通过
+bash tests/test_dns_ssl_helpers.sh      # 70 项全部通过
+```
+
+`tests/test_dns_ssl_helpers.sh` 从 `conf/lnmp` 与 `conf/lamp` 抽取被测函数运行，
+覆盖：插件元数据解析（单变量、双变量、两组凭据、可选项、插件缺失）；凭据交互
+（提示含变量名与说明、必填留空重试、已保存回车沿用、选组后不索取另一组变量、
+手工模式不提示、无元数据降级）；根域判定（二级域、三级域、四级域、泛域名、
+`com.cn`/`co.uk` 二级后缀）；站点匹配（站点名命中、`server_name` 命中、
+Apache `ServerAlias` 命中、子域按根域给候选、无关域无候选、目录不存在）；
+证书域名过滤（泛域名覆盖子域、主域名不被剔除、去重、多级子域不被覆盖）；
+域名菜单（子域按根域继续、无站点返回 1 并给出两条出路、拒绝 `default`、
+泛域名并入证书域名、多站点要求准确域名）；`ssl add` 域名菜单（站点名命中、
+`server_name` 命中并说明匹配到的站点、泛域名指向 `dnsssl`、子域不做根域回退、
+无站点给出两条出路、`default` 直接放行）；附加域名范围校验（同根域、泛域名与子域、
+站点现有域名均直接通过，跨根域默认拒绝并只列出越界的那个，确认 `y` 可继续，
+`onlyssl` 同根域不提示、跨根域提示）。
+
+Debian 13 测试机（LNMP，nginx 1.30.4）以桩 `acme.sh` 执行 `lnmp dnsssl nsone` 与
+`lnmp onlyssl nsone`，不访问真实 CA：无站点域名与 `default` 均返回 1 并打印对应提示；
+子域 `sub.node.test` 匹配到站点 `node.test` 并继续；`NS1_Key` 经交互输入后在
+`acme.sh --dns dns_nsone` 调用中可见；桩返回成功时执行
+`--install-cert -d node.test --ecc --key-file .../node.test.key --fullchain-file .../fullchain.cer`，
+证书文件落到 `/usr/local/nginx/conf/ssl/node.test/`，追加的 443 配置指向该两个文件，
+`server_name node.test www.node.test *.node.test`，`nginx -t` 通过，301 跳转按选择写入。
+输入 `*.node.test` 时匹配到 `node.test` 站点，证书域名为 `node.test *.node.test`，
+未要求存在带 `*` 的虚拟主机。
+
+`lnmp ssl add` 用一次性站点与自有证书验证（不接触任何 CA）：站点不存在、重复添加、
+泛域名三种情况均返回 1 并打印对应提示；输入 `www.ssltest.local` 命中站点
+`ssltest.local` 并说明匹配关系；完整流程写入 443 配置后 `nginx -t` 通过；
+证书路径输错时重新询问，配置测试未通过时回滚新增的虚拟主机配置。
+
+- **验证状态**：已实测（Debian 13，2026-08-17）。真实 CA 签发与 DNS 服务商 API 调用
+  受测试机 NAT 环境限制未验证；`conf/lnmpa`、`conf/lamp` 的同源改动只做静态检查。

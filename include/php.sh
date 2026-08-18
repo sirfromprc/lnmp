@@ -380,6 +380,9 @@ Creat_PHP_Tools()
     cd ${cur_dir}/src
 
     \cp ${cur_dir}/conf/index.html ${Default_Website_Dir}/index.html
+    # 默认站点自带 favicon，避免浏览器请求在 error_log 中反复记录 404
+    \cp ${cur_dir}/conf/favicon.ico ${Default_Website_Dir}/favicon.ico ||
+        Echo_Red "favicon.ico 部署失败，默认站点仍会记录 /favicon.ico 404。"
 
     if [ "${Enable_PHPInfo_Page}" = "y" ]; then
         echo "正在创建 PHP 信息页面..."

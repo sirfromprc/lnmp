@@ -54,6 +54,9 @@ Install_Only_Nginx()
     StartOrStop start nginx
     Add_Iptables_Rules
     \cp ${cur_dir}/conf/index.html ${Default_Website_Dir}/index.html
+    # 默认站点自带 favicon，避免浏览器请求在 error_log 中反复记录 404
+    \cp ${cur_dir}/conf/favicon.ico ${Default_Website_Dir}/favicon.ico ||
+        Echo_Red "favicon.ico 部署失败，默认站点仍会记录 /favicon.ico 404。"
     Install_Current_LNMP_Command lnmp || return 1
     Check_Nginx_Files
 }

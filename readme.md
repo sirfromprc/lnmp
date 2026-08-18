@@ -334,8 +334,8 @@ lnmp database {add|list|edit|del|export|import}   # 数据库，见 3.3
 lnmp backup   {init|run|status|list|restore|test} # 备份，见 3.10
 lnmp ftp      {add|list|edit|del|show}            # FTP 账号，见 3.8
 lnmp ssl add                                      # 签发证书，见 3.7
-lnmp dnsssl   {cx|ali|cf|dp|he|gd|aws}            # DNS 验证签发（支持泛域名）
-lnmp onlyssl  {cx|ali|cf|dp|he|gd|aws}            # 只签证书，不改 Nginx 配置
+lnmp dnsssl   {ali|cf|dp|he|gd|aws}               # DNS 验证签发（支持泛域名）
+lnmp onlyssl  {ali|cf|dp|he|gd|aws}               # 只签证书，不改 Nginx 配置
 lnmp tgnotice {--init|--test|--status}            # Telegram 通知，见 3.12
 ```
 
@@ -646,13 +646,28 @@ echo stats | nc 127.0.0.1 11211                 # 确认在跑
 
 ```bash
 lnmp ssl add                                  # 为已有站点签发证书（HTTP 验证）
-lnmp dnsssl {cx|ali|cf|dp|he|gd|aws}          # DNS 验证，支持泛域名
-lnmp onlyssl {cx|ali|cf|dp|he|gd|aws}         # 只签证书，不改 Nginx 配置
+lnmp dnsssl {ali|cf|dp|he|gd|aws}             # DNS 验证，支持泛域名
+lnmp onlyssl {ali|cf|dp|he|gd|aws}            # 只签证书，不改 Nginx 配置
 ```
 
-`lnmp ssl add` 只处理已有虚拟主机：输入域名后先检查站点配置，不存在则提示先执行
-`lnmp vhost add`，不会再次进入目录、伪静态、日志、Pathinfo 或 IPv6 等建站问答。
-站点目录、附加域名和 PHP 开关状态直接从现有配置读取。
+三条命令的区别：
+
+| | 验证方式 | 是否要求站点已存在 | 是否改 Nginx 配置 | 泛域名 | 前提 |
+|---|---|---|---|---|---|
+| `lnmp ssl add` | HTTP-01 | 是 | 是（追加 443 server） | 否 | 80 端口公网可达 |
+| `lnmp dnsssl` | DNS-01 | 是 | 是（追加 443 server） | 是 | DNS 服务商 API 凭据 |
+| `lnmp onlyssl` | DNS-01 | 否 | 否 | 是 | DNS 服务商 API 凭据 |
+
+`ssl add` 与 `dnsssl` 都只处理已有虚拟主机：输入域名后先检查站点配置，不存在则提示
+先执行 `lnmp vhost add`，不会再次进入目录、伪静态、日志、Pathinfo 或 IPv6 等建站问答。
+站点目录、附加域名和 PHP 开关状态直接从现有配置读取。`dnsssl` 按**根域名**定位站点：
+输入 `test.example.com` 或 `*.example.com` 时，会匹配到同根域的现有网站 `example.com`。
+
+`dnsssl` 与 `onlyssl` 的服务商参数取 acme.sh 的 dnsapi 插件名，`{ali|cf|dp|he|gd|aws}`
+之外的插件同样可用（如 `nsone`），完整列表见 `/usr/local/acme.sh/dnsapi/`。命令会按插件
+声明逐项提示输入 API 凭据（如 `NS1_Key`、`CF_Token`），不需要事先手工 `export`；acme.sh
+会保存凭据供续期复用，已保存时回车即可沿用。不带服务商参数时进入手工 TXT 模式，
+该模式无法自动续期。
 
 底层用 acme.sh，证书放在 `/usr/local/nginx/conf/ssl/`，会自动加续期任务。
 密钥类型使用 acme.sh 默认的 **EC-256**。

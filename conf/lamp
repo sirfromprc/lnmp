@@ -500,7 +500,7 @@ Add_VHost()
         fi
     fi
 
-    Echo_Yellow "是否添加 SSL 证书 [y/N]（默认 n）: "
+    Echo_Yellow "是否添加 SSL 证书（HTTP 验证，需 80 端口可从公网访问）[y/N]（默认 n）: "
     read create_ssl
     if [ "${create_ssl}" == "y" ]; then
         Add_SSL_Menu
@@ -1603,18 +1603,56 @@ Add_SSL_Info_Menu()
 # lnmp ssl add 读取现有 Apache 虚拟主机，仅询问证书相关选项。
 Add_SSL_Only_Info_Menu()
 {
-    local vhost_conf
+    local input
 
     domain=""
     while :;do
-        Echo_Yellow "请输入域名（示例：www.example.com）: "
-        Read_Input domain "域名"
-        if [ "${domain}" != "default" ]; then
-            Check_Domain_Name "${domain}" || continue
+        Echo_Yellow "HTTP 验证，请输入域名（示例：www.example.com）: "
+        Read_Input input "域名"
+        Check_Domain_Name "${input}" || continue
+        # HTTP-01 不能签发泛域名，ACME 规定泛域名只接受 DNS-01。
+        case "${input}" in
+        \*.*)
+            Echo_Red "HTTP 验证不能签发泛域名证书，泛域名只接受 DNS 验证。"
+            Echo_Yellow "请改用 lnmp dnsssl {ali|cf|dp|he|gd|aws}。"
+            echo
+            return 1
+            ;;
+        esac
+        if [ "${input}" = "default" ]; then
+            domain="default"
+            break
         fi
-        echo "您的域名：${domain}"
-        break
+        # HTTP 验证要求该域名由现有网站直接服务，因此只认站点名和 server_name，
+        # 不做 dnsssl 那样的根域回退。
+        if Find_Site_For_SSL "${input}"; then
+            domain="${Site_Match_Name}"
+            break
+        fi
+        Echo_Red "未找到网站 ${input} 的虚拟主机配置。"
+        if [ -n "${Site_Match_Hints}" ]; then
+            Echo_Yellow "同一根域下现有网站：${Site_Match_Hints}"
+            echo
+            Echo_Yellow "HTTP 验证要求该域名由现有网站直接服务，请输入准确的域名。"
+            echo
+            continue
+        fi
+        Echo_Yellow "请先执行 lnmp vhost add 创建网站，再执行 lnmp ssl add 添加证书。"
+        echo
+        Echo_Yellow "只要证书不需要网站，请用 lnmp onlyssl {ali|cf|dp|he|gd|aws}。"
+        echo
+        return 1
     done
+    echo "您的域名：${domain}"
+    [ "${domain}" != "${input}" ] && echo "已匹配到网站：${domain}（输入的 ${input} 由该网站服务）"
+
+    Load_Vhost_Params
+}
+
+# 从现有虚拟主机读回站点参数，供 ssl add 与 dnsssl 复用。
+Load_Vhost_Params()
+{
+    local vhost_conf
 
     if [ "${domain}" = "default" ]; then
         vhost_conf="/usr/local/apache/conf/extra/httpd-vhosts.conf"
@@ -1628,7 +1666,7 @@ Add_SSL_Only_Info_Menu()
         return 1
     fi
     if grep -Eq '^[[:space:]]*<VirtualHost[[:space:]]+\*:443>' "${vhost_conf}"; then
-        Echo_Red "网站 ${domain} 已存在 HTTPS/443 配置，不能重复执行 ssl add。"
+        Echo_Red "网站 ${domain} 已存在 HTTPS/443 配置，不能重复添加证书。"
         Echo_Yellow "如需更换证书，请先检查并处理现有 SSL 配置。"
         echo
         return 1
@@ -1701,9 +1739,9 @@ Return_301_Menu()
 
 Add_DNS_SSL_Select_Menu()
 {
-    echo "1: 使用 Let's Encrypt 签发 SSL 证书"
-    echo "2: 使用 ZeroSSL 签发 SSL 证书"
-        while :;do
+    echo "1: 使用 Let's Encrypt 签发 SSL 证书（DNS 验证）"
+    echo "2: 使用 ZeroSSL 签发 SSL 证书（DNS 验证）"
+    while :;do
         Echo_Yellow "请选择 [1-2]："
         read dns_ssl_choice
         if [[ "${dns_ssl_choice}" =~ ^1|2$ ]]; then
@@ -1715,27 +1753,352 @@ Add_DNS_SSL_Select_Menu()
     done
 }
 
+# 虚拟主机配置目录，用于按域名定位现有站点。
+Vhost_Conf_Dir="/usr/local/apache/conf/vhost"
+
+# 判断 Apache 虚拟主机配置中是否声明了该域名。
+Vhost_Has_Domain()
+{
+    awk -v d="$2" '
+        $1 == "ServerName" || $1 == "ServerAlias" {
+            for (i=2; i<=NF; i++) if ($i == d) f=1
+        }
+        END { exit f ? 0 : 1 }
+    ' "$1"
+}
+
+# acme.sh 插件目录与账户配置，安装位置固定。
+Acme_DNSAPI_Dir="/usr/local/acme.sh/dnsapi"
+Acme_Account_Conf="/usr/local/acme.sh/account.conf"
+
+# 解析 acme.sh dnsapi 插件头部的 dns_<provider>_info 元数据，取出所需变量。
+# 输出每行：组号<TAB>变量名<TAB>required|optional<TAB>说明
+# 组 1 来自 Options:，组 2 来自 OptionsAlt:（同一服务商的另一套凭据）。
+Parse_DNS_API_Options()
+{
+    local plugin="$1"
+
+    [ -s "${plugin}" ] || return 1
+    awk '
+        BEGIN { q=sprintf("%c", 39); inblock=0; group=0 }
+        !inblock && /^dns_[A-Za-z0-9_]+_info=/ { inblock=1; next }
+        inblock && substr($0, 1, 1) == q { exit }
+        inblock && /^Options:/ { group=1; next }
+        inblock && /^OptionsAlt:/ { group=2; next }
+        inblock && group > 0 && /^[ \t]+[A-Za-z_][A-Za-z0-9_]*([ \t]|$)/ {
+            name=$1
+            desc=""
+            for (i=2; i<=NF; i++) desc = (desc == "" ? $i : desc " " $i)
+            req="required"
+            if (desc ~ /Optional\.?$/) {
+                req="optional"
+                sub(/[ \t]*Optional\.?$/, "", desc)
+            }
+            if (desc == "") desc=name
+            printf "%d\t%s\t%s\t%s\n", group, name, req, desc
+            next
+        }
+        inblock { group=0 }
+    ' "${plugin}"
+}
+
+# 读取 acme.sh account.conf 中已保存的凭据，用于提示可直接沿用。
+Acme_Saved_Conf_Value()
+{
+    local key="$1" conf="${Acme_Account_Conf}"
+
+    [ -s "${conf}" ] || return 0
+    sed -n "s/^SAVED_${key}='\(.*\)'\$/\1/p" "${conf}" | tail -n 1
+}
+
+# 交互获取 DNS 服务商 API 凭据并导出，避免用户手工 export。
+# 变量名和说明来自插件元数据，新增服务商无需改本脚本。
+Prompt_DNS_API_Credentials()
+{
+    local provider="${1:-}" plugin opts group g name req desc saved val
+
+    [ -z "${provider}" ] && return 0
+    plugin="${Acme_DNSAPI_Dir}/dns_${provider}.sh"
+    opts=$(Parse_DNS_API_Options "${plugin}")
+    if [ -z "${opts}" ]; then
+        Echo_Yellow "无法从 ${plugin} 读取所需的 API 变量名。"
+        echo
+        Echo_Yellow "请按 acme.sh 文档自行 export 对应变量后重新执行。"
+        echo
+        return 0
+    fi
+
+    group=1
+    if printf '%s\n' "${opts}" | grep -q "^2$(printf '\t')"; then
+        echo "DNS 服务商 ${provider} 支持两套凭据："
+        echo "1: $(printf '%s\n' "${opts}" | awk -F'\t' '$1 == 1 { printf "%s ", $2 }')"
+        echo "2: $(printf '%s\n' "${opts}" | awk -F'\t' '$1 == 2 { printf "%s ", $2 }')"
+        while :;do
+            Echo_Yellow "请选择 [1-2]："
+            Read_Input group "凭据组"
+            [[ "${group}" =~ ^[12]$ ]] && break
+            Echo_Red "请输入 1 或 2。"
+        done
+    fi
+
+    echo "请输入 ${provider} 的 API 凭据，acme.sh 会保存供续期复用。"
+    while IFS=$'\t' read -r g name req desc <&3; do
+        [ "${g}" = "${group}" ] || continue
+        saved=$(Acme_Saved_Conf_Value "${name}")
+        while :;do
+            if [ -n "${saved}" ]; then
+                Echo_Yellow "${name}（${desc}）[已保存，回车沿用]: "
+            elif [ "${req}" = "optional" ]; then
+                Echo_Yellow "${name}（${desc}，可留空）: "
+            else
+                Echo_Yellow "${name}（${desc}）: "
+            fi
+            Read_Input val "${name}"
+            if [ -n "${val}" ]; then
+                export "${name}=${val}"
+                break
+            fi
+            # 留空且已有保存值时不导出，由 acme.sh 读取自身保存的凭据。
+            [ -n "${saved}" ] && break
+            [ "${req}" = "optional" ] && break
+            Echo_Red "${name} 不能为空。"
+        done
+    done 3<<EOF
+${opts}
+EOF
+    return 0
+}
+
+# 取可注册根域，用于判断输入域名与现有站点是否同属一个域。
+Get_Domain_Base()
+{
+    local d="${1#\*.}" n l2
+
+    n=$(printf '%s' "${d}" | awk -F. '{ print NF }')
+    if [ "${n}" -le 2 ]; then
+        printf '%s' "${d}"
+        return 0
+    fi
+    l2=$(printf '%s' "${d}" | awk -F. '{ print $(NF-1)"."$NF }')
+    case " com.cn net.cn org.cn gov.cn edu.cn ac.cn co.uk org.uk me.uk ltd.uk plc.uk net.uk ac.uk co.jp ne.jp or.jp com.au net.au org.au com.hk org.hk idv.hk com.tw org.tw idv.tw com.br com.mx co.kr co.in co.nz co.za com.sg com.my com.tr com.ua com.ar " in
+    *" ${l2} "*)
+        if [ "${n}" -le 3 ]; then
+            printf '%s' "${d}"
+        else
+            printf '%s' "$(printf '%s' "${d}" | awk -F. '{ print $(NF-2)"."$(NF-1)"."$NF }')"
+        fi
+        return 0
+        ;;
+    esac
+    printf '%s' "${l2}"
+}
+
+# 在现有虚拟主机中定位域名对应的站点，命中的站点名写入 Site_Match_Name。
+# 未命中时把同根域的站点写入 Site_Match_Hints，供提示用户改正输入。
+Find_Site_For_SSL()
+{
+    local input="${1#\*.}" base name f
+
+    Site_Match_Name=""
+    Site_Match_Hints=""
+    [ -d "${Vhost_Conf_Dir}" ] || return 1
+
+    for f in "${Vhost_Conf_Dir}"/*.conf; do
+        [ -s "${f}" ] || continue
+        name=$(basename "${f}" .conf)
+        if [ "${name}" = "${input}" ]; then
+            Site_Match_Name="${name}"
+            return 0
+        fi
+    done
+
+    # 站点名不匹配时再比对配置内声明的全部域名。
+    for f in "${Vhost_Conf_Dir}"/*.conf; do
+        [ -s "${f}" ] || continue
+        if Vhost_Has_Domain "${f}" "${input}"; then
+            Site_Match_Name=$(basename "${f}" .conf)
+            return 0
+        fi
+    done
+
+    base=$(Get_Domain_Base "${input}")
+    for f in "${Vhost_Conf_Dir}"/*.conf; do
+        [ -s "${f}" ] || continue
+        name=$(basename "${f}" .conf)
+        [ "${name}" = "default" ] && continue
+        if [ "$(Get_Domain_Base "${name}")" = "${base}" ]; then
+            Site_Match_Hints="${Site_Match_Hints:+${Site_Match_Hints} }${name}"
+        fi
+    done
+    return 1
+}
+
+# 生成证书域名列表：去重，并去掉已被泛域名覆盖的同级子域名。
+Filter_Cert_Domains()
+{
+    printf '%s %s\n' "$1" "$2" | awk '
+        {
+            n=0
+            for (i=1; i<=NF; i++) if (!seen[$i]++) list[++n]=$i
+            for (i=1; i<=n; i++) if (substr(list[i], 1, 2) == "*.") wild[substr(list[i], 3)]=1
+            for (i=1; i<=n; i++) {
+                d=list[i]
+                # 主域名始终保留，acme.sh 按第一个 -d 决定证书目录。
+                if (i > 1 && substr(d, 1, 2) != "*.") {
+                    p=index(d, ".")
+                    if (p > 0 && (substr(d, p+1) in wild)) continue
+                }
+                out = (out == "" ? d : out " " d)
+            }
+            print out
+        }
+    '
+}
+
+# onlyssl 不写站点配置，跨根域是合法用法，只提示服务商需同时管理这些解析。
+Warn_Multi_Root_Domains()
+{
+    local base list="$2" d outside=""
+
+    base=$(Get_Domain_Base "$1")
+    set -f
+    for d in ${list}; do
+        [ "$(Get_Domain_Base "${d}")" = "${base}" ] && continue
+        outside="${outside:+${outside} }${d}"
+    done
+    set +f
+
+    [ -z "${outside}" ] && return 0
+    Echo_Yellow "注意：${outside} 与主域名不同根域，DNS 服务商须同时管理它们的解析。"
+    echo
+}
+
+# 附加域名超出本站根域时确认；DNS 验证要求服务商能管理这些域名的解析。
+Confirm_Extra_Domains()
+{
+    local base="$1" known="$2" list="$3" d k outside="" ans
+
+    # 泛域名带 *，比对期间关闭路径展开。
+    set -f
+    for d in ${list}; do
+        for k in ${known}; do
+            [ "${k}" = "${d}" ] && continue 2
+        done
+        [ "$(Get_Domain_Base "${d}")" = "${base}" ] && continue
+        outside="${outside:+${outside} }${d}"
+    done
+    set +f
+
+    [ -z "${outside}" ] && return 0
+    Echo_Red "这些域名不属于网站 ${domain} 的根域 ${base}：${outside}"
+    Echo_Yellow "DNS 验证需要服务商能管理它们的解析，否则本次签发会失败；"
+    echo
+    Echo_Yellow "它们还会被写入该网站的 HTTPS 配置。"
+    echo
+    Echo_Yellow "确认一并申请? (y/N，默认 n) "
+    read ans
+    [ "${ans}" = "y" ] && return 0
+    return 1
+}
+
+# dnsssl 只给已存在的站点签发证书，域名必须命中现有虚拟主机。
+Add_DNS_SSL_Site_Info_Menu()
+{
+    local input extradomain site_base
+
+    domain=""
+    while :;do
+        Echo_Yellow "DNS 验证，请输入域名（示例：www.example.com）: "
+        Read_Input input "域名"
+        Check_Domain_Name "${input}" || continue
+        if [ "${input}" = "default" ]; then
+            Echo_Red "default 是 IP 站点，DNS 验证无法为 IP 地址签发证书。"
+            Echo_Yellow "请执行 lnmp ssl add 并输入 default，走 IP 证书流程。"
+            echo
+            return 1
+        fi
+        if Find_Site_For_SSL "${input}"; then
+            domain="${Site_Match_Name}"
+            break
+        fi
+        # 输入的是子域名或根域名时，按根域命中现有站点即可继续。
+        if [ "$(printf '%s\n' ${Site_Match_Hints} | wc -l)" = "1" ] && [ -n "${Site_Match_Hints}" ]; then
+            domain="${Site_Match_Hints}"
+            echo "${input} 与现有网站 ${domain} 同属根域 $(Get_Domain_Base "${input}")，按该网站申请证书。"
+            break
+        fi
+        Echo_Red "未找到网站 ${input} 的虚拟主机配置。"
+        if [ -n "${Site_Match_Hints}" ]; then
+            Echo_Yellow "同一根域下有多个网站：${Site_Match_Hints}"
+            echo
+            Echo_Yellow "请输入其中一个准确的域名。"
+            echo
+            continue
+        fi
+        Echo_Yellow "请先执行 lnmp vhost add 建立网站，再用本功能申请证书。"
+        echo
+        Echo_Yellow "只要证书不需要网站，请用 lnmp onlyssl {ali|cf|dp|he|gd|aws}。"
+        echo
+        return 1
+    done
+    echo "您的域名：${domain}"
+
+    Load_Vhost_Params || return 1
+    [ -n "${moredomain}" ] && echo "站点现有域名：${moredomain}"
+
+    # 泛域名无需单独建站，按根域命中站点后直接并入证书域名。
+    case "${input}" in
+    \*.*)
+        moredomain="${moredomain:+${moredomain} }${input}"
+        echo "泛域名 ${input} 已加入证书域名。"
+        ;;
+    esac
+
+    site_base=$(Get_Domain_Base "${domain}")
+    while :;do
+        Echo_Yellow "请输入更多域名（支持泛域名，示例：*.example.com sub.example.com，留空跳过）: "
+        read extradomain
+        [ -z "${extradomain}" ] && break
+        Check_More_Domains "${extradomain}" || continue
+        Confirm_Extra_Domains "${site_base}" "${domain} ${moredomain}" "${extradomain}" && break
+    done
+    if [ -n "${extradomain}" ]; then
+        moredomain=$(printf '%s %s\n' "${moredomain}" "${extradomain}" | awk -v p="${domain}" '
+            { for (i=1; i<=NF; i++) if ($i != p && !seen[$i]++) out = (out == "" ? $i : out " " $i) }
+            END { print out }
+        ')
+        echo "附加域名：${moredomain}"
+    fi
+    return 0
+}
 Add_DNS_SSL_Only_Info_Menu()
 {
     Add_DNS_SSL_Select_Menu
 
     domain=""
     while :;do
-        Echo_Yellow "请输入域名（示例：www.example.com）: "
-        read domain
+        Echo_Yellow "DNS 验证，请输入域名（示例：www.example.com）: "
+        Read_Input domain "域名"
         Check_Domain_Name "${domain}" || continue
+        if [ "${domain}" = "default" ]; then
+            Echo_Red "default 是 IP 站点，DNS 验证无法为 IP 地址签发证书。"
+            Echo_Yellow "请执行 lnmp ssl add 并输入 default，走 IP 证书流程。"
+            echo
+            return 1
+        fi
         echo "您的域名：${domain}"
         break
     done
 
     while :;do
-        Echo_Yellow "请输入更多域名（示例：example.com sub.example.com，留空跳过）: "
+        Echo_Yellow "请输入更多域名（支持泛域名，示例：*.example.com sub.example.com，留空跳过）: "
         read moredomain
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" && break
     done
     if [ "${moredomain}" != "" ]; then
         echo "附加域名：${moredomain}"
+        Warn_Multi_Root_Domains "${domain}" "${moredomain}"
     fi
 }
 
@@ -1744,11 +2107,16 @@ Add_SSL_Menu()
     if [ "${info:-}" == "n" ]; then
         Add_SSL_Only_Info_Menu || return 1
     fi
+    if [ "${domain}" = "default" ]; then
+        echo "HTTP 验证要求本机公网 IPv4 的 80 端口可从公网访问。"
+    else
+        echo "HTTP 验证要求域名已解析到本机，且 80 端口可从公网访问。"
+    fi
     echo "1: 使用自有 SSL 证书和私钥"
-    echo "2: 使用 Let's Encrypt 签发 SSL 证书"
+    echo "2: 使用 Let's Encrypt 签发 SSL 证书（HTTP 验证）"
     if [ "${domain}" != "default" ]; then
-        echo "3: 使用 BuyPass 签发 SSL 证书"
-        echo "4: 使用 ZeroSSL 签发 SSL 证书"
+        echo "3: 使用 BuyPass 签发 SSL 证书（HTTP 验证）"
+        echo "4: 使用 ZeroSSL 签发 SSL 证书（HTTP 验证）"
     fi
     while :;do
         if [ "${domain}" = "default" ]; then
@@ -2174,35 +2542,36 @@ Add_Dns_SSL()
         Echo_Red "DNS 手工验证模式无法自动续期，证书到期前必须手动续期。"
     fi
 
-    Add_SSL_Info_Menu
+    Add_DNS_SSL_Site_Info_Menu || exit 1
     Add_DNS_SSL_Select_Menu
     Return_301_Menu
+
     Install_Check_Acme.sh || exit 1
 
     if [[ ! -s /usr/local/acme.sh/dnsapi/dns_${provider}.sh && "${provider}" != "" ]]; then
         echo "未找到 DNS 服务商插件：${provider}。"
         exit 1
     fi
+    Prompt_DNS_API_Credentials "${provider}" || exit 1
 
-    if [ -s /usr/local/apache/conf/ssl/${domain}/fullchain.cer ]; then
+    # 泛域名不能直接做目录名，避免路径被通配符展开。
+    cert_dir_name="${domain/#\*./_wildcard.}"
+    cert_dir="/usr/local/apache/conf/ssl/${cert_dir_name}"
+    if [ -s "${cert_dir}/fullchain.cer" ]; then
         echo "正在删除已有域名证书..."
-        rm -rf /usr/local/apache/conf/ssl/${domain}
+        rm -rf "${cert_dir}"
     fi
 
-    letsdomain=""
-    if [ "${moredomain}" != "" ]; then
-        letsdomain="-d ${domain}"
-        for i in ${moredomain};do
-            letsdomain=${letsdomain}" -d ${i}"
-        done
-    else
-        letsdomain="-d ${domain}"
-    fi
-
-    if echo "${letsdomain}" | grep -q '\*\.' && echo "${letsdomain}" | grep -qi 'www\.'; then
-        Echo_Red "泛域名证书不能同时添加 www 子域名。"
-        exit 1
-    fi
+    # 泛域名已覆盖同级子域名，重复申请只会多一次 TXT 验证。
+    cert_domains=$(Filter_Cert_Domains "${domain}" "${moredomain}")
+    # 泛域名带 *，拆分和传参期间关闭路径展开。
+    letsdomain=()
+    set -f
+    for i in ${cert_domains};do
+        letsdomain+=(-d "${i}")
+    done
+    set +f
+    echo "证书域名：${cert_domains}"
 
     if [ "${dns_ssl_choice}" == "1" ]; then
         ca_server="letsencrypt"
@@ -2212,40 +2581,43 @@ Add_Dns_SSL()
 
     echo "正在使用 ${ca_server} 签发 SSL 证书..."
     if [ "${provider}" != "" ]; then
-        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} --dns ${dns_provider} --reloadcmd "/etc/init.d/httpd graceful"
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue "${letsdomain[@]}" --dns ${dns_provider} --reloadcmd "/etc/init.d/httpd graceful"
         lets_status=$?
     else
-        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue "${letsdomain[@]}" --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
         Echo_Yellow "请在 120 秒内为域名添加上方显示的 TXT 记录。"
         echo
         Sleep_Sec 120
-        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --renew ${letsdomain} --yes-I-know-dns-manual-mode-enough-go-ahead-please
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --renew "${letsdomain[@]}" --yes-I-know-dns-manual-mode-enough-go-ahead-please
         lets_status=$?
     fi
-    if [ "${lets_status}" = 0 ] || [[ "${provider}" = "" && "${lets_status}" = 1 && -s "/usr/local/apache/conf/ssl/${domain}/${domain}.cer" ]]; then
-        if [ ! -d "${vhostdir}" ]; then
-            echo "正在创建虚拟主机目录......"
-            mkdir -p "${vhostdir}"
-            echo "正在设置虚拟主机目录权限......"
-            chmod -R 755 "${vhostdir}"
-            chown -R www:www "${vhostdir}"
-        fi
 
-        if [ ! -s "/usr/local/apache/conf/vhost/${domain}.conf" ]; then
-            Add_VHost_Config || return 1
-        fi
-        ssl_certificate="/usr/local/apache/conf/ssl/${domain}/${domain}.cer"
-        ssl_certificate_key="/usr/local/apache/conf/ssl/${domain}/${domain}.key"
-        Create_SSL_Config || return 1
-        Print_Banner \
-            "SSL 证书信息" \
-            "域名：${domain} ${moredomain}" \
-            "证书：/usr/local/apache/conf/ssl/${domain}/fullchain.cer" \
-            "私钥：/usr/local/apache/conf/ssl/${domain}/${domain}.key"
-        Echo_Green "SSL 证书签发成功。"
-    else
-        Echo_Red "SSL 证书签发失败。"
+    # acme.sh 默认签发 ECC 证书，须显式安装到站点证书目录。
+    if [ "${lets_status}" = 0 ]; then
+        mkdir -p "${cert_dir}" || return 1
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --install-cert -d "${domain}" --ecc \
+            --cert-file "${cert_dir}/${cert_dir_name}.cer" \
+            --key-file "${cert_dir}/${cert_dir_name}.key" \
+            --ca-file "${cert_dir}/ca.cer" \
+            --fullchain-file "${cert_dir}/fullchain.cer" \
+            --reloadcmd "/etc/init.d/httpd graceful"
+        lets_status=$?
     fi
+
+    if [ "${lets_status}" != 0 ]; then
+        Echo_Red "SSL 证书签发失败。"
+        return 1
+    fi
+
+    ssl_certificate="${cert_dir}/${cert_dir_name}.cer"
+    ssl_certificate_key="${cert_dir}/${cert_dir_name}.key"
+    Create_SSL_Config || return 1
+    Print_Banner \
+        "SSL 证书信息" \
+        "域名：${domain} ${moredomain}" \
+        "证书：${cert_dir}/fullchain.cer" \
+        "私钥：${cert_dir}/${cert_dir_name}.key"
+    Echo_Green "SSL 证书签发成功。"
 }
 
 Add_Dns_SSL_Only()
@@ -2263,33 +2635,34 @@ Add_Dns_SSL_Only()
         Echo_Red "DNS 手工验证模式无法自动续期，证书到期前必须手动续期。"
     fi
 
-    Add_DNS_SSL_Only_Info_Menu
+    Add_DNS_SSL_Only_Info_Menu || exit 1
+
     Install_Check_Acme.sh || exit 1
 
     if [[ ! -s /usr/local/acme.sh/dnsapi/dns_${provider}.sh && "${provider}" != "" ]]; then
         echo "未找到 DNS 服务商插件：${provider}。"
         exit 1
     fi
+    Prompt_DNS_API_Credentials "${provider}" || exit 1
 
-    if [ -s /usr/local/apache/conf/ssl/${domain}/fullchain.cer ]; then
+    # 泛域名不能直接做目录名，避免路径被通配符展开。
+    cert_dir_name="${domain/#\*./_wildcard.}"
+    cert_dir="/usr/local/apache/conf/ssl/${cert_dir_name}"
+    if [ -s "${cert_dir}/fullchain.cer" ]; then
         echo "正在删除已有域名证书..."
-        rm -rf /usr/local/apache/conf/ssl/${domain}
+        rm -rf "${cert_dir}"
     fi
 
-    letsdomain=""
-    if [ "${moredomain}" != "" ]; then
-        letsdomain="-d ${domain}"
-        for i in ${moredomain};do
-            letsdomain=${letsdomain}" -d ${i}"
-        done
-    else
-        letsdomain="-d ${domain}"
-    fi
-
-    if echo "${letsdomain}" | grep -q '\*\.' && echo "${letsdomain}" | grep -qi 'www\.'; then
-        Echo_Red "泛域名证书不能同时添加 www 子域名。"
-        exit 1
-    fi
+    # 泛域名已覆盖同级子域名，重复申请只会多一次 TXT 验证。
+    cert_domains=$(Filter_Cert_Domains "${domain}" "${moredomain}")
+    # 泛域名带 *，拆分和传参期间关闭路径展开。
+    letsdomain=()
+    set -f
+    for i in ${cert_domains};do
+        letsdomain+=(-d "${i}")
+    done
+    set +f
+    echo "证书域名：${cert_domains}"
 
     if [ "${dns_ssl_choice}" == "1" ]; then
         ca_server="letsencrypt"
@@ -2299,26 +2672,40 @@ Add_Dns_SSL_Only()
 
     echo "正在使用 ${ca_server} 签发 SSL 证书..."
     if [ "${provider}" != "" ]; then
-        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} --dns ${dns_provider} --reloadcmd "/etc/init.d/httpd graceful"
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue "${letsdomain[@]}" --dns ${dns_provider} --reloadcmd "/etc/init.d/httpd graceful"
         lets_status=$?
     else
-        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue ${letsdomain} --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue "${letsdomain[@]}" --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
         Echo_Yellow "请在 120 秒内为域名添加上方显示的 TXT 记录。"
         echo
         Sleep_Sec 120
-        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --renew ${letsdomain} --yes-I-know-dns-manual-mode-enough-go-ahead-please
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --renew "${letsdomain[@]}" --yes-I-know-dns-manual-mode-enough-go-ahead-please
         lets_status=$?
     fi
-    if [ "${lets_status}" = 0 ] || [[ "${provider}" = "" && "${lets_status}" = 1 && -s "/usr/local/apache/conf/ssl/${domain}/fullchain.cer" ]]; then
-        Print_Banner \
-            "SSL 证书信息" \
-            "域名：${domain} ${moredomain}" \
-            "证书：/usr/local/apache/conf/ssl/${domain}/fullchain.cer" \
-            "私钥：/usr/local/apache/conf/ssl/${domain}/${domain}.key"
-        Echo_Green "SSL 证书签发成功。"
-    else
-        Echo_Red "SSL 证书签发失败。"
+
+    # acme.sh 默认签发 ECC 证书，须显式安装到站点证书目录。
+    if [ "${lets_status}" = 0 ]; then
+        mkdir -p "${cert_dir}" || return 1
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --install-cert -d "${domain}" --ecc \
+            --cert-file "${cert_dir}/${cert_dir_name}.cer" \
+            --key-file "${cert_dir}/${cert_dir_name}.key" \
+            --ca-file "${cert_dir}/ca.cer" \
+            --fullchain-file "${cert_dir}/fullchain.cer"
+        lets_status=$?
     fi
+
+    if [ "${lets_status}" != 0 ]; then
+        Echo_Red "SSL 证书签发失败。"
+        return 1
+    fi
+
+    Print_Banner \
+        "SSL 证书信息" \
+        "域名：${domain} ${moredomain}" \
+        "证书：${cert_dir}/fullchain.cer" \
+        "私钥：${cert_dir}/${cert_dir_name}.key" \
+        "证书未写入任何站点配置，需要时自行引用。"
+    Echo_Green "SSL 证书签发成功。"
 }
 
 Color_Text()
@@ -2469,8 +2856,9 @@ case "${arg1}" in
         echo "用法：lnmp tgnotice {--init|--test|--status} | lnmp tgnotice \"文本\" [md]"
         echo "用法：lnmp phpmyadmin {enable|disable|status}"
         echo "用法：lnmp ssl add"
-        echo "用法：lnmp {dnsssl|dns} {cx|ali|cf|dp|he|gd|aws}"
-        echo "用法：lnmp onlyssl {cx|ali|cf|dp|he|gd|aws}"
+        echo "用法：lnmp {dnsssl|dns} {ali|cf|dp|he|gd|aws}"
+        echo "用法：lnmp onlyssl {ali|cf|dp|he|gd|aws}"
+        echo "      DNS 服务商名取 acme.sh 插件名，如 nsone、gcloud，见 /usr/local/acme.sh/dnsapi/"
         exit 1
         ;;
 esac
