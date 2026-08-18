@@ -119,9 +119,31 @@ Svc_If_Installed()
     Svc "${service}" "${action}"
 }
 
+# 输出服务对应的进程名。服务名与进程名不一致时在这里映射。
+Svc_Process_Names()
+{
+    case "$1" in
+    mariadb) echo "mariadbd mysqld" ;;
+    mysql)   echo "mysqld" ;;
+    *)       echo "$1" ;;
+    esac
+}
+
+# 服务有进程在运行时返回 0。缺少 pgrep 时一律按未运行处理，
+# 宁可给排错命令，也不给可能无效的 kill 建议。
+Svc_Process_Running()
+{
+    local name
+    command -v pgrep >/dev/null 2>&1 || return 1
+    for name in $(Svc_Process_Names "$1"); do
+        pgrep -x "${name}" >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
 Check_Svc_State()
 {
-    local service failed=''
+    local service stray='' down=''
 
     [ -d /run/systemd/system ] || return 0
     command -v systemctl >/dev/null 2>&1 || return 0
@@ -129,13 +151,31 @@ Check_Svc_State()
     for service in "$@"; do
         [ -z "${service}" ] && continue
         Systemd_Service_Exists "${service}" || continue
-        systemctl is-active --quiet "${service}.service" || failed="${failed} ${service}"
+        systemctl is-active --quiet "${service}.service" && continue
+        # 进程在跑但 unit 不是 active，才是 systemd 之外启动导致的状态不一致；
+        # 进程不在，说明启动确实失败，此时提示 kill 只会重复同一个失败。
+        if Svc_Process_Running "${service}"; then
+            stray="${stray} ${service}"
+        else
+            down="${down} ${service}"
+        fi
     done
 
-    [ -z "${failed}" ] && return 0
-    echo "警告：以下服务的 systemd 状态不是活动状态（active）：${failed}"
-    echo "      若进程其实还在跑，说明它被 systemd 之外的方式启动过；"
-    echo "      执行 lnmp kill 后再 lnmp start，可让两边重新对齐。"
+    [ -z "${stray}" ] && [ -z "${down}" ] && return 0
+
+    if [ -n "${stray}" ]; then
+        echo "警告：以下服务在运行，但不受 systemd 管理：${stray}"
+        echo "      它们被 systemd 之外的方式启动过，systemctl 无法停止或重载。"
+        echo "      执行 lnmpa kill 后再 lnmpa start，可让两边重新对齐。"
+    fi
+    if [ -n "${down}" ]; then
+        echo "警告：以下服务未能启动：${down}"
+        echo "      查看失败原因："
+        for service in ${down}; do
+            echo "        systemctl status ${service}.service"
+            echo "        journalctl -xeu ${service}.service"
+        done
+    fi
     return 1
 }
 
@@ -144,7 +184,8 @@ lnmpa_start()
     local failed=0
     echo "正在启动 LNMPA..."
     Svc_If_Installed Nginx "${NGINX_SERVICE}" start || failed=1
-    Svc_If_Installed Database "${DB_SERVICE}" start || failed=1
+    Svc_If_Installed Database "${DB_SERVICE}" start ||
+        { failed=1; Diagnose_DB_Start_Failure start; }
     Svc_If_Installed Apache "${APACHE_SERVICE}" start || failed=1
     Check_Svc_State "${NGINX_SERVICE}" "${DB_SERVICE}" "${APACHE_SERVICE}" || failed=1
     return ${failed}
@@ -171,15 +212,53 @@ lnmpa_reload()
     return ${failed}
 }
 
+# Kill_Process <进程名> [等待秒数]
+# 先 TERM 并等待进程真正退出，超时才 KILL。不等待会让随后的 start 撞上
+# 尚未释放的端口或 pid 文件。目标进程本就不存在时静默返回 0。
+Kill_Process()
+{
+    local name="$1" wait_sec="${2:-10}" i
+
+    if ! command -v pgrep >/dev/null 2>&1 || ! command -v pkill >/dev/null 2>&1; then
+        # 缺少 procps 时退回 killall，此路径无法确认进程是否已退出。
+        if command -v killall >/dev/null 2>&1; then
+            killall "${name}" 2>/dev/null
+            return 0
+        fi
+        Echo_Red "缺少 pkill 和 killall，无法终止 ${name}，请安装 procps。"
+        return 1
+    fi
+
+    pgrep -x "${name}" >/dev/null 2>&1 || return 0
+    pkill -x "${name}" 2>/dev/null
+    i=0
+    while [ ${i} -lt ${wait_sec} ]; do
+        pgrep -x "${name}" >/dev/null 2>&1 || return 0
+        sleep 1
+        i=$((i + 1))
+    done
+
+    Echo_Yellow "${name} 未响应 TERM，改用 KILL 强制终止。"
+    echo
+    pkill -9 -x "${name}" 2>/dev/null
+    sleep 1
+    pgrep -x "${name}" >/dev/null 2>&1 || return 0
+    Echo_Red "${name} 进程未能终止，请手工检查。"
+    return 1
+}
+
 lnmpa_kill()
 {
+    local failed=0
     echo "正在终止 Nginx、Apache 和数据库进程..."
-    killall nginx
-    killall httpd
+    Kill_Process nginx || failed=1
+    Kill_Process httpd || failed=1
     # MariaDB 的进程名是 mariadbd，两者只会有一个存在。
-    killall mysqld 2>/dev/null
-    killall mariadbd 2>/dev/null
-    echo "完成。"
+    # 数据库关闭要刷缓冲池，给更长的等待时间。
+    Kill_Process mysqld 30 || failed=1
+    Kill_Process mariadbd 30 || failed=1
+    [ ${failed} -eq 0 ] && echo "完成。"
+    return ${failed}
 }
 
 lnmpa_status()
@@ -797,6 +876,77 @@ Check_DB()
     else
         MySQL_Bin="None"
     fi
+}
+
+# 输出 /etc/my.cnf 中 [mysqld] 段指定键的值，未配置时输出空。
+Get_Mysqld_Conf_Value()
+{
+    local key="$1" conf="${2:-/etc/my.cnf}"
+
+    [ -n "${key}" ] && [ -s "${conf}" ] || return 0
+    awk -v key="${key}" '
+        /^[[:space:]]*\[/ {
+            section = $0
+            sub(/^[[:space:]]*\[[[:space:]]*/, "", section)
+            sub(/[[:space:]]*\].*$/, "", section)
+            next
+        }
+        section == "mysqld" && found == "" && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]#].*$/, "", value)
+            found = value
+        }
+        END { if (found != "") print found }
+    ' "${conf}"
+}
+
+# 数据库启动失败时给出可操作的原因。datadir 或错误日志对运行账号不可写时，
+# 服务端在打开错误日志前就退出，日志文件里不留任何记录，systemd 只显示
+# init 脚本的 ERROR!，需要在这里补出真实原因。
+Diagnose_DB_Start_Failure()
+{
+    local action="${1:-start}" conf="${2:-/etc/my.cnf}"
+    local db_user db_group datadir logerror target unwritable=0
+
+    case "${action}" in
+    start|restart) ;;
+    *) return 0 ;;
+    esac
+    [ -s "${conf}" ] || return 1
+
+    db_user=$(Get_Mysqld_Conf_Value user "${conf}")
+    datadir=$(Get_Mysqld_Conf_Value datadir "${conf}")
+    logerror=$(Get_Mysqld_Conf_Value log_error "${conf}")
+
+    if [ -n "${db_user}" ] && id "${db_user}" >/dev/null 2>&1 &&
+       command -v runuser >/dev/null 2>&1; then
+        db_group=$(id -gn "${db_user}" 2>/dev/null) || db_group="${db_user}"
+        for target in "${datadir}" "${logerror}"; do
+            [ -n "${target}" ] && [ -e "${target}" ] || continue
+            runuser -u "${db_user}" -- test -w "${target}" 2>/dev/null && continue
+            Echo_Red "${target} 对数据库运行账号 ${db_user} 不可写。"
+            unwritable=1
+        done
+        if [ ${unwritable} -eq 1 ]; then
+            # Echo_Yellow 不输出换行，提示后需要补一个换行再列修复命令。
+            Echo_Yellow "数据库进程无法写入数据目录或错误日志，修复属主后重新启动："
+            echo
+            [ -n "${datadir}" ] && echo "  chown -R ${db_user}:${db_group} ${datadir}"
+            case "${logerror}" in
+            ''|"${datadir}"/*) ;;
+            *) echo "  chown ${db_user}:${db_group} ${logerror}" ;;
+            esac
+            return 1
+        fi
+    fi
+
+    if [ -n "${logerror}" ] && [ -s "${logerror}" ]; then
+        Echo_Yellow "数据库错误日志末尾（${logerror}）："
+        echo
+        tail -n 15 "${logerror}"
+    fi
+    return 1
 }
 
 # 输出数据库实际使用的 socket 路径，[client] 优先，其次 [mysqld]。
@@ -2907,10 +3057,10 @@ case "${arg1}" in
         Svc nginx ${arg2}
         ;;
     mysql)
-        Svc mysql ${arg2}
+        Svc mysql ${arg2} || Diagnose_DB_Start_Failure "${arg2}"
         ;;
     mariadb)
-        Svc mariadb ${arg2}
+        Svc mariadb ${arg2} || Diagnose_DB_Start_Failure "${arg2}"
         ;;
     pureftpd)
         Svc pureftpd ${arg2}

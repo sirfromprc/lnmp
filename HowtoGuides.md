@@ -9,8 +9,7 @@
 > WordPress 7.0.3；WordPress 主链路已分别在两种数据库上完成。
 > LAMP 与 LNMPA 另用 Apache 2.4.68 + PHP 8.3.33 完整安装验证。
 >
-> 与其他文档的分工：本文讲**怎么做**；`README.md` 讲各组件与开关的含义；
-> `changelog.md` 记录本包相对上游做过哪些改动以及为什么。
+> 本项目所提供的功能纯终端命令操作，建议配合 WinSCP 处理上下传文件工作，提高工作效率。
 
 ---
 
@@ -69,16 +68,16 @@ ss -lntup
 
 ### 1.2 编译耗时参考
 
-4 核 6G 的机器上，从零完整安装约 **9 分钟**（MySQL 走二进制不编译）。
+4 核 6G 的机器上，从零完整安装约 **9 分钟**（MySQL 走二进制不编译，VPS 网络、CPU限制情况不同，时间会有所差异，可达20-30分钟）。
 如果选择源码编译 MySQL，再加 30-60 分钟，且有可能失败。
 
 ### 1.3 获取代码
 
 ```bash
-# 发布地址确定后，将占位符替换为实际的 v2.3 Release 压缩包地址
-wget <v2.3-release压缩包地址>
-tar zxf v2.3.tar.gz
-cd lnmp2.3
+# 请查阅最新版本，将v2.3-20260816替换为最新版本号
+wget https://github.com/{your-github-username}/lnmp/archive/refs/tags/v2.3-20260816.tar.gz -o /root/lnmp.tar.gz
+tar zxf /root/lnmp.tar.gz -C /root/
+cd /root/lnmp
 chmod +x install.sh addons.sh uninstall.sh upgrade.sh
 id -u
 # 必须输出 0
@@ -807,34 +806,30 @@ echo "校验通过"
 
 ### 5.2 铺文件
 
-**代码目录不要交给 PHP 运行账号（`www`）写。** 这是 WordPress 站点被入侵后
-攻击持久化的关键条件是 PHP 可以改写代码文件。任何插件、主题或站点代码漏洞，
-只要 PHP 能改写自己的代码文件，攻击者就能落 webshell、改核心文件、
-篡改 `wp-config.php`。
+默认按 WordPress 常规权限铺文件，网页安装向导、插件与主题安装、后台自动更新
+都可用：
 
 ```bash
 SITE=/home/wwwroot/wp.example.com
+echo ${SITE}        # 执行 chown -R 前先确认变量已展开成站点目录
 tar zxf wordpress.tar.gz
 cp -a wordpress/. ${SITE}/
 
-# 代码归 root，PHP 只读
-chown -R root:www ${SITE}/
-find ${SITE} -type d -exec chmod 750 {} \;
-find ${SITE} -type f -exec chmod 640 {} \;
-
-# 只有这几个目录需要 PHP 写：上传、缓存、升级临时目录
-mkdir -p ${SITE}/wp-content/uploads ${SITE}/wp-content/cache ${SITE}/wp-content/upgrade
-chown -R www:www ${SITE}/wp-content/uploads ${SITE}/wp-content/cache ${SITE}/wp-content/upgrade
-chmod -R 750     ${SITE}/wp-content/uploads ${SITE}/wp-content/cache ${SITE}/wp-content/upgrade
+chown -R www:www ${SITE}/
+find ${SITE} -type d -exec chmod 755 {} \;
+find ${SITE} -type f -exec chmod 644 {} \;
 ```
 
-**限制**：这样配置后，**后台的插件/主题在线安装与自动升级会失效**
-（PHP 写不了 `wp-content/plugins`）。这是有意的取舍。两种做法二选一：
+> `SITE` 为空时 `chown -R www:www ${SITE}/` 会作用到 `/`，把
+> `/usr/local/mariadb/var` 等数据目录的属主一并改掉，数据库将无法启动
+> （错误日志不可写，服务端在写日志前就退出）。递归改属主前务必先
+> `echo ${SITE}` 核对。
 
-- **推荐**：升级走命令行（`wp-cli` 或手工替换文件），后台只用来编辑内容。
-- **图省事**：把 `wp-content/plugins`、`wp-content/themes` 也给 `www` 写权限，
-  但要清楚这等于把"PHP 可写自身代码"这条路重新打开了。
-  `wp-config.php` 与核心目录（`wp-admin`、`wp-includes`）**无论如何都不要**给。
+`wp-config.php` 含明文数据库密码，单独收紧到 600，见 5.3。
+
+需要禁止 PHP 改写代码目录的更强隔离，等安装完成、功能验证通过后再做，
+见 5.6。**不要在建站前就收紧**：那样网页安装向导无法写 `wp-config.php`，
+插件安装和自动更新也会失败，问题会与配置错误、伪静态失效混在一起，难以定位。
 
 > **会看到这两行报错，属正常，不用管：**
 > ```
@@ -881,9 +876,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once ABSPATH . 'wp-settings.php';
 PHPEOF
 
-# 属主为 root，PHP 仅有读取权限；文件包含明文数据库密码，
-# 而且没有任何正当理由需要被 PHP 改写
-chown root:www wp-config.php && chmod 640 wp-config.php
+# 文件含明文数据库密码，只给属主读写；采用 5.6 的加固时改为
+# chown root:www wp-config.php && chmod 640 wp-config.php
+chown www:www wp-config.php && chmod 600 wp-config.php
 php -l wp-config.php
 ```
 
@@ -896,7 +891,8 @@ php -l wp-config.php
   未设置前缀时会发生键名冲突。
 - **`DISALLOW_FILE_EDIT`**：关掉后台的插件/主题在线编辑器。
   这是被入侵后最常见的提权跳板。
-- **`wp-config.php` 权限 640**：它含明文数据库密码，不能是 644。
+- **`wp-config.php` 权限 600**：它含明文数据库密码，不能是 644。
+  采用 5.6 的加固（属主 root）时用 640，让 `www` 组可读。
 
 ### 5.4 完成安装
 
@@ -973,6 +969,54 @@ wp-admin: 301        ← wordpress.conf 的补斜杠规则，跳到 /wp-admin/
 
 **如果文章页返回 404**，说明伪静态没生效，检查站点配置里有没有
 `include rewrite/wordpress.conf;`。
+
+### 5.6 可选加固：禁止 PHP 改写代码目录
+
+**执行前提**：安装向导已完成、HTTPS 可访问、伪静态验证通过（5.4、5.5），
+需要的插件与主题已装好并确认可用。收紧权限会关闭后台的安装与更新能力，
+在功能尚未验证的站点上执行，会把权限问题和配置问题混在一起。
+
+PHP 能改写自身代码文件，是站点被入侵后落 webshell、篡改核心文件的前提。
+接受用命令行完成后续全部更新时，把代码目录改为 PHP 只读：
+
+```bash
+SITE=/home/wwwroot/wp.example.com
+echo ${SITE}        # 执行 chown -R 前先确认变量已展开成站点目录
+
+chown -R root:www ${SITE}/
+find ${SITE} -type d -exec chmod 750 {} \;
+find ${SITE} -type f -exec chmod 640 {} \;
+chown root:www ${SITE}/wp-config.php && chmod 640 ${SITE}/wp-config.php
+
+# 只有这几个目录需要 PHP 写：上传、缓存、升级临时目录
+mkdir -p ${SITE}/wp-content/uploads ${SITE}/wp-content/cache ${SITE}/wp-content/upgrade
+chown -R www:www ${SITE}/wp-content/uploads ${SITE}/wp-content/cache ${SITE}/wp-content/upgrade
+chmod -R 750     ${SITE}/wp-content/uploads ${SITE}/wp-content/cache ${SITE}/wp-content/upgrade
+```
+
+执行后逐项确认站点仍然可用：
+
+```bash
+curl -o /dev/null -w "首页: %{http_code}\n"   https://wp.example.com/
+curl -o /dev/null -w "文章页: %{http_code}\n" https://wp.example.com/hello-world/
+```
+
+再在后台确认媒体上传成功。上传失败通常是 uploads 属主没改回 `www:www`。
+
+代价：后台的插件/主题在线安装与自动升级失效，更新须走 `wp-cli` 或手工替换
+文件。装新插件时先临时把目标目录属主改回 `www:www`，装完再改回 `root:www`。
+折中做法是长期只对 `wp-content/plugins`、`wp-content/themes` 保留 `www` 写权限，
+等于重新打开 PHP 可写自身代码这条路；`wp-config.php` 与核心目录
+（`wp-admin`、`wp-includes`）不给。
+
+**回退**：加固后出现无法定位的功能异常，先恢复默认权限排除权限因素：
+
+```bash
+chown -R www:www ${SITE}/
+find ${SITE} -type d -exec chmod 755 {} \;
+find ${SITE} -type f -exec chmod 644 {} \;
+chown www:www ${SITE}/wp-config.php && chmod 600 ${SITE}/wp-config.php
+```
 
 ---
 
@@ -1547,6 +1591,28 @@ lnmp php-fpm {start|stop|reload|restart}
 
 > `lnmp restart` **不包含 Redis**（它是 addon）。Redis 单独管：
 > `/etc/init.d/redis {start|stop|restart|status}`
+
+`lnmp kill` 逐个终止 Nginx、PHP-FPM 和数据库进程：先发 TERM 并等待进程真正退出
+（数据库最多 30 秒，其余最多 10 秒），超时才发 KILL 并给出提示。进程本就不在时
+不输出内容。全部终止成功才打印「完成。」并返回 0：
+
+```bash
+lnmp kill; echo "rc=$?"
+# 正在终止 Nginx、PHP-FPM 和数据库进程...
+# 完成。
+# rc=0
+```
+
+该命令依赖 procps 提供的 `pgrep` 与 `pkill`。两者缺失时退回 `killall`（此路径无法
+确认进程是否已退出），都没有时报错并要求安装 procps：
+
+```bash
+apt-get install -y procps      # Debian / Ubuntu
+yum install -y procps-ng       # CentOS / RHEL
+```
+
+`kill` 之后请用 `lnmp start` 重新拉起服务，不要直接跑 `/etc/init.d/` 下的脚本，
+否则 `systemctl is-active` 与实际进程会再次对不上。
 
 DenyHosts 误封时使用源码目录里的严格地址入口；参数必须是完整 IPv4 或 IPv6，非法值会在
 停止服务和修改列表前退出：
@@ -2146,7 +2212,8 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo
 ```
 
 - `Access denied` → 密码错误，或账号仅授权 `localhost` 而客户端连接 `127.0.0.1`
-- `Can't connect` → 数据库没启动；按实际分支执行 `lnmp mysql start` 或 `lnmp mariadb start`
+- `Can't connect` → 数据库没启动；按实际分支执行 `lnmp mysql start` 或 `lnmp mariadb start`。
+  启动命令本身失败见 9.10
 
 ### 9.7 忘记数据库 root 密码
 
@@ -2192,6 +2259,76 @@ bash tools/remove_open_basedir_restriction.sh
 
 该限制是多站点之间的目录边界，去掉后这个站点的 PHP 可以读写 `open_basedir`
 原本挡住的路径。单站点服务器影响有限，共享主机场景不建议去掉。
+
+### 9.10 服务起不来，或状态与 systemd 对不上
+
+`lnmp start` 会在启动后核对每个服务的 systemd 状态，并按进程是否真的在运行给出
+两种不同的提示。先看清是哪一种，两者的处置方式相反。
+
+**一、进程在跑，但不受 systemd 管理**
+
+```
+警告：以下服务在运行，但不受 systemd 管理： nginx
+      它们被 systemd 之外的方式启动过，systemctl 无法停止或重载。
+      执行 lnmp kill 后再 lnmp start，可让两边重新对齐。
+```
+
+多见于直接执行 `/usr/local/nginx/sbin/nginx` 或 `/etc/init.d/` 脚本拉起服务。
+此时 `systemctl` 管不到这些进程，`stop`、`reload` 都不会生效。按提示处理：
+
+```bash
+lnmp kill && lnmp start
+systemctl is-active nginx        # 应为 active，且 lnmp start 不再告警
+```
+
+**二、进程不在，服务确实没起来**
+
+```
+警告：以下服务未能启动： nginx
+      查看失败原因：
+        systemctl status nginx.service
+        journalctl -xeu nginx.service
+```
+
+这种情况执行 `lnmp kill` 没有意义，只会重复同一个失败。按提示的两条命令看原因。
+Nginx 与 PHP-FPM 多为配置语法错误，先做配置测试：
+
+```bash
+/usr/local/nginx/sbin/nginx -t
+/usr/local/php/sbin/php-fpm -t
+```
+
+**数据库启动失败**
+
+数据库另有一类不会写进错误日志的失败：数据目录或 `log_error` 指向的文件对
+`/etc/my.cnf` 中 `[mysqld] user` 配置的账号不可写时，服务端在打开错误日志前就退出，
+`journalctl` 里只有 init 脚本的 ` ERROR!`，错误日志文件本身停留在上一次运行。
+`lnmp start` 与 `lnmp mariadb start` 会直接指出这种情况：
+
+```
+ /usr/local/mariadb/var 对数据库运行账号 mariadb 不可写。
+ /usr/local/mariadb/var/mariadb.err 对数据库运行账号 mariadb 不可写。
+ 数据库进程无法写入数据目录或错误日志，修复属主后重新启动：
+  chown -R mariadb:mariadb /usr/local/mariadb/var
+```
+
+按给出的命令恢复属主即可。属主被改坏通常源于递归 `chown` 时路径变量为空，
+例如站点加固命令 `chown -R root:www ${SITE}/` 在 `SITE` 未赋值时作用到 `/`，
+把数据目录一并改掉（见 5.2 的提示）。恢复后确认：
+
+```bash
+chown -R mariadb:mariadb /usr/local/mariadb    # MySQL 分支为 mysql:mysql /usr/local/mysql
+lnmp start
+lnmp status
+```
+
+属主正常但仍启动失败时，同一条命令改为输出错误日志末尾 15 行，据此继续定位：
+
+```bash
+tail -50 /usr/local/mariadb/var/mariadb.err    # 也可直接看完整日志
+```
+
+数据库能启动但程序连不上，属于另一类问题，见 9.6。
 
 ---
 
@@ -2330,9 +2467,10 @@ LNMP 的防火墙、`open_basedir` 和禁用函数不能弥补 WordPress 插件�
 3. **禁止后台编辑代码**。在 `wp-config.php` 加 `DISALLOW_FILE_EDIT`，防止已取得后台权限的
    账号直接用主题/插件编辑器落地 PHP。只有采用外部发布、能持续安装安全更新的环境才设
    `DISALLOW_FILE_MODS=true`；普通站点盲目设置会连自动更新一起阻断。
-4. **文件写权限最小化**。本指南让核心、插件和主题归 `root:www` 且不可由 PHP 修改，
-   只给 uploads/cache/upgrade 等必要目录写权限。这会要求管理员通过受控发布流程更新代码，
-   但能显著限制 Web 进程被利用后的持久化范围。不要为解决一次更新失败递归 `chmod 777`。
+4. **文件写权限最小化**。默认权限（`www:www` 755/644）保留后台安装与自动更新能力。
+   需要更强隔离时按 5.6 在功能验证通过后把核心、插件和主题改为 `root:www` 不可由 PHP 修改，
+   只给 uploads/cache/upgrade 写权限，代码更新改走受控发布流程。任何情况下都不要为
+   解决一次更新失败递归 `chmod 777`。
 5. **数据库每站独立**。`lnmp vhost add` 创建的站点用户只授权自己的库；不要把数据库
    root 写进 `wp-config.php`，不要多个互不信任站点共用同一个库用户。备份凭据与站点凭据
    分开，文件权限保持 600/640。

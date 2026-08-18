@@ -342,6 +342,11 @@ lnmp tgnotice {--init|--test|--status}            # Telegram 通知，见 3.12
 > `reload` 是平滑重载配置，不中断连接；`restart` 会真正重启进程。
 > 修改 Nginx 配置后优先使用 `reload`。`kill` 仅用于正常停止失败的情况。
 
+> `kill` 按进程名逐个终止 Nginx、PHP-FPM 和数据库：先发 TERM 并等待进程真正退出
+> （数据库最多 30 秒，其余最多 10 秒），超时才发 KILL。全部终止成功才打印「完成。」
+> 并返回 0，有进程未能终止时返回非 0。该命令依赖 procps 提供的 `pgrep` 与 `pkill`，
+> 两者缺失时退回 `killall`，都没有时报错要求安装 procps。
+
 **优先用 `lnmp`，不要直接调 `/etc/init.d/`**。有 systemd 的机器上，`lnmp` 会走
 `systemctl`；绕过它直接跑 init 脚本，进程确实起来了，`systemctl is-active` 却报
 inactive，后续运维命令判断不了服务状态。init 脚本仍然保留，供没有 systemd 的

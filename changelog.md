@@ -10700,3 +10700,143 @@ Debian 13 测试机（LNMP，nginx 1.30.4）以桩 `acme.sh` 执行 `lnmp dnsssl
 
 - **验证状态**：已实测（Debian 13，2026-08-17）。真实 CA 签发与 DNS 服务商 API 调用
   受测试机 NAT 环境限制未验证；`conf/lnmpa`、`conf/lamp` 的同源改动只做静态检查。
+
+## FIX-DB-017 数据库启动失败没有可定位的原因输出
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp`
+
+数据目录或 `log_error` 指向的文件对 `[mysqld] user` 配置的运行账号不可写时，
+服务端在打开错误日志前就退出，错误日志里不留任何记录。`/etc/init.d/mariadb`
+只打印 ` ERROR!` 并返回 1，systemd 显示 `status=1/FAILURE`，`lnmp start` 转述
+systemd 的通用提示，全链路没有一处指出真实原因。
+
+新增 `Get_Mysqld_Conf_Value <键> [配置文件]`：解析 `/etc/my.cnf` 的 `[mysqld]` 段，
+取指定键的值，剥离行尾注释，不受 `[client]`、`[mysqldump]` 同名键干扰。
+
+新增 `Diagnose_DB_Start_Failure <动作> [配置文件]`：仅对 `start` 与 `restart` 生效，
+用 `runuser` 以配置中的运行账号测试 `datadir` 与 `log_error` 是否可写。不可写时
+逐条指出路径与账号，并给出 `chown -R <用户>:<组> <datadir>` 修复命令；属主正常时
+输出错误日志末尾 15 行。无 `runuser` 或账号不存在时跳过权限判定，不做误报。
+
+挂载点：`lnmp_start`、`lnmpa_start`、`lamp_start` 的数据库启动失败分支；
+`conf/lnmp` 的 `Svc_Feedback` 在 `mysql`/`mariadb` 失败时调用；
+`conf/lnmpa`、`conf/lamp` 的 `mysql)`、`mariadb)` 分发分支。成功路径行为不变。
+
+**验证**：`tests/test_db_diag.sh`（27 项，本机与 Debian 13）覆盖配置解析：
+`[mysqld]` 优先于 `[client]`、`datadir`、`log_error`、行尾注释剥离、未配置键返回空、
+空键名返回空；以及 `stop` 动作不触发诊断且无输出、`start` 返回失败码。
+
+`tests/test_db_diag_root.sh`（24 项，Debian 13 以 root 运行）覆盖权限分支：
+数据目录与错误日志归 root 时逐条报出不可写、给出 `chown` 修复命令、返回 1、
+不再打印日志尾部；属主改正后不报权限问题、改为打印错误日志末尾、仍返回 1。
+
+Debian 13 端到端：构造 `[mysqld] user = mariadb` 且数据目录归 root 的 `/etc/my.cnf`，
+`lnmp mariadb start` 输出两条不可写路径与 `chown -R mariadb:mariadb <datadir>`；
+修正属主后同一命令改为输出错误日志末尾内容。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## DOC-704 WordPress 权限指导默认过严导致网页安装与后台更新不可用
+
+**位置**：`HowtoGuides.md` 5.2、5.3、10.2
+
+5.2 原先只给出 `chown -R root:www` + 750/640 一套方案，PHP 对代码目录只读。
+该权限下网页安装向导写不了 `wp-config.php`，后台插件/主题安装与自动更新全部失效，
+文档自身也标注了这一限制，但没有提供可用的默认路径。
+
+改为默认 `chown -R www:www` + 755/644，网页安装向导、插件与主题安装、后台自动更新
+均可用；`wp-config.php` 单独收紧为 `www:www` 600。
+
+原方案移出 5.2，作为独立的 5.6「可选加固：禁止 PHP 改写代码目录」，位置排在 5.4
+完成安装、5.5 验证伪静态之后，并写明执行前提：安装向导已完成、HTTPS 可访问、
+伪静态验证通过、所需插件与主题已装好。5.2 保留一句指向 5.6 的说明，说明建站前
+收紧会让权限问题与配置问题混在一起。5.6 补充加固后的可用性核对命令、装插件时的
+临时放宽做法，以及恢复默认权限的回退命令。
+
+同时补充递归改属主的风险提示：`SITE` 变量为空时 `chown -R www:www ${SITE}/` 作用到
+`/`，会改掉 `/usr/local/mariadb/var` 等数据目录属主，导致数据库无法启动，
+故在命令块中加入 `echo ${SITE}` 核对步骤。10.2 第 4 点同步改为默认权限说明加可选加固。
+
+- **验证状态**：文档改动，无代码影响。
+
+## OPS-003 服务未 active 的提示不区分原因，一律建议执行 kill
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的 `Check_Svc_State`
+
+原实现只判断 `systemctl is-active`，不管进程是否真在跑，都输出「若进程其实还在跑…
+执行 lnmp kill 后再 lnmp start，可让两边重新对齐」。服务因配置错误、权限或依赖问题
+启动失败时，按此提示操作只会重复同一个失败，真正需要的 `systemctl status`、
+`journalctl` 一个都没给。三个脚本中的提示文案都写的是 `lnmp kill`，在 LNMPA 和 LAMP
+环境下命令名不正确。
+
+新增 `Svc_Process_Names <服务名>`：输出服务对应的进程名，`mariadb` 映射到
+`mariadbd mysqld`、`mysql` 映射到 `mysqld`，其余原样返回。
+
+新增 `Svc_Process_Running <服务名>`：用 `pgrep -x` 判断服务是否有进程在运行。
+缺少 `pgrep` 时按未运行处理，只给排错命令，不给可能无效的 kill 建议。
+
+`Check_Svc_State` 据此分成两类输出：进程在跑但 unit 不是 active，说明被 systemd
+之外的方式启动过，此时才提示 kill 后重新启动，命令名按所在脚本分别为 `lnmp`、
+`lnmpa`、`lamp`；进程不在，说明启动确实失败，逐个服务给出
+`systemctl status <服务>.service` 与 `journalctl -xeu <服务>.service`。
+
+**验证**：`tests/test_svc_state.sh`（48 项，Debian 13）覆盖进程名映射、`pgrep`
+判定、全部 active 时静默返回 0、两类提示的文案与命令名、启动失败时不出现 kill
+建议、混合场景各自只列出对应服务、返回码。
+
+Debian 13 实机：绕过 systemd 直接执行 `/usr/local/nginx/sbin/nginx` 后 `lnmp start`
+输出「以下服务在运行，但不受 systemd 管理」并建议 `lnmp kill`；按提示执行后
+`systemctl is-active nginx` 恢复 active 且不再告警。向 `nginx.conf` 追加非法指令后
+`lnmp start` 改为输出「以下服务未能启动」与两条排错命令，不出现 kill 建议。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## FIX-OPS-004 kill 命令依赖 killall，缺少 psmisc 时静默失效
+
+**位置**：`conf/lnmp` 的 `lnmp_kill`、`conf/lnmpa` 的 `lnmpa_kill`、
+`conf/lamp` 的 `lamp_kill`
+
+三个 kill 命令直接调用 `killall`。Debian 13 最小安装不带 psmisc，`killall` 不存在时
+命令逐条报 `command not found`（数据库两条被 `2>/dev/null` 吞掉），最后仍打印
+「完成。」并返回 0，进程一个都没终止。即使 `killall` 存在，实现也只发一次 TERM 就
+返回，不等待进程退出，随后的 start 可能撞上尚未释放的端口或 pid 文件。
+
+新增 `Kill_Process <进程名> [等待秒数]`：优先用 `pkill -x` 发 TERM，然后按秒轮询
+`pgrep -x` 直到进程退出；超时输出提示并改用 KILL，仍未退出则报错返回 1。目标进程
+本就不存在时静默返回 0，不再出现 `php-cgi: no process found` 一类噪声。缺少 procps
+时退回 `killall`，两者都没有时明确报错要求安装 procps。
+
+数据库关闭要刷缓冲池，`mysqld` 与 `mariadbd` 的等待时间设为 30 秒，其余为默认 10 秒。
+kill 命令改为汇总各进程的终止结果，全部成功才打印「完成。」并返回 0。
+
+**验证**：`tests/test_kill_process.sh`（27 项，本机与 Debian 13）覆盖目标不存在时
+静默返回 0、正常响应 TERM 的进程在函数返回时确已退出且无多余输出、忽略 TERM 的
+进程在等待期满后被 KILL 并给出提示、各分支返回码。
+
+Debian 13 实机（该机无 `killall`）：`lnmp kill` 终止 9 个 nginx 进程，
+`pgrep -x nginx` 归零，耗时 0.084 秒；随后 `lnmp start` 恢复 active 且无告警。
+改动前同一命令在该机上不终止任何进程。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## DOC-705 kill 命令行为与服务启动排错未写入文档
+
+**位置**：`README.md` 3.1、`HowtoGuides.md` 8.1、9.6、9.10
+
+`FIX-OPS-004` 改变了 `kill` 的实际行为（等待进程退出、超时才 KILL、返回码反映结果、
+依赖 procps），`OPS-003` 改变了 `lnmp start` 的告警形式（区分「进程在跑但不受 systemd
+管理」与「服务未能启动」两类），文档均未同步。
+
+`README.md` 3.1 在服务管理说明后补充 `kill` 的终止策略、等待时间、返回码与 procps
+依赖。
+
+`HowtoGuides.md` 8.1 补充同一内容的操作示例：`lnmp kill; echo "rc=$?"` 的实际输出、
+缺少 procps 时的安装命令、`kill` 之后应当用 `lnmp start` 而不是直接跑 init 脚本。
+
+新增 `HowtoGuides.md` 9.10「服务起不来，或状态与 systemd 对不上」：列出两类告警的
+原文与相反的处置方式；补充数据库因数据目录或 `log_error` 不可写而在写日志前退出的
+排查路径，含 `FIX-DB-017` 的实际输出、恢复属主的命令，以及属主被改坏与 5.2 中递归
+`chown` 路径变量为空的关联；属主正常时改看错误日志末尾。9.6 数据库连接失败补一条
+指向 9.10 的交叉引用。
+
+- **验证状态**：文档改动，无代码影响。
