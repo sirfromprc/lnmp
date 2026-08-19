@@ -306,6 +306,362 @@ lnmpa_status()
         echo "phpMyAdmin：访问已禁用（程序和配置仍保留）"
     fi
 }
+# ---------------------------------------------------------------------------
+# 应用托管：Node、Go 等自带后端进程的站点
+# 元数据在 /etc/lnmp/apps/<名字>.env，由 init.d/lnmp-app@.service 读取。
+# ---------------------------------------------------------------------------
+App_Conf_Dir="/etc/lnmp/apps"
+App_Unit_Tpl="/etc/systemd/system/lnmp-app@.service"
+
+# 应用名同时用于 unit 实例名、专属账号名和文件名，字符集必须收紧。
+# 账号名为 lnmp-app-<名字>，Linux 用户名上限 32 字符，故名字最长 23。
+Check_App_Name()
+{
+    local n="$1"
+
+    if [ -z "${n}" ]; then
+        Echo_Red "应用名不能为空。"
+        return 1
+    fi
+    if [ ${#n} -gt 23 ]; then
+        Echo_Red "应用名过长（超过 23 字符）：${n}"
+        return 1
+    fi
+    if ! printf '%s' "${n}" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'; then
+        Echo_Red "应用名不合法：'${n}'"
+        Echo_Red "只接受小写字母、数字和中划线，且必须以字母或数字开头结尾。"
+        return 1
+    fi
+    return 0
+}
+
+App_Env_File()  { echo "${App_Conf_Dir}/$1.env"; }
+App_User_Name() { echo "lnmp-app-$1"; }
+App_Unit_Name() { echo "lnmp-app@$1.service"; }
+
+App_Exists()
+{
+    [ -s "$(App_Env_File "$1")" ]
+}
+
+# 读取应用元数据到 App_Dir / App_Exec / App_Port。
+App_Load()
+{
+    local name="$1" env_file
+    env_file=$(App_Env_File "${name}")
+
+    App_Dir=$(awk -F= '$1 == "APP_DIR" { sub(/^APP_DIR=/, ""); print; exit }' "${env_file}")
+    App_Exec=$(awk -F= '$1 == "APP_EXEC" { sub(/^APP_EXEC=/, ""); print; exit }' "${env_file}")
+    App_Port=$(awk -F= '$1 == "APP_PORT" { sub(/^APP_PORT=/, ""); print; exit }' "${env_file}")
+    return 0
+}
+
+# 端口被别的进程占用时拒绝，避免应用起来后与现有服务抢端口。
+Check_App_Port()
+{
+    local port="$1"
+
+    [ -z "${port}" ] && return 0
+    if ! printf '%s' "${port}" | grep -Eq '^[0-9]+$' \
+       || [ "${port}" -lt 1 ] || [ "${port}" -gt 65535 ]; then
+        Echo_Red "端口不合法：${port}"
+        return 1
+    fi
+    if command -v ss >/dev/null 2>&1 \
+       && ss -lntH 2>/dev/null | awk '{print $4}' | sed -E 's/.*:([0-9]+)$/\1/' \
+          | grep -qx "${port}"; then
+        Echo_Red "端口 ${port} 已被占用。"
+        return 1
+    fi
+    return 0
+}
+
+# 模板 unit 由安装流程写入；命令行单独使用时按需补装。
+Ensure_App_Unit_Tpl()
+{
+    if [ ! -s "${App_Unit_Tpl}" ]; then
+        Echo_Red "缺少应用托管单元 ${App_Unit_Tpl}。"
+        Echo_Yellow "请重新执行安装包中的收尾步骤，或手工放置 init.d/lnmp-app@.service。"
+        return 1
+    fi
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+        Echo_Red "当前系统未运行 systemd，无法托管应用进程。"
+        return 1
+    fi
+    return 0
+}
+# 目录已被其它托管应用使用时拒绝：chown -R 会夺走对方的属主。
+App_Dir_In_Use()
+{
+    local dir="$1" env_file other other_dir
+
+    [ -d "${App_Conf_Dir}" ] || return 1
+    for env_file in "${App_Conf_Dir}"/*.env; do
+        [ -s "${env_file}" ] || continue
+        other=$(basename "${env_file}" .env)
+        other_dir=$(awk -F= '$1 == "APP_DIR" { sub(/^APP_DIR=/, ""); print; exit }' "${env_file}")
+        if [ "${other_dir}" = "${dir}" ]; then
+            Echo_Red "目录 ${dir} 已被应用 ${other} 使用。"
+            Echo_Red "（递归改属主会夺走该应用的目录属主。）"
+            return 0
+        fi
+    done
+    return 1
+}
+
+
+Add_App()
+{
+    local name dir exec_cmd port user env_file bin
+
+    Ensure_App_Unit_Tpl || return 1
+
+    while :; do
+        Echo_Yellow "请输入应用名（小写字母、数字、中划线）: "
+        Read_Input name "应用名"
+        Check_App_Name "${name}" || continue
+        if App_Exists "${name}"; then
+            Echo_Red "应用 ${name} 已存在，请先用 lnmp app del 删除或换一个名字。"
+            continue
+        fi
+        break
+    done
+
+    while :; do
+        Echo_Yellow "请输入应用目录（绝对路径）: "
+        Read_Input dir "应用目录"
+        # 复用站点目录的边界校验：随后要对该目录执行 chown -R，
+        # 必须挡住 /etc、/usr 这类系统目录、允许根本身和符号链接越界。
+        Check_Vhost_Dir "${dir}" || continue
+        if [ ! -d "${dir}" ]; then
+            Echo_Red "目录不存在：${dir}"
+            continue
+        fi
+        App_Dir_In_Use "${dir}" && continue
+        break
+    done
+
+    while :; do
+        Echo_Yellow "请输入启动命令（含绝对路径，如 /usr/bin/node server.js）: "
+        Read_Input exec_cmd "启动命令"
+        if [ -z "${exec_cmd}" ]; then
+            Echo_Red "启动命令不能为空。"
+            continue
+        fi
+        # 换行会破坏 EnvironmentFile 的一行一项格式。
+        case "${exec_cmd}" in
+        *$'\n'*) Echo_Red "启动命令不能包含换行。"; continue ;;
+        esac
+        bin=${exec_cmd%% *}
+        case "${bin}" in
+        /*) ;;
+        *)  Echo_Red "启动命令的可执行文件必须写绝对路径：${bin}"; continue ;;
+        esac
+        if [ ! -x "${bin}" ]; then
+            Echo_Red "不是可执行文件：${bin}"
+            continue
+        fi
+        break
+    done
+
+    while :; do
+        Echo_Yellow "请输入监听端口（留空跳过检查）: "
+        Read_Input port "监听端口"
+        Check_App_Port "${port}" || continue
+        break
+    done
+
+    user=$(App_User_Name "${name}")
+    if ! id -u "${user}" >/dev/null 2>&1; then
+        # 专属账号，不复用 www：复用会让应用获得全部站点目录的读写权限。
+        if ! useradd -r -M -s /sbin/nologin "${user}" 2>/dev/null \
+           && ! useradd -r -M -s /usr/sbin/nologin "${user}" 2>/dev/null; then
+            Echo_Red "创建运行账号 ${user} 失败。"
+            return 1
+        fi
+        echo "已创建运行账号 ${user}。"
+    fi
+
+    if ! mkdir -p "${App_Conf_Dir}"; then
+        Echo_Red "创建 ${App_Conf_Dir} 失败。"
+        return 1
+    fi
+    chmod 750 "${App_Conf_Dir}"
+
+    env_file=$(App_Env_File "${name}")
+    if ! cat >"${env_file}"<<EOF
+APP_DIR=${dir}
+APP_EXEC=${exec_cmd}
+APP_PORT=${port}
+EOF
+    then
+        Echo_Red "写入 ${env_file} 失败。"
+        return 1
+    fi
+    chmod 640 "${env_file}"
+
+    # 应用需要读取自己的目录，交给专属账号。
+    # 递归改属主前再次复核边界：dir 到这里为止经过了多次赋值与交互输入。
+    if ! Check_Vhost_Dir "${dir}" || [ ! -d "${dir}" ]; then
+        Echo_Red "应用目录 ${dir} 未通过写入前复核，已取消托管。"
+        rm -f "${env_file}"
+        return 1
+    fi
+    if ! chown -R "${user}:${user}" "${dir}"; then
+        Echo_Yellow "变更 ${dir} 属主失败，请确认应用账号对该目录有读取权限。"
+    fi
+
+    systemctl daemon-reload
+    if ! systemctl enable --now "$(App_Unit_Name "${name}")"; then
+        Echo_Red "启动应用 ${name} 失败，配置已保留。"
+        Echo_Yellow "可执行 lnmp app logs ${name} 查看原因。"
+        return 1
+    fi
+
+    echo "========================================================"
+    echo "应用 ${name} 已托管并设为开机启动。"
+    echo "目录：${dir}"
+    echo "命令：${exec_cmd}"
+    [ -n "${port}" ] && echo "端口：${port}"
+    echo "运行账号：${user}"
+    echo "查看日志：lnmp app logs ${name}"
+    [ -n "${port}" ] && echo "反向代理请执行 lnmp vhost add 建站后按 127.0.0.1:${port} 配置。"
+    echo "========================================================"
+    return 0
+}
+
+List_App()
+{
+    local env_file name state
+
+    if [ ! -d "${App_Conf_Dir}" ] || [ -z "$(ls -A "${App_Conf_Dir}" 2>/dev/null)" ]; then
+        echo "当前没有托管的应用。"
+        return 0
+    fi
+    printf '%-24s %-10s %-8s %s\n' "应用名" "状态" "端口" "目录"
+    for env_file in "${App_Conf_Dir}"/*.env; do
+        [ -s "${env_file}" ] || continue
+        name=$(basename "${env_file}" .env)
+        App_Load "${name}"
+        state=$(systemctl is-active "$(App_Unit_Name "${name}")" 2>/dev/null)
+        printf '%-24s %-10s %-8s %s\n' "${name}" "${state:-unknown}" "${App_Port:-—}" "${App_Dir}"
+    done
+    return 0
+}
+
+Del_App()
+{
+    local name="$1" user env_file answer
+
+    if [ -z "${name}" ]; then
+        List_App
+        while :; do
+            Echo_Yellow "请输入要删除的应用名: "
+            Read_Input name "应用名"
+            Check_App_Name "${name}" || continue
+            break
+        done
+    else
+        Check_App_Name "${name}" || return 1
+    fi
+
+    if ! App_Exists "${name}"; then
+        Echo_Red "应用 ${name} 不存在。"
+        return 1
+    fi
+
+    App_Load "${name}"
+    user=$(App_User_Name "${name}")
+    env_file=$(App_Env_File "${name}")
+
+    systemctl disable --now "$(App_Unit_Name "${name}")" >/dev/null 2>&1
+    systemctl reset-failed "$(App_Unit_Name "${name}")" >/dev/null 2>&1
+    rm -f "${env_file}"
+
+    # 账号可能仍拥有应用目录，交由用户决定是否删除。
+    if id -u "${user}" >/dev/null 2>&1; then
+        Echo_Yellow "是否删除运行账号 ${user}？(y/N) "
+        if read -r answer && [ "${answer}" = "y" -o "${answer}" = "Y" ]; then
+            userdel "${user}" >/dev/null 2>&1 \
+                && echo "已删除账号 ${user}。" \
+                || Echo_Yellow "删除账号 ${user} 失败，请手工处理。"
+        else
+            echo "保留账号 ${user}。"
+        fi
+    fi
+
+    systemctl daemon-reload
+    echo "========================================================"
+    echo "应用 ${name} 已取消托管。"
+    echo "为安全起见，应用目录 ${App_Dir} 不会被自动删除。"
+    echo "站点的反向代理配置需要另行用 lnmp vhost del 处理。"
+    echo "========================================================"
+    return 0
+}
+
+# start/stop/restart/status 统一走 systemd，与其余服务的语义保持一致。
+App_Ctl()
+{
+    local action="$1" name="$2"
+
+    if [ -z "${name}" ]; then
+        Echo_Red "请指定应用名：lnmp app ${action} <应用名>"
+        return 1
+    fi
+    Check_App_Name "${name}" || return 1
+    if ! App_Exists "${name}"; then
+        Echo_Red "应用 ${name} 不存在。"
+        return 1
+    fi
+    systemctl --no-pager "${action}" "$(App_Unit_Name "${name}")"
+}
+
+Logs_App()
+{
+    local name="$1"
+
+    if [ -z "${name}" ]; then
+        Echo_Red "请指定应用名：lnmp app logs <应用名>"
+        return 1
+    fi
+    Check_App_Name "${name}" || return 1
+    if ! App_Exists "${name}"; then
+        Echo_Red "应用 ${name} 不存在。"
+        return 1
+    fi
+    if ! command -v journalctl >/dev/null 2>&1; then
+        Echo_Red "系统没有 journalctl，无法查看应用日志。"
+        return 1
+    fi
+    journalctl -u "$(App_Unit_Name "${name}")" -n 100 --no-pager
+}
+
+Function_App()
+{
+    case "$1" in
+        [aA][dD][dD])
+            Add_App
+            ;;
+        [lL][iI][sS][tT])
+            List_App
+            ;;
+        [dD][eE][lL])
+            Del_App "$2"
+            ;;
+        [sS][tT][aA][rR][tT]|[sS][tT][oO][pP]|[rR][eE][sS][tT][aA][rR][tT]|[sS][tT][aA][tT][uU][sS])
+            App_Ctl "$(echo "$1" | tr '[:upper:]' '[:lower:]')" "$2"
+            ;;
+        [lL][oO][gG][sS])
+            Logs_App "$2"
+            ;;
+        *)
+            echo "用法：lnmp app {add|list|del|start|stop|restart|status|logs}"
+            echo "      lnmp app {del|start|stop|restart|status|logs} <应用名>"
+            exit 1
+            ;;
+    esac
+}
+
 
 Function_Vhost()
 {
@@ -472,6 +828,34 @@ Site_PHP_Menu()
                 ;;
         esac
     done
+}
+
+# 取出配置文件中“自定义配置--开始/结束”之间的内容，保留原缩进。
+# 标记缺失、不成对或区块只有空行时输出空，由调用方决定后续行为。
+Extract_Custom_Block()
+{
+    local conf="$1"
+
+    [ -s "${conf}" ] || return 0
+    awk '
+        !started && /# 自定义配置--开始/ { started = 1; next }
+        started && !finished && /# 自定义配置--结束/ { finished = 1; next }
+        started && !finished { lines[++n] = $0 }
+        END {
+            if (!started || !finished) exit
+            s = 1; e = n
+            while (s <= e && lines[s] ~ /^[ \t\r]*$/) s++
+            while (e >= s && lines[e] ~ /^[ \t\r]*$/) e--
+            for (i = s; i <= e; i++) print lines[i]
+        }
+    ' "${conf}"
+}
+
+# 判断自定义配置里是否已经声明了 location /。
+# 同一 server 内出现第二个 location / 会被 Nginx 判为 duplicate location。
+Custom_Block_Has_Root_Location()
+{
+    printf '%s\n' "$1" | grep -Eq '^[[:space:]]*location[[:space:]]+/[[:space:]]*\{'
 }
 
 # Nginx 的 HTTP 与 HTTPS 共用以下规则，防止未解析的 .php 文件作为静态内容泄露。
@@ -856,17 +1240,14 @@ Del_VHost()
         Check_Domain_Name "${domain}" || continue
         break
     done
-    if [ ! -f "/usr/local/nginx/conf/vhost/${domain}.conf" ] || [ ! -f "/usr/local/apache/conf/vhost/${domain}.conf" ]; then
+    # 两端配置都不存在才算站点不存在。用 || 判断会让半删状态无法再用本命令清理。
+    if [ ! -f "/usr/local/nginx/conf/vhost/${domain}.conf" ] && [ ! -f "/usr/local/apache/conf/vhost/${domain}.conf" ]; then
         echo "=========================================="
         echo "域名 ${domain} 不存在！"
         echo "=========================================="
         exit 1
     else
-        rm -f /usr/local/nginx/conf/vhost/${domain}.conf
-        rm -f /usr/local/apache/conf/vhost/${domain}.conf
-
-        # 删除两端配置后必须重载 Nginx 和 Apache，才能使运行中的站点下线。
-        Del_VHost_Reload || exit 1
+        Del_VHost_Files "${domain}" || exit 1
 
         echo "========================================================"
         echo "域名 ${domain} 已删除。"
@@ -876,30 +1257,100 @@ Del_VHost()
     fi
 }
 
+# 先备份再删除，任一端语法检查或重载失败时两端一起回滚。
+# Nginx 与 Apache 的站点配置必须同进同退，否则只删掉一半会让站点半可用，
+# 且被删文件无法自动恢复。
+Del_VHost_Files()
+{
+    local domain="$1"
+    local nginx_conf="/usr/local/nginx/conf/vhost/${domain}.conf"
+    local apache_conf="/usr/local/apache/conf/vhost/${domain}.conf"
+    local nginx_backup='' apache_backup=''
+
+    if [ -f "${nginx_conf}" ]; then
+        nginx_backup=$(mktemp /tmp/lnmpa-del-nginx.XXXXXXXX) || return 1
+        if ! \cp -p "${nginx_conf}" "${nginx_backup}"; then
+            rm -f "${nginx_backup}"
+            Echo_Red "备份 ${nginx_conf} 失败，未删除任何文件。"
+            return 1
+        fi
+    fi
+    if [ -f "${apache_conf}" ]; then
+        apache_backup=$(mktemp /tmp/lnmpa-del-apache.XXXXXXXX) || { rm -f "${nginx_backup}"; return 1; }
+        if ! \cp -p "${apache_conf}" "${apache_backup}"; then
+            rm -f "${nginx_backup}" "${apache_backup}"
+            Echo_Red "备份 ${apache_conf} 失败，未删除任何文件。"
+            return 1
+        fi
+    fi
+
+    rm -f "${nginx_conf}"
+    rm -f "${apache_conf}"
+
+    # 删除两端配置后必须重载 Nginx 和 Apache，才能使运行中的站点下线。
+    if ! Del_VHost_Reload; then
+        Del_VHost_Restore "${domain}" "${nginx_conf}" "${nginx_backup}" \
+                          "${apache_conf}" "${apache_backup}"
+        rm -f "${nginx_backup}" "${apache_backup}"
+        return 1
+    fi
+
+    rm -f "${nginx_backup}" "${apache_backup}"
+    return 0
+}
+
+# 回滚删站，两端一起恢复，使磁盘状态与运行中的配置重新一致。
+Del_VHost_Restore()
+{
+    local domain="$1" nginx_conf="$2" nginx_backup="$3" apache_conf="$4" apache_backup="$5"
+
+    [ -n "${nginx_backup}" ] && \cp -p "${nginx_backup}" "${nginx_conf}"
+    [ -n "${apache_backup}" ] && \cp -p "${apache_backup}" "${apache_conf}"
+    Echo_Yellow "已恢复站点 ${domain} 的两端配置文件，站点仍然存在。"
+
+    # 恢复后尽力让运行配置与磁盘一致；此处失败不改变删站已失败的结论。
+    if pgrep -f '/usr/local/nginx/sbin/nginx' >/dev/null 2>&1; then
+        /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1 \
+            && /usr/local/nginx/sbin/nginx -s reload >/dev/null 2>&1
+    fi
+    if pgrep -f '/usr/local/apache/bin/httpd' >/dev/null 2>&1; then
+        /usr/local/apache/bin/httpd -t >/dev/null 2>&1 && Svc httpd reload >/dev/null 2>&1
+    fi
+}
+
 Del_VHost_Reload()
 {
     local rc=0
 
-    if pgrep -f '/usr/local/nginx/sbin/nginx' >/dev/null 2>&1; then
-        echo "正在检查 Nginx 配置..."
-        if /usr/local/nginx/sbin/nginx -t && /usr/local/nginx/sbin/nginx -s reload; then
+    # 语法检查不依赖服务是否在运行，删完必须校验，否则会把未验证的结果报成成功。
+    echo "正在检查 Nginx 配置..."
+    if ! /usr/local/nginx/sbin/nginx -t; then
+        Echo_Red "Nginx 配置测试未通过，未执行 reload。"
+        rc=1
+    elif pgrep -f '/usr/local/nginx/sbin/nginx' >/dev/null 2>&1; then
+        if /usr/local/nginx/sbin/nginx -s reload; then
             echo "Nginx 重载完成。"
         else
             Echo_Red "Nginx 未能重载，运行中的 Nginx 仍在提供该站点。"
-            Echo_Red "请修复后执行：lnmp nginx reload"
             rc=1
         fi
+    else
+        echo "Nginx 未在运行，跳过 reload。"
     fi
 
-    if pgrep -f '/usr/local/apache/bin/httpd' >/dev/null 2>&1; then
-        echo "正在检查 Apache 配置..."
-        if /usr/local/apache/bin/httpd -t && Svc httpd reload; then
+    echo "正在检查 Apache 配置..."
+    if ! /usr/local/apache/bin/httpd -t; then
+        Echo_Red "Apache 配置测试未通过，未执行重载。"
+        rc=1
+    elif pgrep -f '/usr/local/apache/bin/httpd' >/dev/null 2>&1; then
+        if Svc httpd reload; then
             echo "Apache 重载完成。"
         else
             Echo_Red "Apache 未能重载，运行中的 httpd 仍在提供该站点。"
-            Echo_Red "请修复后执行：lnmp httpd reload"
             rc=1
         fi
+    else
+        echo "Apache 未在运行，跳过重载。"
     fi
 
     return ${rc}
@@ -2099,6 +2550,13 @@ Load_Vhost_Params()
         enable_site_php="y"
     fi
 
+    # HTTPS 必须继承 HTTP 的站点级自定义配置，否则反代、WebSocket 等规则
+    # 只在 80 端口生效，443 会落到静态 root 上返回目录内容、404 或 502。
+    ssl_custom_block=$(Extract_Custom_Block "${vhost_conf}")
+    if [ -n "${ssl_custom_block}" ]; then
+        echo "已读取网站 ${domain} 的自定义配置，将一并写入 HTTPS 配置。"
+    fi
+
     al=$(awk '$1 == "access_log" { sub(/^[[:space:]]*/, ""); print; exit }' "${vhost_conf}")
     al="${al:-access_log off;}"
     if grep -Eq '^[[:space:]]*listen[[:space:]]+\[::\]:80' "${vhost_conf}"; then
@@ -2723,7 +3181,13 @@ Create_SSL_Config()
     Check_Config_File_Path "${ssl_certificate_key}" "SSL 私钥文件" || return 1
     ssl_index="$(Site_Index_Line)"
     if [ "${enable_site_php}" = "n" ]; then
-        ssl_php_block="$(Site_PHP_Off_Block)"
+        # 站点自行移除 .php 拦截时（整站反代要把 .php 交给后端）不再写回：
+        # 正则 location 优先级高于 location /，写回会把反代请求拦成 404。
+        if grep -qF '[^/]\.php(/|$)' "${vhost_conf}"; then
+            ssl_php_block="$(Site_PHP_Off_Block)"
+        else
+            ssl_php_block=''
+        fi
     fi
     if [ "${domain}" = "default" ]; then
         ssl_listen='listen 443 ssl default_server;'
@@ -2804,13 +3268,19 @@ server {
     error_log   /home/wwwlogs/${domain}.error.log;
 
     # 自定义配置--开始
-
+${ssl_custom_block}
     # 自定义配置--结束
 }
 EOF
 
     if [ "${using_301}" == "y" ]; then
-        sed -i '0,/access_log/!b;//i\    location / {\n        return 301 https://$host$request_uri;\n    }\n' /usr/local/nginx/conf/vhost/${domain}.conf
+        if Custom_Block_Has_Root_Location "${ssl_custom_block}"; then
+            # 站点已自定义 location /，再插一个会 duplicate location 使 nginx -t 失败。
+            # 改用 server 级跳转，并放行 ACME 续期用的 .well-known 路径。
+            sed -i '0,/access_log/!b;//i\    if ($request_uri !~ "^/\\.well-known/") {\n        return 301 https://$host$request_uri;\n    }\n' /usr/local/nginx/conf/vhost/${domain}.conf
+        else
+            sed -i '0,/access_log/!b;//i\    location / {\n        return 301 https://$host$request_uri;\n    }\n' /usr/local/nginx/conf/vhost/${domain}.conf
+        fi
         sed -i '0,/include proxy-pass-php.conf;/s/include proxy-pass-php.conf;/#include proxy-pass-php.conf;/' /usr/local/nginx/conf/vhost/${domain}.conf
     fi
 
@@ -3264,6 +3734,9 @@ case "${arg1}" in
     vhost)
         Function_Vhost ${arg2}
         ;;
+    app)
+        Function_App "${arg2}" "${arg3}"
+        ;;
     database)
         # 先认动作名，避免无效参数也要求输入数据库口令。
         case "${arg2}" in
@@ -3340,6 +3813,7 @@ case "${arg1}" in
         echo "用法：lnmp {start|stop|reload|restart|kill|status}"
         echo "用法：lnmp {nginx|mysql|mariadb|pureftpd|httpd} {start|stop|reload|restart|kill|status}"
         echo "用法：lnmp vhost {add|list|del}"
+        echo "用法：lnmp app {add|list|del|start|stop|restart|status|logs}"
         echo "用法：lnmp database {add|list|edit|del}"
         echo "用法：lnmp database export <数据库名> <文件.sql.gz>"
         echo "用法：lnmp database import <数据库名> <文件.sql.gz>"

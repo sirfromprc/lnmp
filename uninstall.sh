@@ -218,6 +218,35 @@ Remove_Multiple_PHP()
     fi
 }
 
+# 清理 lnmp app 托管的应用：实例 unit、元数据与专属账号。
+# 应用目录不动，由用户自行处置。
+Remove_App_Hosting()
+{
+    local env_file name user
+
+    if [ -d /etc/lnmp/apps ]; then
+        for env_file in /etc/lnmp/apps/*.env; do
+            [ -s "${env_file}" ] || continue
+            name=$(basename "${env_file}" .env)
+            user="lnmp-app-${name}"
+            echo "正在取消托管应用 ${name} ..."
+            if command -v systemctl >/dev/null 2>&1; then
+                systemctl disable --now "lnmp-app@${name}.service" >/dev/null 2>&1
+                systemctl reset-failed "lnmp-app@${name}.service" >/dev/null 2>&1
+            fi
+            rm -f "${env_file}"
+            id -u "${user}" >/dev/null 2>&1 && userdel "${user}" >/dev/null 2>&1
+        done
+        rmdir /etc/lnmp/apps 2>/dev/null
+    fi
+
+    # 模板 unit 由所有应用共用，全部清理完毕后再删除。
+    if [ -e /etc/systemd/system/lnmp-app@.service ]; then
+        rm -f /etc/systemd/system/lnmp-app@.service
+        command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+    fi
+}
+
 # 清理 lnmp health init 写入的定时探测任务。
 Remove_Health_Schedule()
 {
@@ -346,6 +375,7 @@ Uninstall_LNMP()
     Remove_Acme
     Remove_Backup_Schedule
     Remove_Health_Schedule
+    Remove_App_Hosting
     Remove_Perm_Hooks
 
     rm -f /etc/init.d/nginx
@@ -386,6 +416,7 @@ Uninstall_LNMPA()
     Remove_Acme
     Remove_Backup_Schedule
     Remove_Health_Schedule
+    Remove_App_Hosting
     Remove_Perm_Hooks
 
     rm -f /etc/init.d/nginx
@@ -424,6 +455,7 @@ Uninstall_LAMP()
     Remove_Acme
     Remove_Backup_Schedule
     Remove_Health_Schedule
+    Remove_App_Hosting
     Remove_Perm_Hooks
 
     rm -f /etc/my.cnf
@@ -482,6 +514,7 @@ lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
 lnmp-perm 的 systemd timer/service 与 /etc/cron.d/lnmp-perm
 lnmp-health 的 systemd timer/service 与 /etc/lnmp/health-state
 php-fpm@.service 模板单元
+lnmp app 托管的应用 unit、/etc/lnmp/apps 与其专属账号（应用目录保留）
 /etc/lnmp（数据库口令文件删除，其余配置移到 /root）
 inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
@@ -518,6 +551,7 @@ lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
 lnmp-perm 的 systemd timer/service 与 /etc/cron.d/lnmp-perm
 lnmp-health 的 systemd timer/service 与 /etc/lnmp/health-state
 php-fpm@.service 模板单元
+lnmp app 托管的应用 unit、/etc/lnmp/apps 与其专属账号（应用目录保留）
 /etc/lnmp（数据库口令文件删除，其余配置移到 /root）
 inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
@@ -552,6 +586,7 @@ lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
 lnmp-perm 的 systemd timer/service 与 /etc/cron.d/lnmp-perm
 lnmp-health 的 systemd timer/service 与 /etc/lnmp/health-state
 php-fpm@.service 模板单元
+lnmp app 托管的应用 unit、/etc/lnmp/apps 与其专属账号（应用目录保留）
 /etc/lnmp（数据库口令文件删除，其余配置移到 /root）
 inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF

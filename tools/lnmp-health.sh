@@ -154,6 +154,11 @@ Managed_Services()
         svc="${unit##*/}"
         printf '%s\n' "${svc%.service}"
     done
+    for unit in /etc/systemd/system/multi-user.target.wants/lnmp-app@*.service; do
+        [ -e "${unit}" ] || continue
+        svc="${unit##*/}"
+        printf '%s\n' "${svc%.service}"
+    done
 }
 
 # 探测目标的服务类别。多版本 PHP 与主 php-fpm 共用探针。
@@ -161,6 +166,7 @@ Svc_Kind()
 {
     case "$1" in
     php-fpm@*) printf 'mphp' ;;
+    lnmp-app@*) printf 'app' ;;
     mysql|mariadb) printf 'db' ;;
     *) printf '%s' "$1" ;;
     esac

@@ -165,6 +165,23 @@ expect_empty C15 "防火墙端口未硬编码（80/443 除外）" 'Firewall_(All
 # 原先五处各写各的，改一处不改其它等于没改。
 expect_empty C16 "并行编译任务数统一由 Build_Jobs 决定" 'make[^|;#]*-j(?!"\$\(Build_Jobs\)")' -g '*.sh'
 
+# C17 随包示例的证书路径必须是项目实际产物
+#
+# conf/example 会被安装到 /usr/local/nginx/conf/example，用户直接照抄。
+# 曾写成扁平的 <域名>.crt/.key，而 lnmp ssl add 生成的是
+# <域名>/fullchain.cer（Apache 侧 <域名>/<域名>.cer），照抄必然 nginx -t 失败。
+[ -z "${only}" ] || [ "${only}" = "C17" ] && {
+    out=$(grep -rnE '(ssl_certificate(_key)?|SSLCertificate(Key)?File)[[:space:]]+\S*/conf/ssl/[^/]+\.(crt|key)' \
+          conf/example 2>/dev/null)
+    if [ -z "${out}" ]; then
+        printf 'ok   %-4s %s\n' C17 "示例证书路径与 lnmp ssl 产物一致"
+    else
+        printf 'FAIL %-4s %s\n' C17 "示例仍引用不存在的扁平证书路径"
+        echo "${out}" | sed 's/^/       /'
+        fail=1
+    fi
+}
+
 # T1 语法检查
 [ -z "${only}" ] || [ "${only}" = "T1" ] && {
     syntax_fail=0

@@ -11462,3 +11462,169 @@ TERM/KILL。目标命令派生的子进程不在清理范围内，超时后会�
 临时文件、调用方存活。保护分支实测：桩掉 `ps` 后仍返回 124 且调用方存活；目标进程
 组与调用方进程组相同（非组长）时，`Kill_Process_Group` 只终止目标，调用方存活。
 有 `timeout` 的正常路径输出与退出码不变。`tests/test_health.sh` 70 项增至 77 项。
+
+## AUDIT-PHP-001-FIX PHP 升级路径丢失 `pcntl_exec`
+
+**位置**：`include/php.sh`、`include/multiplephp.sh`、`include/upgrade_php.sh`、
+`include/upgrade_mphp.sh`
+
+四处写 `php.ini` 的代码块内容完全相同，但两条升级路径的 `disable_functions`
+结尾少了 `pcntl_exec`。安装时禁用、升级后重新可用，升级前后安全基线不一致；
+多版本 PHP 还会出现版本间策略不一致。这是 `AUDIT-SEC-002-FIX` 的回归——该条目
+只改了安装侧，而 `tests/test_security_fixes.sh` 也只断言安装侧两个文件。
+
+`include/php.sh` 新增 `PHP_Ini_Tune <php.ini 路径>`，把四份副本收敛为一份，
+安装、多版本安装、主 PHP 升级、多版本 PHP 升级四个调用点改为调用它；
+`php.ini` 不存在或为空时返回 1。`install.sh` 与 `upgrade.sh` 都在相关脚本之前
+source `include/php.sh`，加载顺序满足。`tools/remove_disable_function.sh` 是用户
+主动解除限制的运维工具，不在收敛范围内。
+
+`t/consistency.sh` 新增 V16：四条路径都必须调用 `PHP_Ini_Tune`，且除
+`include/php.sh` 外不得再出现 `disable_functions =` 的写入。
+
+**验证状态**：Debian 13 实测。对真实 `php.ini` 副本执行 `PHP_Ini_Tune` 返回 0，
+结果含 `pcntl_exec`、不含 `pcntl_fork`，`expose_php = Off`、`post_max_size = 50M`、
+`max_execution_time = 300` 均按预期写入；对不存在的路径返回 1。
+V16 与 `tests/test_security_fixes.sh` 均做过负向验证（人为在升级脚本里加回
+`disable_functions` 写入后两者都报错）。
+
+## AUDIT-WEB-002-FIX 随包示例引用不存在的证书路径
+
+**位置**：`conf/example/` 下 9 个示例文件、`t/lint.sh`
+
+`conf/example` 整个目录由 `include/nginx.sh` 复制到
+`/usr/local/nginx/conf/example`（OpenResty 侧同理），用户可见并直接照抄。
+9 处证书路径写的是扁平的 `<域名>.crt` / `<域名>.key`，而 `lnmp ssl` 生成的是
+Nginx `<域名>/fullchain.cer` + `<域名>/<域名>.key`，Apache
+`<域名>/<域名>.cer` + `<域名>.key`。照抄必然 `nginx -t` 失败。
+原审计只记了反代示例一个文件，实际 8 个 Nginx 示例和 1 个 Apache 示例全部如此。
+
+9 处改为实际产物路径，Apache 示例补 `SSLCertificateChainFile`，每处上方加一行
+说明证书由 `lnmp ssl add` 生成、域名需替换。`t/lint.sh` 新增 C17 防回归。
+
+**验证状态**：Debian 13 实测。按 `lnmp ssl` 的产物布局摆放自签证书后，
+把修正后的 `nginx-reverse-proxy-example.conf` 放入 vhost 目录，
+`nginx -t` 通过。C17 做过负向验证。
+
+## AUDIT-OPS-003-FIX 删站非原子，失败时磁盘与运行配置分离
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp`
+
+三份脚本的 `Del_VHost` 先删配置（LNMP 还先删站点 `.user.ini`）再做语法检查和
+reload，失败只打印提示不恢复：被删文件回不来，运行中的服务继续用旧配置，
+`vhost list` 与实际服务状态不一致。另有两处原审计未覆盖：Web 服务未运行时直接
+`return 0` 跳过语法检查，把未校验的删除报成成功；`conf/lnmpa` 的存在性判断用
+`||`，两份配置缺任意一份就报"域名不存在"退出，半删状态无法再用本命令清理。
+
+三栈统一改为"备份 → 删除 → 语法检查 → reload → 清理备份"，新增
+`Del_VHost_Files` 与 `Del_VHost_Restore`：备份失败即中止且不删任何文件；
+任一步失败全量回滚并返回 1，回滚后按服务运行状态尽力重载一次使运行配置与磁盘
+一致。LNMP 的 `.user.ini` 与站点配置同进同退，回滚时恢复 0644 与 immutable 属性；
+LNMPA 的 Nginx、Apache 两份一起回滚。语法检查改为不依赖服务是否在运行，
+只有 reload 按运行状态跳过。`conf/lnmpa` 的 `||` 改为 `&&`。
+回滚模板取自同文件已有的 `Create_SSL_Config`。
+
+**验证状态**：Debian 13 实测。放入一个语法错误的 vhost 使全局 `nginx -t` 失败后
+执行 `lnmp vhost del`，退出码 1、站点配置原样保留并提示已恢复；移除错误配置后
+再删，退出码 0、配置删除、`/tmp` 无备份残留、nginx 保持 active。
+`tests/test_vhost_del_rollback.sh` 三栈 37 项通过，覆盖语法检查失败、reload 失败、
+仅 Apache reload 失败、正常路径、服务未运行和 LNMPA 半删状态可继续清理。
+
+## AUDIT-WEB-001-FIX HTTPS 不继承站点自定义反代配置
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp`
+
+`Load_Vhost_Params` 只读 root、server_name、rewrite、PHP 状态、日志和 IPv6，
+不读自定义配置区块；`Create_SSL_Config` 追加的 443 段里那对自定义配置标记是空的。
+HTTP 站点里的 `proxy_pass`、WebSocket、上传等规则不会进入 HTTPS，443 落到静态
+root 上返回目录内容、404 或 502。另有两处原审计未覆盖：
+
+1. 选 301 时，`location / { return 301 ...; }` 被插入 80 段，站点已有
+   `location /` 就构成 `duplicate location`，`nginx -t` 失败并回滚，
+   `ssl add` 整体失败，证书都拿不到。LAMP 的 301 走 `RewriteEngine`，无此冲突。
+2. `HowtoGuides.md` 教用户整站反代时删掉那段 `.php` 404 规则，但
+   `Load_Vhost_Params` 判定 `enable_site_php=n` 后会把它无条件写回 443。
+   正则 location 优先级高于 `location /`，补了 `proxy_pass` 也会被拦成 404。
+
+三栈新增 `Extract_Custom_Block`（取两个标记之间的内容，保留缩进；标记缺失、
+不成对或只有空行时输出空）与 `Custom_Block_Has_Root_Location`。
+`Load_Vhost_Params` 读回该区块，并改为按 80 段是否仍保留 `.php` 拦截决定是否
+写回；`Create_SSL_Config` 的 443 heredoc 注入该区块（heredoc 只做一层展开，
+内容里的 `$host` 等变量原样保留）；301 在已有 `location /` 时改用 server 级
+跳转并放行 `/.well-known/`，保证证书续期。
+
+**验证状态**：Debian 13 实测。建一个关闭 PHP 的站点，删掉 `.php` 拦截并在自定义
+区块写入整站反代，执行 SSL 追加（选 301）：`nginx -t` 通过、reload 成功；
+80 段只有一个 `location /`，跳转为 server 级 `if ($request_uri !~ "^/\.well-known/")`；
+443 段完整继承 `proxy_pass` 与 `$host`、`$remote_addr` 且未写回 `.php` 拦截。
+实际请求：HTTP 返回 301 且 Location 为 https、`/.well-known/` 未被跳转拦截、
+HTTPS 返回 200 并命中后端。`tests/test_ssl_custom_block.sh` 三栈 37 项通过。
+
+## AUDIT-APP-001-FIX Node/Go 应用缺少进程托管闭环
+
+**位置**：`init.d/lnmp-app@.service`、`conf/lnmp`、`conf/lnmpa`、`conf/lamp`、
+`include/end.sh`、`uninstall.sh`、`tools/lnmp-health.sh`
+
+项目能建关闭 PHP 的站点并给出反代示例，但不覆盖应用进程本身：没有 unit 模板、
+没有管理入口、没有开机启用、崩溃重启、日志和端口冲突检查。用户按文档起的进程
+退出或机器重启后，Nginx 仍在运行而后端不可用，表现为 502。
+
+新增模板单元 `init.d/lnmp-app@.service`：`Type=simple`，运行账号
+`lnmp-app-%i`，`EnvironmentFile=/etc/lnmp/apps/%i.env`，`Restart=on-failure`、
+`RestartSec=3`、`StartLimitIntervalSec=300`、`StartLimitBurst=5`（与其余服务
+unit 同一基线），`NoNewPrivileges`、`PrivateTmp`，日志走 journald。
+`WorkingDirectory` 不做环境变量展开，故由 `ExecStart` 内的 `cd` 处理。
+
+三栈新增 `lnmp app {add|list|del|start|stop|restart|status|logs}`。`add` 校验
+应用名字符集与长度（账号名上限决定最长 23）、目录必须已存在、启动命令的可执行
+文件必须是绝对路径且可执行、端口未被占用，随后创建专属账号、写 0640 的
+EnvironmentFile 并 `enable --now`。运行账号不复用 `www`：复用会让应用进程获得
+全部站点目录和 `.user.ini` 的读写权限。`del` 停用实例、删除元数据，并询问是否
+删除专属账号；应用目录一律保留。
+
+`include/end.sh` 新增 `Install_App_Unit_Tpl` 安装模板单元；`uninstall.sh` 新增
+`Remove_App_Hosting` 清理全部实例、元数据与专属账号，并加入卸载清单文案；
+`tools/lnmp-health.sh` 的 `Managed_Services` 纳入 `lnmp-app@*` 实例枚举，
+`Svc_Kind` 归类为 `app`，只做存活判定不做应用层探测（协议未知）。
+
+**验证状态**：Debian 13 实测。`systemd-analyze verify` 通过。托管一个监听
+127.0.0.1:3000 的最小 HTTP 服务：MainPID 归属 `lnmp-app-demoapp`、
+`systemctl is-active` 为 active、本地请求 200；`kill -9` 主进程后 NRestarts 由 0
+增至 1 并自动恢复服务；启动持续失败时重启计数到 5 后进入 failed 并停止重试
+（`Start request repeated too quickly`），确认退避与限流生效；
+`lnmp app stop` 后 6 秒保持 inactive 未被拉起；`is-enabled` 为 enabled；
+`lnmp app logs` 正常输出 journald 日志；`Managed_Services` 枚举到该实例；
+`lnmp app del` 后元数据、账号、unit 链接全部清理且模板单元保留。
+配合站点反代，HTTPS 请求经 Nginx 命中该应用返回 200。
+`tests/test_app_manage.sh` 三栈 99 项通过。
+
+## AUDIT-APP-002-FIX 应用目录未做边界校验即递归改属主
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的 `Add_App`
+
+`AUDIT-APP-001-FIX` 引入的 `lnmp app add` 只校验应用目录是绝对路径且存在，
+随后执行 `chown -R lnmp-app-<名字>:lnmp-app-<名字> <目录>`。输入 `/etc`、`/usr`、
+`/home` 或其它站点目录，一次误操作即可递归改变系统配置、其它站点文件或多个应用的
+属主，导致服务启动失败、权限隔离失效乃至系统不可用。三份脚本行为一致地带有该风险。
+
+改为复用同文件已有的 `Check_Vhost_Dir`——该函数的设计目的正是"防止递归 chmod 或
+chown 影响系统目录及其它用户数据"：只放行 `/home`、`/var/www`、`/srv`、`/data`、
+`/www` 下的子目录，拒绝允许根本身、相对路径、`..`、shell 元字符和路径组件中的
+符号链接，并用 realpath 复核解析后的路径仍在允许根内。不另立第二套边界。
+
+新增 `App_Dir_In_Use`：目录已被其它托管应用使用时拒绝，避免 `chown -R` 夺走
+对方的目录属主。按项目既有的"写入前复核半可信输入"惯例，`chown -R` 之前再次
+调用 `Check_Vhost_Dir`，未通过则删除已写入的 EnvironmentFile 并返回 1。
+
+`App_Dir_In_Use` 的 awk 漏了 `-F=`，`$1` 取到整行而非字段名，占用检查从未命中；
+该缺陷在离线测试中表现为"通过"（退出码 1 实际来自输入耗尽），由 Debian 13 实测
+发现并修正。`tests/test_app_manage.sh` 相应加固：拒绝类用例喂满四项输入，
+断言拒绝理由文本而非仅看退出码，并新增 `Check_Vhost_Dir` 的直接用例
+（此前全仓库没有针对该函数的测试）。
+
+**验证状态**：Debian 13 实测。`/etc`、`/usr`、`/root`、`/`、`/srv`、`/home`、`/var`
+作为应用目录全部返回 1 且属主不变，`/etc` 的拒绝理由为"不在允许的站点根之下"；
+指向 `/etc` 的符号链接 `/srv/evil-link` 被"路径组件是符号链接"拒绝，`/etc` 属主仍为
+root；`/srv/goodapp` 正常托管，服务 active、目录属主变为 `lnmp-app-goodapp`、
+本地请求 200；同一目录再添加第二个应用报"目录 /srv/app1 已被应用 app1 使用"并返回 1。
+`tests/test_app_manage.sh` 三栈通过，占用检查做过负向验证（去掉该调用后用例报错）。

@@ -492,6 +492,38 @@ check_v15()
     fi
 }
 
+# ---------------------------------------------------------------------------
+# V16 php.ini 基线只允许由 PHP_Ini_Tune 写入
+#
+# 安装与升级各写一份 disable_functions 时，升级侧漏项会让安全基线在升级后回退
+# （pcntl_exec 曾因此丢失）。tools/remove_disable_function.sh 是用户主动解除
+# 限制的运维工具，不在此约束内。
+# ---------------------------------------------------------------------------
+check_v16()
+{
+    local f bad_files="" missing=""
+
+    for f in include/php.sh include/multiplephp.sh \
+             include/upgrade_php.sh include/upgrade_mphp.sh; do
+        [ -f "${f}" ] || { missing="${missing} ${f}(缺失)"; continue; }
+        grep -q 'PHP_Ini_Tune ' "${f}" || missing="${missing} ${f}"
+    done
+
+    for f in include/multiplephp.sh include/upgrade_php.sh include/upgrade_mphp.sh; do
+        [ -f "${f}" ] || continue
+        grep -q 'disable_functions =' "${f}" && bad_files="${bad_files} ${f}"
+    done
+
+    grep -q 'disable_functions =.*pcntl_exec' include/php.sh 2>/dev/null \
+        || bad_files="${bad_files} include/php.sh(PHP_Ini_Tune 缺 pcntl_exec)"
+
+    if [ -z "${bad_files}" ] && [ -z "${missing}" ]; then
+        ok V16 "PHP 安装与升级路径共用 PHP_Ini_Tune 写 php.ini 基线"
+    else
+        bad V16 "未调用 PHP_Ini_Tune：${missing:-无}；自带 disable_functions：${bad_files:-无}"
+    fi
+}
+
 echo "=== 跨文件一致性检查 ==="
 check_v1
 check_v2
@@ -508,6 +540,7 @@ check_v12
 check_v13
 check_v14
 check_v15
+check_v16
 
 echo
 echo "通过 ${pass} 项，失败 ${fail} 项。"

@@ -435,6 +435,10 @@ lnmp vhost list    # 列出所有站点
 lnmp vhost del     # 删除站点（只删配置，不删网站文件）
 ```
 
+删站是原子的：先备份待删配置（LNMP 含站点 `.user.ini`，LNMPA 含 Nginx 与 Apache
+两份），删除后做语法检查再重载，任一步失败都会把文件全部还原并返回非零，
+不会留下"配置已删、服务还在提供该站点"的分裂状态。
+
 `lnmp vhost add` 会依次问：主域名 → 附加域名 → 网站目录 → 伪静态规则 →
 **是否开启 PHP** → Pathinfo → 是否写访问日志 → IPv6 → 是否建库 → 是否申请 SSL 证书。
 新站点配置写入 `/usr/local/nginx/conf/vhost/<域名>.conf`。
@@ -447,7 +451,12 @@ LNMPA 与 LAMP 的 Apache 站点写 `ErrorLog "/home/wwwlogs/<日志名>-error_l
 
 **自定义配置区块**：站点配置和随包的 Nginx、Apache 主配置模板中都留有
 `# 自定义配置--开始` 与 `# 自定义配置--结束` 两行注释，自己加的指令写在两行之间，
-便于与本包生成的内容区分。
+便于与本包生成的内容区分。`lnmp ssl add` 追加 443 配置时会把该区块的内容
+一并复制到 HTTPS 段，反向代理、WebSocket 等规则不需要再写一遍。
+
+站点自定义了 `location /` 时，选择 HTTP 301 跳转不会再插入第二个 `location /`
+（那会导致 `duplicate location` 使 `nginx -t` 失败），改用 server 级跳转并放行
+`/.well-known/` 以保证证书续期。
 
 **站点级 PHP 开关**：`是否开启 PHP? (Y/n，默认 y)` 默认开启，与原有建站流程一致。
 选 `n` 时跳过 Pathinfo 和 PHP 版本询问，站点配置中不写 PHP 执行入口
@@ -458,6 +467,28 @@ LAMP 关掉该站点的 PHP 引擎），首页候选去掉 `index.php`，`.php` 
 `lnmp ssl add` 会从现有站点配置读回该状态，HTTPS 不会重新打开 PHP。
 非交互执行时这一问不读标准输入，只看环境变量 `VHOST_PHP`（不设即开启 PHP），
 用法见 `HowtoGuides.md` 4.4。
+
+**应用托管（Node、Go 等自带后端）**
+
+```bash
+lnmp app add                 # 托管一个应用（问：应用名、目录、启动命令、端口）
+lnmp app list                # 列出已托管应用及其运行状态
+lnmp app start|stop|restart|status <应用名>
+lnmp app logs <应用名>       # 查看该应用最近 100 行 journald 日志
+lnmp app del <应用名>        # 取消托管（应用目录保留）
+```
+
+`lnmp vhost add` 只负责 Nginx 反向代理配置，进程本身的存活由 `lnmp app` 托管：
+每个应用生成一个 `lnmp-app@<应用名>.service` 实例，用专属账号
+`lnmp-app-<应用名>` 运行（不复用 `www`，避免应用获得全部站点目录的读写权限），
+崩溃按 `Restart=on-failure` 自动拉起（300 秒窗口内最多 5 次），并设为开机启动。
+元数据写入 `/etc/lnmp/apps/<应用名>.env`，日志走 journald。
+添加时校验应用目录、启动命令为可执行的绝对路径、端口未被占用。
+
+应用目录复用建站那套边界校验(`/home`、`/var/www`、`/srv`、`/data`、`/www` 下的
+子目录),并拒绝允许根本身、`..`、shell 元字符和路径组件中的符号链接,
+`chown -R` 前再复核一次:该目录随后会被递归改属主,打到 `/etc`、`/usr` 上不可逆。
+目录已被其它托管应用使用时也会拒绝,避免夺走对方的属主。
 
 **修改默认站点域名**：编辑 `/usr/local/nginx/conf/vhost/default.conf` 找到
 `server_name _;`，改为实际域名（多个域名用空格分隔），然后执行
@@ -1116,6 +1147,8 @@ Pathinfo、是否记日志、IPv6、是否建库、是否申请 SSL。
 选 `n`：站点不写任何 PHP 执行入口，`.php` 与 `.php/xxx` 一律返回 404，
 `lnmp ssl add` 追加的 HTTPS 配置沿用同一状态。非交互执行用 `VHOST_PHP=n`。
 
+Node、Go 这类自带后端的站点，进程本身用 `lnmp app add` 托管，见上文「应用托管」。
+
 ### 如何修改默认虚拟主机的域名？
 
 默认（兜底）站点的配置在 `/usr/local/nginx/conf/vhost/default.conf`
@@ -1159,6 +1192,7 @@ lnmp php-fpm reload
 | LNMP 运维配置 | `/etc/lnmp/`（备份、通知等，权限 600） |
 | 数据库密码 | `/root/.lnmp_db_root_password` |
 | SSL 证书 | `/usr/local/nginx/conf/ssl/` |
+| 托管应用元数据 | `/etc/lnmp/apps/` |
 
 ### 如何给 PHP 安装需要的扩展？
 

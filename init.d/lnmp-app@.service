@@ -1,0 +1,32 @@
+[Unit]
+Description=LNMP managed application %i
+After=network.target
+
+# 崩溃循环退避：300 秒窗口内最多启动 5 次，超出后标记 failed 并停止重试。
+# 不设 StartLimitAction，保持默认 none，不触发整机重启。
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+# %i 为应用名。运行目录与启动命令由 lnmp app add 写入 EnvironmentFile，
+# WorkingDirectory 不做环境变量展开，因此改由 ExecStart 内的 cd 处理。
+Type=simple
+EnvironmentFile=/etc/lnmp/apps/%i.env
+User=lnmp-app-%i
+Group=lnmp-app-%i
+ExecStart=/bin/sh -c 'cd "${APP_DIR}" && exec ${APP_EXEC}'
+# 停止交给 systemd 发信号，超时后再 SIGKILL。
+KillMode=mixed
+TimeoutStopSec=15
+# 仅进程异常退出时重启，systemctl stop 属主动停止，不触发。
+Restart=on-failure
+RestartSec=3
+# 应用以专属账号运行，禁止提权并隔离 /tmp。
+NoNewPrivileges=true
+PrivateTmp=true
+# 日志走 journald，用 lnmp app logs 查看。
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

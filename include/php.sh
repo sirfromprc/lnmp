@@ -178,6 +178,31 @@ Ln_PHP_Bin()
     rm -f /usr/local/php/conf.d/*
 }
 
+# php.ini 基线参数。安装、多版本安装与两条升级路径共用同一份，
+# 避免各入口各写一份导致 disable_functions 等安全基线漂移。
+PHP_Ini_Tune()
+{
+    local ini="$1"
+
+    if [ ! -s "${ini}" ]; then
+        Echo_Red "php.ini 不存在或为空：${ini}"
+        return 1
+    fi
+
+    sed -i 's/post_max_size =.*/post_max_size = 50M/g' "${ini}"
+    sed -i 's/upload_max_filesize =.*/upload_max_filesize = 50M/g' "${ini}"
+    sed -i 's/;date.timezone =.*/date.timezone = PRC/g' "${ini}"
+    sed -i 's/short_open_tag =.*/short_open_tag = On/g' "${ini}"
+    sed -i 's/;cgi.fix_pathinfo=.*/cgi.fix_pathinfo=0/g' "${ini}"
+    # 关闭 X-Powered-By 响应头，避免对外暴露 PHP 版本号。
+    sed -i 's/^expose_php =.*/expose_php = Off/g' "${ini}"
+    sed -i 's/max_execution_time =.*/max_execution_time = 300/g' "${ini}"
+    # 禁用命令执行类函数。pcntl_exec 属执行类，pcntl_fork/signal/wait 不禁用。
+    sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server,pcntl_exec/g' "${ini}"
+
+    return 0
+}
+
 Pear_Pecl_Set()
 {
     pear config-set php_ini /usr/local/php/etc/php.ini
@@ -289,15 +314,7 @@ Install_PHP_8x()
 
     # 配置 PHP 扩展及运行参数。
     echo "正在修改 php.ini..."
-    sed -i 's/post_max_size =.*/post_max_size = 50M/g' /usr/local/php/etc/php.ini
-    sed -i 's/upload_max_filesize =.*/upload_max_filesize = 50M/g' /usr/local/php/etc/php.ini
-    sed -i 's/;date.timezone =.*/date.timezone = PRC/g' /usr/local/php/etc/php.ini
-    sed -i 's/short_open_tag =.*/short_open_tag = On/g' /usr/local/php/etc/php.ini
-    sed -i 's/;cgi.fix_pathinfo=.*/cgi.fix_pathinfo=0/g' /usr/local/php/etc/php.ini
-    # 关闭 X-Powered-By 响应头，避免对外暴露 PHP 版本号。
-    sed -i 's/^expose_php =.*/expose_php = Off/g' /usr/local/php/etc/php.ini
-    sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
-    sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server,pcntl_exec/g' /usr/local/php/etc/php.ini
+    PHP_Ini_Tune /usr/local/php/etc/php.ini || exit 1
     Pear_Pecl_Set
     Install_Composer
 

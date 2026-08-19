@@ -10,6 +10,7 @@
 > LAMP 与 LNMPA 另用 Apache 2.4.68 + PHP 8.3.33 完整安装验证。
 >
 > 本项目所提供的功能纯终端命令操作，建议配合 WinSCP 处理上下传文件工作，提高工作效率。
+> 阅读 [readme.md](readme.md) 文件，了解LNMP项目更多使用信息。
 
 ---
 
@@ -772,11 +773,63 @@ location / {
 
 整站反代时若需要把 `.php` 路径原样透传给后端，删掉配置里那段带
 `# 本站点未开启 PHP` 注释的 `location` 即可（正则 location 优先级高于
-`location /`，留着会先被它拦成 404）。
+`location /`，留着会先被它拦成 404）。删掉后 `lnmp ssl add` 追加的 443
+配置不会把它写回。
+
+反代规则写在 `# 自定义配置--开始` 与 `# 自定义配置--结束` 之间，
+`lnmp ssl add` 会把该区块原样复制到 443 配置里，HTTPS 不需要再写一遍。
+选 HTTP 301 跳转时，若该区块已有 `location /`，跳转改用 server 级实现并放行
+`/.well-known/`（同一 server 内出现两个 `location /` 会让 `nginx -t` 报
+`duplicate location`）。
 
 **站点建好后想改主意**：直接编辑 `/usr/local/nginx/conf/vhost/<域名>.conf`
 （LAMP 是 `/usr/local/apache/conf/vhost/<域名>.conf`），加回或删掉上述几行，
 `nginx -t` / `httpd -t` 通过后 reload 即可，不必删站重建。
+
+### 4.5 托管 Node / Go 应用进程
+
+反向代理只解决"请求怎么转给后端"，进程本身退出或机器重启后仍然是 502。
+用 `lnmp app` 把应用交给 systemd 托管：
+
+```bash
+lnmp app add
+```
+
+依次问四项：
+
+| 问题 | 说明 |
+|---|---|
+| 应用名 | 小写字母、数字、中划线，最长 23 字符；用作 unit 实例名与账号名 |
+| 应用目录 | 必须位于 `/home`、`/var/www`、`/srv`、`/data`、`/www` 之一的**子目录**且已存在；进程的工作目录 |
+| 启动命令 | 可执行文件写绝对路径，如 `/usr/bin/node server.js` |
+| 监听端口 | 用于占用检查，留空则跳过 |
+
+完成后应用以专属账号 `lnmp-app-<应用名>` 运行，已设为开机启动，
+崩溃后由 `Restart=on-failure` 自动拉起（300 秒窗口内最多 5 次，超出标记 failed）。
+
+```bash
+lnmp app list                  # 应用名、运行状态、端口、目录
+lnmp app status myapp          # systemctl status
+lnmp app restart myapp
+lnmp app logs myapp            # 最近 100 行 journald 日志
+lnmp app del myapp             # 取消托管；询问是否删除专属账号，应用目录保留
+```
+
+非 root 账号运行是刻意的：不复用 `www`，否则应用进程能读写全部站点目录
+和 `.user.ini`。`lnmp app add` 会把应用目录的属主改成该账号。
+
+正因为要递归改属主，应用目录的边界与站点目录同一套：只放行上表那五个根下的
+子目录，拒绝根目录本身、`..`、shell 元字符、路径组件中的符号链接，
+以及已被其它托管应用占用的目录。想把应用放在 `/opt` 或系统目录下不被支持——
+换成 `/srv/<应用名>` 这类专用目录即可。
+
+完整的一条链是：`lnmp app add` 托管进程 → `lnmp vhost add` 建站（PHP 选 `n`）
+→ 在站点的自定义配置区块写 `proxy_pass http://127.0.0.1:<端口>;`
+→ `lnmp ssl add` 加证书（反代规则会自动继承到 443）。
+参考配置见 `/usr/local/nginx/conf/example/nginx-reverse-proxy-example.conf`。
+
+元数据在 `/etc/lnmp/apps/<应用名>.env`（0640），模板单元是
+`/etc/systemd/system/lnmp-app@.service`。`lnmp health` 会一并检查这些实例的存活。
 
 ---
 
@@ -1719,9 +1772,14 @@ bash tools/denyhosts_removeip.sh <被误封的IP>
 lnmp vhost add       # 新增站点
 lnmp vhost list      # 列出所有站点
 lnmp vhost del       # 删除站点（只删 nginx 配置，保留网站文件）
+lnmp app add         # 托管 Node/Go 等应用进程，见 4.5
+lnmp app list        # 已托管应用及运行状态
+lnmp app logs <名字> # 查看应用日志
 ```
 
 > `vhost del` 会保留网站文件并给出提示，以避免误删数据。
+> 删除本身是原子的：先备份待删配置，语法检查和 reload 都通过才清理备份；
+> 任一步失败会把文件全部还原并返回非零，不会出现配置已删但服务仍在提供站点的状态。
 > 需要彻底删除时手工 `rm -rf`，`.user.ini` 的 immutable 属性
 > 已由删除流程自动解除。
 >

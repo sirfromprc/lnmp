@@ -112,6 +112,7 @@ Install_LNMP_Command()
 
     Install_Tgnotice_Profile || return 1
     Install_Perm_Diagnose_Unit || return 1
+    Install_App_Unit_Tpl || return 1
     # 工具脚本需要可执行权限，以支持通过 ./tools/xxx.sh 直接调用。
     if ! chmod 755 "${cur_dir}"/tools/*.sh 2>/dev/null; then
         Echo_Red "设置 tools/ 目录脚本权限失败，请手动执行: chmod 755 ${cur_dir}/tools/*.sh"
@@ -130,6 +131,22 @@ Install_Perm_Diagnose_Unit()
     [ -s "${src}" ] || { Echo_Red "缺少 ${src}"; return 1; }
     if ! \cp "${src}" "${dst}" || ! chmod 644 "${dst}"; then
         Echo_Red "安装权限诊断单元失败：${dst}"
+        return 1
+    fi
+    command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+    return 0
+}
+
+# lnmp app 托管 Node/Go 等应用进程时按实例启动该模板单元。
+Install_App_Unit_Tpl()
+{
+    local src="${cur_dir}/init.d/lnmp-app@.service"
+    local dst="/etc/systemd/system/lnmp-app@.service"
+
+    [ -d /etc/systemd/system ] || return 0
+    [ -s "${src}" ] || { Echo_Red "缺少 ${src}"; return 1; }
+    if ! \cp "${src}" "${dst}" || ! chmod 644 "${dst}"; then
+        Echo_Red "安装应用托管单元失败：${dst}"
         return 1
     fi
     command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
