@@ -2,12 +2,18 @@
 Description=Redis
 After=network.target
 
+# LNMP perm hooks
+OnFailure=lnmp-perm-diagnose@%n.service
+
 [Service]
 Type=forking
 User=redis
 Group=redis
 # PIDFile 必须与 redis.conf 保持一致。
 PIDFile=/usr/local/redis/var/redis.pid
+# LNMP perm hooks
+ExecStartPre=+/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook pre redis'
+ExecStopPost=-+/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook post redis'
 ExecStart=/usr/local/redis/bin/redis-server /usr/local/redis/etc/redis.conf
 ExecStop=-/usr/local/redis/bin/redis-cli shutdown
 PrivateTmp=true

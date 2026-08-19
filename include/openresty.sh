@@ -298,6 +298,8 @@ OpenResty_Post_Install()
     fi
 
     chown -R www:www "${Default_Website_Dir}" 2>/dev/null
+    # 安装进程可能继承 umask 077，mkdir 出来的目录会是 700，需显式校正。
+    chmod 755 "${Default_Website_Dir}"
     chown root:root /home/wwwlogs
     chmod 755 /home/wwwlogs
 

@@ -337,6 +337,7 @@ lnmp ssl add                                      # 签发证书，见 3.7
 lnmp dnsssl   {ali|cf|dp|he|gd|aws}               # DNS 验证签发（支持泛域名）
 lnmp onlyssl  {ali|cf|dp|he|gd|aws}               # 只签证书，不改 Nginx 配置
 lnmp tgnotice {--init|--test|--status}            # Telegram 通知，见 3.12
+lnmp perm     {check|status|init|uninit}          # 权限基线核对，见 3.13
 ```
 
 > `reload` 是平滑重载配置，不中断连接；`restart` 会真正重启进程。
@@ -832,6 +833,64 @@ tgnotice "原样文本 < & >" text       # 不做格式解析
 - 未配置或 `TG_Enable=0` 时静默跳过并返回 0，不影响调用脚本的主流程。
 - 发送失败返回非 0。通知失败通常不该中断主流程，需要时写
   `tgnotice "..." || true`。
+
+### 3.13 权限基线核对：`lnmp perm`
+
+核对本项目安装时设置的属主与权限是否被改动。递归 `chown` 打错路径这类误操作
+会让数据库运行账号写不了数据目录，服务端在打开错误日志前就退出，错误日志与
+`journalctl` 都不会留下原因。
+
+```bash
+lnmp perm check           # 核对全部条目
+lnmp perm check mariadb   # 只核对某个服务相关的条目
+lnmp perm run             # 定期核对入口，仅在结果变化时推送通知
+lnmp perm status          # 钩子与定期核对状态、忽略清单、上次结果
+lnmp perm init            # 注入校验钩子并安装每日定期核对任务
+lnmp perm uninit          # 剥离校验钩子并移除定期核对任务
+lnmp perm ignore <条目ID>    # 忽略指定条目
+lnmp perm unignore <条目ID>  # 取消忽略
+```
+
+服务名取值：`mysql`、`mariadb`、`nginx`、`httpd`、`php-fpm`、`redis`、
+`pureftpd`，以及 `cmd`（管理命令）与 `sec`（凭据与防火墙文件）。
+
+返回码：`0` 全部通过；`1` 存在权限告警；`2` 存在会导致服务启动失败的问题。
+
+**感知时机。** 本项目生成的 systemd unit 带三处钩子，全新安装即生效；已有
+环境执行一次 `lnmp perm init` 补上：
+
+| 钩子 | 触发时机 | 行为 |
+|---|---|---|
+| `ExecStartPre` | 服务启动前 | 覆盖 `systemctl start`、开机自启、systemd 自动重启与 `lnmp start` |
+| `ExecStopPost` | 服务停止后 | 正常停止与崩溃退出都会跑，结果写入 journal |
+| `OnFailure` | 服务进入失败状态 | 实例化 `lnmp-perm-diagnose@.service`，诊断结果写入 journal 并推送通知 |
+| systemd timer | 每天 04:20 前后 | `lnmp perm init` 一并安装；systemd 不可用时退回 `/etc/cron.d/lnmp-perm` |
+
+前三处只在服务状态变化时触发。服务持续运行期间属主被改动，靠定期核对发现 ——
+已打开的文件描述符不受属主变更影响，进程照常运行，不做定期核对就要等到下次
+重启才暴露。
+
+**阻止启动的条目只有三条**：数据库数据目录、数据库错误日志、Redis 数据目录对
+各自运行账号不可写。这三种情况不修必然启动失败，此时 `ExecStartPre` 返回非 0，
+systemd 直接给出路径与修复命令，而不是让服务反复失败。其余条目一律只告警，
+不影响启动。
+
+钩子通过 `/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; ...'` 调用，命令缺失时
+静默放行，不会让服务因找不到校验程序而无法启动。
+
+**不核对的内容**：`/run` 下的运行时目录与 socket（每次启动重建）、用户自建站点
+目录 `/home/wwwroot/<site>`（按 HowtoGuides 5.6 加固后属主本就不同）、
+已存在时项目不会改写的 `/etc/nftables.conf`。核对只报告，不修改任何文件。
+
+**通知去重**：`lnmp perm run` 对失败条目集合取摘要，仅在结果与上次不同时推送
+（含由失败转为恢复）。结果未变但仍存在硬失败时，每 24 小时再提醒一次。手动
+`lnmp perm check` 不推送通知。
+
+**忽略清单**：有意做出的权限调整用 `lnmp perm ignore <条目ID>` 静音单条，
+不必把基线整体降级。条目 ID 就是核对输出里 `FAIL`/`WARN` 后面那个短标识。
+
+日志：`/var/log/lnmp/perm.log`。状态：`/etc/lnmp/perm-state`（600）。
+忽略清单：`/etc/lnmp/perm-ignore`（600）。
 
 ---
 

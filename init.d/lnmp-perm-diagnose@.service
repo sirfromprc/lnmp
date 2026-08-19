@@ -1,0 +1,8 @@
+[Unit]
+Description=LNMP permission diagnose for %i
+# 本单元不设 OnFailure，避免诊断自身失败触发递归。
+
+[Service]
+Type=oneshot
+ExecStart=/bin/lnmp-perm diagnose %i
+Nice=10

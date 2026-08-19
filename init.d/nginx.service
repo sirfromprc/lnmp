@@ -2,9 +2,15 @@
 Description=The NGINX HTTP and reverse proxy server
 After=network.target remote-fs.target nss-lookup.target
 
+# LNMP perm hooks
+OnFailure=lnmp-perm-diagnose@%n.service
+
 [Service]
 Type=forking
 PIDFile=/usr/local/nginx/logs/nginx.pid
+# LNMP perm hooks
+ExecStartPre=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook pre nginx'
+ExecStopPost=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook post nginx'
 ExecStart=/usr/local/nginx/sbin/nginx -c /usr/local/nginx/conf/nginx.conf
 ExecReload=/usr/local/nginx/sbin/nginx -s reload
 # 停止交给 systemd 发信号，SIGQUIT 为优雅退出。

@@ -94,7 +94,8 @@ Install_LNMP_Command()
         "${cur_dir}/conf/${stack}:/bin/lnmp" \
         "${cur_dir}/tools/lnmp-backup.sh:/bin/lnmp-backup" \
         "${cur_dir}/tools/lnmp-tgnotice.sh:/bin/lnmp-tgnotice" \
-        "${cur_dir}/tools/lnmp-phpmyadmin.sh:/bin/lnmp-phpmyadmin"
+        "${cur_dir}/tools/lnmp-phpmyadmin.sh:/bin/lnmp-phpmyadmin" \
+        "${cur_dir}/tools/lnmp-perm.sh:/bin/lnmp-perm"
     do
         target=${source#*:}
         source=${source%%:*}
@@ -109,11 +110,28 @@ Install_LNMP_Command()
     Sync_LNMP_Command_Alias || return 1
 
     Install_Tgnotice_Profile || return 1
+    Install_Perm_Diagnose_Unit || return 1
     # 工具脚本需要可执行权限，以支持通过 ./tools/xxx.sh 直接调用。
     if ! chmod 755 "${cur_dir}"/tools/*.sh 2>/dev/null; then
         Echo_Red "设置 tools/ 目录脚本权限失败，请手动执行: chmod 755 ${cur_dir}/tools/*.sh"
         return 1
     fi
+    return 0
+}
+
+# 各服务 unit 的 OnFailure 指向该模板单元，安装期必须一并写入。
+Install_Perm_Diagnose_Unit()
+{
+    local src="${cur_dir}/init.d/lnmp-perm-diagnose@.service"
+    local dst="/etc/systemd/system/lnmp-perm-diagnose@.service"
+
+    [ -d /etc/systemd/system ] || return 0
+    [ -s "${src}" ] || { Echo_Red "缺少 ${src}"; return 1; }
+    if ! \cp "${src}" "${dst}" || ! chmod 644 "${dst}"; then
+        Echo_Red "安装权限诊断单元失败：${dst}"
+        return 1
+    fi
+    command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
     return 0
 }
 

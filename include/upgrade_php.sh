@@ -247,6 +247,8 @@ Upgrade_PHP_8x()
     Echo_Blue "[+] 正在安装 PHP ${php_version}"
     Tar_Cd php-${php_version}.tar.bz2 php-${php_version}
     PHP_Openssl3_Patch
+    # configure 的 iconv 探针要能加载 /usr/local/lib 里的 libiconv.so.2。
+    Ensure_Libiconv_Ldpath || exit 1
 
     if [ "${Stack}" = "lnmp" ]; then
         ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}

@@ -373,6 +373,19 @@ Function_Database()
     esac
 }
 
+Function_Perm()
+{
+    # 权限基线核对由三种运行模式共用，避免基线出现分歧。
+    local bin="/bin/lnmp-perm"
+    if [ ! -x "${bin}" ]; then
+        Echo_Red "找不到 ${bin}，安装不完整。"
+        Echo_Red "可从源码目录补装："
+        Echo_Red "  cp tools/lnmp-perm.sh /bin/lnmp-perm && chmod +x /bin/lnmp-perm"
+        return 1
+    fi
+    "${bin}" "$@"
+}
+
 Function_Backup()
 {
     # 三种运行模式共用 /bin/lnmp-backup，避免备份行为不一致。
@@ -1297,13 +1310,55 @@ Get_Mysqld_Conf_Value()
     ' "${conf}"
 }
 
+# 按 / 拆解并消除 . 与 ..，只做文本规范化，不访问文件系统。
+Normalize_Fs_Path()
+{
+    local path="$1" part out=""
+    local IFS=/
+
+    for part in ${path}; do
+        case "${part}" in
+        ''|.) ;;
+        ..)   out="${out%/*}" ;;
+        *)    out="${out}/${part}" ;;
+        esac
+    done
+    printf '%s' "${out:-/}"
+}
+
+# mysqld 把相对 log_error 解释为相对 datadir。不解析会按当前工作目录判断权限
+# 并读错日志位置。解析结果越出 datadir 时提示并返回 1，由调用方跳过日志检查。
+# 提示写 stderr，避免被命令替换吞掉。
+Resolve_DB_Log_Error()
+{
+    local logerror="$1" datadir="$2" base resolved
+
+    [ -n "${logerror}" ] || return 0
+    case "${logerror}" in
+    /*) Normalize_Fs_Path "${logerror}"; return 0 ;;
+    esac
+    if [ -z "${datadir}" ]; then
+        Echo_Yellow "log_error=${logerror} 为相对路径且未配置 datadir，无法定位错误日志。" >&2
+        echo >&2
+        return 1
+    fi
+    base=$(Normalize_Fs_Path "${datadir}")
+    resolved=$(Normalize_Fs_Path "${base}/${logerror}")
+    case "${resolved}" in
+    "${base}"/*) printf '%s' "${resolved}"; return 0 ;;
+    esac
+    Echo_Yellow "log_error=${logerror} 解析为 ${resolved}，越出数据目录 ${base}，不做检查。" >&2
+    echo >&2
+    return 1
+}
+
 # 数据库启动失败时给出可操作的原因。datadir 或错误日志对运行账号不可写时，
 # 服务端在打开错误日志前就退出，日志文件里不留任何记录，systemd 只显示
 # init 脚本的 ERROR!，需要在这里补出真实原因。
 Diagnose_DB_Start_Failure()
 {
     local action="${1:-start}" conf="${2:-/etc/my.cnf}"
-    local db_user db_group datadir logerror target unwritable=0
+    local db_user db_group datadir logerror target probe unwritable=0
 
     case "${action}" in
     start|restart) ;;
@@ -1314,14 +1369,24 @@ Diagnose_DB_Start_Failure()
     db_user=$(Get_Mysqld_Conf_Value user "${conf}")
     datadir=$(Get_Mysqld_Conf_Value datadir "${conf}")
     logerror=$(Get_Mysqld_Conf_Value log_error "${conf}")
+    if [ -n "${logerror}" ]; then
+        logerror=$(Resolve_DB_Log_Error "${logerror}" "${datadir}") || logerror=""
+    fi
 
     if [ -n "${db_user}" ] && id "${db_user}" >/dev/null 2>&1 &&
        command -v runuser >/dev/null 2>&1; then
         db_group=$(id -gn "${db_user}" 2>/dev/null) || db_group="${db_user}"
         for target in "${datadir}" "${logerror}"; do
-            [ -n "${target}" ] && [ -e "${target}" ] || continue
-            runuser -u "${db_user}" -- test -w "${target}" 2>/dev/null && continue
-            Echo_Red "${target} 对数据库运行账号 ${db_user} 不可写。"
+            [ -n "${target}" ] || continue
+            probe="${target}"
+            # 首次启动时错误日志尚未生成，改判其父目录：父目录不可写同样会让
+            # 服务端在打开日志前退出，日志文件里不会留下任何记录。
+            if [ ! -e "${probe}" ]; then
+                probe="${probe%/*}"
+                [ -n "${probe}" ] && [ -d "${probe}" ] || continue
+            fi
+            runuser -u "${db_user}" -- test -w "${probe}" 2>/dev/null && continue
+            Echo_Red "${probe} 对数据库运行账号 ${db_user} 不可写。"
             unwritable=1
         done
         if [ ${unwritable} -eq 1 ]; then
@@ -1429,6 +1494,7 @@ LNMP_Mycnf_Owned=0
 # EXIT trap 同时清理临时目录和数据库凭据，覆盖异常退出路径。
 LNMP_Cleanup()
 {
+    Restore_Cert_Dir
     if [ -n "${LNMP_Tmp_Dir}" ]; then
         rm -rf "${LNMP_Tmp_Dir}"
         LNMP_Tmp_Dir=""
@@ -1441,7 +1507,7 @@ LNMP_Cleanup()
 LNMP_Set_Trap()
 {
     trap 'LNMP_Cleanup' EXIT
-    trap 'echo; exit 130' INT TERM
+    trap 'echo; exit 130' INT TERM HUP
 }
 
 # 临时目录必须在当前 shell 初始化，使主流程和 EXIT trap 使用同一路径。
@@ -2451,7 +2517,7 @@ Add_DNS_SSL_Select_Menu()
     while :;do
         Echo_Yellow "请选择 [1-2]："
         Read_Input dns_ssl_choice "证书来源选项"
-        if [[ "${dns_ssl_choice}" =~ ^1|2$ ]]; then
+        if [[ "${dns_ssl_choice}" =~ ^(1|2)$ ]]; then
             Check_Acme_EMail
             break
         else
@@ -3226,6 +3292,91 @@ Print_Self_Signed_Hint()
     echo
 }
 
+# KILL 或断电时 Restore_Cert_Dir 来不及执行，活动证书目录会停留在缺失状态。
+# 申请前扫描同级遗留备份：产生它的进程已退出且活动路径缺失时恢复，其余只提示。
+Recover_Cert_Backups()
+{
+    local dir="$1" parent bak base pid
+
+    parent="${dir%/*}"
+    [ -n "${parent}" ] && [ -d "${parent}" ] || return 0
+    for bak in "${parent}"/*.lnmp-bak.*; do
+        [ -d "${bak}" ] || continue
+        pid="${bak##*.lnmp-bak.}"
+        case "${pid}" in
+        ''|*[!0-9]*) continue ;;
+        esac
+        [ "${pid}" = "$$" ] && continue
+        # 备份进程仍在运行时不介入，避免破坏正在进行的申请。
+        kill -0 "${pid}" 2>/dev/null && continue
+        [ -n "$(ls -A "${bak}" 2>/dev/null)" ] || continue
+        base="${bak%.lnmp-bak.*}"
+        if [ -e "${base}" ]; then
+            Echo_Yellow "存在遗留证书备份 ${bak}，活动证书已在位，确认后可自行删除。"
+            echo
+            continue
+        fi
+        if mv "${bak}" "${base}"; then
+            Echo_Yellow "上次申请被中断，已恢复原有证书：${base}"
+            echo
+        else
+            Echo_Red "恢复遗留证书备份失败：${bak}"
+        fi
+    done
+    return 0
+}
+
+# 证书目录在签发前改名保留，任一环节失败即回滚。直接删除会在签发或安装
+# 失败时留下不可用的证书路径，而旧证书可能仍被站点配置引用。
+Backup_Cert_Dir()
+{
+    local dir="$1"
+
+    Cert_Backup_Src=""
+    Cert_Backup_Dir=""
+    [ -n "${dir}" ] || return 0
+    Recover_Cert_Backups "${dir}"
+    [ -d "${dir}" ] || return 0
+
+    Cert_Backup_Dir="${dir}.lnmp-bak.$$"
+    rm -rf "${Cert_Backup_Dir}"
+    if ! mv "${dir}" "${Cert_Backup_Dir}"; then
+        Cert_Backup_Dir=""
+        Echo_Red "备份现有证书目录失败：${dir}"
+        return 1
+    fi
+    Cert_Backup_Src="${dir}"
+    # 中断信号必须走 EXIT 清理，否则活动证书路径会停在缺失状态。
+    LNMP_Set_Trap
+    echo "已备份现有证书，签发失败时会自动恢复。"
+    return 0
+}
+
+# 失败回滚：丢弃本次写入的内容，把备份改回原路径。
+Restore_Cert_Dir()
+{
+    [ -n "${Cert_Backup_Dir}" ] && [ -d "${Cert_Backup_Dir}" ] || return 0
+    rm -rf "${Cert_Backup_Src}"
+    if mv "${Cert_Backup_Dir}" "${Cert_Backup_Src}"; then
+        Echo_Yellow "已恢复原有证书：${Cert_Backup_Src}"
+        echo
+    else
+        Echo_Red "恢复原有证书失败，备份保留在：${Cert_Backup_Dir}"
+    fi
+    Cert_Backup_Src=""
+    Cert_Backup_Dir=""
+    return 0
+}
+
+# 成功后清理备份。
+Discard_Cert_Backup()
+{
+    [ -n "${Cert_Backup_Dir}" ] && rm -rf "${Cert_Backup_Dir}"
+    Cert_Backup_Src=""
+    Cert_Backup_Dir=""
+    return 0
+}
+
 Add_SSL()
 {
     local vhost_conf="/usr/local/nginx/conf/vhost/${domain}.conf"
@@ -3271,10 +3422,7 @@ Add_SSL()
 
         Install_Check_Acme.sh || exit 1
 
-        if [ -s /usr/local/nginx/conf/ssl/${domain}/fullchain.cer ]; then
-            echo "正在删除已有域名证书..."
-            rm -rf /usr/local/nginx/conf/ssl/${domain}
-        fi
+        Backup_Cert_Dir "/usr/local/nginx/conf/ssl/${domain}" || return 1
 
         if [ "${ssl_choice}" == "2" ]; then
             echo "正在使用 Let's Encrypt 签发 SSL 证书..."
@@ -3292,7 +3440,7 @@ Add_SSL()
         if [ "${lets_status}" = 0 ]; then
             cert_install_domain="${domain}"
             [ "${domain}" = "default" ] && cert_install_domain="${default_site_ip}"
-            mkdir -p "/usr/local/nginx/conf/ssl/${domain}" || return 1
+            mkdir -p "/usr/local/nginx/conf/ssl/${domain}" || { Restore_Cert_Dir; return 1; }
             /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --install-cert -d "${cert_install_domain}" --ecc \
                 --key-file "/usr/local/nginx/conf/ssl/${domain}/${domain}.key" \
                 --fullchain-file "/usr/local/nginx/conf/ssl/${domain}/fullchain.cer" \
@@ -3303,9 +3451,11 @@ Add_SSL()
         ssl_certificate="/usr/local/nginx/conf/ssl/${domain}/fullchain.cer"
         ssl_certificate_key="/usr/local/nginx/conf/ssl/${domain}/${domain}.key"
         if [ "${lets_status}" = 0 ]; then
-            Create_SSL_Config || return 1
+            Create_SSL_Config || { Restore_Cert_Dir; return 1; }
+            Discard_Cert_Backup
             Echo_Green "SSL 证书签发成功。"
         else
+            Restore_Cert_Dir
             Echo_Red "SSL 证书签发失败。"
             return 1
         fi
@@ -3343,10 +3493,7 @@ Add_Dns_SSL()
     # 泛域名不能直接做目录名，避免路径被通配符展开。
     cert_dir_name="${domain/#\*./_wildcard.}"
     cert_dir="/usr/local/nginx/conf/ssl/${cert_dir_name}"
-    if [ -s "${cert_dir}/fullchain.cer" ]; then
-        echo "正在删除已有域名证书..."
-        rm -rf "${cert_dir}"
-    fi
+    Backup_Cert_Dir "${cert_dir}" || return 1
 
     # 泛域名已覆盖同级子域名，重复申请只会多一次 TXT 验证。
     cert_domains=$(Filter_Cert_Domains "${domain}" "${moredomain}")
@@ -3380,7 +3527,7 @@ Add_Dns_SSL()
 
     # acme.sh 默认签发 ECC 证书，须显式安装到站点证书目录。
     if [ "${lets_status}" = 0 ]; then
-        mkdir -p "${cert_dir}" || return 1
+        mkdir -p "${cert_dir}" || { Restore_Cert_Dir; return 1; }
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --install-cert -d "${domain}" --ecc \
             --key-file "${cert_dir}/${cert_dir_name}.key" \
             --fullchain-file "${cert_dir}/fullchain.cer" \
@@ -3389,13 +3536,15 @@ Add_Dns_SSL()
     fi
 
     if [ "${lets_status}" != 0 ]; then
+        Restore_Cert_Dir
         Echo_Red "SSL 证书签发失败。"
         return 1
     fi
 
     ssl_certificate="${cert_dir}/fullchain.cer"
     ssl_certificate_key="${cert_dir}/${cert_dir_name}.key"
-    Create_SSL_Config || return 1
+    Create_SSL_Config || { Restore_Cert_Dir; return 1; }
+    Discard_Cert_Backup
     Print_Banner \
         "SSL 证书信息" \
         "域名：${domain} ${moredomain}" \
@@ -3432,10 +3581,7 @@ Add_Dns_SSL_Only()
     # 泛域名不能直接做目录名，避免路径被通配符展开。
     cert_dir_name="${domain/#\*./_wildcard.}"
     cert_dir="/usr/local/nginx/conf/ssl/${cert_dir_name}"
-    if [ -s "${cert_dir}/fullchain.cer" ]; then
-        echo "正在删除已有域名证书..."
-        rm -rf "${cert_dir}"
-    fi
+    Backup_Cert_Dir "${cert_dir}" || return 1
 
     # 泛域名已覆盖同级子域名，重复申请只会多一次 TXT 验证。
     cert_domains=$(Filter_Cert_Domains "${domain}" "${moredomain}")
@@ -3469,7 +3615,7 @@ Add_Dns_SSL_Only()
 
     # acme.sh 默认签发 ECC 证书，须显式安装到站点证书目录。
     if [ "${lets_status}" = 0 ]; then
-        mkdir -p "${cert_dir}" || return 1
+        mkdir -p "${cert_dir}" || { Restore_Cert_Dir; return 1; }
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --install-cert -d "${domain}" --ecc \
             --key-file "${cert_dir}/${cert_dir_name}.key" \
             --fullchain-file "${cert_dir}/fullchain.cer"
@@ -3477,10 +3623,12 @@ Add_Dns_SSL_Only()
     fi
 
     if [ "${lets_status}" != 0 ]; then
+        Restore_Cert_Dir
         Echo_Red "SSL 证书签发失败。"
         return 1
     fi
 
+    Discard_Cert_Backup
     Print_Banner \
         "SSL 证书信息" \
         "域名：${domain} ${moredomain}" \
@@ -3600,6 +3748,12 @@ case "${arg1}" in
         Function_Backup "$@"
         exit $?
         ;;
+    perm)
+        # perm 子命令参数数量不同，移除命令名后完整转交。
+        shift
+        Function_Perm "$@"
+        exit $?
+        ;;
     tgnotice|notice)
         shift
         if [ ! -x /bin/lnmp-tgnotice ]; then
@@ -3644,6 +3798,8 @@ case "${arg1}" in
         echo "用法：lnmp backup {init|run|status|list|restore|test}"
         echo "用法：lnmp backup run [db|web|all] [域名...]"
         echo "用法：lnmp tgnotice {--init|--test|--status} | lnmp tgnotice \"文本\" [md]"
+        echo "用法：lnmp perm {check|run|status|init|uninit}"
+        echo "用法：lnmp perm check [服务名] | lnmp perm {ignore|unignore} <条目ID>"
         echo "用法：lnmp phpmyadmin {enable|disable|status}"
         echo "用法：lnmp ssl add"
         echo "用法：lnmp {dnsssl|dns} {ali|cf|dp|he|gd|aws}"

@@ -2,12 +2,18 @@
 Description=MySQL Community Server
 After=network.target syslog.target
 
+# LNMP perm hooks
+OnFailure=lnmp-perm-diagnose@%n.service
+
 [Service]
 Type=forking
 RuntimeDirectory=mysqld
 RuntimeDirectoryMode=0755
 ExecStartPre=/usr/bin/install -d -o mysql -g mysql -m 0755 /run/mysqld
 
+# LNMP perm hooks
+ExecStartPre=/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook pre mysql'
+ExecStopPost=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook post mysql'
 ExecStart=/etc/init.d/mysql start
 ExecStop=/etc/init.d/mysql stop
 ExecReload=/etc/init.d/mysql reload

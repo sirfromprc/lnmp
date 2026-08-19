@@ -2,9 +2,15 @@
 Description=Pure-FTPd is an FTP server
 After=network.target
 
+# LNMP perm hooks
+OnFailure=lnmp-perm-diagnose@%n.service
+
 [Service]
 Type=forking
 PIDFile=/var/run/pure-ftpd.pid
+# LNMP perm hooks
+ExecStartPre=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook pre pureftpd'
+ExecStopPost=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook post pureftpd'
 ExecStart=/usr/local/pureftpd/sbin/pure-ftpd /usr/local/pureftpd/etc/pure-ftpd.conf
 PrivateTmp=true
 

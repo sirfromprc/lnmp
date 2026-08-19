@@ -703,8 +703,31 @@ Deb_Ncurses5_Compat()
     ldconfig
 }
 
+# 软件源中存在可安装候选时返回 0。逐包判断可以避开发行版之间的包名差异，
+# 不必为每个版本维护一份依赖清单。
+Deb_Pkg_Available()
+{
+    local cand
+
+    cand=$(apt-cache policy "$1" 2>/dev/null | awk -F': ' '/Candidate:/{print $2; exit}')
+    [ -n "${cand}" ] && [ "${cand}" != "(none)" ]
+}
+
+# 新发行版移除旧包后的等价替代，无替代时输出空。
+Deb_Pkg_Alternative()
+{
+    case "$1" in
+    libpcre3-dev)                 printf 'libpcre2-dev' ;;
+    libncurses5-dev|libtinfo-dev) printf 'libncurses-dev' ;;
+    gnutls-dev)                   printf 'libgnutls28-dev' ;;
+    *)                            printf '' ;;
+    esac
+}
+
 Deb_Dependent()
 {
+    local pkg alt failed="" skipped=""
+
     Echo_Blue "[+] 正在使用 apt-get 安装依赖软件包..."
     apt-get update -y
     [[ $? -ne 0 ]] && apt-get update --allow-releaseinfo-change -y
@@ -713,8 +736,27 @@ Deb_Dependent()
     export DEBIAN_FRONTEND=noninteractive
     apt-get --no-install-recommends install -y build-essential gcc g++ make
 
-    for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make cmake autoconf automake re2c wget cron bzip2 libzip-dev libc6-dev bison file flex m4 gawk less cpp binutils diffutils unzip tar libbz2-dev libncurses-dev libncurses5-dev libtool libevent-dev openssl libssl-dev libsasl2-dev libltdl-dev zlib1g-dev libglib2.0-dev libjpeg-dev libpng-dev libkrb5-dev curl libcurl4-gnutls-dev libcurl4-openssl-dev libpcre2-dev libpcre3-dev libpq-dev gettext libxml2-dev libcap-dev ca-certificates psmisc patch git libc-ares-dev libicu-dev e2fsprogs libxslt1-dev xz-utils libexpat1-dev libaio-dev libtirpc-dev libsqlite3-dev libonig-dev lsof pkg-config libtinfo-dev libnuma-dev libwebp-dev gnutls-dev libbrotli-dev iproute2 gzip nftables gnupg gpgv;
-    do apt-get --no-install-recommends install -y $packages; done
+    for pkg in debian-keyring debian-archive-keyring build-essential gcc g++ make cmake autoconf automake re2c wget cron bzip2 libzip-dev libc6-dev bison file flex m4 gawk less cpp binutils diffutils unzip tar libbz2-dev libncurses-dev libncurses5-dev libtool libevent-dev openssl libssl-dev libsasl2-dev libltdl-dev zlib1g-dev libglib2.0-dev libjpeg-dev libpng-dev libkrb5-dev curl libcurl4-gnutls-dev libcurl4-openssl-dev libpcre2-dev libpcre3-dev libpq-dev gettext libxml2-dev libcap-dev ca-certificates psmisc patch git libc-ares-dev libicu-dev e2fsprogs libxslt1-dev xz-utils libexpat1-dev libaio-dev libtirpc-dev libsqlite3-dev libonig-dev lsof pkg-config libtinfo-dev libnuma-dev libwebp-dev gnutls-dev libbrotli-dev iproute2 gzip nftables gnupg gpgv; do
+        if ! Deb_Pkg_Available "${pkg}"; then
+            alt=$(Deb_Pkg_Alternative "${pkg}")
+            if [ -n "${alt}" ] && Deb_Pkg_Available "${alt}"; then
+                pkg="${alt}"
+            else
+                skipped="${skipped} ${pkg}"
+                continue
+            fi
+        fi
+        apt-get --no-install-recommends install -y "${pkg}" || failed="${failed} ${pkg}"
+    done
+
+    if [ -n "${skipped}" ]; then
+        Echo_Yellow "软件源无下列包，已跳过：${skipped# }"
+        echo
+    fi
+    if [ -n "${failed}" ]; then
+        Echo_Red "下列依赖包安装失败：${failed# }"
+        return 1
+    fi
 
     Deb_Ncurses5_Compat
 
@@ -727,6 +769,7 @@ Deb_Dependent()
             Echo_Yellow "PHP imap 扩展将无法编译。若不需要它，请设 Enable_PHP_Imap='n'。"
         fi
     fi
+    return 0
 }
 
 Check_Download()
@@ -845,12 +888,31 @@ PHP_Make_Install()
 }
 
 
+# libiconv 的动态库装在 /usr/local/lib。链接器缓存未刷新时，PHP configure 的
+# iconv errno 探针找不到 libiconv.so.2，以 127 失败并中止 configure。
+Ensure_Libiconv_Ldpath()
+{
+    [ -e /usr/local/lib/libiconv.so.2 ] || return 0
+    ldconfig 2>/dev/null
+    ldconfig -p 2>/dev/null | grep -q 'libiconv\.so\.2' && return 0
+    if [ -d /etc/ld.so.conf.d ] &&
+       ! grep -rqx '/usr/local/lib' /etc/ld.so.conf /etc/ld.so.conf.d/ 2>/dev/null; then
+        echo '/usr/local/lib' > /etc/ld.so.conf.d/lnmp-usr-local.conf
+        ldconfig 2>/dev/null
+    fi
+    ldconfig -p 2>/dev/null | grep -q 'libiconv\.so\.2' && return 0
+    Echo_Red "libiconv 动态库未进入链接器缓存，PHP 的 iconv 探针会失败。"
+    Echo_Red "请检查 /usr/local/lib 是否在动态链接器搜索路径中。"
+    return 1
+}
+
 Install_Libiconv()
 {
     Echo_Blue "[+] 正在安装 ${Libiconv_Ver}"
     Tar_Cd ${Libiconv_Ver}.tar.gz ${Libiconv_Ver}
     ./configure --enable-static
     Make_Install || exit 1
+    Ensure_Libiconv_Ldpath || exit 1
     cd ${cur_dir}/src/
     rm -rf ${cur_dir}/src/${Libiconv_Ver}
 }

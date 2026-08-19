@@ -55,7 +55,7 @@ echo "同步 ${Stack} 管理命令与 tools/ 脚本权限（源码目录：${cur
 Install_LNMP_Command "${Stack}" || exit 1
 
 Rc=0
-for f in /bin/lnmp /bin/lnmp-backup /bin/lnmp-tgnotice /bin/lnmp-phpmyadmin; do
+for f in /bin/lnmp /bin/lnmp-backup /bin/lnmp-tgnotice /bin/lnmp-phpmyadmin /bin/lnmp-perm; do
     if [ ! -x "${f}" ]; then
         Echo_Red "同步失败：${f} 缺失或不可执行。"
         Rc=1

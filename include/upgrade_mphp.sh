@@ -110,6 +110,8 @@ Upgrade_MPHP8x()
     Echo_Blue "[+] 正在升级 PHP ${php_version}"
     Tar_Cd php-${php_version}.tar.bz2 php-${php_version}
     PHP_Openssl3_Patch
+    # configure 的 iconv 探针要能加载 /usr/local/lib 里的 libiconv.so.2。
+    Ensure_Libiconv_Ldpath || exit 1
     ./configure --prefix=${Cur_MPHP_Path} --with-config-file-path=${Cur_MPHP_Path}/etc --with-config-file-scan-dir=${Cur_MPHP_Path}/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
     if [ $? -ne 0 ]; then
         Echo_Red "PHP ${php_version} 的 configure 失败。**现有的多版本 PHP 未做任何改动。**"

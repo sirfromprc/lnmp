@@ -1009,6 +1009,9 @@ curl -o /dev/null -w "文章页: %{http_code}\n" https://wp.example.com/hello-wo
 等于重新打开 PHP 可写自身代码这条路；`wp-config.php` 与核心目录
 （`wp-admin`、`wp-includes`）不给。
 
+加固只改站点目录，不影响 `lnmp perm check` 的判定：用户自建站点目录不在权限
+基线内（属主本就有默认与加固两种合理形态），核对不会因此报告偏差。
+
 **回退**：加固后出现无法定位的功能异常，先恢复默认权限排除权限因素：
 
 ```bash
@@ -1561,6 +1564,16 @@ NS1_Key（API Key）: <粘贴 API Key>
 屏幕上打印 TXT 记录，给 120 秒去 DNS 面板添加，然后继续验证。
 **该模式不能自动续期**，证书到期前必须再手工执行一次。
 
+**申请被中断**。签发前会把正在使用的证书目录改名保留（`<域名>.lnmp-bak.<PID>`）。
+签发、安装或配置测试失败会自动回滚；按 Ctrl+C 或收到 TERM/HUP 信号时，退出清理
+同样会把原证书放回去。进程被 KILL 或主机断电时来不及回滚，下次执行签发命令会扫描
+同级目录：产生备份的进程已退出且证书目录缺失时自动恢复并提示，证书目录已经存在
+时只提示备份位置，不覆盖现有证书。
+
+```bash
+ls -d /usr/local/nginx/conf/ssl/*.lnmp-bak.*   # 查看是否有遗留备份
+```
+
 ### 7.4 强制 HTTPS
 
 `lnmp ssl add`、`lnmp dnsssl` 最后一步问 `是否将 HTTP 301 跳转到 HTTPS [y/N]` 选 `y` 即可。
@@ -1613,6 +1626,16 @@ yum install -y procps-ng       # CentOS / RHEL
 
 `kill` 之后请用 `lnmp start` 重新拉起服务，不要直接跑 `/etc/init.d/` 下的脚本，
 否则 `systemctl is-active` 与实际进程会再次对不上。
+
+服务起不来时先核对一次权限基线，多数属主类故障能在这里直接定位：
+
+```bash
+lnmp perm check           # 核对全部条目
+lnmp perm check mariadb   # 只核对数据库相关条目
+lnmp perm status          # 校验钩子安装状态
+```
+
+详见 9.11。
 
 DenyHosts 误封时使用源码目录里的严格地址入口；参数必须是完整 IPv4 或 IPv6，非法值会在
 停止服务和修改列表前退出：
@@ -2322,6 +2345,8 @@ lnmp start
 lnmp status
 ```
 
+不想等到下次启动才发现这类问题，用 9.11 的权限基线核对主动查一次。
+
 属主正常但仍启动失败时，同一条命令改为输出错误日志末尾 15 行，据此继续定位：
 
 ```bash
@@ -2329,6 +2354,111 @@ tail -50 /usr/local/mariadb/var/mariadb.err    # 也可直接看完整日志
 ```
 
 数据库能启动但程序连不上，属于另一类问题，见 9.6。
+
+### 9.11 权限被改动导致服务异常
+
+递归 `chown` 打错路径是最常见的诱因：`chown -R root:www ${SITE}/` 在 `SITE`
+未赋值时作用到 `/`，会把 `/usr/local/mariadb/var` 等数据目录一并改掉。
+
+**主动核对**：
+
+```bash
+lnmp perm check           # 核对全部条目
+lnmp perm check mariadb   # 只核对某个服务相关的条目
+```
+
+输出示例：
+
+```
+FAIL DB01  /usr/local/mariadb/var
+     对运行账号 mariadb 不可写
+     修复：chown -R mariadb:mariadb /usr/local/mariadb/var
+WARN NGX01  /home/wwwlogs
+     属组是 www，期望 root
+     修复：chgrp root /home/wwwlogs
+
+通过 11，告警 1，严重 1
+```
+
+`FAIL` 表示不修必然导致服务启动失败，`WARN` 表示属主或权限偏离安装值但不影响
+启动。核对只报告，不改动任何文件，按给出的命令自行执行即可。
+
+条目对应的路径定位不到时，输出的是令牌本身：
+
+```
+WARN DB02  @DB_LOGERROR
+     无法定位 @DB_LOGERROR 指向的路径，请检查 /etc/my.cnf 中的相关配置
+```
+
+`log_error` 写成相对路径时按 `datadir` 解析（mysqld 的规则），未配置 `datadir`
+或解析后越出数据目录就属于这种情况。它只告警、不阻止启动，改正 `/etc/my.cnf`
+后重新核对即可；完全没配 `log_error` 则跳过该条，不产生告警。
+
+返回码：`0` 全部通过；`1` 存在告警；`2` 存在会导致启动失败的问题。可用于脚本：
+
+```bash
+lnmp perm check || echo "权限存在偏差"
+```
+
+**自动感知**：本项目生成的 systemd unit 带校验钩子，全新安装即生效。已有环境
+执行一次补上：
+
+```bash
+lnmp perm init
+systemctl show -p ExecStartPre nginx.service   # 确认钩子已注册
+```
+
+装上之后三个时机会自动核对：
+
+- **服务启动前**。覆盖 `systemctl start`、开机自启、systemd 自动重启和
+  `lnmp start`。数据库或 Redis 命中不可写这类硬故障时直接阻止启动，
+  `journalctl -u mariadb` 里就是路径与修复命令，不必再去猜。
+- **服务停止后**。`lnmp stop`、`systemctl stop` 和进程崩溃退出都会跑一次，
+  结果写进 journal。交互式停止时直接显示在终端上。
+- **服务失败时**。`OnFailure` 实例化 `lnmp-perm-diagnose@.service`，核对结果
+  写入 journal 并按已配置的 Telegram 通知推送。查看：
+
+  ```bash
+  journalctl -u "lnmp-perm-diagnose@mariadb.service.service" -n 30
+  ```
+
+**定期核对**。上面三处只在服务状态变化时触发。属主被改动而服务还在跑时，已打开
+的文件描述符不受影响，进程照常工作，不做定期核对就要等到下次重启才暴露。
+`lnmp perm init` 会一并装上每天 04:20 前后执行的 systemd timer（systemd 不可用时
+退回 `/etc/cron.d/lnmp-perm`）：
+
+```bash
+systemctl list-timers lnmp-perm.timer   # 看下次执行时间
+lnmp perm run                           # 手动跑一次定期核对
+tail -20 /var/log/lnmp/perm.log         # 看历史结果
+```
+
+`run` 对失败条目集合取摘要，只在结果与上次不同时推送通知，包括由失败转为恢复的
+情况；结果未变但仍有硬失败时每 24 小时再提醒一次。手动 `lnmp perm check` 不推送。
+
+**静音有意的调整**。某条告警是你自己改的，按条目 ID 单独忽略，不必降级整个基线：
+
+```bash
+lnmp perm ignore NGX01     # 条目 ID 就是 FAIL/WARN 后面那个短标识
+lnmp perm unignore NGX01
+lnmp perm status           # 查看当前忽略清单
+```
+
+忽略清单在 `/etc/lnmp/perm-ignore`（600），也可直接编辑，每行一个 ID。
+
+需要临时关掉钩子与定期核对：
+
+```bash
+lnmp perm uninit; echo "rc=$?"
+```
+
+只有全部 unit 钩子剥离、timer 与 cron 删除、诊断 unit 移除和 `daemon-reload`
+都成功，才会打印“权限校验钩子与定期核对任务已移除”并返回 0。任一步失败会打印
+具体路径并返回非零，此时残留项仍然生效，处理掉打印出来的路径后重跑一次。
+
+**不纳入核对的内容**：`/run` 下的运行时目录与 socket（每次启动重建）、
+用户自建站点目录（5.6 加固后属主本就不同）、已存在时项目不会改写的
+`/etc/nftables.conf`。
 
 ---
 

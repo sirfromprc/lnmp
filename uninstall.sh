@@ -226,6 +226,34 @@ Remove_Backup_Schedule()
     return 0
 }
 
+# 剥离各服务 unit 中的权限校验钩子，移除诊断单元与定期核对任务。
+# 必须在删除 /bin/lnmp-perm 之前调用，避免 unit 残留指向已删除的命令。
+Remove_Perm_Hooks()
+{
+    local unit path
+    local diagnose='/etc/systemd/system/lnmp-perm-diagnose@.service'
+    local timer='/etc/systemd/system/lnmp-perm.timer'
+    local service='/etc/systemd/system/lnmp-perm.service'
+    local cron='/etc/cron.d/lnmp-perm'
+
+    if [ -x /bin/lnmp-perm ]; then
+        /bin/lnmp-perm uninit >/dev/null 2>&1
+    else
+        for unit in mysql mariadb nginx httpd php-fpm redis pureftpd; do
+            path="/etc/systemd/system/${unit}.service"
+            [ -f "${path}" ] || continue
+            grep -q '^# LNMP perm hooks$' "${path}" || continue
+            sed -i '/^# LNMP perm hooks$/,+1{/^# LNMP perm hooks$/d;/^\(ExecStartPre\|ExecStopPost\|OnFailure\)=/d}' "${path}"
+        done
+    fi
+    if [ -e "${timer}" ] && command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now lnmp-perm.timer >/dev/null 2>&1
+    fi
+    rm -f "${diagnose}" "${timer}" "${service}" "${cron}"
+    command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+    return 0
+}
+
 Remove_Acme()
 {
     [ -s /usr/local/acme.sh/acme.sh ] || return 0
@@ -285,6 +313,7 @@ Uninstall_LNMP()
     Remove_Multiple_PHP
     Remove_Acme
     Remove_Backup_Schedule
+    Remove_Perm_Hooks
 
     rm -f /etc/init.d/nginx
     rm -f /etc/init.d/php-fpm
@@ -292,6 +321,7 @@ Uninstall_LNMP()
     rm -f /bin/lnmp-backup
     rm -f /bin/lnmp-tgnotice
     rm -f /bin/lnmp-phpmyadmin
+    rm -f /bin/lnmp-perm
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
@@ -321,6 +351,7 @@ Uninstall_LNMPA()
     Remove_Multiple_PHP
     Remove_Acme
     Remove_Backup_Schedule
+    Remove_Perm_Hooks
 
     rm -f /etc/init.d/nginx
     rm -f /etc/init.d/httpd
@@ -328,6 +359,7 @@ Uninstall_LNMPA()
     rm -f /bin/lnmp-backup
     rm -f /bin/lnmp-tgnotice
     rm -f /bin/lnmp-phpmyadmin
+    rm -f /bin/lnmp-perm
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
@@ -355,6 +387,7 @@ Uninstall_LAMP()
     Remove_Multiple_PHP
     Remove_Acme
     Remove_Backup_Schedule
+    Remove_Perm_Hooks
 
     rm -f /etc/my.cnf
     rm -f /etc/init.d/httpd
@@ -362,6 +395,7 @@ Uninstall_LAMP()
     rm -f /bin/lnmp-backup
     rm -f /bin/lnmp-tgnotice
     rm -f /bin/lnmp-phpmyadmin
+    rm -f /bin/lnmp-perm
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
@@ -399,11 +433,14 @@ ${MySQL_Dir}
 /bin/lnmp-backup
 /bin/lnmp-tgnotice
 /bin/lnmp-phpmyadmin
+/bin/lnmp-perm
 /etc/profile.d/lnmp-tgnotice.sh
 /usr/local/phpmyadmin 与 /var/lib/phpmyadmin
 /usr/local/acme.sh 及其中的证书
 已安装的多版本 PHP（/usr/local/php8.x）
 lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
+各服务 unit 中的权限校验钩子、lnmp-perm-diagnose@.service
+lnmp-perm 的 systemd timer/service 与 /etc/cron.d/lnmp-perm
 /etc/lnmp（数据库口令文件删除，其余配置移到 /root）
 inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
@@ -429,11 +466,14 @@ ${MySQL_Dir}
 /bin/lnmp-backup
 /bin/lnmp-tgnotice
 /bin/lnmp-phpmyadmin
+/bin/lnmp-perm
 /etc/profile.d/lnmp-tgnotice.sh
 /usr/local/phpmyadmin 与 /var/lib/phpmyadmin
 /usr/local/acme.sh 及其中的证书
 已安装的多版本 PHP（/usr/local/php8.x）
 lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
+各服务 unit 中的权限校验钩子、lnmp-perm-diagnose@.service
+lnmp-perm 的 systemd timer/service 与 /etc/cron.d/lnmp-perm
 /etc/lnmp（数据库口令文件删除，其余配置移到 /root）
 inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
@@ -457,11 +497,14 @@ ${MySQL_Dir}
 /bin/lnmp-backup
 /bin/lnmp-tgnotice
 /bin/lnmp-phpmyadmin
+/bin/lnmp-perm
 /etc/profile.d/lnmp-tgnotice.sh
 /usr/local/phpmyadmin 与 /var/lib/phpmyadmin
 /usr/local/acme.sh 及其中的证书
 已安装的多版本 PHP（/usr/local/php8.x）
 lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
+各服务 unit 中的权限校验钩子、lnmp-perm-diagnose@.service
+lnmp-perm 的 systemd timer/service 与 /etc/cron.d/lnmp-perm
 /etc/lnmp（数据库口令文件删除，其余配置移到 /root）
 inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF

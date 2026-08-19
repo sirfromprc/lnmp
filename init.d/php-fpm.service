@@ -2,6 +2,9 @@
 Description=The PHP FastCGI Process Manager
 After=network.target
 
+# LNMP perm hooks
+OnFailure=lnmp-perm-diagnose@%n.service
+
 [Service]
 # Type=forking 与 php-fpm.conf 的 pid 文件配合，使 systemd、SysV 脚本和
 # lnmp status 使用同一服务状态依据。
@@ -9,6 +12,9 @@ Type=forking
 PIDFile=/usr/local/php/var/run/php-fpm.pid
 RuntimeDirectory=php-fpm
 RuntimeDirectoryMode=0755
+# LNMP perm hooks
+ExecStartPre=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook pre php-fpm'
+ExecStopPost=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook post php-fpm'
 ExecStart=/usr/local/php/sbin/php-fpm --fpm-config /usr/local/php/etc/php-fpm.conf
 ExecReload=/bin/kill -USR2 $MAINPID
 # 停止交给 systemd 发信号，SIGQUIT 为优雅退出。

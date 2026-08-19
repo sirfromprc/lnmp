@@ -10759,6 +10759,133 @@ Debian 13 端到端：构造 `[mysqld] user = mariadb` 且数据目录归 root �
 
 - **验证状态**：文档改动，无代码影响。
 
+## AUDIT-DNSSSL-001 Apache 配置路径实机验证通过
+
+Debian 13 实机在已安装 Apache 2.4.68、PHP 8.3.33 和 curl 的环境中，分别执行
+`tests/verify_project_apache_stack.sh lnmpa` 与
+`tests/verify_project_apache_stack.sh lamp`，两项均通过 18/18；覆盖 PHP 开关、
+`.php.bak` 静态边界、同属主/异属主符号链接、根目录拒绝、默认站点 PHP 白名单、
+配置错误下 `httpd graceful`、管理命令 reload/start 的真实失败码传播。
+`tests/test_apache_stack_service_failures.sh` 的 LAMP/LNMPA 六项聚合返回码测试也
+通过。测试站点和临时 Apache 端口配置已清理，环境恢复为 Apache 88、Nginx active。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## AUDIT-SSL-002 证书失败回滚实机验证通过
+
+Debian 13 执行 `tests/test_cert_rollback.sh`，三栈共 52 项通过。进一步用临时失败的
+`acme.sh` 运行完整 `conf/lnmp` `Add_SSL` 失败分支：签发返回 42，`Add_SSL` 返回 1，
+旧证书和私钥均恢复，备份目录为 0，临时虚拟主机、证书和伪 acme 文件均已清理。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## AUDIT-SSL-003 证书中断遗留备份问题确认
+
+Debian 13 在 `Backup_Cert_Dir` 完成后制造 `SIGTERM` 中断，流程返回 143，活动证书
+目录不存在而 `.lnmp-bak.<pid>` 保留，复现了中断后站点证书路径缺失的问题；遗留备份
+已在验证结束时清理。该项保留在 `todo.md`，等待修改方案和中断/重启恢复实现。
+
+- **验证状态**：已实测确认，待修改。
+
+## AUDIT-PERM-003 OpenResty umask 权限复核通过
+
+在 Debian 13 以 `umask 077` 创建默认站点目录，目录初始权限为 700；执行
+`include/openresty.sh` 的同等属主和权限校正后，权限为 755、属主为 `www:www`，
+测试目录已删除。当前分支显式 `chmod 755` 的修复行为符合基线。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## AUDIT-PERM-GROUP-20260818 服务属组漂移监控验证
+
+Debian 13 实机将 `/home/wwwlogs` 属组改为 `www`，`lnmp perm check nginx full` 返回
+1 并报告 NGX01、给出 `chgrp root /home/wwwlogs`，Nginx 重启仍为 active；将默认站点
+目录属组改为 `root`，Apache 检查报告 NGX02、给出 `chgrp www /home/wwwroot/default`，
+Apache 重启仍为 active。恢复原属组后两项检查均返回 0。权限运行期验证
+`tests/verify_perm_runtime.sh` 的 init/run/ignore/unignore/uninit 全部通过。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## AUDIT-CLOSEOUT-20260818 最近功能收尾回归
+
+清理 PHP 编译解包目录后，`t/lint.sh` 全部通过，`t/consistency.sh` 14/14 通过，
+相关管理、安装、权限和 systemd 脚本 `bash -n` 通过。定向回归结果：数据库诊断
+1+27+33 项、权限基线/检查/unit 22+22+72 项、调度/通知/忽略 32+7+7 项、
+服务状态 48 项、进程终止 27 项、DNS SSL 辅助 70 项、修复总回归 19 项均通过。
+
+权限运行期测试本身的 init/run/ignore/unignore/uninit 断言通过，但退出后未恢复已有
+Apache unit 钩子，已作为 `AUDIT-TEST-001` 写入 `todo.md`；验证环境随后执行
+`lnmp perm init`，Nginx 与 Apache 钩子均恢复，两个服务保持 active。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## AUDIT-VERIFY-FIXES-20260818 数据库、SSL 与权限监控修复复验
+
+**范围**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp`、`tools/lnmp-perm.sh` 及相关
+`tests/` 脚本；Debian 13 验证机使用当前工作区副本执行。
+
+**验证结果**：
+
+- `bash -n` 通过；`bash t/lint.sh` 全部通过；`bash t/consistency.sh` 14 项通过。
+- `tests/test_cert_rollback.sh` 52 项通过：三栈 DNS 选项仅接受 `1`/`2`，证书目录在
+  普通签发/安装失败时恢复旧内容，成功时清理备份，重复执行无残留。
+- 数据库诊断：`tests/audit_db_diag_missing_log.sh` 通过，`tests/test_db_diag.sh`
+  27 项、`tests/test_db_diag_root.sh` 33 项通过；不存在的绝对 `log_error` 已按父目录
+  权限诊断。
+- 权限监控：`tests/test_perm_schedule.sh` 32 项、`test_perm_check.sh` 22 项、
+  `test_perm_unit_patch.sh` 72 项、通知与忽略各 7 项通过；真实 systemd 运行期验证中
+  timer、日志、600 状态文件、ignore/unignore 和 uninit 清理均通过，
+  `UNINIT_DIAG=PASS`。
+- `tests/test_audit_fixes.sh` 19 项、`tests/test_dns_ssl_helpers.sh` 70 项、
+  `tests/test_svc_state.sh` 48 项全部通过。
+
+对应已完成条目 `AUDIT-SSL-001`、`AUDIT-DB-001`、`AUDIT-PERM-001`、
+`AUDIT-PERM-002` 已从 `todo.md` 删除。证书完整流程强制中断、相对 `log_error`、
+清理失败码、OpenResty 真实安装和 Apache 栈验证仍保留在 `todo.md`。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## AUDIT-VERIFY-20260818 最近三项功能定向复核
+
+**范围**：当前工作区的 `conf/lnmp`、`conf/lnmpa`、`conf/lamp`、
+`tools/lnmp-perm.sh`、相关 systemd unit 及 `tests/` 定向脚本。
+
+**Debian 13 验证**：将当前工作区文件复制到验证机隔离目录后执行：
+
+- `bash t/lint.sh`：静态自检全部通过；`bash t/consistency.sh`：14 项全部通过。
+- `bash -n conf/lnmp conf/lnmpa conf/lamp tools/lnmp-perm.sh include/end.sh uninstall.sh init.d/*.service`
+- `bash tests/test_db_diag.sh`：27 项通过；`bash tests/test_db_diag_root.sh`：24 项通过。
+- `bash tests/test_perm_check.sh`：22 项通过；`bash tests/test_perm_unit_patch.sh`：72 项通过。
+- `bash tests/test_dns_ssl_helpers.sh`：70 项通过。
+
+以上是前置复核阶段的记录；当时未覆盖的路径已在后续收尾验证中分别处理，最新状态以
+本文件后面的 `AUDIT-DNSSSL-001`、`AUDIT-SSL-002`、`AUDIT-SSL-003`、
+`AUDIT-PERM-003` 和属组漂移记录为准。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）；当前缺口待修复后复验。
+
+## AUDIT-VERIFY-OPEN-20260818 OPEN 条目复核与故障注入
+
+- `AUDIT-DNSSSL-001`：初次复核时验证机无 Apache；后续已安装 Apache/PHP/curl，
+  LNMPA 与 LAMP 真实栈各 18/18 通过，详见本节后面的收尾条目。
+- `AUDIT-PERM-003`：初次复核时只记录了 `umask 077` 会产生 700；后续确认
+  OpenResty 分支显式 `chmod 755`，并在 Debian 13 复测 700 -> 755，已移入通过记录。
+- `AUDIT-PERM-004`：Debian 13 隔离实测 `perm init` timer、`perm run` 日志/状态、
+  通知去重 7 项、ignore/unignore 7 项、cron 文件格式和 timer 移除均通过；诊断
+  模板残留已由 `AUDIT-PERM-002` 保留，cron 初始化前置条件由 `AUDIT-PERM-001`
+  保留。
+- 用户组故障注入：将 `/home/wwwlogs` 属组改为 `www`、将默认站点属组改为 `root`
+  均被 `lnmp perm check nginx` 报告；按输出恢复为 `root`/`www` 后检查返回 0，
+  Nginx 重启保持 `active`。数据库/Redis 账号在该验证机不存在，相关组变更仅完成
+  代码与函数级核对，未冒充真实服务验证。
+- `AUDIT-OPS-001` 复核：`include/end.sh` 将 `conf/lnmp`、`conf/lnmpa`、`conf/lamp`
+  统一安装为 `/bin/lnmp`（并同步 `/usr/bin/lnmp`），因此 `bash conf/lnmpa bad` 与
+  `bash conf/lamp bad` 输出 `用法：lnmp ...` 属于正确行为，原条目已删除。
+
+`OPEN-PERM-003` 按用户要求暂不处理、不改编号，待自动拉起方案确定后再处理。
+
+- **验证状态**：已实测/静态复核（Debian 13，2026-08-18）；数据库/Redis unit 在该
+  验证机未安装，相关硬条件以函数级故障注入和 `todo.md` 的已确认问题记录为准。
+
 ## OPS-003 服务未 active 的提示不区分原因，一律建议执行 kill
 
 **位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的 `Check_Svc_State`
@@ -10766,8 +10893,8 @@ Debian 13 端到端：构造 `[mysqld] user = mariadb` 且数据目录归 root �
 原实现只判断 `systemctl is-active`，不管进程是否真在跑，都输出「若进程其实还在跑…
 执行 lnmp kill 后再 lnmp start，可让两边重新对齐」。服务因配置错误、权限或依赖问题
 启动失败时，按此提示操作只会重复同一个失败，真正需要的 `systemctl status`、
-`journalctl` 一个都没给。三个脚本中的提示文案都写的是 `lnmp kill`，在 LNMPA 和 LAMP
-环境下命令名不正确。
+`journalctl` 一个都没给。三个栈最终都通过统一安装的 `/bin/lnmp` 管理命令执行，提示
+使用 `lnmp kill` 是正确的；此前按源码文件名误判为 `lnmpa`/`lamp` 的修改已回退。
 
 新增 `Svc_Process_Names <服务名>`：输出服务对应的进程名，`mariadb` 映射到
 `mariadbd mysqld`、`mysql` 映射到 `mysqld`，其余原样返回。
@@ -10776,8 +10903,8 @@ Debian 13 端到端：构造 `[mysqld] user = mariadb` 且数据目录归 root �
 缺少 `pgrep` 时按未运行处理，只给排错命令，不给可能无效的 kill 建议。
 
 `Check_Svc_State` 据此分成两类输出：进程在跑但 unit 不是 active，说明被 systemd
-之外的方式启动过，此时才提示 kill 后重新启动，命令名按所在脚本分别为 `lnmp`、
-`lnmpa`、`lamp`；进程不在，说明启动确实失败，逐个服务给出
+之外的方式启动过，此时才提示使用统一的 `lnmp kill` 后重新启动；进程不在，说明启动
+确实失败，逐个服务给出
 `systemctl status <服务>.service` 与 `journalctl -xeu <服务>.service`。
 
 **验证**：`tests/test_svc_state.sh`（48 项，Debian 13）覆盖进程名映射、`pgrep`
@@ -10838,5 +10965,282 @@ Debian 13 实机（该机无 `killall`）：`lnmp kill` 终止 9 个 nginx 进�
 排查路径，含 `FIX-DB-017` 的实际输出、恢复属主的命令，以及属主被改坏与 5.2 中递归
 `chown` 路径变量为空的关联；属主正常时改看错误日志末尾。9.6 数据库连接失败补一条
 指向 9.10 的交叉引用。
+
+- **验证状态**：文档改动，无代码影响。
+
+## OPS-004 权限被篡改后项目没有感知渠道
+
+**位置**：`tools/lnmp-perm.sh`（新增）、`init.d/*.service`、`conf/lnmp`、
+`conf/lnmpa`、`conf/lamp`、`include/end.sh`、`bumpversion.sh`、`uninstall.sh`
+
+`FIX-DB-017` 只在数据库启动失败时给出原因，而启动是低频操作。安装时设置的属主
+被外部命令改掉后，服务仍在运行，项目没有任何渠道感知，问题要等到下次重启才暴露。
+
+新增 `tools/lnmp-perm.sh`，安装为 `/bin/lnmp-perm`，由 `lnmp perm` 子命令调用。
+基线写在脚本内的 `Baseline` 数组，不生成数据文件：扫描现状得到的是实际值而非
+期望值，属主已被改坏时会把错误状态固化成基线。
+
+条目格式 `ID|SVC|KIND|PATH|OWNER|GROUP|MODE|SEV|OPT`。`KIND` 区分两类判定：
+`write` 以 `[mysqld] user` 等运行账号实测可写性，用于不修必挂的条目；
+`stat`、`stat_r`、`maxmode`、`immutable`、`marker` 做字面比对，用于漂移感知。
+路径支持 `@DB_DATADIR`、`@DB_LOGERROR`、`@DB_USER`、`@MY_CNF`、`@DEFAULT_SITE`
+运行期令牌，数据库相关条目从 `/etc/my.cnf` 实际读取，不硬编码路径。
+
+`SEV=hard` 的条目恰为三条：数据库数据目录、数据库错误日志、Redis 数据目录对
+运行账号不可写。只有这三种情况阻止启动，其余一律只告警。`tests/test_perm_baseline.sh`
+断言该集合不被扩大。
+
+按服务筛选分 `fast` 与 `full` 两档。`fast` 供启停钩子使用，排除递归扫描与
+`cmd`/`sec` 条目。该筛选同时是正确性要求：`init.d/redis.service` 带
+`ProtectSystem=full` 与 `ProtectHome=true`，redis 的钩子不能访问 `/home` 与
+`/root`，其 `fast` 条目全部落在 `/usr/local/redis` 下。
+
+`init.d/{mariadb,mysql,redis,nginx,httpd,php-fpm,pureftpd}.service` 加三处钩子：
+`ExecStartPre` 覆盖全部启动路径；`ExecStopPost` 覆盖正常停止与崩溃退出；
+`OnFailure` 实例化新增的 `init.d/lnmp-perm-diagnose@.service`，诊断结果写入
+journal 并按已配置的通知推送。`memcached.service` 无基线条目，不挂钩子。
+
+持有 hard 条目的 unit，其 `ExecStartPre` 不带 `-` 前缀以阻止启动；其余带 `-`。
+`ExecStopPost` 一律带 `-`，否则正常停止会让 unit 停在 failed。`redis.service`
+设了 `User=redis`，其钩子带 `+` 前缀以 root 执行，`Patch_Unit` 按 unit 是否含
+`User=` 自动判定。
+
+所有钩子经 `/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; ...'` 调用：命令缺失时
+静默放行，避免 unit 因 `203/EXEC` 永久无法启动。
+
+`Writable_By` 在属主即运行账号且属主位可写时直接通过，仅在属主不符时才用
+`runuser` 实测（附加组或 ACL 可能让进程照样可写）。正常启动不再产生 PAM 会话记录。
+
+`uninstall.sh` 新增 `Remove_Perm_Hooks()`，在删除 `/bin/lnmp-perm` 之前剥离各
+unit 的钩子并移除诊断单元。
+
+**验证**：`tests/test_perm_baseline.sh`（22 项）覆盖字段结构、ID 唯一、KIND 与
+SVC 白名单、hard 集合锁定、hard 条目均为 write 判定、服务粒度筛选、redis fast
+不触及 ProtectHome 屏蔽路径、令牌展开。
+
+`tests/test_perm_unit_patch.sh`（72 项）覆盖指令落在正确段落、缺失守卫、前缀
+规则（hard 服务无 `-`、其余带 `-`、`ExecStopPost` 一律带 `-`、redis 带 `+`）、
+重复注入为空操作、剥离后逐字节还原、结构异常的 unit 跳过而不改写。
+
+`tests/test_perm_check.sh`（22 项，root 下跑全部分支）覆盖配置解析、无 my.cnf
+时不误报、软告警判定与修复命令、datadir 不可写判为硬失败、属主修正后通过、
+log_error 未生成时按父目录判定、探测账号不存在时降级不判硬失败、目录目标给
+递归 chown 而文件目标不带 `-R`、hook pre 硬失败返回 1 而 post 恒返回 0、
+未知服务名与 unit 名被拒绝。
+
+Debian 13 实机：`systemd-analyze verify` 校验改动过的 unit 无段落错误；
+`lnmp perm init` 后 `systemctl show -p ExecStartPre nginx.service` 列出钩子；
+改 `/home/wwwlogs` 属组后 `systemctl restart nginx` 输出告警且服务照常启动；
+`systemctl stop nginx` 触发停止钩子且 unit 停在 inactive 而非 failed；
+nginx 配置错误导致启动失败时 `lnmp-perm-diagnose@nginx.service.service` 被实例化、
+输出进 journal 且自身不进入 failed；构造 datadir 归 root 的 mariadb 环境后
+`systemctl start mariadb` 在 `ExecStartPre` 阶段失败，journal 中直接给出
+`chown -R mariadb:mariadb <datadir>`，按提示修复后启动通过且无 PAM 噪声；
+`lnmp perm uninit` 后钩子消失、服务仍可启动。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。定期核对的 systemd timer 与
+  通知去重未包含在本次改动内。
+
+## DOC-706 权限基线核对的用法与排查未写入文档
+
+**位置**：`README.md` 3.13、`HowtoGuides.md` 5.6、8.1、9.10、9.11
+
+`README.md` 新增 3.13，说明 `lnmp perm` 各子命令、服务名取值、返回码、三处钩子的
+触发时机与行为、阻止启动的三条硬条件，以及不纳入核对的内容。子命令总览加一行。
+
+`HowtoGuides.md` 8.1 补充服务起不来时先跑 `lnmp perm check` 的指引；5.6 说明按该
+节加固站点目录不会被核对报告为偏差；9.10 数据库段落补一条指向主动核对的出路。
+
+新增 `HowtoGuides.md` 9.11「权限被改动导致服务异常」：递归 `chown` 路径变量为空的
+诱因、`lnmp perm check` 的实际输出与 FAIL/WARN 区别、返回码在脚本中的用法、
+`lnmp perm init` 的补装与确认命令、三个自动感知时机及查看诊断输出的
+`journalctl` 命令、`lnmp perm uninit` 的临时关闭方式。
+
+- **验证状态**：文档改动，无代码影响。
+
+## AUDIT-SSL-003 证书备份后被中断会留下缺失的活动证书路径
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的 `Backup_Cert_Dir`、
+`Recover_Cert_Backups`（新增）、`LNMP_Cleanup`、`LNMP_Set_Trap`
+
+签发前 `mv` 让出活动证书目录后，进程被 `SIGTERM` 终止时不会执行
+`Restore_Cert_Dir`，站点配置引用的路径缺失，备份只留在 `.lnmp-bak.<PID>`。
+
+`Backup_Cert_Dir` 备份成功后调用 `LNMP_Set_Trap` 注册中断处理，`INT`/`TERM`/`HUP`
+统一转为退出，`LNMP_Cleanup` 在 EXIT 阶段先执行 `Restore_Cert_Dir`；成功路径已
+调用 `Discard_Cert_Backup` 清空状态，回滚为空操作。
+
+`KILL` 与断电无法执行清理，新增 `Recover_Cert_Backups`，由 `Backup_Cert_Dir` 在
+备份前调用：扫描同级 `*.lnmp-bak.<PID>` 目录，PID 非数字、等于当前进程、进程仍在
+运行或备份为空时跳过；活动路径缺失时改名恢复，活动路径已存在时只提示备份位置，
+不删除也不覆盖。
+
+**行为变化**：中断后活动证书目录不再缺失；存在遗留备份时签发前会打印恢复或提示信息。
+
+**验证**：`tests/test_cert_rollback.sh` 扩充为 73 项，新增 TERM 中断恢复、
+KILL 残留恢复、活动证书在位时不覆盖、备份进程仍在运行时不介入四组断言。
+去掉 trap 注册复现旧行为：进程返回 143、活动目录缺失、残留备份 1 个；
+修复后返回 130、活动目录内容为原证书、无残留。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## AUDIT-DB-002 相对 `log_error` 未按数据目录解析
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的 `Normalize_Fs_Path`、
+`Resolve_DB_Log_Error`（新增）、`Diagnose_DB_Start_Failure`；
+`tools/lnmp-perm.sh` 的 `Db_Log_Error_Path`（新增）、`Expand_Token`、`Diagnose_DB`
+
+mysqld 把相对 `log_error` 解释为相对 `datadir`，诊断函数按当前工作目录处理，
+文件不存在时 `${probe%/*}` 仍是文件名，父目录权限漏报，日志尾部也读错位置。
+
+`Resolve_DB_Log_Error` 统一解析：绝对路径规范化后返回；相对路径拼到 `datadir`
+之后消除 `.` 与 `..`；无 `datadir` 或解析结果越出 `datadir` 时提示并返回 1，
+调用方置空 `logerror` 跳过权限判断与日志读取，不按当前目录静默放行。提示写
+stderr，避免被命令替换吞掉。权限工具的 `@DB_LOGERROR` 令牌与 `Diagnose_DB`
+同步走 `Db_Log_Error_Path`。
+
+**行为变化**：相对 `log_error` 现在按数据目录判断权限并读取日志；越界路径给出提示。
+
+**验证**：`tests/test_db_diag.sh` 51 项、`tests/test_db_diag_root.sh` 42 项全部通过，
+新增相对路径解析、尾斜杠 `datadir`、绝对路径规范化、`../` 越界、无 `datadir`、
+空值，以及 root 下相对日志的读取与不可写报告。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。权限工具部分已返工，
+  见 `AUDIT-DB-002-B`：当时的 `Db_Log_Error_Path` 只做字符串拼接，
+  未规范化也未拒绝越界，且无定向测试覆盖。
+
+## AUDIT-INSTALL-001 依赖清单含已移除包，且循环不汇总失败码
+
+**位置**：`include/init.sh` 的 `Deb_Pkg_Available`、`Deb_Pkg_Alternative`（新增）、
+`Deb_Dependent`；`install.sh` 的 `Init_Install`
+
+Debian 13 已移除 `libpcre3-dev`、`libncurses5-dev`、`libtinfo-dev`、`gnutls-dev`，
+逐项安装时 apt 返回 100；循环不记录失败，函数仍以成功结束。
+
+安装前用 `apt-cache policy` 判断候选：无候选时查等价替代
+（`libpcre3-dev`→`libpcre2-dev`，`libncurses5-dev`/`libtinfo-dev`→`libncurses-dev`，
+`gnutls-dev`→`libgnutls28-dev`），替代也没有才跳过并汇总打印。安装失败的包名累计
+输出，`Deb_Dependent` 返回 1，`Init_Install` 以 `|| return 1` 中止安装。
+
+**行为变化**：源中不存在的包不再触发 apt 错误；必需包安装失败时安装流程中止。
+
+**验证**：Debian 13 实测 `apt-get --no-install-recommends install -y libpcre3-dev`
+返回 100，`Deb_Pkg_Available` 对 `libpcre3-dev`、`gnutls-dev` 判为无候选；
+以桩 apt-get 运行 `Deb_Dependent`，安装列表不含四个已移除包、包含三个替代包，
+注入必需包失败后返回 1 并打印失败包名。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## AUDIT-INSTALL-002 libiconv 动态库未进入链接器缓存
+
+**位置**：`include/init.sh` 的 `Ensure_Libiconv_Ldpath`（新增）、`Install_Libiconv`；
+`include/php.sh`、`include/upgrade_php.sh`、`include/multiplephp.sh`、
+`include/upgrade_mphp.sh` 的 PHP configure 入口
+
+`make install` 把 `libiconv.so.2` 装到 `/usr/local/lib` 后没有刷新链接器缓存，
+PHP configure 的 iconv errno 探针以 127 失败（`error while loading shared
+libraries: libiconv.so.2`），configure 报 `iconv does not support errno` 中止。
+
+`Ensure_Libiconv_Ldpath` 在动态库存在时执行 `ldconfig` 并校验 `ldconfig -p`；
+仍不可见且 `/usr/local/lib` 不在搜索路径时写 `/etc/ld.so.conf.d/lnmp-usr-local.conf`
+再刷新；两次校验都失败则报错返回 1。`Install_Libiconv` 与四个 PHP 编译入口在
+configure 前调用，失败即中止。
+
+**行为变化**：libiconv 安装后校验动态库可被加载，不可用时立即失败而不是在
+configure 阶段才暴露。
+
+**验证**：Debian 13 实测删除 `/etc/ld.so.cache` 后 `-liconv` 探针复现
+`rc=127` 与原始报错，调用 `Ensure_Libiconv_Ldpath` 后 `ldconfig -p` 含
+`libiconv.so.2`、探针返回 0；`/usr/local/lib` 已在搜索路径时不写入额外配置文件。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## AUDIT-PERM-005 `perm uninit` 忽略清理函数失败码
+
+**位置**：`tools/lnmp-perm.sh` 的 `Remove_Schedule`、`Remove_Diagnose_Unit`、
+`Cmd_Uninit`
+
+`Cmd_Uninit` 不检查两个清理函数的返回值，`Remove_Schedule` 又固定返回 0，
+删除失败时命令仍返回 0 并打印“已移除”，与残留的 timer、cron 和诊断 unit 不一致。
+
+`Remove_Schedule` 删除后逐个复核 timer、service、cron 文件是否仍存在，存在即打印
+路径并返回 1；`systemctl disable --now` 失败时再用 `is-enabled`/`is-active` 复核，
+仅在 timer 仍启用或运行时判为失败，避免 unit 未加载时误报。`Remove_Diagnose_Unit`
+同样以文件是否残留为准。`Cmd_Uninit` 把两者与 `daemon-reload` 的结果并入 `rc`，
+失败时打印提示并返回非零，只有全部成功才输出成功消息。
+
+**行为变化**：清理未完成时 `lnmp perm uninit` 返回非零并列出残留路径。
+
+**验证**：`tests/test_perm_schedule.sh` 扩到 36 项（root），新增桩 `rm` 下两个清理
+函数返回非零、注入失败码后 `Cmd_Uninit` 返回非零且不打印“已移除”的断言。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## AUDIT-TEST-001 权限运行期验证脚本未恢复全部 unit
+
+**位置**：`tests/verify_perm_runtime.sh`（新增到仓库）
+
+原脚本只备份 `nginx.service`，而测试中的 `lnmp-perm uninit` 会剥离所有已安装服务的
+钩子，运行后 `httpd.service` 的 `ExecStartPre`、`ExecStopPost`、`OnFailure` 保持被
+移除状态，脚本却返回 0。
+
+备份清单改为动态生成：从 `tools/lnmp-perm.sh` 读取 `Hook_Services` 与
+`Unit_For_Svc`，把所有可能被 `uninit` 修改的 unit 路径并入固定清单；退出时逐个还原
+并 `daemon-reload`。测试末尾显式恢复后逐文件断言与运行前字节一致，运行前不存在的
+文件必须仍不存在。
+
+**验证**：Debian 13 执行 23 项全部通过，其中 `nginx.service`、`httpd.service`、
+`/bin/lnmp-perm`、诊断 unit、状态文件和日志均与运行前一致；运行前后
+`lnmp perm status` 均显示 Nginx、Apache 钩子已安装，nginx 保持 active。
+
+- **验证状态**：已实测（Debian 13，2026-08-18）。
+
+## DOC-707 证书中断恢复与 uninit 返回码未写入文档
+
+**位置**：`HowtoGuides.md` 7.3、9.11
+
+7.3 补充签发被中断后的行为：备份目录命名、信号中断自动回滚、KILL 或断电后下次
+签发时的扫描恢复与不覆盖策略，以及查看遗留备份的命令。9.11 把 `lnmp perm uninit`
+的示例改为带返回码，说明成功条件与失败时的处理方式。
+
+- **验证状态**：文档改动，无代码影响。
+
+## AUDIT-DB-002-B 权限工具的相对 `log_error` 解析返工
+
+**位置**：`tools/lnmp-perm.sh` 的 `Normalize_Fs_Path`（新增）、`Db_Log_Error_Path`、
+`Expand_Token`、`Perm_Run`、`Diagnose_DB`
+
+`AUDIT-DB-002` 修复三份管理脚本时，权限工具只补了 `${datadir%/}/${logerror}` 拼接：
+不消除 `.`/`..`，不拒绝越出 `datadir` 的结果，缺少 `datadir` 时静默返回空；
+`Expand_Token` 固定返回 0，调用方无法区分“未配置该项”与“配置了但定位不到”。
+
+`Db_Log_Error_Path` 改为与管理脚本同一套规则：绝对路径经 `Normalize_Fs_Path`
+规范化后返回；相对路径拼到 `datadir` 后规范化，结果必须仍在 `datadir` 之下；
+未配置 `datadir` 或解析越界返回 1 且不输出路径。`Expand_Token` 以 `return $?`
+传递该结果，`@*/后缀` 递归分支同样传递。
+
+`Perm_Run` 展开失败时按 `soft` 报告 `无法定位 <令牌> 指向的路径`，条目计入告警但
+不升级为硬条件，避免因配置无法定位而阻止数据库启动。`Diagnose_DB` 在同样情况下
+打印无法定位的原因，不再静默返回。
+
+**行为变化**：`log_error` 含 `..`、越出数据目录或缺少 `datadir` 时，
+`lnmp perm check` 输出 `WARN DB02  @DB_LOGERROR`，诊断输出说明无法定位；
+未配置 `log_error` 时仍静默跳过。
+
+**验证**：`tests/test_perm_check.sh` 扩到 33 项（root）/22 项（非 root），新增
+相对路径按 `datadir` 解析、`datadir` 带尾斜杠、绝对路径含 `./`/`..` 的规范化、
+`../` 越界返回 1 且输出为空、缺少 `datadir` 返回 1、未配置 `log_error` 返回 0
+且不产生 DB02 告警、越界时按软告警处理且 DB02 不出现在硬失败行、
+`Diagnose_DB` 打印无法定位原因等断言。
+
+- **验证状态**：已实测（Debian 13，2026-08-19）。
+
+## DOC-708 权限核对无法定位错误日志的告警未写入文档
+
+**位置**：`HowtoGuides.md` 9.11
+
+补充 `DB02` 在 `log_error` 无法定位时的告警形式与含义：相对路径缺少 `datadir`
+或解析后越出数据目录会输出 `WARN DB02  @DB_LOGERROR`，该情况只告警、不阻止
+服务启动，修正 `/etc/my.cnf` 后重新核对即可。
 
 - **验证状态**：文档改动，无代码影响。

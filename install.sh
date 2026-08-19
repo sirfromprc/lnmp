@@ -86,7 +86,8 @@ Init_Install()
         Deb_InstallNTP
         Xen_Hwcap_Setting
         Deb_RemoveAMP
-        Deb_Dependent
+        # 必需依赖装不上就中止，避免后续编译在缺库时才失败。
+        Deb_Dependent || return 1
     fi
     Disable_Selinux
     Check_Download
