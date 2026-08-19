@@ -1075,6 +1075,22 @@ Prepare_Payload()
     return 0
 }
 
+# 恢复与试恢复都用 root option file 执行 dump 里的全部 SQL，
+# 校验清单只能证明文件未损坏，不能证明语义只影响目标库。
+Check_Restore_Sql_Boundary()
+{
+    local target="$1" file="$2" bin="/bin/lnmp-sqlguard"
+
+    if [ ! -x "${bin}" ]; then
+        Err "找不到 ${bin}，无法确认这份备份只影响数据库 ${target}，已拒绝。"
+        Err "可从源码目录补装：cp tools/lnmp-sqlguard.sh /bin/lnmp-sqlguard && chmod +x /bin/lnmp-sqlguard"
+        return 1
+    fi
+    "${bin}" check "${target}" "${file}" && return 0
+    Err "这份备份包含越出数据库 ${target} 的语句，恢复会改动目标库以外的数据，已拒绝。"
+    return 1
+}
+
 Cmd_Restore()
 {
     local kind="${1:-}" name="${2:-}" batch="${3:-}" dir file work payload mysql_bin rc
@@ -1111,6 +1127,11 @@ Cmd_Restore()
 
     if [ "${kind}" = "db" ]; then
         mysql_bin=$(Find_Mysql_Client) || { Err "找不到 mysql 客户端。"; return 1; }
+        if [ "${LNMP_Restore_Allow_Cross_Db:-}" = "yes" ]; then
+            Warn "已显式允许跨库语句（LNMP_Restore_Allow_Cross_Db=yes），跳过边界检查。"
+        else
+            Check_Restore_Sql_Boundary "${name}" "${payload}" || return 1
+        fi
         Warn "即将把备份导入数据库 ${name}，库中同名表会被覆盖，且无法撤销。"
         Say "5 秒后开始，Ctrl+C 取消..."
         sleep 5
@@ -1165,6 +1186,12 @@ Cmd_Test()
     payload=$(Prepare_Payload "${file}" "${work}") || { Err "解密失败。"; return 1; }
 
     tmpdb="lnmp_bktest_$(date '+%s')"
+    # 试恢复对外承诺不影响现有数据，因此不提供跳过边界检查的开关。
+    # dump 里的对象都会落进临时库，跨库限定名按目标库为 tmpdb 判断。
+    if ! Check_Restore_Sql_Boundary "${tmpdb}" "${payload}"; then
+        Err "试恢复中止：备份内容会影响临时库以外的数据库。"
+        return 1
+    fi
     "${mysql_bin}" --defaults-file="${MySQL_Option_File}" \
         -e "CREATE DATABASE \`${tmpdb}\`;" || { Err "无法创建临时库 ${tmpdb}。"; return 1; }
 

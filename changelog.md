@@ -11881,3 +11881,75 @@ WordPress 在后台保存固定链接时自行写入 `.htaccess`。原验证直�
 移走 `.htaccess` 后 `/hello-world/`、`/wp-json/` 返回 404。证实 404 来自缺少 `.htaccess`
 （原验证直接改数据库未触发 WordPress 生成该文件），与 Nginx 侧是否引用 rewrite 无关。
 验证站点与目录已删除。
+
+## AUDIT-DB-DATA-001-FIX 数据库升级在搬迁失败后仍继续清空原数据目录
+
+**位置**：`include/main.sh`（新增 `Move_For_Upgrade`、`Rollback_Upgrade_Moves`、
+`Abort_Upgrade_Move`、`Ensure_DB_Stopped`、`Require_Empty_Data_Dir`）、
+`include/upgrade_mysql.sh`、`include/upgrade_mariadb.sh`、`include/upgrade_mysql2mariadb.sh`
+
+三条升级/迁移路径的 `Backup_*` 逐条执行裸 `mv`，不检查 `lnmp stop` 与各次 `mv` 的返回码；
+数据目录是独立挂载点、bind mount 或只读文件系统时 `mv` 报 `Device or resource busy`，
+流程仍继续，随后的初始化函数无条件执行 `rm -rf ${MySQL_Data_Dir}/*`（MariaDB 同理），
+把在线数据目录的内容删掉。逻辑备份不等价于原始数据目录，删除后无法回滚到原实例。
+
+改为：
+
+1. `Ensure_DB_Stopped` 先确认数据库进程真正退出，未退出则不搬迁任何文件。
+2. `Move_For_Upgrade` 逐项检查源存在、目标未占用、`mv` 返回码和搬迁后的源/目标状态，
+   成功项入栈；任一步失败由 `Abort_Upgrade_Move` 按逆序还原并终止升级，明确说明数据未删除。
+3. 删除全部 `rm -rf <datadir>/*`。新实例改用 `Require_Empty_Data_Dir`：目录不存在则创建，
+   为空则使用，非空一律报错退出——升级路径不再具备清空数据目录的能力。
+
+**验证状态**：已验证（函数级，含真实失败注入）。`tests/test_db_upgrade_move.sh` 28 项覆盖
+正常搬迁、源缺失、目标已存在、`mv` 在第三步失败（模拟挂载点 `Device or resource busy`）时
+的逆序还原与哨兵文件保留，以及数据目录非空/为空/不存在/是文件四种初始化判定；
+并断言仓库中不再存在 `rm -rf ${MySQL_Data_Dir}/*`、`rm -rf ${MariaDB_Data_Dir}/*`。
+真机完整升级需要可回滚的快照机，未在验证机执行。
+
+## AUDIT-DB-DATA-002-FIX / AUDIT-DB-DATA-003-FIX 导入与恢复允许 SQL 删除目标以外的数据库
+
+**位置**：新增 `tools/lnmp-sqlguard.sh`（安装为 `/bin/lnmp-sqlguard`）；
+`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的 `Import_Database`、`Export_Database`；
+`tools/lnmp-backup.sh` 的 `Cmd_Restore`、`Cmd_Test`；`include/end.sh`、`uninstall.sh`、`bumpversion.sh`
+
+`lnmp database import`、`lnmp backup restore db` 和 `lnmp backup test` 都用 root 客户端执行
+文件中的全部 SQL，只校验文件完整性（SHA256）而不校验语义。误选、被篡改或第三方生成的
+dump 只要包含 `DROP DATABASE`、`DROP USER`、跨库 `USE` 等语句，就会在用户没有下达任何删除
+指令的情况下删除其它站点的数据库；试恢复同样如此，且它对外承诺“不影响现有数据”。
+
+新增独立检查器 `lnmp-sqlguard`，流式扫描 SQL（自动识别 gzip），按语句拆分并剥掉可执行注释
+`/*!...*/` 后判定：库级语句、账号语句、授权、改口令、表空间、插件、实例控制、
+`LOAD DATA`/`INTO OUTFILE`、客户端 `source`/`system`/`\!`、切到非目标库的 `USE`，
+以及 `其它库`.`对象` 形式的跨库限定名。命中即列出行号、类别和语句摘要并返回 1。
+
+调用方：导入与恢复在执行任何 SQL 前调用检查，未通过即拒绝；检查器缺失时同样拒绝并给出补装
+命令，不做静默降级。确需执行跨库语句时用 `LNMP_Import_Allow_Cross_Db=yes` /
+`LNMP_Restore_Allow_Cross_Db=yes` 显式声明；`backup test` 不提供该开关。`Export_Database`
+在导出后用同一检查器复核，含跨库引用时提前提示。
+
+**验证状态**：Debian 13 实测（用 LNMP 自带 mysqld 起隔离实例，`--skip-networking` + 专用
+socket，不触碰运行中的数据库；验证后已停止并删除）。真实 `mysqldump` 输出（含
+`/*!50017 DEFINER=...*/` 触发器与目标库自身的限定名）检查通过；审计中的恶意备份
+（`DROP DATABASE`）在导入路径被拒绝、`rc=1`、非目标库 `lnmp_guard_other.keepme` 行数不变；
+干净备份可正常导入。备份恢复路径在 SHA256 校验通过后仍被边界检查拒绝并返回 1；
+试恢复被拒绝且未创建临时库。显式设置 `LNMP_Import_Allow_Cross_Db=yes` 后导入继续执行并确实
+删除了非目标库，说明拦截确有必要。`tests/test_sql_boundary_guard.sh` 53 项覆盖 16 类越界语句、
+注释与目标库自身限定名的免判、参数错误、三栈接线与安装/卸载接线。
+
+## AUDIT-USER-013-FIX Redis 重装在新扩展就绪前删除现有 PHP 扩展
+
+**位置**：`include/redis.sh` 的 `Install_Redis`（新增 `Backup_Existing_PHPRedis`、
+`Restore_Existing_PHPRedis`、`Clear_PHPRedis_Backup`）
+
+`Install_Redis` 一开始就执行 `rm -f ${PHP_Path}/conf.d/*redis.ini` 和删除 `redis.so`，
+早于 phpredis 的下载与校验。已有可用 Redis 环境的机器重装时，只要下载或校验失败，
+PHP 立即失去 `redis` 模块，而脚本只报告安装失败。
+
+改为：源码包下载校验通过后才动现有扩展；动之前把 `021-redis.ini` 与 `redis.so` 备份到临时目录；
+编译（`Make_Install`）、init 脚本校验、服务账号预检和最终产物检查任一失败都恢复旧扩展并重载 PHP。
+清理范围收敛为本包创建的 `021-redis.ini`，其它来源的 `*redis.ini` 保留并提示可能重复加载。
+
+**验证状态**：已验证（隔离假 PHP 目录，函数级）。`tests/test_redis_reinstall_guard.sh` 14 项覆盖
+下载失败时 `redis.so` 与 ini 原样保留、下载成功后只删本包文件并留有备份、失败恢复后内容与安装前
+一致且触发 PHP 重载，以及"清理动作位于 `Require_File` 之后""编译失败路径会恢复"两项源码顺序约束。

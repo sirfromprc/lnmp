@@ -596,7 +596,8 @@ lnmp database import <库名> <文件.sql.gz>   # 导入到已存在的库
 
 `backup init` 返回 0 仅表示配置已写入且定时任务已安装；输入 `n`、空值或 EOF 取消时返回非 0。
 
-**数据库数据的保护边界**：本包在任何路径下都不会自动删除数据库数据目录。
+**数据库数据的保护边界**：本包在任何路径下都不会自动删除数据库数据目录，
+也不会让一份 SQL 文件改动它声称之外的数据库。
 
 - 重装数据库（`install.sh db` 等）时，数据目录非空即中止，提示确认；确认变量为
   `LNMP_Move_Existing_DB_Data=yes`，作用是把现有数据整体搬到 `/root/<数据库>-data-dir-backup<时间戳>` 后新建空实例，仍不删除数据。
@@ -611,6 +612,29 @@ chmod 755 /etc/init.d/mysql
 systemctl daemon-reload && systemctl start mysql
 apt-get purge 'mariadb-server*' 'mysql-server*'                    # 避免 unit 别名再次冲突
 ```
+
+- 数据库升级与 MySQL→MariaDB 迁移不再逐条裸 `mv`：程序目录、init 脚本、`/etc/my.cnf`
+  和自定义数据目录按事务方式搬迁，任一步失败按逆序还原并终止升级；新实例只初始化到空目录，
+  目标目录非空时报错退出，绝不清空既有数据目录（数据目录是独立挂载盘时尤其重要）。
+- `lnmp database import`、`lnmp backup restore db` 和 `lnmp backup test` 在执行 SQL 前用
+  `/bin/lnmp-sqlguard` 检查文件边界，发现 `DROP DATABASE`、`DROP/CREATE USER`、`GRANT`、
+  跨库 `USE`、跨库限定名、`INTO OUTFILE`、客户端 `system`/`source` 等语句时拒绝执行：
+
+```bash
+lnmp-sqlguard report <目标库> <文件.sql.gz>    # 只看报告，不执行
+```
+
+  确有需要（例如用 `--databases` 导出的整库备份）时显式声明后重试：
+
+```bash
+LNMP_Import_Allow_Cross_Db=yes  lnmp database import <目标库> <文件.sql.gz>
+LNMP_Restore_Allow_Cross_Db=yes lnmp backup restore db <目标库> [批次]
+```
+
+  `lnmp backup test` 对外承诺不影响现有数据，因此不提供该开关。
+- 重装 Redis（`addons.sh install redis`）时，新的 phpredis 源码包下载校验通过后才会动现有扩展，
+  并先备份 `redis.so` 与 `021-redis.ini`；编译或启动失败会把旧扩展放回并重载 PHP。
+  其它来源的 `*redis.ini` 不会被删除，只提示可能重复加载。
 
 导出不会覆盖已存在的文件；导入前目标库必须已经存在（先 `database add`），
 导入会覆盖库中的同名表，执行前有 10 秒倒计时可以 Ctrl+C 取消。

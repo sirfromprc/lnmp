@@ -15,13 +15,18 @@ Backup_MySQL2()
     Check_DB_Backup "/root/mysql_all_backup${Upgrade_Date}.sql" || exit 1
     Snapshot_DB_List /usr/local/mysql/bin/mysql "${DB_List_Before}" || exit 1
     lnmp stop
+    Ensure_DB_Stopped "/usr/local/mysql/bin/mysqld" || exit 1
     echo "正在移除旧数据库的开机自启..."
     Remove_StartUp mysql
-    mv /usr/local/mysql /usr/local/mysql2mariadb${Upgrade_Date}
-    mv /etc/init.d/mysql /usr/local/mysql2mariadb${Upgrade_Date}/init.dmysql2mariadb.bak.${Upgrade_Date}
-    mv /etc/my.cnf /usr/local/mysql2mariadb${Upgrade_Date}/my.cnf.mysql2mariadbbak.${Upgrade_Date}
+
+    LNMP_Moved_Items=()
+    Move_For_Upgrade /usr/local/mysql "/usr/local/mysql2mariadb${Upgrade_Date}" || Abort_Upgrade_Move
+    Move_For_Upgrade /etc/init.d/mysql \
+        "/usr/local/mysql2mariadb${Upgrade_Date}/init.dmysql2mariadb.bak.${Upgrade_Date}" || Abort_Upgrade_Move
+    Move_For_Upgrade /etc/my.cnf \
+        "/usr/local/mysql2mariadb${Upgrade_Date}/my.cnf.mysql2mariadbbak.${Upgrade_Date}" || Abort_Upgrade_Move
     if [ "${MariaDB_Data_Dir}" != "/usr/local/mariadb/var" ]; then
-        mv ${MariaDB_Data_Dir} ${MariaDB_Data_Dir}${Upgrade_Date}
+        Move_For_Upgrade "${MariaDB_Data_Dir}" "${MariaDB_Data_Dir}${Upgrade_Date}" || Abort_Upgrade_Move
     fi
 
 }
@@ -239,11 +244,8 @@ EOF
         sed -i '/skip-external-locking/i\default_storage_engine = MyISAM\nloose-skip-innodb' /etc/my.cnf
     fi
     MySQL_Opt
-    if [ -d "${MariaDB_Data_Dir}" ]; then
-        rm -rf ${MariaDB_Data_Dir}/*
-    else
-        mkdir -p ${MariaDB_Data_Dir}
-    fi
+    # 搬迁成功后该路径应当为空；非空说明上一步没搬干净，此时拒绝而不是清空。
+    Require_Empty_Data_Dir "${MariaDB_Data_Dir}" || exit 1
     chown -R mariadb:mariadb /usr/local/mariadb
     install_db=$(First_Executable \
         /usr/local/mariadb/scripts/mariadb-install-db /usr/local/mariadb/scripts/mysql_install_db \

@@ -386,6 +386,7 @@ Uninstall_LNMP()
     rm -f /bin/lnmp-phpmyadmin
     rm -f /bin/lnmp-perm
     rm -f /bin/lnmp-health
+    rm -f /bin/lnmp-sqlguard
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
@@ -427,6 +428,7 @@ Uninstall_LNMPA()
     rm -f /bin/lnmp-phpmyadmin
     rm -f /bin/lnmp-perm
     rm -f /bin/lnmp-health
+    rm -f /bin/lnmp-sqlguard
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
@@ -466,6 +468,7 @@ Uninstall_LAMP()
     rm -f /bin/lnmp-phpmyadmin
     rm -f /bin/lnmp-perm
     rm -f /bin/lnmp-health
+    rm -f /bin/lnmp-sqlguard
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
@@ -545,6 +548,7 @@ ${MySQL_Dir}
 /bin/lnmp-phpmyadmin
 /bin/lnmp-perm
 /bin/lnmp-health
+/bin/lnmp-sqlguard
 /etc/profile.d/lnmp-tgnotice.sh
 /usr/local/phpmyadmin 与 /var/lib/phpmyadmin
 /usr/local/acme.sh 及其中的证书
@@ -582,6 +586,7 @@ ${MySQL_Dir}
 /bin/lnmp-phpmyadmin
 /bin/lnmp-perm
 /bin/lnmp-health
+/bin/lnmp-sqlguard
 /etc/profile.d/lnmp-tgnotice.sh
 /usr/local/phpmyadmin 与 /var/lib/phpmyadmin
 /usr/local/acme.sh 及其中的证书
@@ -617,6 +622,7 @@ ${MySQL_Dir}
 /bin/lnmp-phpmyadmin
 /bin/lnmp-perm
 /bin/lnmp-health
+/bin/lnmp-sqlguard
 /etc/profile.d/lnmp-tgnotice.sh
 /usr/local/phpmyadmin 与 /var/lib/phpmyadmin
 /usr/local/acme.sh 及其中的证书

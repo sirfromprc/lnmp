@@ -1822,6 +1822,11 @@ lnmp database export <库名> <文件.sql.gz>   # 导出单个库，gzip 压缩
 lnmp database import <库名> <文件.sql.gz>   # 导入到已存在的库
 ```
 
+`database import` 在执行前检查 SQL 边界：文件里出现 `DROP DATABASE`、`DROP/CREATE USER`、
+`GRANT`、跨库 `USE`、`其它库`.`表` 这类语句时直接拒绝，不会因为“只是恢复一个库”而删掉别的库。
+先看报告用 `lnmp-sqlguard report <库名> <文件>`；确认要执行时用
+`LNMP_Import_Allow_Cross_Db=yes lnmp database import ...`。
+
 `database add` 不接管已有对象：库名或 `<库名>@localhost`、`<库名>@127.0.0.1` 任一已存在时，
 命令直接返回非 0 并列出冲突项，不会重置现有账号密码（重复执行曾会让在用站点连不上库）。
 需要改密码用 `lnmp database edit`，确认旧库不再需要可 `lnmp database del` 后重建。

@@ -50,19 +50,57 @@ Check_Redis_Runtime_Access()
     return 0
 }
 
+# 重装时先把现有 phpredis 备份到临时目录，新扩展落地前不破坏可用环境。
+# 只接管本包创建的 021-redis.ini，其它 *redis.ini 保留并提示。
+Backup_Existing_PHPRedis()
+{
+    Redis_Ext_Backup_Dir=""
+    Redis_Ext_Backup_Dir=$(mktemp -d /tmp/lnmp-phpredis-bak.XXXXXXXX) || return 1
+    if [ -s "${PHP_Path}/conf.d/021-redis.ini" ]; then
+        \cp -p "${PHP_Path}/conf.d/021-redis.ini" "${Redis_Ext_Backup_Dir}/021-redis.ini" || return 1
+    fi
+    if [ -s "${zend_ext}" ]; then
+        \cp -p "${zend_ext}" "${Redis_Ext_Backup_Dir}/redis.so" || return 1
+    fi
+    return 0
+}
+
+# 安装失败时把备份的扩展放回原位并重载 PHP，避免留下没有 redis 模块的站点。
+Restore_Existing_PHPRedis()
+{
+    local restored='n'
+
+    [ -n "${Redis_Ext_Backup_Dir}" ] || return 0
+    if [ -s "${Redis_Ext_Backup_Dir}/redis.so" ]; then
+        \cp -p "${Redis_Ext_Backup_Dir}/redis.so" "${zend_ext}" && restored='y'
+    fi
+    if [ -s "${Redis_Ext_Backup_Dir}/021-redis.ini" ]; then
+        \cp -p "${Redis_Ext_Backup_Dir}/021-redis.ini" "${PHP_Path}/conf.d/021-redis.ini" && restored='y'
+    fi
+    if [ "${restored}" = 'y' ]; then
+        Echo_Yellow "已恢复安装前的 phpredis 扩展并重载 PHP。"
+        Restart_PHP
+    fi
+    rm -rf "${Redis_Ext_Backup_Dir}"
+    Redis_Ext_Backup_Dir=""
+    return 0
+}
+
+Clear_PHPRedis_Backup()
+{
+    [ -n "${Redis_Ext_Backup_Dir}" ] && rm -rf "${Redis_Ext_Backup_Dir}"
+    Redis_Ext_Backup_Dir=""
+    return 0
+}
+
 Install_Redis()
 {
     echo "====== 正在安装 Redis ======"
     echo "正在安装稳定版 ${Redis_Stable_Ver}..."
     Press_Start || return 1
 
-    # 清理所有旧 phpredis 配置，避免重复加载 redis.so。
-    rm -f ${PHP_Path}/conf.d/*redis.ini
     Addons_Get_PHP_Ext_Dir
     zend_ext="${zend_ext_dir}redis.so"
-    if [ -s "${zend_ext}" ]; then
-        rm -f "${zend_ext}"
-    fi
 
     cd ${cur_dir}/src
     # 扩展包与服务端同属一次安装，先把 phpredis 取齐再动系统，
@@ -72,6 +110,18 @@ Install_Redis()
     fi
     Download_Files https://pecl.php.net/get/${PHPRedis_Ver}.tgz ${PHPRedis_Ver}.tgz
     Require_File "${PHPRedis_Ver}.tgz" "pecl redis"
+
+    # 源码包就绪后才动现有扩展，并先备份以便失败恢复。
+    Backup_Existing_PHPRedis || { Echo_Red "备份现有 phpredis 失败，已中止，未改动任何文件。"; return 1; }
+    # 其它来源的 redis 配置不归本包管理，重复加载时由使用者决定去留。
+    for redis_ini in ${PHP_Path}/conf.d/*redis.ini; do
+        [ -e "${redis_ini}" ] || continue
+        case "${redis_ini}" in
+        */021-redis.ini) rm -f "${redis_ini}" ;;
+        *) Echo_Yellow "发现非本包创建的 PHP 配置：${redis_ini}，未删除；重复加载 redis.so 时请自行处理。" ;;
+        esac
+    done
+    [ -s "${zend_ext}" ] && rm -f "${zend_ext}"
 
     if [ -s /usr/local/redis/bin/redis-server ]; then
         echo "Redis 服务端已存在。"
@@ -146,7 +196,10 @@ Install_Redis()
         echo "检测到 igbinary，启用 phpredis 的 igbinary 序列化支持。"
     fi
     ./configure --with-php-config=${PHP_Path}/bin/php-config ${Redis_Igbinary_Opt}
-    Make_Install || return 1
+    if ! Make_Install; then
+        Restore_Existing_PHPRedis
+        return 1
+    fi
     cd ../
     cat >${PHP_Path}/conf.d/021-redis.ini<<EOF
 extension = "redis.so"
@@ -154,11 +207,17 @@ EOF
 
     \cp ${cur_dir}/init.d/init.d.redis /etc/init.d/redis
     sed -i "s/^REDISPORT=.*/REDISPORT=${Redis_Port}/" /etc/init.d/redis
-    Check_Conf_Applied /etc/init.d/redis "^REDISPORT=${Redis_Port}\$"         "Redis init 脚本端口 ${Redis_Port}" || return 1
+    if ! Check_Conf_Applied /etc/init.d/redis "^REDISPORT=${Redis_Port}\$" "Redis init 脚本端口 ${Redis_Port}"; then
+        Restore_Existing_PHPRedis
+        return 1
+    fi
     \cp ${cur_dir}/init.d/redis.service /etc/systemd/system/redis.service
     chmod +x /etc/init.d/redis
     Normalize_Redis_Perms
-    Check_Redis_Runtime_Access || return 1
+    if ! Check_Redis_Runtime_Access; then
+        Restore_Existing_PHPRedis
+        return 1
+    fi
     echo "正在加入开机自启..."
     StartUp redis
     Restart_PHP
@@ -176,10 +235,12 @@ EOF
     fi
 
     if [ ! -s "${zend_ext}" ] || [ ! -s /usr/local/redis/bin/redis-server ]; then
-        rm -f ${PHP_Path}/conf.d/*redis.ini
+        rm -f ${PHP_Path}/conf.d/021-redis.ini
         Echo_Red "Redis 安装失败！（扩展或服务端二进制未生成）"
+        Restore_Existing_PHPRedis
         return 1
     fi
+    Clear_PHPRedis_Backup
 
     if /etc/init.d/redis status >/dev/null 2>&1; then
         Echo_Green "====== Redis 安装完成 ======"

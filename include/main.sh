@@ -1499,6 +1499,99 @@ Ensure_Runtime_Directory()
 # Patch_Init_Runtime_Directory <init脚本> <目录> <用户> <组>
 # SysV 和 systemd 生成的兼容服务都可能直接执行 init 脚本，因此把重建逻辑
 # 写进入口；固定标记保证升级或回滚时重复调用不会重复插入。
+# 升级前的搬迁必须整体成功：逐项检查存在性、目标未占用和 mv 返回码，
+# 记录已完成项以便失败时按逆序还原。任何路径都不删除数据。
+LNMP_Moved_Items=()
+
+Move_For_Upgrade()
+{
+    local src="$1" dst="$2"
+
+    if [ ! -e "${src}" ]; then
+        Echo_Red "待搬迁的路径不存在：${src}"
+        return 1
+    fi
+    if [ -e "${dst}" ]; then
+        Echo_Red "搬迁目标已存在，拒绝覆盖：${dst}"
+        return 1
+    fi
+    if ! mv -- "${src}" "${dst}"; then
+        Echo_Red "搬迁失败：${src} -> ${dst}"
+        Echo_Red "数据目录是独立挂载点或只读文件系统时会出现该错误，原数据未被改动。"
+        return 1
+    fi
+    if [ -e "${src}" ] || [ ! -e "${dst}" ]; then
+        Echo_Red "搬迁后状态异常：${src} -> ${dst}"
+        return 1
+    fi
+    LNMP_Moved_Items+=("${dst}|${src}")
+    return 0
+}
+
+# 按逆序把已搬迁的项目放回原位；还原失败时打印确切路径，供人工处理。
+Rollback_Upgrade_Moves()
+{
+    local i entry dst src rc=0
+
+    for (( i=${#LNMP_Moved_Items[@]} - 1; i >= 0; i-- )); do
+        entry="${LNMP_Moved_Items[i]}"
+        dst="${entry%%|*}"
+        src="${entry#*|}"
+        if mv -- "${dst}" "${src}"; then
+            echo "已还原：${dst} -> ${src}"
+        else
+            Echo_Red "还原失败，请手工处理：${dst} -> ${src}"
+            rc=1
+        fi
+    done
+    LNMP_Moved_Items=()
+    return ${rc}
+}
+
+# 搬迁失败的统一出口：还原已搬项目，说明数据未被删除，然后退出。
+Abort_Upgrade_Move()
+{
+    Echo_Red "升级前的搬迁未全部成功，已停止升级。"
+    Rollback_Upgrade_Moves
+    Echo_Yellow "原数据库数据未被删除；确认上述路径后可执行 lnmp start 恢复服务。"
+    exit 1
+}
+
+# 数据库进程必须真正退出后才能搬迁数据目录。
+Ensure_DB_Stopped()
+{
+    local pattern="$1" i
+
+    command -v pgrep >/dev/null 2>&1 || return 0
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        pgrep -f "${pattern}" >/dev/null 2>&1 || return 0
+        sleep 2
+    done
+    Echo_Red "数据库进程仍在运行（${pattern}），未搬迁任何文件，升级中止。"
+    return 1
+}
+
+# 新实例只初始化到空目录：目录非空一律拒绝，绝不清空既有数据目录。
+Require_Empty_Data_Dir()
+{
+    local dir="$1"
+
+    if [ ! -e "${dir}" ]; then
+        mkdir -p -- "${dir}" || { Echo_Red "无法创建数据目录：${dir}"; return 1; }
+        return 0
+    fi
+    if [ ! -d "${dir}" ]; then
+        Echo_Red "数据目录路径存在但不是目录：${dir}"
+        return 1
+    fi
+    if [ -n "$(ls -A -- "${dir}" 2>/dev/null)" ]; then
+        Echo_Red "数据目录非空：${dir}"
+        Echo_Red "升级不会清空既有数据目录。请确认其中内容后自行处理，再重新执行升级。"
+        return 1
+    fi
+    return 0
+}
+
 Patch_Init_Runtime_Directory()
 {
     local initd="$1" dir="$2" owner="$3" group="$4" tmp

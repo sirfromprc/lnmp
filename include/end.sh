@@ -96,7 +96,8 @@ Install_LNMP_Command()
         "${cur_dir}/tools/lnmp-tgnotice.sh:/bin/lnmp-tgnotice" \
         "${cur_dir}/tools/lnmp-phpmyadmin.sh:/bin/lnmp-phpmyadmin" \
         "${cur_dir}/tools/lnmp-perm.sh:/bin/lnmp-perm" \
-        "${cur_dir}/tools/lnmp-health.sh:/bin/lnmp-health"
+        "${cur_dir}/tools/lnmp-health.sh:/bin/lnmp-health" \
+        "${cur_dir}/tools/lnmp-sqlguard.sh:/bin/lnmp-sqlguard"
     do
         target=${source#*:}
         source=${source%%:*}

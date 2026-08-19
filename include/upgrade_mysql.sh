@@ -15,11 +15,16 @@ Backup_MySQL()
     Check_DB_Backup "/root/mysql_all_backup${Upgrade_Date}.sql" || exit 1
     Snapshot_DB_List /usr/local/mysql/bin/mysql "${DB_List_Before}" || exit 1
     lnmp stop
-    mv /usr/local/mysql /usr/local/oldmysql${Upgrade_Date}
-    mv /etc/init.d/mysql /usr/local/oldmysql${Upgrade_Date}/init.d.mysql.bak.${Upgrade_Date}
-    mv /etc/my.cnf /usr/local/oldmysql${Upgrade_Date}/my.cnf.bak.${Upgrade_Date}
+    Ensure_DB_Stopped "/usr/local/mysql/bin/mysqld" || exit 1
+
+    LNMP_Moved_Items=()
+    Move_For_Upgrade /usr/local/mysql "/usr/local/oldmysql${Upgrade_Date}" || Abort_Upgrade_Move
+    Move_For_Upgrade /etc/init.d/mysql \
+        "/usr/local/oldmysql${Upgrade_Date}/init.d.mysql.bak.${Upgrade_Date}" || Abort_Upgrade_Move
+    Move_For_Upgrade /etc/my.cnf \
+        "/usr/local/oldmysql${Upgrade_Date}/my.cnf.bak.${Upgrade_Date}" || Abort_Upgrade_Move
     if [ "${MySQL_Data_Dir}" != "/usr/local/mysql/var" ]; then
-        mv ${MySQL_Data_Dir} ${MySQL_Data_Dir}${Upgrade_Date}
+        Move_For_Upgrade "${MySQL_Data_Dir}" "${MySQL_Data_Dir}${Upgrade_Date}" || Abort_Upgrade_Move
     fi
 
 }
@@ -125,11 +130,8 @@ EOF
     MySQL_Opt
     # MySQL 8.4 及以上转换弃用配置，较低版本保持原配置。
     MySQL_Deprecated_Opt
-    if [ -d "${MySQL_Data_Dir}" ]; then
-        rm -rf ${MySQL_Data_Dir}/*
-    else
-        mkdir -p ${MySQL_Data_Dir}
-    fi
+    # 搬迁成功后该路径应当为空；非空说明上一步没搬干净，此时拒绝而不是清空。
+    Require_Empty_Data_Dir "${MySQL_Data_Dir}" || exit 1
     chown -R mysql:mysql /usr/local/mysql/
     /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql || exit 1
     chown -R mysql:mysql ${MySQL_Data_Dir}
@@ -244,11 +246,8 @@ EOF
     MySQL_Opt
     # MySQL 8.4 及以上转换弃用配置，较低版本保持原配置。
     MySQL_Deprecated_Opt
-    if [ -d "${MySQL_Data_Dir}" ]; then
-        rm -rf ${MySQL_Data_Dir}/*
-    else
-        mkdir -p ${MySQL_Data_Dir}
-    fi
+    # 搬迁成功后该路径应当为空；非空说明上一步没搬干净，此时拒绝而不是清空。
+    Require_Empty_Data_Dir "${MySQL_Data_Dir}" || exit 1
     chown -R mysql:mysql /usr/local/mysql/
     /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql || exit 1
     chown -R mysql:mysql ${MySQL_Data_Dir}
