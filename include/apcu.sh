@@ -3,7 +3,7 @@
 Install_Apcu()
 {
     echo "====== 正在安装 APCu ======"
-    Press_Start
+    Press_Start || return 1
 
     rm -f ${PHP_Path}/conf.d/009-apcu.ini
     Addons_Get_PHP_Ext_Dir
@@ -52,7 +52,7 @@ EOF
 Uninstall_Apcu()
 {
     echo "即将卸载 APCu..."
-    Press_Start
+    Press_Start || return 1
     rm -f ${PHP_Path}/conf.d/009-apcu.ini
     echo "正在删除 APCu 文件..."
     rm -f "${zend_ext}"

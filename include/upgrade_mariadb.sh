@@ -115,7 +115,7 @@ Upgrade_MariaDB()
         MariaDBMAOpt=''
     fi
 
-    Press_Start
+    Press_Start || exit 1
 
     echo "============================ 检查文件 ============================"
     cd ${cur_dir}/src

@@ -1390,8 +1390,16 @@ Cmd_Init()
     Say "如需修改配置，请先按 Ctrl+C 退出当前程序，修改配置文件后重新运行即可。"
     Say ""
     printf '确认开始配置请输入 y，其它输入一律取消：'
-    read -r ans
-    [ "${ans}" = "y" ] || { Say "已取消。"; return 0; }
+    # 返回 0 只代表配置真正写入；取消与 EOF 都必须返回非 0。
+    if ! read -r ans; then
+        echo
+        Err "读取确认时遇到 EOF，未做任何配置。"
+        return 1
+    fi
+    if [ "${ans}" != "y" ]; then
+        Say "已取消，未做任何配置。"
+        return 1
+    fi
 
     [ "$(id -u)" = "0" ] || { Err "init 需要 root 权限。"; return 1; }
     mkdir -p "${Conf_Dir}" && chmod 700 "${Conf_Dir}" || { Err "无法创建 ${Conf_Dir}"; return 1; }
@@ -1400,7 +1408,11 @@ Cmd_Init()
     if [ -f "${Conf_File}" ]; then
         Warn "配置已存在：${Conf_File}"
         printf '覆盖并重新生成？[y/N]（默认 n）：'
-        read -r ans
+        if ! read -r ans; then
+            echo
+            Err "读取确认时遇到 EOF，保留现有配置。"
+            return 1
+        fi
         [ "${ans}" = "y" ] || { Say "保留现有配置。"; return 0; }
         cp -p "${Conf_File}" "${Conf_File}.bak.$(date '+%Y%m%d%H%M%S')"
         Say "旧配置已备份。"
@@ -1534,10 +1546,17 @@ Encrypt_Tool="age"
 Encrypt_Recipient=""
 Encrypt_Identity="/root/.config/lnmp/backup-age.key"
 EOF
-    chmod 600 "${Conf_File}"
+    if [ ! -s "${Conf_File}" ]; then
+        Err "写入 ${Conf_File} 失败。"
+        return 1
+    fi
+    chmod 600 "${Conf_File}" || { Err "设置 ${Conf_File} 权限失败。"; return 1; }
     Ok "配置已写入 ${Conf_File}（600）。"
 
-    mkdir -p "${backup_home}" && chmod 700 "${backup_home}"
+    if ! mkdir -p "${backup_home}" || ! chmod 700 "${backup_home}"; then
+        Err "无法准备备份目录 ${backup_home}。"
+        return 1
+    fi
 
     printf '每天几点执行备份？(0-23，默认 3) '
     read -r hour

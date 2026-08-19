@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+# 安装过程会创建 /usr/local 下的程序目录，服务账号需要遍历和读取。
+# 调用者可能带着 umask 077 执行，这里固定为可预期值，密码等敏感文件
+# 仍由各自的 ( umask 077; ... ) 子 shell 单独收紧。
+umask 022
+
 # 数据库、PHP 和 Apache 的菜单信息与编号映射统一定义在 profile.sh。
 
 # phpMyAdmin 位于网站根目录之外，防止 Web 配置失效时源码和 config.inc.php
@@ -367,14 +372,7 @@ Press_Install()
         Confirm_Start_Install || exit 1
         ;;
     *)
-        if [ -z ${LNMP_Auto} ]; then
-            echo ""
-            Echo_Green "按任意键开始安装，或按 Ctrl+C 取消。"
-            OLDCONFIG=`stty -g`
-            stty -icanon -echo min 1 time 0
-            dd count=1 2>/dev/null
-            stty ${OLDCONFIG}
-        fi
+        Press_Start || exit 1
         ;;
     esac
 
@@ -382,18 +380,28 @@ Press_Install()
 }
 
 # lnmp、lnmpa 和 lamp 在安装依赖及编译前进行最终确认。
-# 非交互（无终端或 LNMP_Auto=y）不阻断，打印提示后直接继续。
+# 只有显式 LNMP_Auto=y 可跳过；无终端或 EOF 一律取消，不按默认选择继续。
 Confirm_Start_Install()
 {
     local ans
 
-    if [ ! -t 0 ] || [ "${LNMP_Auto}" = "y" ]; then
-        Echo_Yellow "当前为非交互执行，按以上信息直接开始安装。"
+    if [ "${LNMP_Auto:-}" = "y" ]; then
+        Echo_Yellow "LNMP_Auto=y，按以上信息直接开始安装。"
         return 0
     fi
 
+    if [ ! -t 0 ]; then
+        Echo_Red "标准输入不是终端，无法确认安装，已取消。"
+        Echo_Red "请在交互终端执行，或设置 LNMP_Auto=y 并完整提供各项安装选择。"
+        return 1
+    fi
+
     echo ""
-    read -r -p "确认以上信息，开始安装请输入 y，其它输入一律取消： " ans
+    if ! read -r -p "确认以上信息，开始安装请输入 y，其它输入一律取消： " ans; then
+        echo
+        Echo_Red "读取确认时遇到 EOF，已取消安装。"
+        return 1
+    fi
     case "${ans}" in
         [yY]) return 0 ;;
         *)
@@ -435,14 +443,37 @@ Invalid_Selection()
     exit 1
 }
 
+# 按键确认必须来自真实终端；无终端只接受显式 LNMP_Auto=y，
+# stty/dd 失败或 EOF 一律返回非 0，调用方须终止后续系统变更。
 Press_Start()
 {
+    local oldconfig
+
+    if [ "${LNMP_Auto:-}" = "y" ]; then
+        echo "LNMP_Auto=y，跳过按键确认。"
+        return 0
+    fi
+
+    if [ ! -t 0 ]; then
+        Echo_Red "标准输入不是终端，无法读取确认按键，已取消。"
+        Echo_Red "请在交互终端执行，或设置 LNMP_Auto=y 明确表示自动确认。"
+        return 1
+    fi
+
     echo ""
     Echo_Green "按任意键开始，或按 Ctrl+C 取消。"
-    OLDCONFIG=`stty -g`
-    stty -icanon -echo min 1 time 0
-    dd count=1 2>/dev/null
-    stty ${OLDCONFIG}
+    oldconfig=$(stty -g) || { Echo_Red "读取终端状态失败，已取消。"; return 1; }
+    if ! stty -icanon -echo min 1 time 0; then
+        Echo_Red "设置终端状态失败，已取消。"
+        return 1
+    fi
+    if ! dd bs=1 count=1 >/dev/null 2>&1; then
+        stty "${oldconfig}"
+        Echo_Red "读取确认按键失败，已取消。"
+        return 1
+    fi
+    stty "${oldconfig}"
+    return 0
 }
 
 Install_LSB()

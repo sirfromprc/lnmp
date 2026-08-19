@@ -103,16 +103,30 @@ if ! Version_GE "${DB_Ver}" "${Min_Ver}"; then
 fi
 
 # --- 读取密码：不回显并要求两次输入一致 -----------------------------
+# 只在真实终端重试；EOF 直接失败，避免非交互执行时空转刷屏。
+if [ ! -t 0 ]; then
+    echo "错误：标准输入不是终端，无法安全读取新密码。" >&2
+    echo "请在交互终端执行本脚本。" >&2
+    exit 1
+fi
 while :; do
     DB_Root_Password=''
     DB_Root_Password2=''
-    read -r -s -p "请输入新的 ${DB_Name} root 密码：" DB_Root_Password
+    if ! read -r -s -p "请输入新的 ${DB_Name} root 密码：" DB_Root_Password; then
+        echo
+        echo "错误：读取密码时输入已结束，未修改任何内容。" >&2
+        exit 1
+    fi
     echo
     if [ -z "${DB_Root_Password}" ]; then
         echo "错误：密码不能为空。"
         continue
     fi
-    read -r -s -p "请再次输入新密码：" DB_Root_Password2
+    if ! read -r -s -p "请再次输入新密码：" DB_Root_Password2; then
+        echo
+        echo "错误：读取确认密码时输入已结束，未修改任何内容。" >&2
+        exit 1
+    fi
     echo
     if [ "${DB_Root_Password}" != "${DB_Root_Password2}" ]; then
         echo "错误：两次输入不一致，请重来。"

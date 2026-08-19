@@ -479,6 +479,14 @@ Probe_Db()
         return 1
     fi
 
+    # init 脚本被发行版包覆盖后 start 会返回 0 却起不来，这里给出确切原因，
+    # 避免把启动脚本被替换误判成数据问题。数据目录不受影响。
+    if [ -f "/etc/init.d/${svc}" ] &&
+       ! grep -q "/usr/local/${svc}" "/etc/init.d/${svc}"; then
+        Probe_Detail="/etc/init.d/${svc} 已不指向 /usr/local/${svc}，疑似被系统包覆盖；数据目录未受影响"
+        [ -S "${sock}" ] || return 1
+    fi
+
     # --connect-timeout 只覆盖建立连接阶段，mysqld 接受连接后不响应时不会中断，
     # 因此整条命令再包一层墙钟超时。
     out=$(Run_With_Timeout "${Probe_Timeout}" \

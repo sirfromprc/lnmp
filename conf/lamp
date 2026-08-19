@@ -913,7 +913,7 @@ EOF
     if ! /etc/init.d/httpd configtest; then
         Echo_Red "Apache 配置测试未通过，已撤销本次新增的虚拟主机配置。"
         rm -f "/usr/local/apache/conf/vhost/${domain}.conf"
-        exit 1
+        return 1
     fi
     echo "正在平滑重载 Apache..."
     /etc/init.d/httpd graceful
@@ -935,7 +935,7 @@ Add_VHost()
     domain=""
     while :;do
         Echo_Yellow "请输入域名（示例：www.example.com）: "
-        read domain
+        Read_Input domain "域名"
         # default 是安装时创建的兜底站点，不能作为普通域名重复创建。
         if [ "${domain}" = "default" ]; then
             Echo_Green " default 站已安装，是默认兜底站，如需为其配置 SSL 证书，请执行 lnmp ssl add"
@@ -952,7 +952,7 @@ Add_VHost()
 
     while :;do
         Echo_Yellow "请输入更多域名（示例：example.com *.example.com，留空跳过）: "
-        read moredomain
+        Read_Input moredomain "更多域名"
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" && break
     done
@@ -963,7 +963,7 @@ Add_VHost()
     while :;do
         echo "请输入域名 $domain 的网站目录。"
         Echo_Yellow "网站目录（默认 /home/wwwroot/${domain}）: "
-        read vhostdir
+        Read_Input vhostdir "网站目录"
         if [ "${vhostdir}" == "" ]; then
             vhostdir="/home/wwwroot/${domain}"
         fi
@@ -976,35 +976,38 @@ Add_VHost()
 
     Site_PHP_Menu
 
-    Echo_Yellow "是否启用访问日志 [y/N]（默认 n）: "
-    read access_log
-    if [[ "${access_log}" == "n" || "${access_log}" == "" ]]; then
+    Read_YN access_log "是否启用访问日志 [y/N]（默认 n）: " n "访问日志开关"
+    if [ "${access_log}" == "n" ]; then
         echo "已禁用访问日志。"
         al_name="${domain}"
     else
-        Echo_Yellow "访问日志文件名（默认 ${domain}-access_log）: "
-        read al_name
-        if [ "${al_name}" == "" ]; then
-            al_name="${domain}"
-        fi
-        Check_Config_Name "${al_name}" "访问日志文件名" || exit 1
+        while :;do
+            Echo_Yellow "访问日志文件名（默认 ${domain}-access_log）: "
+            Read_Input al_name "访问日志文件名"
+            if [ "${al_name}" == "" ]; then
+                al_name="${domain}"
+            fi
+            Check_Config_Name "${al_name}" "访问日志文件名" && break
+        done
         echo "访问日志文件名：${al_name}-access_log"
     fi
 
     email=""
-    Echo_Yellow "请输入管理员邮箱（默认 webmaster@example.com）: "
-    read email
-    if [ "${email}" == "" ]; then
-        echo "未输入，管理员邮箱将设为 webmaster@example.com。"
-        email='webmaster@example.com'
-    else
-        Check_Server_Admin_Email "${email}" || exit 1
+    while :;do
+        Echo_Yellow "请输入管理员邮箱（默认 webmaster@example.com）: "
+        Read_Input email "管理员邮箱"
+        if [ "${email}" == "" ]; then
+            echo "未输入，管理员邮箱将设为 webmaster@example.com。"
+            email='webmaster@example.com'
+            break
+        fi
+        Check_Server_Admin_Email "${email}" || continue
         echo "服务器管理员邮箱：${email}"
-    fi
+        break
+    done
 
     if [[ -x /usr/local/mysql/bin/mysql || -x /usr/local/mariadb/bin/mariadb || -x /usr/local/mariadb/bin/mysql ]]; then
-        Echo_Yellow "是否创建同名数据库和 MySQL 用户 [y/N]（默认 n）: "
-        read create_database
+        Read_YN create_database "是否创建同名数据库和 MySQL 用户 [y/N]（默认 n）: " n "建库开关"
 
         if [ "${create_database}" == "y" ]; then
             Verify_DB_Password || exit 1
@@ -1013,34 +1016,33 @@ Add_VHost()
     fi
 
     if [ -s /usr/local/pureftpd/sbin/pure-ftpd ]; then
-        Echo_Yellow "是否创建 FTP 账号 [y/N]（默认 n）: "
-        read create_ftp
+        Read_YN create_ftp "是否创建 FTP 账号 [y/N]（默认 n）: " n "FTP 账号开关"
 
         if [ "${create_ftp}" == "y" ]; then
             Add_Ftp_Menu
         fi
     fi
 
-    Echo_Yellow "是否添加 SSL 证书（HTTP 验证，需 80 端口可从公网访问）[y/N]（默认 n）: "
-    read create_ssl
+    Read_YN create_ssl "是否添加 SSL 证书（HTTP 验证，需 80 端口可从公网访问）[y/N]（默认 n）: " n "SSL 开关"
     if [ "${create_ssl}" == "y" ]; then
         Add_SSL_Menu
     fi
 
-    echo ""
-    echo "按任意键开始创建虚拟主机，或按 Ctrl+C 取消..."
-    OLDCONFIG=`stty -g`
-    stty -icanon -echo min 1 time 0
-    dd count=1 2>/dev/null
-    stty ${OLDCONFIG}
+    Press_Any_Key_Or_Line "按任意键开始创建虚拟主机，或按 Ctrl+C 取消..." || return 1
 
     echo "正在创建虚拟主机目录......"
-    mkdir -p "${vhostdir}"
+    # 记录目录是否由本次创建，配置失败时只回收本次新建的空目录。
+    vhostdir_created="n"
+    [ -d "${vhostdir}" ] || vhostdir_created="y"
+    mkdir -p "${vhostdir}" || return 1
     echo "正在设置虚拟主机目录权限......"
     chmod -R 755 "${vhostdir}"
     chown -R www:www "${vhostdir}"
 
-    Add_VHost_Config || exit 1
+    if ! Add_VHost_Config; then
+        [ "${vhostdir_created}" = "y" ] && rmdir "${vhostdir}" 2>/dev/null
+        return 1
+    fi
 
     if [ "${create_database}" == "y" ]; then
         Add_Database
@@ -1067,10 +1069,10 @@ Add_VHost()
     else
         echo "PHP：已开启"
     fi
-    if [ "${access_log}" == "n" ]; then
-        echo "访问日志：未启用"
-    else
+    if [ "${access_log}" == "y" ]; then
         echo "访问日志：已启用"
+    else
+        echo "访问日志：未启用"
     fi
 
     if [ "${create_database}" == "y" ]; then
@@ -1126,7 +1128,7 @@ Del_VHost()
     domain=""
     while :;do
         Echo_Yellow "请输入要删除的域名: "
-        read domain
+        Read_Input domain "域名"
         # 域名会组成待删除的配置文件路径，因此必须先限制字符集。
         Check_Domain_Name "${domain}" || continue
         break
@@ -1310,6 +1312,34 @@ Resolve_DB_Log_Error()
 # 数据库启动失败时给出可操作的原因。datadir 或错误日志对运行账号不可写时，
 # 服务端在打开错误日志前就退出，日志文件里不留任何记录，systemd 只显示
 # init 脚本的 ERROR!，需要在这里补出真实原因。
+# 数据库 init 脚本可能被发行版包（如 apt 的 mariadb-server / mysql-server）覆盖：
+# 覆盖后脚本指向系统路径，start 会返回 0 但服务起不来，容易被误判为数据丢失。
+# 本函数只判断脚本归属，不改动任何文件。
+Check_DB_Init_Script_Integrity()
+{
+    local initd="/etc/init.d/${DB_Name}" prefix
+
+    [ -f "${initd}" ] || return 0
+    case "${DB_Name}" in
+    mysql)   prefix="/usr/local/mysql" ;;
+    mariadb) prefix="/usr/local/mariadb" ;;
+    *) return 0 ;;
+    esac
+    grep -q "${prefix}" "${initd}" && return 0
+
+    Echo_Red "${initd} 已不再指向 ${prefix}，很可能被系统包（apt/yum 的 mariadb-server、mysql-server）覆盖。"
+    Echo_Red "数据目录不受影响，数据仍在；只是启动脚本被换掉，start 可能返回 0 却起不来。"
+    Echo_Yellow "恢复方式："
+    echo
+    echo "  cp ${prefix}/support-files/mysql.server ${initd}"
+    echo "  chmod 755 ${initd}"
+    echo "  systemctl daemon-reload && systemctl start ${DB_Name}"
+    Echo_Yellow "同时建议卸载系统包，避免 mysql.service 被别名到 mariadb.service："
+    echo
+    echo "  apt-get purge 'mariadb-server*' 'mysql-server*'"
+    return 1
+}
+
 Diagnose_DB_Start_Failure()
 {
     local action="${1:-start}" conf="${2:-/etc/my.cnf}"
@@ -1319,6 +1349,8 @@ Diagnose_DB_Start_Failure()
     start|restart) ;;
     *) return 0 ;;
     esac
+    # 脚本归属异常时先给出结论，避免把"被换掉的启动脚本"误判成数据问题。
+    Check_DB_Init_Script_Integrity || return 1
     [ -s "${conf}" ] || return 1
 
     db_user=$(Get_Mysqld_Conf_Value user "${conf}")
@@ -1533,6 +1565,58 @@ Read_Secret()
     fi
 }
 
+# 严格读取 y/n：接受 y/yes/n/no（不分大小写），空输入取默认值，
+# 其它输入在原问题处重问，EOF 由 Read_Input 终止，不按默认值继续。
+Read_YN()
+{
+    local __var="$1" __prompt="$2" __def="$3" __what="${4:-选择}" __in
+    while :;do
+        Echo_Yellow "${__prompt}"
+        Read_Input __in "${__what}"
+        case "${__in}" in
+        "")                 __in="${__def}" ;;
+        [yY]|[yY][eE][sS])  __in="y" ;;
+        [nN]|[nN][oO])      __in="n" ;;
+        *)
+            Echo_Red "只接受 y 或 n（也可写 yes/no），直接回车使用默认值 ${__def}。"
+            continue
+            ;;
+        esac
+        printf -v "${__var}" '%s' "${__in}"
+        return 0
+    done
+}
+
+# 执行前的最后确认：真实终端按任意键；非交互从标准输入读一行，
+# 输入耗尽（EOF）或终端操作失败时返回非 0，调用方须放弃本次变更。
+Press_Any_Key_Or_Line()
+{
+    local __old __discard
+    echo ""
+    echo "$1"
+    if [ ! -t 0 ]; then
+        if ! read -r __discard; then
+            echo
+            Echo_Red "读取确认时遇到 EOF —— 标准输入已经没有内容了，已取消。"
+            return 1
+        fi
+        return 0
+    fi
+    __old=$(stty -g) || { Echo_Red "读取终端状态失败，已取消。"; return 1; }
+    if ! stty -icanon -echo min 1 time 0; then
+        Echo_Red "设置终端状态失败，已取消。"
+        return 1
+    fi
+    if ! dd bs=1 count=1 >/dev/null 2>&1; then
+        stty "${__old}"
+        Echo_Red "读取确认按键失败，已取消。"
+        return 1
+    fi
+    stty "${__old}"
+    echo
+    return 0
+}
+
 # DNS 名称可带前导泛域名标记，但不能包含路径分隔符、空白或配置元字符。
 Check_Domain_Name()
 {
@@ -1740,9 +1824,55 @@ Enter_Database_Name()
     done
 }
 
+# 建库前确认数据库与两个 host 用户都不存在。
+# 查询失败与"存在"必须区分：返回 2 表示无法判断，不能当作可以继续创建。
+Database_Object_Exists()
+{
+    local out
+    out=$(${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" -N -B -e "$1" 2>/dev/null) || return 2
+    [ -n "${out}" ]
+}
+
+# database add 只用于新建；命中已有对象时返回非 0，不改动任何认证信息。
+Check_Database_Absent()
+{
+    local name="$1" host rc conflict=""
+
+    Check_DB_Identifier "${name}" || return 1
+
+    Database_Object_Exists "SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${name}';"
+    rc=$?
+    if [ ${rc} -eq 2 ]; then
+        Echo_Red "无法查询数据库 ${name} 是否已存在，已中止。"
+        return 1
+    fi
+    [ ${rc} -eq 0 ] && conflict="数据库 ${name}"
+
+    for host in localhost 127.0.0.1; do
+        Database_Object_Exists "SELECT 1 FROM mysql.user WHERE User='${name}' AND Host='${host}';"
+        rc=$?
+        if [ ${rc} -eq 2 ]; then
+            Echo_Red "无法查询数据库用户 ${name}@${host} 是否已存在，已中止。"
+            return 1
+        fi
+        [ ${rc} -eq 0 ] && conflict="${conflict}${conflict:+，}用户 ${name}@${host}"
+    done
+
+    if [ -n "${conflict}" ]; then
+        Echo_Red "已存在：${conflict}"
+        Echo_Red "database add 只负责新建，继续会改掉现有账号的密码，让在用站点连不上数据库。"
+        Echo_Red "改密码请执行 lnmp database edit；确认不再需要旧库可执行 lnmp database del 后重建；"
+        Echo_Red "或换一个数据库名。"
+        return 1
+    fi
+    return 0
+}
+
 Add_Database_Menu()
 {
     Enter_Database_Name
+    # 先确认是新建而不是覆盖，避免收集完密码才在写库阶段破坏既有账号。
+    Check_Database_Absent "${database_name}" || return 1
     echo "将创建数据库及同名数据库用户：${database_name}"
     Echo_Yellow "请输入数据库用户 ${database_name} 的密码（输入不回显）: "
     Read_Secret mysql_password "数据库用户密码"
@@ -1771,8 +1901,6 @@ Add_Database()
     cat >"${sql_file}"<<EOF
 CREATE USER IF NOT EXISTS '${database_name}'@'localhost' IDENTIFIED BY '${mysql_password_q}';
 CREATE USER IF NOT EXISTS '${database_name}'@'127.0.0.1' IDENTIFIED BY '${mysql_password_q}';
-ALTER USER '${database_name}'@'localhost' IDENTIFIED BY '${mysql_password_q}';
-ALTER USER '${database_name}'@'127.0.0.1' IDENTIFIED BY '${mysql_password_q}';
 GRANT USAGE ON *.* TO '${database_name}'@'localhost';
 GRANT USAGE ON *.* TO '${database_name}'@'127.0.0.1';
 CREATE DATABASE IF NOT EXISTS \`${database_name}\`;
@@ -2233,7 +2361,7 @@ Add_SSL_Info_Menu()
     domain=""
     while :;do
         Echo_Yellow "请输入域名（示例：www.example.com）: "
-        read domain
+        Read_Input domain "域名"
         Check_Domain_Name "${domain}" || continue
         echo "您的域名：${domain}"
         break
@@ -2241,7 +2369,7 @@ Add_SSL_Info_Menu()
 
     while :;do
         Echo_Yellow "请输入更多域名（示例：example.com sub.example.com，留空跳过）: "
-        read moredomain
+        Read_Input moredomain "更多域名"
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" && break
     done
@@ -2250,7 +2378,7 @@ Add_SSL_Info_Menu()
     Echo_Yellow "请输入域名 $domain 的网站目录: "
     echo
     Echo_Yellow "网站目录（默认 /home/wwwroot/${domain}）: "
-    read vhostdir
+    Read_Input vhostdir "网站目录"
     if [ "${vhostdir}" == "" ]; then
         vhostdir="/home/wwwroot/${domain}"
     fi
@@ -2260,33 +2388,37 @@ Add_SSL_Info_Menu()
 
     Site_PHP_Menu
 
-    Echo_Yellow "是否启用访问日志 [y/N]（默认 n）: "
-    read access_log
-    if [[ "${access_log}" == "n" || "${access_log}" == "" ]]; then
+    Read_YN access_log "是否启用访问日志 [y/N]（默认 n）: " n "访问日志开关"
+    if [ "${access_log}" == "n" ]; then
         echo "已禁用访问日志。"
         al="access_log off;"
         al_name="${domain}"
     else
-        Echo_Yellow "访问日志文件名（默认 ${domain}.log）: "
-        read al_name
-        if [ "${al_name}" == "" ]; then
-            al_name="${domain}"
-        fi
-        Check_Config_Name "${al_name}" "访问日志文件名" || exit 1
+        while :;do
+            Echo_Yellow "访问日志文件名（默认 ${domain}.log）: "
+            Read_Input al_name "访问日志文件名"
+            if [ "${al_name}" == "" ]; then
+                al_name="${domain}"
+            fi
+            Check_Config_Name "${al_name}" "访问日志文件名" && break
+        done
         al="access_log  /home/wwwlogs/${al_name}.log;"
         echo "访问日志文件名：${al_name}.log"
     fi
 
     email=""
-    Echo_Yellow "请输入管理员邮箱（默认 webmaster@example.com）: "
-    read email
-    if [ "${email}" == "" ]; then
-        echo "未输入，管理员邮箱将设为 webmaster@example.com。"
-        email='webmaster@example.com'
-    else
-        Check_Server_Admin_Email "${email}" || exit 1
+    while :;do
+        Echo_Yellow "请输入管理员邮箱（默认 webmaster@example.com）: "
+        Read_Input email "管理员邮箱"
+        if [ "${email}" == "" ]; then
+            echo "未输入，管理员邮箱将设为 webmaster@example.com。"
+            email='webmaster@example.com'
+            break
+        fi
+        Check_Server_Admin_Email "${email}" || continue
         echo "服务器管理员邮箱：${email}"
-    fi
+        break
+    done
 }
 
 # lnmp ssl add 读取现有 Apache 虚拟主机，仅询问证书相关选项。
@@ -2424,11 +2556,10 @@ Check_Acme_EMail()
 
 Return_301_Menu()
 {
-    Echo_Yellow "是否将 HTTP 301 跳转到 HTTPS [y/N]（默认 n）: "
-    read using_301
-    if [[ "${using_301}" == "n" || "${using_301}" == "" ]]; then
+    Read_YN using_301 "是否将 HTTP 301 跳转到 HTTPS [y/N]（默认 n）: " n "301 跳转开关"
+    if [ "${using_301}" == "n" ]; then
         echo "不设置 301 跳转。"
-    elif [ "${using_301}" == "y" ]; then
+    else
         echo "将 http://${domain} 跳转到 https://${domain}。"
     fi
 }
@@ -2753,7 +2884,7 @@ Add_DNS_SSL_Site_Info_Menu()
     site_base=$(Get_Domain_Base "${domain}")
     while :;do
         Echo_Yellow "请输入更多域名（支持泛域名，示例：*.example.com sub.example.com，留空跳过）: "
-        read extradomain
+        Read_Input extradomain "更多域名"
         [ -z "${extradomain}" ] && break
         Check_More_Domains "${extradomain}" || continue
         Confirm_Extra_Domains "${site_base}" "${domain} ${moredomain}" "${extradomain}" && break
@@ -2788,7 +2919,7 @@ Add_DNS_SSL_Only_Info_Menu()
 
     while :;do
         Echo_Yellow "请输入更多域名（支持泛域名，示例：*.example.com sub.example.com，留空跳过）: "
-        read moredomain
+        Read_Input moredomain "更多域名"
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" && break
     done

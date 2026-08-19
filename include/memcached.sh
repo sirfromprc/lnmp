@@ -69,7 +69,7 @@ Install_Memcached()
     fi
 
     echo "====== 正在安装 Memcached ======"
-    Press_Start
+    Press_Start || return 1
 
     rm -f ${PHP_Path}/conf.d/005-memcached.ini
     Addons_Get_PHP_Ext_Dir
@@ -169,7 +169,7 @@ EOF
 Uninstall_Memcached()
 {
     echo "即将卸载 Memcached..."
-    Press_Start
+    Press_Start || return 1
     rm -f ${PHP_Path}/conf.d/005-memcached.ini
     Restart_PHP
     Remove_StartUp memcached

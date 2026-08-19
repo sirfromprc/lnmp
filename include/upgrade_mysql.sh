@@ -417,7 +417,7 @@ Upgrade_MySQL()
     echo "即将把 MySQL 升级到 ${mysql_version}"
     echo "=================================================="
 
-    Press_Start
+    Press_Start || exit 1
 
     echo "============================ 检查文件 ============================"
     cd ${cur_dir}/src

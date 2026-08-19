@@ -14,11 +14,47 @@ Set_Redis_Loopback_Bind()
         'Redis 回环监听地址' || return 1
 }
 
+# 服务以 redis 账号运行，程序目录必须可遍历、配置可读、数据目录可写。
+# 安装可能继承调用者的严格 umask，因此这里按目标权限显式修正。
+Normalize_Redis_Perms()
+{
+    id -u redis >/dev/null 2>&1 || return 0
+    chmod 755 /usr/local/redis /usr/local/redis/bin 2>/dev/null
+    chown root:redis /usr/local/redis/etc 2>/dev/null
+    chmod 750 /usr/local/redis/etc 2>/dev/null
+    chown root:redis /usr/local/redis/etc/redis.conf 2>/dev/null
+    chmod 640 /usr/local/redis/etc/redis.conf 2>/dev/null
+    chown -R redis:redis /usr/local/redis/var 2>/dev/null
+    chmod 750 /usr/local/redis/var 2>/dev/null
+    return 0
+}
+
+# 启动前以服务账号验证可执行与可读，失败时给出具体路径而不是通用提示。
+Check_Redis_Runtime_Access()
+{
+    command -v runuser >/dev/null 2>&1 || return 0
+    if ! runuser -u redis -- test -x /usr/local/redis/bin/redis-server; then
+        Echo_Red "redis 账号无法执行 /usr/local/redis/bin/redis-server。"
+        Echo_Red "请检查该路径各级目录权限：namei -l /usr/local/redis/bin/redis-server"
+        return 1
+    fi
+    if ! runuser -u redis -- test -r /usr/local/redis/etc/redis.conf; then
+        Echo_Red "redis 账号无法读取 /usr/local/redis/etc/redis.conf。"
+        Echo_Red "请检查目录与文件权限：namei -l /usr/local/redis/etc/redis.conf"
+        return 1
+    fi
+    if ! runuser -u redis -- test -w /usr/local/redis/var; then
+        Echo_Red "redis 账号无法写入数据目录 /usr/local/redis/var。"
+        return 1
+    fi
+    return 0
+}
+
 Install_Redis()
 {
     echo "====== 正在安装 Redis ======"
     echo "正在安装稳定版 ${Redis_Stable_Ver}..."
-    Press_Start
+    Press_Start || return 1
 
     # 清理所有旧 phpredis 配置，避免重复加载 redis.so。
     rm -f ${PHP_Path}/conf.d/*redis.ini
@@ -29,6 +65,14 @@ Install_Redis()
     fi
 
     cd ${cur_dir}/src
+    # 扩展包与服务端同属一次安装，先把 phpredis 取齐再动系统，
+    # 避免服务端装完后扩展下载失败，留下未启用的服务和防火墙规则。
+    if [ -s ${PHPRedis_Ver} ]; then
+        rm -rf ${PHPRedis_Ver}
+    fi
+    Download_Files https://pecl.php.net/get/${PHPRedis_Ver}.tgz ${PHPRedis_Ver}.tgz
+    Require_File "${PHPRedis_Ver}.tgz" "pecl redis"
+
     if [ -s /usr/local/redis/bin/redis-server ]; then
         echo "Redis 服务端已存在。"
         ln -sf /usr/local/redis/bin/redis-cli /usr/bin/redis-cli
@@ -92,12 +136,6 @@ Install_Redis()
         Firewall_Save
     fi
 
-    if [ -s ${PHPRedis_Ver} ]; then
-        rm -rf ${PHPRedis_Ver}
-    fi
-
-    Download_Files https://pecl.php.net/get/${PHPRedis_Ver}.tgz ${PHPRedis_Ver}.tgz
-    Require_File "${PHPRedis_Ver}.tgz" "pecl redis"
     Tar_Cd ${PHPRedis_Ver}.tgz ${PHPRedis_Ver}
     ${PHP_Path}/bin/phpize
 
@@ -119,6 +157,8 @@ EOF
     Check_Conf_Applied /etc/init.d/redis "^REDISPORT=${Redis_Port}\$"         "Redis init 脚本端口 ${Redis_Port}" || return 1
     \cp ${cur_dir}/init.d/redis.service /etc/systemd/system/redis.service
     chmod +x /etc/init.d/redis
+    Normalize_Redis_Perms
+    Check_Redis_Runtime_Access || return 1
     echo "正在加入开机自启..."
     StartUp redis
     Restart_PHP
@@ -161,7 +201,7 @@ EOF
 Uninstall_Redis()
 {
     echo "即将卸载 Redis..."
-    Press_Start
+    Press_Start || return 1
 
     rm -f ${PHP_Path}/conf.d/*redis.ini
     Restart_PHP

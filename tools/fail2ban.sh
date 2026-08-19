@@ -23,7 +23,7 @@ fi
 Get_Dist_Name
 Get_Dist_Version
 
-Press_Start
+Press_Start || exit 1
 
 if [ "${PM}" = "yum" ]; then
     for packages in python3 python3-setuptools python3-systemd nftables rsyslog;

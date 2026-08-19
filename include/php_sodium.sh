@@ -4,7 +4,7 @@ Install_PHP_Sodium()
 {
     cd ${cur_dir}/src
     echo "====== 正在安装 PHP Sodium 扩展 ======"
-    Press_Start
+    Press_Start || return 1
 
     Addons_Get_PHP_Ext_Dir
     if echo "${Cur_PHP_Version}" | grep -Eqi '^5.[2-6].'; then
@@ -57,7 +57,7 @@ Install_PHP_Sodium()
 Uninstall_PHP_Sodium()
 {
     echo "即将卸载 PHP Sodium 扩展..."
-    Press_Start
+    Press_Start || return 1
     rm -f ${PHP_Path}/conf.d/009-sodium.ini
     Restart_PHP
     Echo_Green "PHP Sodium 扩展卸载完成。"

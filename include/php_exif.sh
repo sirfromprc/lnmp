@@ -4,7 +4,7 @@ Install_PHP_Exif()
 {
     cd ${cur_dir}/src
     echo "====== 正在安装 PHP EXIF 扩展 ======"
-    Press_Start
+    Press_Start || return 1
 
     Addons_Get_PHP_Ext_Dir
     zend_ext="${zend_ext_dir}exif.so"
@@ -46,7 +46,7 @@ EOF
 Uninstall_PHP_Exif()
 {
     echo "即将卸载 PHP EXIF 扩展..."
-    Press_Start
+    Press_Start || return 1
     rm -f ${PHP_Path}/conf.d/009-exif.ini
     Restart_PHP
     Echo_Green "PHP EXIF 扩展卸载完成。"

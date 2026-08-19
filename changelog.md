@@ -11628,3 +11628,256 @@ chown 影响系统目录及其它用户数据"：只放行 `/home`、`/var/www`�
 root；`/srv/goodapp` 正常托管，服务 active、目录属主变为 `lnmp-app-goodapp`、
 本地请求 200；同一目录再添加第二个应用报"目录 /srv/app1 已被应用 app1 使用"并返回 1。
 `tests/test_app_manage.sh` 三栈通过，占用检查做过负向验证（去掉该调用后用例报错）。
+
+## AUDIT-USER-001-FIX 建站流程遇到 EOF 仍创建站点并返回成功
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的 `Add_VHost`、`Add_SSL_Info_Menu`、
+`Del_VHost`、`Return_301_Menu`
+
+`Add_VHost` 除域名外的问题都用裸 `read`。标准输入耗尽时每个问题按空输入取默认值，
+命令一路走到创建阶段并返回 0，留下站点配置、网站目录、`.user.ini` 与已重载的 Web 服务。
+`conf/lnmpa`、`conf/lamp` 的域名循环用裸 `read`，EOF 后会在校验循环中空转。
+摘要还用 `[ "${access_log}" == "n" ]` 判断，空值（EOF 或直接回车）被显示成"访问日志：已启用"，
+与实际写入的 `access_log off;` 相反。
+
+三份脚本统一改用已有的 `Read_Input`（EOF 打印来源提示并以非 0 退出），并新增两个公共函数：
+
+- `Read_YN`：y/n 类问题的唯一入口。接受 `y/Y/yes/YES`、`n/N/no/NO` 和空值（取默认），
+  其它输入在原问题处提示"只接受 y 或 n"并重问，EOF 由 `Read_Input` 终止。
+  返回值一律归一化为 `y` 或 `n`，摘要与创建逻辑改用归一化后的变量。
+- `Press_Any_Key_Or_Line`：创建前的最后确认。真实终端按任意键（`stty`/`dd` 任一失败即取消），
+  非交互从标准输入读一行（保持手册里 `printf ... | lnmp vhost add` 的用法），EOF 返回非 0。
+
+`Add_VHost_Config` 的配置测试失败分支由 `exit 1` 改为 `return 1`，调用方据此回收本次
+新建且仍为空的站点目录（`vhostdir_created` 标记，已有目录不删）。
+
+**行为变化**：非交互输入项数量必须精确，缺项不再按默认值继续；y/n 问题不再把 `yes`、
+`maybe` 等值当成开启或关闭；摘要的访问日志状态与实际配置一致。同一读取契约也适用于
+`lnmp ssl add`、`lnmp dnsssl` 的站点信息补录，用管道驱动时"更多域名"等问题都要显式喂入
+（留空即空行）。`tests/test_dns_ssl_helpers.sh` 已按该契约补齐输入。
+
+**验证状态**：Debian 13（LNMPA）实测。`printf 'audit-eof-user.invalid\n' | lnmp vhost add`
+返回 1，`/usr/local/nginx/conf/vhost/` 与 `/home/wwwroot/` 下无该站点产物；
+完整输入序列（含最后确认行）仍可正常建站。`tests/test_user_audit_fixes.sh` 72 项通过。
+
+## AUDIT-USER-002-FIX 非法 y/n 输入到写盘后才失败并留下半成品目录
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的 `Add_VHost`
+
+伪静态问题输入 `yes` 时既不匹配 `n`/空值也不匹配 `y`，`rewrite` 保持空值，流程继续收集
+其余选项并进入创建阶段；`mkdir`、`chmod -R`、`chown -R` 执行完后才由 `Add_VHost_Config`
+报"伪静态规则名不合法：''"返回 1，留下空的网站目录。
+
+由 `Read_YN` 在原问题处拦截非法值；伪静态规则名与访问日志文件名改为校验失败即重问，
+不再 `exit 1`；创建阶段失败时回收本次新建的空目录（见 `AUDIT-USER-001-FIX`）。
+
+**验证状态**：Debian 13 实测。伪静态问题输入 `maybe` 时打印"只接受 y 或 n"并重问，
+输入 `yes` 等价于 `y` 并进入规则名问题；两种情况下 `/home/wwwroot/audit-typo-user.invalid`
+均未被创建。
+
+## AUDIT-USER-003-FIX 附加组件与安装入口在无 TTY 时绕过"按任意键开始"
+
+**位置**：`include/main.sh` 的 `Press_Start`、`Press_Install`，及其全部调用方
+
+`Press_Start` 不检查 `[ -t 0 ]`，也不检查 `stty -g`、`stty`、`dd` 的返回码。标准输入不是
+终端时三次 `stty` 报错后函数仍返回 0，调用方继续下载、编译并写入系统。
+
+`Press_Start` 改为：`LNMP_Auto=y` 时跳过确认；否则要求真实终端，`stty -g`、`stty`、
+`dd bs=1 count=1` 任一失败返回非 0，并提示改用交互终端或设置 `LNMP_Auto=y`。
+`Press_Install` 的非主栈分支直接复用 `Press_Start`。全部调用方处理返回码：
+`include/` 下的附加组件按 V13 约定用 `return 1`，`tools/denyhosts.sh`、`tools/fail2ban.sh`
+等顶层脚本用 `exit 1`。
+
+**行为变化**：`bash addons.sh install <组件> </dev/null` 等非交互调用不再自动继续，
+自动化需显式 `LNMP_Auto=y`。
+
+**验证状态**：Debian 13 实测。`bash addons.sh install redis </dev/null` 返回 1，
+未新增下载或解压产物；`LNMP_Auto=y` 时正常进入安装。
+
+## AUDIT-USER-004-FIX `pureftpd.sh` 无确认仍安装并开放端口
+
+**位置**：`pureftpd.sh`、`include/main.sh` 的 `Press_Install`
+
+与 `AUDIT-USER-003-FIX` 同源：确认失败后不再进入 APT、编译、服务安装和防火墙放行。
+
+**验证状态**：Debian 13 实测。`bash pureftpd.sh </dev/null` 返回 1，
+未生成 `/usr/local/pureftpd`，未新增 nftables 规则。
+
+## AUDIT-USER-005-FIX 数据库 root 密码重置遇到 EOF 后无限刷屏
+
+**位置**：`tools/reset_mysql_root_password.sh`
+
+两处 `read -r -s` 不检查返回码，EOF 后落入"密码不能为空"重试分支形成无限循环，
+输出可迅速占满磁盘。改为：读取前要求真实终端，两处读取分别检查返回码，EOF 时打印一次
+错误并以非 0 退出；退出发生在停止数据库之前。
+
+**验证状态**：Debian 13（MySQL 8.4.7）实测。`bash tools/reset_mysql_root_password.sh </dev/null`
+返回 1，输出 7 行，数据库保持 active。
+
+## AUDIT-USER-006-FIX 重复 `database add` 静默重置现有站点数据库密码
+
+**位置**：`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的 `Add_Database_Menu`、`Add_Database`
+
+建库 SQL 在 `CREATE USER IF NOT EXISTS` 之后无条件执行两条 `ALTER USER ... IDENTIFIED BY`，
+对已存在的同名库重复执行 `database add` 会把 `<库名>@localhost` 与 `<库名>@127.0.0.1`
+的密码改成本次输入值并返回 0，在用站点（如 WordPress）随即报 1045。
+
+新增 `Database_Object_Exists` 与 `Check_Database_Absent`：`Add_Database_Menu` 在读取密码前
+分别检查数据库、两个 host 用户是否存在，任一命中即返回非 0 并列出冲突项，提示改用
+`lnmp database edit` 或 `lnmp database del` 后重建；查询本身失败（返回 2）同样拒绝，
+不当作"可以创建"。`Add_Database` 删除两条无条件 `ALTER USER`，保留 `IF NOT EXISTS` 的幂等
+重试能力。
+
+**行为变化**：`database add` 命中已有库或用户时返回非 0 且不修改任何认证信息。
+
+**验证状态**：Debian 13 实测（用 apt 临时装的 MariaDB 11.8 独立实例验证，
+不影响机器上运行的 MySQL，验证后已停实例、删数据并卸载软件包）。首次创建
+`audit_user_db` 成功并写入标记表；对同名库再次执行 `database add` 返回 1，输出
+"已存在：数据库 audit_user_db，用户 audit_user_db@localhost，用户 audit_user_db@127.0.0.1"，
+旧口令仍可登录、新口令报 1045、标记表数据未变；删库只留用户时同样返回 1；
+新库名可正常创建并用新口令登录。`tests/test_user_audit_fixes.sh` 另覆盖查询失败与非法库名分支。
+
+## AUDIT-USER-007-FIX `lnmp backup init` 取消或 EOF 仍返回成功
+
+**位置**：`tools/lnmp-backup.sh` 的 `Cmd_Init`
+
+初始确认输入 `n`、空值或 EOF 时返回 0，调用方无法区分"已配置"和"已取消"。
+改为：EOF 与非 `y` 输入均返回非 0，并分别提示"读取确认时遇到 EOF"和"已取消，未做任何配置"；
+覆盖已有配置的确认遇 EOF 同样返回非 0。配置写入后增加 `test -s`、`chmod` 与备份目录
+创建的返回码检查，失败即返回非 0。
+
+**行为变化**：`lnmp backup init` 返回 0 仅表示配置已写入且定时任务已安装。
+
+**验证状态**：Debian 13 实测。`printf 'n\n' | lnmp backup init` 与
+`lnmp backup init </dev/null` 均返回 1，未生成 `/etc/lnmp/backup.conf`。
+
+## AUDIT-USER-008-FIX 卸载入口无 TTY 时会绕过最终确认并开始删除
+
+**位置**：`uninstall.sh`
+
+三个卸载分支复用"按任意键开始"的 `Press_Start`，EOF 时被当作确认。新增 `Confirm_Uninstall`：
+要求在真实终端输入完整的 `uninstall-<栈名>`，输入不符、空值或 EOF 返回非 0；
+自动化必须显式 `LNMP_Uninstall_Confirm=uninstall-<栈名>`，`LNMP_Auto=y` 不能跳过该确认。
+栈选择菜单的 `read` 也增加 EOF 处理。
+
+**验证状态**：Debian 13 实测（卸载函数打桩，放行会以 rc=9 暴露）。
+`bash uninstall.sh lnmpa </dev/null` 返回 1；`LNMP_Uninstall_Confirm=uninstall-lnmp` 卸载
+lnmpa 返回 1；`LNMP_Uninstall_Confirm=uninstall-lnmpa` 才进入卸载函数。未执行真实卸载。
+
+## AUDIT-USER-009-FIX 未设置 `LNMP_Auto` 的无 TTY 完整安装也会自动确认
+
+**位置**：`include/main.sh` 的 `Confirm_Start_Install`
+
+原实现把 `[ ! -t 0 ]` 与 `LNMP_Auto=y` 同等对待，无终端即视为已授权，与手册"`LNMP_Auto=y`
+才会跳过确认"相反。改为只有 `LNMP_Auto=y` 跳过；非终端返回非 0 并提示改用交互终端或
+补齐自动安装参数；交互读取遇 EOF 也按取消处理。
+
+**验证状态**：Debian 13 实测。未设 `LNMP_Auto` 时函数返回 1，`LNMP_Auto=y` 返回 0。
+`tests/test_install_confirm.sh` 全部通过。
+
+## AUDIT-USER-010-FIX 继承严格 `umask` 时 Redis 目录不可遍历，服务必然启动失败
+
+**位置**：`include/main.sh`（新增 `umask 022`）、`include/redis.sh` 的 `Install_Redis`
+
+`make PREFIX=/usr/local/redis install` 与后续 `mkdir` 继承调用者的 `umask`。用户执行过
+`umask 077`（手册的 Redis 密码示例即使用该值）后安装，`/usr/local/redis`、`bin`、`etc`
+均为 0700 root:root，而服务以 `redis` 账号运行，`redis-server` 启动报 203/EXEC。
+
+安装公共层 `include/main.sh` 顶部固定 `umask 022`，覆盖 `install.sh`、`addons.sh`、
+`pureftpd.sh`、`upgrade.sh`、`uninstall.sh` 全部入口；敏感文件仍由各自的
+`( umask 077; ... )` 子 shell 单独收紧。`include/redis.sh` 另加两个函数：
+
+- `Normalize_Redis_Perms`：显式修正 `/usr/local/redis`、`bin`（0755）、`etc`
+  （0750 root:redis）、`redis.conf`（0640 root:redis）、`var`（0750 redis:redis），
+  重复安装时也会纠正历史遗留的错误权限。
+- `Check_Redis_Runtime_Access`：启动前以 `runuser -u redis` 校验二进制可执行、配置可读、
+  数据目录可写，失败时打印具体路径与 `namei -l` 排查命令并返回 1。
+
+**验证状态**：Debian 13 实测。`umask 0077` 下执行 `LNMP_Auto=y bash addons.sh install redis`
+安装成功，服务 active、enabled，进程以 `redis` 账号运行，`redis-cli ping` 返回 PONG；
+目录权限为 `/usr/local/redis` 0755、`bin` 0755、`etc` 0750 root:redis、
+`var` 0750 redis:redis、`redis.conf` 0640 root:redis。
+
+## AUDIT-USER-011-FIX phpredis 下载失败会留下未启动的 Redis 服务端与防火墙规则
+
+**位置**：`include/redis.sh` 的 `Install_Redis`
+
+原顺序为：安装 Redis 服务端 → 创建账号、配置、symlink → 写防火墙规则 → 下载 phpredis。
+`pecl.php.net` 不可达时安装以非 0 结束，但系统已留下 `/usr/local/redis`、`redis` 账号、
+`/usr/bin/redis-cli` 和 6379 的 nftables 规则，而 unit 与服务尚未生成。
+
+把 phpredis 的 `Download_Files` 与 `Require_File` 移到服务端安装分支之前，两个源码包全部
+就绪后才进入编译与系统写入。
+
+**验证状态**：Debian 13 实测。将 `pecl.php.net` 指向 0.0.0.0 后执行安装，命令返回 1，
+`/usr/local/redis`、`/etc/systemd/system/redis.service`、`/etc/init.d/redis` 均未生成，
+`inet lnmp` 与 `/etc/nftables.d/lnmp.nft` 中无 6379 规则，`src/` 下无解压出的服务端源码。
+恢复解析后完整安装通过（见 `AUDIT-USER-010-FIX`），随后按测试前状态卸载。
+
+## AUDIT-WEB-003-FIX `install.sh nginx` 在 LNMPA 机器上覆盖模板并丢失反代包含文件
+
+**位置**：`include/nginx.sh` 的 `Install_Nginx`、`include/openresty.sh` 的配置写入段
+
+单独安装 Nginx 时 `Stack` 是子命令名（`nginx`）而不是栈名，模板选择走 else 分支：
+用 LNMP 模板覆盖 `/usr/local/nginx/conf/nginx.conf`，且不再复制 `proxy.conf` 与
+`proxy-pass-php.conf`。LNMPA 机器执行后，`lnmp vhost add` 生成的站点引用
+`include proxy-pass-php.conf;`，`nginx -t` 报 `open() ... failed (2: No such file or directory)`，
+建站必然失败；已有站点配置引用这两个文件时下次 reload 同样失败。
+
+模板选择改为：`Stack` 是栈名时按栈选；否则调用 `Check_Stack` 按机器上已装的栈选，
+LNMPA 补齐 `proxy.conf`、`proxy-pass-php.conf`。识别不出栈且已有 `nginx.conf` 时保留原文件
+并提示，不再无条件覆盖用户配置（安装前记录 `Nginx_Conf_Preexisting`，因为 `make install`
+不覆盖已有配置，安装后无法区分新旧）。OpenResty 路径同步修正。
+
+**验证状态**：已验证（静态与函数级）。`tests/test_nginx_conf_template.sh` 用假安装根目录覆盖
+"LNMPA 机器单独装""LNMP 机器单独装""识别不出栈且有/无现有配置""完整安装 lnmp/lnmpa"六种情况。
+Debian 13 实测确认问题存在并按修复后的行为补齐两个文件，随后 `nginx -t` 通过、
+`lnmp vhost add` 建站成功（该机器未重编译 Nginx）。
+
+## FIX-DB-DATA-001 数据库数据的误操作防护
+
+**位置**：`include/mysql.sh` 的 `Check_MySQL_Data_Dir`、`include/mariadb.sh` 的
+`Check_MariaDB_Data_Dir`、`conf/lnmp`、`conf/lnmpa`、`conf/lamp` 的
+`Check_DB_Init_Script_Integrity`、`tools/lnmp-health.sh` 的 `Probe_Db`
+
+两处加固，目标是除主动删除外任何路径都不丢数据：
+
+1. 重装数据库时，数据目录非空即中止并说明后果，不再静默把正在使用的数据目录搬到
+   `/root` 下新建空实例。确认后才继续：`LNMP_Move_Existing_DB_Data=yes`，
+   行为仍是整体搬迁而非删除。空目录不受影响。
+2. `/etc/init.d/mysql`、`/etc/init.d/mariadb` 被发行版包覆盖后，启动命令会返回 0 但服务起不来
+   （包还会把 `mysql.service` 别名到 `mariadb.service`，`systemctl stop mariadb` 会连带停掉本包的
+   数据库）。`Diagnose_DB_Start_Failure` 在其它判断之前先核对 init 脚本是否仍指向
+   `/usr/local/mysql`、`/usr/local/mariadb`，命中时明确说明数据未受影响并给出恢复命令；
+   `lnmp health` 的数据库探针同样报出该情况。
+
+卸载路径既有的"搬迁失败即中止、备份目录为空即中止、备份路径不得落在删除范围内"逻辑
+经测试复核仍然成立，未改动。`tests/test_security_fixes.sh` 中原来直接走搬迁分支的用例
+按新契约补上显式确认，并新增"未确认时拒绝且数据原样保留"的断言。
+
+**验证状态**：Debian 13 实测 + 函数级测试。真机上以 `/usr/local/mysql/var`（40 个条目）
+执行数据目录检查返回 1，数据条目数不变、未生成备份目录、服务保持 active；
+用被 apt 包覆盖过的那份 `/etc/init.d/mysql` 复现，检查返回 1 并输出恢复命令，
+换回本包脚本后返回 0、服务 active。`tests/test_db_data_guard.sh` 26 项覆盖非空/空数据目录、
+显式确认搬迁、init 脚本三种归属状态和卸载搬迁的失败分支。
+
+## AUDIT-USER-012-DOC LNMPA/LAMP 的伪静态归属未在文档说明
+
+**位置**：`HowtoGuides.md` 4.1、5.5、9.3
+
+原审计记录判断"LNMPA 建站未收集伪静态规则"是缺陷。复核结论：LNMPA 与 LAMP 的伪静态由
+Apache 处理，`conf/httpd24-lnmpa.conf`、`conf/httpd24-lamp.conf` 已加载 `mod_rewrite`，
+站点目录为 `AllowOverride All`，Apache 以 `www` 运行且站点目录属 `www:www`，
+WordPress 在后台保存固定链接时自行写入 `.htaccess`。原验证直接修改数据库的
+`permalink_structure`，未生成 `.htaccess`，404 由验证方式导致。向 LNMPA 站点加入
+`include rewrite/wordpress.conf` 会与 `conf/proxy-pass-php.conf` 的 `location /` 冲突
+（`nginx -t` 报 `duplicate location "/"`），不采纳该修改建议。
+
+文档补充三栈伪静态差异、`.htaccess` 的生成条件和按栈区分的 404 排查步骤。
+
+**验证状态**：Debian 13（LNMPA）实测。用 `lnmp vhost add` 建站后放入 WordPress 官方那段
+`.htaccess` 与一个回显 `REQUEST_URI` 的 `index.php`：`/`、`/hello-world/`、
+`/category/uncategorized/`、`/wp-json/` 全部返回 200 并由 `index.php` 处理；
+移走 `.htaccess` 后 `/hello-world/`、`/wp-json/` 返回 404。证实 404 来自缺少 `.htaccess`
+（原验证直接改数据库未触发 WordPress 生成该文件），与 Nginx 侧是否引用 rewrite 无关。
+验证站点与目录已删除。

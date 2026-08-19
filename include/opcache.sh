@@ -4,7 +4,7 @@ Install_Opcache()
 {
 
     echo "====== 正在安装 Zend OPcache ======"
-    Press_Start
+    Press_Start || return 1
 
     # 清理旧 OPcache 配置，避免扩展被重复加载。
     rm -f ${PHP_Path}/conf.d/004-opcache.ini
@@ -50,7 +50,7 @@ EOF
 Uninstall_Opcache()
 {
     echo "即将卸载 OPcache..."
-    Press_Start
+    Press_Start || return 1
     rm -f ${PHP_Path}/conf.d/004-opcache.ini
     Restart_PHP
     Echo_Green "OPcache 卸载完成。"

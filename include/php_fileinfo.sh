@@ -5,7 +5,7 @@ Install_PHP_Fileinfo()
     cd ${cur_dir}/src
     echo "====== 正在安装 PHP Fileinfo 扩展 ======"
     Echo_Yellow "内存低于 1GB 时，Fileinfo 扩展可能安装失败。"
-    Press_Start
+    Press_Start || return 1
 
     Addons_Get_PHP_Ext_Dir
     zend_ext="${zend_ext_dir}fileinfo.so"
@@ -44,7 +44,7 @@ EOF
 Uninstall_PHP_Fileinfo()
 {
     echo "即将卸载 PHP Fileinfo 扩展..."
-    Press_Start
+    Press_Start || return 1
     rm -f ${PHP_Path}/conf.d/009-fileinfo.ini
     Restart_PHP
     Echo_Green "PHP Fileinfo 扩展卸载完成。"

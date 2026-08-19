@@ -39,7 +39,7 @@ Start_Upgrade_PHP()
         exit 1
     fi
 
-    Press_Start
+    Press_Start || exit 1
     cd ${cur_dir}/src
 
     if ! Download_Verified php "${php_version}" \

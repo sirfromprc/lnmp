@@ -199,6 +199,11 @@ unset DB_Root_Password
 | `DB_Root_Password` | 留空则随机生成并写入 `/root/.lnmp_db_root_password` |
 | `LNMP_Auto` | `y`=非交互确认；必须同时明确提供其余选择与密码策略 |
 
+`install.sh`、`addons.sh`、`pureftpd.sh`、`upgrade.sh` 的确认步骤只接受两种放行方式：
+真实终端上的按键/输入，或显式 `LNMP_Auto=y`。标准输入被重定向（`</dev/null`、管道、
+面板任务、断开的 SSH）且未设置该变量时，脚本在下载、编译和任何系统变更之前退出，
+退出码非 0。
+
 > **注意：必须在无现有业务的干净系统上安装。** 安装脚本会卸载系统自带的 nginx / php /
 > apache / mysql 相关包，并接管防火墙配置。
 
@@ -223,13 +228,17 @@ ss -lntup                 # 检查 80/443/3306 等端口占用
 bash install.sh nginx      # 只装 Nginx
 bash install.sh db         # 只装 MySQL 或 MariaDB
 bash install.sh mphp       # 额外安装一个 PHP 版本（仅 LNMP 模式）
-bash uninstall.sh          # 卸载
+bash uninstall.sh          # 卸载（需输入 uninstall-lnmp / uninstall-lnmpa / uninstall-lamp 确认）
 bash upgrade.sh            # 升级
 bash addons.sh             # 安装/卸载扩展插件
 ```
 
 建议先 `screen -S lnmp`，SSH 断线后用 `screen -r lnmp` 接回，避免编译中断。
 安装前确认已装 `wget`。
+
+卸载不复用“按任意键”确认：打印删除清单后必须在真实终端输入完整的
+`uninstall-<栈名>`（例如 `uninstall-lnmp`），输入不符、空值或 EOF 一律退出且不删任何文件。
+自动化须显式设置 `LNMP_Uninstall_Confirm=uninstall-<栈名>`，`LNMP_Auto=y` 不能跳过这一步。
 
 `uninstall.sh` 不会静默丢数据：数据库数据目录整体搬到
 `/root/databases_backup_<时间戳>`，搬不动就中止卸载、不删任何文件；
@@ -580,6 +589,27 @@ lnmp database del    # 删除数据库
 
 lnmp database export <库名> <文件.sql.gz>   # 导出单个库，gzip 压缩
 lnmp database import <库名> <文件.sql.gz>   # 导入到已存在的库
+```
+
+`database add` 只负责新建：数据库或 `<库名>@localhost`、`<库名>@127.0.0.1` 任一已存在时
+直接返回非 0 并给出提示，不会改动现有账号的密码。改密码用 `lnmp database edit`。
+
+`backup init` 返回 0 仅表示配置已写入且定时任务已安装；输入 `n`、空值或 EOF 取消时返回非 0。
+
+**数据库数据的保护边界**：本包在任何路径下都不会自动删除数据库数据目录。
+
+- 重装数据库（`install.sh db` 等）时，数据目录非空即中止，提示确认；确认变量为
+  `LNMP_Move_Existing_DB_Data=yes`，作用是把现有数据整体搬到 `/root/<数据库>-data-dir-backup<时间戳>` 后新建空实例，仍不删除数据。
+- 卸载时数据目录整体搬到 `/root/databases_backup_<时间戳>`，搬迁失败或备份目录为空即中止卸载，不删除任何文件。
+- 用 apt/yum 装过 `mariadb-server`、`mysql-server` 后，`/etc/init.d/mysql` 会被系统包覆盖，
+  `mysql.service` 也可能被别名到 `mariadb.service`，表现为启动命令返回 0 但服务起不来。
+  这不影响数据；`lnmp start` 的失败诊断与 `lnmp health` 会指出该情况并给出恢复命令：
+
+```bash
+cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql   # MariaDB 改用 /usr/local/mariadb
+chmod 755 /etc/init.d/mysql
+systemctl daemon-reload && systemctl start mysql
+apt-get purge 'mariadb-server*' 'mysql-server*'                    # 避免 unit 别名再次冲突
 ```
 
 导出不会覆盖已存在的文件；导入前目标库必须已经存在（先 `database add`），

@@ -177,6 +177,19 @@ Check_MySQL_Data_Dir()
 {
     local datetime backup_dir
     if [ -d "${MySQL_Data_Dir}" ]; then
+        # 已有数据目录非空说明机器上存在实际数据库，重装会让它与运行中的服务分离。
+        # 默认拒绝，必须显式确认后才搬走；任何情况下都不删除数据。
+        if [ -n "$(ls -A -- "${MySQL_Data_Dir}" 2>/dev/null)" ] &&
+           [ "${LNMP_Move_Existing_DB_Data:-}" != "yes" ]; then
+            Echo_Red "数据目录 ${MySQL_Data_Dir} 已存在且非空，里面可能是正在使用的数据库。"
+            Echo_Red "本次安装会把它整体搬到 /root 下再新建空实例，不会删除数据，"
+            Echo_Red "但运行中的服务会与数据分离，已中止。"
+            Echo_Yellow "确认要重装并搬走现有数据时，显式声明后重试："
+            echo
+            echo "  LNMP_Move_Existing_DB_Data=yes bash install.sh db"
+            Echo_Yellow "只想保留现有数据库时不要重装，直接使用现有实例即可。"
+            return 1
+        fi
         datetime=$(date +"%Y%m%d%H%M%S")
         backup_dir="/root/mysql-data-dir-backup${datetime}"
         if [ -e "${backup_dir}" ] || ! mv -- "${MySQL_Data_Dir}" "${backup_dir}"; then

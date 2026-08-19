@@ -38,7 +38,7 @@ Build_ImageMagick_Lib()
 Install_ImageMagic()
 {
     echo "====== 正在安装 ImageMagick ======"
-    Press_Start
+    Press_Start || return 1
 
     rm -f ${PHP_Path}/conf.d/008-imagick.ini
     Addons_Get_PHP_Ext_Dir
@@ -77,7 +77,7 @@ EOF
 Uninstall_ImageMagick()
 {
     echo "即将卸载 ImageMagick..."
-    Press_Start
+    Press_Start || return 1
     rm -f ${PHP_Path}/conf.d/008-imagick.ini
     echo "正在删除 ImageMagick 目录..."
     rm -rf /usr/local/imagemagick

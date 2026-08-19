@@ -4,7 +4,7 @@ Install_PHP_Bz2()
 {
     cd ${cur_dir}/src
     echo "====== 正在安装 PHP Bz2 扩展 ======"
-    Press_Start
+    Press_Start || return 1
 
     Addons_Get_PHP_Ext_Dir
     zend_ext="${zend_ext_dir}bz2.so"
@@ -43,7 +43,7 @@ EOF
 Uninstall_PHP_Bz2()
 {
     echo "即将卸载 PHP Bz2 扩展..."
-    Press_Start
+    Press_Start || return 1
     rm -f ${PHP_Path}/conf.d/009-bz2.ini
     Restart_PHP
     Echo_Green "PHP Bz2 扩展卸载完成。"

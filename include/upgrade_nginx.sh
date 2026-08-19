@@ -31,7 +31,7 @@ Upgrade_Nginx()
     Check_Version_String "${Nginx_Version}" "Nginx 版本号" || exit 1
     Print_Banner "即将把 Nginx 升级到 ${Nginx_Version}"
 
-    Press_Start
+    Press_Start || exit 1
 
     echo "============================ 检查文件 ============================"
     cd ${cur_dir}/src

@@ -350,7 +350,13 @@ EOF
 Install_Nginx()
 {
     Nginx_Version="${Nginx_Ver#nginx-}"
+    local nginx_conf_stack nginx_conf_kept='n'
+
     Echo_Blue "[+] 正在安装 ${Nginx_Ver}... "
+    # 安装前的配置状态决定是否保留用户现有 nginx.conf：
+    # make install 不会覆盖已存在的配置，安装后再判断已区分不出新旧。
+    Nginx_Conf_Preexisting='n'
+    [ -s /usr/local/nginx/conf/nginx.conf ] && Nginx_Conf_Preexisting='y'
     groupadd www
     useradd -s /sbin/nologin -g www www
 
@@ -383,14 +389,39 @@ Install_Nginx()
 
     ln -sf /usr/local/nginx/sbin/nginx /usr/bin/nginx
 
-    rm -f /usr/local/nginx/conf/nginx.conf
     cd ${cur_dir}
-    if [ "${Stack}" = "lnmpa" ]; then
-        \cp conf/nginx_a.conf /usr/local/nginx/conf/nginx.conf
+    # 单独安装 Nginx 时 Stack 是子命令名而不是栈名，必须按机器上已装的栈选模板，
+    # 否则会用 LNMP 模板覆盖 LNMPA 的配置，并且不再提供反代包含文件。
+    nginx_conf_stack="${Stack}"
+    case "${nginx_conf_stack}" in
+    lnmp|lnmpa|lamp) ;;
+    *)
+        Check_Stack
+        case "${Get_Stack}" in
+        lnmpa) nginx_conf_stack='lnmpa' ;;
+        lnmp)  nginx_conf_stack='lnmp' ;;
+        esac
+        # 已有配置且识别不出栈时保留原文件，不用模板覆盖用户配置。
+        if [ "${Get_Stack:-}" = "unknow" ] && [ "${Nginx_Conf_Preexisting:-n}" = "y" ]; then
+            nginx_conf_kept='y'
+            Echo_Yellow "识别不出当前安装的栈，已保留现有 /usr/local/nginx/conf/nginx.conf。"
+            Echo_Yellow "如需改用随包模板，请对照 conf/nginx.conf 或 conf/nginx_a.conf 手工调整。"
+        fi
+        ;;
+    esac
+
+    if [ "${nginx_conf_kept}" != "y" ]; then
+        rm -f /usr/local/nginx/conf/nginx.conf
+        if [ "${nginx_conf_stack}" = "lnmpa" ]; then
+            \cp conf/nginx_a.conf /usr/local/nginx/conf/nginx.conf
+        else
+            \cp conf/nginx.conf /usr/local/nginx/conf/nginx.conf
+        fi
+    fi
+    # LNMPA 站点配置引用这两个文件，缺失会让 nginx -t 直接失败。
+    if [ "${nginx_conf_stack}" = "lnmpa" ] || [ "${Get_Stack:-}" = "lnmpa" ]; then
         \cp conf/proxy.conf /usr/local/nginx/conf/proxy.conf
         \cp conf/proxy-pass-php.conf /usr/local/nginx/conf/proxy-pass-php.conf
-    else
-        \cp conf/nginx.conf /usr/local/nginx/conf/nginx.conf
     fi
     \cp -ra conf/rewrite /usr/local/nginx/conf/
     \cp conf/pathinfo.conf /usr/local/nginx/conf/pathinfo.conf

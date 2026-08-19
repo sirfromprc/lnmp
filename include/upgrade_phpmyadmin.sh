@@ -12,7 +12,7 @@ Upgrade_phpMyAdmin()
     Check_Version_String "${phpMyAdmin_Version}" "phpMyAdmin 版本号" || exit 1
     Print_Banner "即将把 phpMyAdmin 升级到 ${phpMyAdmin_Version}"
 
-    Press_Start
+    Press_Start || exit 1
 
     echo "============================ 检查文件 ============================"
     cd ${cur_dir}/src

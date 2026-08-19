@@ -22,7 +22,7 @@ fi
 Get_Dist_Name
 Get_Dist_Version
 
-Press_Start
+Press_Start || exit 1
 
 if [ "${PM}" = "yum" ]; then
     for packages in python rsyslog python-ipaddr;

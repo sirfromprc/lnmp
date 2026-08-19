@@ -48,7 +48,7 @@ ionCube_NotWired_Notice()
 Uninstall_ionCube()
 {
     echo "即将卸载 ionCube..."
-    Press_Start
+    Press_Start || return 1
     rm -f ${PHP_Path}/conf.d/001-ioncube.ini
     Restart_PHP
     Echo_Green "ionCube 卸载完成。"

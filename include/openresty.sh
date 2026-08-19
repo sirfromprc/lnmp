@@ -270,7 +270,11 @@ OpenResty_Post_Install()
     \cp "${cur_dir}/conf/pathinfo.conf" "${ordir}/conf/pathinfo.conf"
     \cp "${cur_dir}/conf/enable-php.conf" "${ordir}/conf/enable-php.conf"
     \cp "${cur_dir}/conf/enable-php-pathinfo.conf" "${ordir}/conf/enable-php-pathinfo.conf"
-    if [ "${Stack}" = 'lnmpa' ]; then
+    # 单独安装时 Stack 是子命令名，需按机器上已装的栈补齐 LNMPA 的反代包含文件。
+    if [ "${Stack}" != 'lnmp' ] && [ "${Stack}" != 'lamp' ] && [ "${Stack}" != 'lnmpa' ]; then
+        Check_Stack
+    fi
+    if [ "${Stack}" = 'lnmpa' ] || [ "${Get_Stack:-}" = 'lnmpa' ]; then
         \cp "${cur_dir}/conf/proxy.conf" "${ordir}/conf/proxy.conf"
         \cp "${cur_dir}/conf/proxy-pass-php.conf" "${ordir}/conf/proxy-pass-php.conf"
     fi

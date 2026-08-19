@@ -76,7 +76,7 @@ ss -lntup
 
 ```bash
 # 请查阅最新版本，将v2.3-20260816替换为最新版本号
-wget https://github.com/{your-github-username}/lnmp/archive/refs/tags/v2.3-20260816.tar.gz -o /root/lnmp.tar.gz
+wget https://github.com/{your-github-username}/lnmp/archive/refs/tags/v2.3-20260816.tar.gz -O /root/lnmp.tar.gz
 tar zxf /root/lnmp.tar.gz -C /root/
 cd /root/lnmp
 chmod +x install.sh addons.sh uninstall.sh upgrade.sh
@@ -505,6 +505,15 @@ PHP 禁用分支和 phpMyAdmin 边界，再做最小修改。
 `addons.sh` 菜单虽然仍列出 ionCube，但当前版本没有接入可用安装流程；不要把菜单名当成
 功能已经实现。Apache/LNMPA/LAMP 保留代码路径，但没有 Debian 13 主线同等级的真机覆盖。
 
+`addons.sh`、`pureftpd.sh`、`upgrade.sh` 和 `install.sh` 的“按任意键开始”只在真实终端
+生效。标准输入被重定向时必须显式 `LNMP_Auto=y`，否则脚本在下载和编译之前就以非 0 退出：
+
+```bash
+LNMP_Auto=y bash addons.sh install redis </dev/null
+```
+
+卸载不接受这种方式，须使用 `LNMP_Uninstall_Confirm=uninstall-<栈名>`。
+
 ---
 
 ## 三、安装 Redis
@@ -637,6 +646,10 @@ lnmp vhost add
 第 5 步之前会先列出已内置的伪静态规则名（`wordpress`、`typecho`、`discuzx` 等），
 第 9 步只在第 8 步选了 `y` 时出现；第 12–14 步只在第 11 步选了 `y` 时出现。
 
+上表是 LNMP（Nginx）的问答顺序。**LNMPA 与 LAMP 不问伪静态规则**，改问管理员邮箱：
+这两套栈的伪静态由 Apache 的 `.htaccess` 处理（站点配置为 `AllowOverride All`，
+`mod_rewrite` 已加载），详见 5.5。
+
 **第 6 步选 `n` 时**（纯静态站点，或 Node、Go 等自带后端的站点）：不再问 Pathinfo，
 装了多个 PHP 版本时也不再问选哪个版本；站点配置里不写任何 PHP 执行入口，
 首页候选去掉 `index.php`，`.php` 与 `.php/xxx` 一律返回 404，
@@ -693,10 +706,10 @@ printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
 > 依次是：域名 → 更多域名(空) → 目录(空) → 伪静态 `n` → 访问日志 `n` →
 > IPv6 `n` → 建库 `n` → SSL `n` → 任意键。站点行为见 4.4。
 
-> 注意：**输入项数量必须精确**。域名、数据库 root 密码、数据库名、库用户密码
-> 缺少任一项时会报告 `读取<项目>时遇到 EOF：标准输入已经没有内容。` 并退出
-> （这是有意的快速失败，早期版本在这里会无限刷屏）；其余选项少喂时按默认值处理，
-> 不会报错，得到的站点配置与预期不符。
+> 注意：**输入项数量必须精确**。任何一项（含最后的“任意键”那一行）缺失时都会报告
+> `读取<项目>时遇到 EOF —— 标准输入已经没有内容了。` 并以非 0 退出，不会按默认值
+> 继续创建站点。y/n 类问题只接受 `y`、`yes`、`n`、`no`（不分大小写）和空值（取默认），
+> 其它输入会在原问题处重问，不会带着非法值走到创建阶段。
 >
 > 注意：**装了多个 PHP 版本时会多一步**（第 10 步后会问选哪个 PHP），
 > 序列要相应调整。单版本时不会问。
@@ -1022,6 +1035,16 @@ wp-admin: 301        ← wordpress.conf 的补斜杠规则，跳到 /wp-admin/
 
 **如果文章页返回 404**，说明伪静态没生效，检查站点配置里有没有
 `include rewrite/wordpress.conf;`。
+
+> **LNMPA 与 LAMP 的伪静态走 Apache。** 这两套栈的站点没有
+> `include rewrite/...`，规则来自网站目录下的 `.htaccess`，由 WordPress 在后台
+> 保存固定链接时自己写入（站点目录属 `www:www`，Apache 也以 `www` 运行，可写）。
+> 直接改数据库里的 `permalink_structure` 不会生成 `.htaccess`，文章页和
+> `/wp-json/` 仍会 404，须在后台「设置 → 固定链接」保存一次。
+>
+> **不要把 `include rewrite/wordpress.conf;` 加进 LNMPA 的 Nginx 站点配置。**
+> LNMPA 的 `proxy-pass-php.conf` 已经定义了 `location /`，再引入该规则会让
+> `nginx -t` 报 `duplicate location "/"`，reload 失败。
 
 ### 5.6 可选加固：禁止 PHP 改写代码目录
 
@@ -1799,6 +1822,10 @@ lnmp database export <库名> <文件.sql.gz>   # 导出单个库，gzip 压缩
 lnmp database import <库名> <文件.sql.gz>   # 导入到已存在的库
 ```
 
+`database add` 不接管已有对象：库名或 `<库名>@localhost`、`<库名>@127.0.0.1` 任一已存在时，
+命令直接返回非 0 并列出冲突项，不会重置现有账号密码（重复执行曾会让在用站点连不上库）。
+需要改密码用 `lnmp database edit`，确认旧库不再需要可 `lnmp database del` 后重建。
+
 导出导入的具体行为：
 
 - 两条命令都会先要求输入数据库 root 密码，凭据写在 `~/.my.cnf`，命令结束即删除。
@@ -1822,6 +1849,8 @@ MariaDB 11.8 会在直接调用旧程序名时打印弃用提示。新版安装�
 
 ```bash
 lnmp backup init                     # 扫描已有站点、挑选后生成配置，并装好 systemd timer
+                                     # 返回 0 才表示配置写入并装好定时任务；
+                                     # 取消（n / 空值 / EOF）返回非 0
 lnmp backup run all                  # 立即完整跑一次
 lnmp backup run wp.example.com       # 只备份某个站点（文件与它的库）
 lnmp backup run db  wp.example.com   # 只备份某个站点的库
@@ -2320,7 +2349,9 @@ tail -50 /var/log/wordpress/debug.log
 
 ### 9.3 文章页 404 但首页正常
 
-伪静态没生效。检查站点配置里有没有引用 wordpress 规则：
+伪静态没生效，按栈检查。
+
+**LNMP（Nginx）**：站点配置要引用 wordpress 规则：
 
 ```bash
 grep rewrite /usr/local/nginx/conf/vhost/wp.example.com.conf
@@ -2328,6 +2359,41 @@ grep rewrite /usr/local/nginx/conf/vhost/wp.example.com.conf
 ```
 
 没有就手工加进 `server {}` 块，然后 `lnmp nginx reload`。
+
+**LNMPA / LAMP（Apache）**：规则来自 `.htaccess`：
+
+```bash
+ls -l /home/wwwroot/wp.example.com/.htaccess
+```
+
+文件不存在时，到后台「设置 → 固定链接」重新保存一次，由 WordPress 生成；
+目录不可写则先 `chown www:www /home/wwwroot/wp.example.com`。
+这两套栈不要加 `include rewrite/wordpress.conf;`，会与 `proxy-pass-php.conf`
+的 `location /` 冲突。
+
+### 9.3b 数据库启动命令返回 0 但服务没起来
+
+先确认不是数据问题：数据目录（MySQL 默认 `/usr/local/mysql/var`）仍在即数据没丢。
+最常见的原因是机器上用 apt/yum 装过 `mariadb-server` 或 `mysql-server`：包会覆盖
+`/etc/init.d/mysql`，并把 `mysql.service` 别名到 `mariadb.service`，此后
+`systemctl stop mariadb` 之类的命令会停掉本包的数据库，启动脚本也不再指向 `/usr/local/mysql`。
+
+```bash
+grep -c /usr/local/mysql /etc/init.d/mysql   # 0 表示脚本已被系统包换掉
+ls -ld /usr/local/mysql/var                  # 数据目录仍在
+```
+
+恢复：
+
+```bash
+cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
+chmod 755 /etc/init.d/mysql
+systemctl daemon-reload && systemctl start mysql
+apt-get purge 'mariadb-server*' 'mysql-server*'
+```
+
+MariaDB 把上面的 `/usr/local/mysql` 换成 `/usr/local/mariadb`。`lnmp health` 的数据库探针
+也会报出该情况。
 
 ### 9.4 上传大文件失败
 

@@ -82,7 +82,7 @@ Upgrade_Multiplephp()
     fi
     Echo_Blue "即将把 PHP ${Cur_MPHP_Version} 升级到 ${php_version}。"
 
-    Press_Start
+    Press_Start || exit 1
     cd ${cur_dir}/src
     # 从 php.net 官方下载并验证源码包。
     if ! Download_Verified php "${php_version}" \
