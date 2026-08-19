@@ -95,7 +95,8 @@ Install_LNMP_Command()
         "${cur_dir}/tools/lnmp-backup.sh:/bin/lnmp-backup" \
         "${cur_dir}/tools/lnmp-tgnotice.sh:/bin/lnmp-tgnotice" \
         "${cur_dir}/tools/lnmp-phpmyadmin.sh:/bin/lnmp-phpmyadmin" \
-        "${cur_dir}/tools/lnmp-perm.sh:/bin/lnmp-perm"
+        "${cur_dir}/tools/lnmp-perm.sh:/bin/lnmp-perm" \
+        "${cur_dir}/tools/lnmp-health.sh:/bin/lnmp-health"
     do
         target=${source#*:}
         source=${source%%:*}
@@ -135,6 +136,22 @@ Install_Perm_Diagnose_Unit()
     return 0
 }
 
+# 健康检查的定时探测任务。unit 的 Restart= 只处理进程退出，
+# 进程存活但不响应请求的场景由该定时任务发现。
+# 只在完整安装收尾调用：bumpversion 同步管理命令时不应改动定时任务。
+# 定时任务装不上不影响已装好的服务，失败只告警。
+Install_Health_Timer()
+{
+    if [ ! -x /bin/lnmp-health ]; then
+        Echo_Yellow "缺少 /bin/lnmp-health，跳过健康检查定时任务。"
+        return 0
+    fi
+    if ! /bin/lnmp-health init >/dev/null 2>&1; then
+        Echo_Yellow "安装健康检查定时任务失败，可稍后执行 lnmp health init 重试。"
+    fi
+    return 0
+}
+
 # 在 Bash 登录环境中加载 tgnotice；该函数依赖 Bash 数组与字符串操作。
 Install_Tgnotice_Profile()
 {
@@ -163,6 +180,7 @@ Add_LNMP_Startup()
         sed -i 's#/usr/local/php/var/run/php-fpm.pid#/usr/local/php/logs/php-fpm.pid#' /bin/lnmp
         Sync_LNMP_Command_Alias || return 1
     fi
+    Install_Health_Timer
 }
 
 # 各安装栈共用数据库启动流程，并按已安装的服务类型启用对应服务。
@@ -184,6 +202,7 @@ Add_LNMPA_Startup()
     Startup_DB || return 1
     StartUp httpd
     StartOrStop start httpd
+    Install_Health_Timer
 }
 
 Add_LAMP_Startup()
@@ -193,6 +212,7 @@ Add_LAMP_Startup()
     StartUp httpd
     StartOrStop start httpd
     Startup_DB || return 1
+    Install_Health_Timer
 }
 
 Check_Nginx_Files()

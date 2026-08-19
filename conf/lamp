@@ -58,10 +58,21 @@ arg4=$4
 # 服务操作优先通过 systemd 执行，使进程状态与 systemctl 及监控结果一致。
 Systemd_Service_Exists()
 {
-    local service="$1"
-    [ -s "/etc/systemd/system/${service}.service" ] || \
-    [ -s "/lib/systemd/system/${service}.service" ] || \
-    [ -s "/usr/lib/systemd/system/${service}.service" ]
+    local service="$1" dir template
+
+    for dir in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do
+        [ -s "${dir}/${service}.service" ] && return 0
+    done
+    # 模板实例（如 php-fpm@8.3）没有独立 unit 文件，改判其模板是否存在。
+    case "${service}" in
+    *@*)
+        template="${service%@*}@"
+        for dir in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do
+            [ -s "${dir}/${template}.service" ] && return 0
+        done
+        ;;
+    esac
+    return 1
 }
 
 Service_Exists()
@@ -140,7 +151,7 @@ Svc_Process_Running()
 
 Check_Svc_State()
 {
-    local service stray='' down=''
+    local service state stray='' down=''
 
     [ -d /run/systemd/system ] || return 0
     command -v systemctl >/dev/null 2>&1 || return 0
@@ -148,7 +159,13 @@ Check_Svc_State()
     for service in "$@"; do
         [ -z "${service}" ] && continue
         Systemd_Service_Exists "${service}" || continue
-        systemctl is-active --quiet "${service}.service" && continue
+        state=$(systemctl is-active "${service}.service" 2>/dev/null)
+        [ "${state}" = "active" ] && continue
+        # unit 设了 Restart= 后，重启期间状态为 activating，此时尚未出结果，
+        # 判定为异常会产生误报。
+        case "${state}" in
+            activating|deactivating|reloading) continue ;;
+        esac
         # 进程在跑但 unit 不是 active，才是 systemd 之外启动导致的状态不一致；
         # 进程不在，说明启动确实失败，此时提示 kill 只会重复同一个失败。
         if Svc_Process_Running "${service}"; then
@@ -241,10 +258,25 @@ Kill_Process()
     return 1
 }
 
+# 先按 unit 停止再清残留：unit 设了 Restart=on-failure 时，直接发信号会被
+# systemd 判为异常退出并重新拉起；systemctl stop 属主动停止，不触发重启。
+Kill_By_Unit()
+{
+    local svc
+    for svc in "$@"; do
+        [ -z "${svc}" ] && continue
+        Systemd_Service_Exists "${svc}" || continue
+        Svc "${svc}" stop >/dev/null 2>&1
+    done
+}
+
 lamp_kill()
 {
     local failed=0
     echo "正在终止 Apache 和数据库进程..."
+
+    Kill_By_Unit "${APACHE_SERVICE}" "${DB_SERVICE}"
+
     Kill_Process httpd || failed=1
     # MariaDB 的进程名是 mariadbd，两者只会有一个存在。
     # 数据库关闭要刷缓冲池，给更长的等待时间。
@@ -329,6 +361,19 @@ Function_Perm()
         Echo_Red "找不到 ${bin}，安装不完整。"
         Echo_Red "可从源码目录补装："
         Echo_Red "  cp tools/lnmp-perm.sh /bin/lnmp-perm && chmod +x /bin/lnmp-perm"
+        return 1
+    fi
+    "${bin}" "$@"
+}
+
+Function_Health()
+{
+    # 健康检查由三种运行模式共用，避免探测阈值出现分歧。
+    local bin="/bin/lnmp-health"
+    if [ ! -x "${bin}" ]; then
+        Echo_Red "找不到 ${bin}，安装不完整。"
+        Echo_Red "可从源码目录补装："
+        Echo_Red "  cp tools/lnmp-health.sh /bin/lnmp-health && chmod +x /bin/lnmp-health"
         return 1
     fi
     "${bin}" "$@"
@@ -3114,6 +3159,12 @@ case "${arg1}" in
         Function_Perm "$@"
         exit $?
         ;;
+    health)
+        # health 子命令参数数量不同，移除命令名后完整转交。
+        shift
+        Function_Health "$@"
+        exit $?
+        ;;
     tgnotice|notice)
         shift
         if [ ! -x /bin/lnmp-tgnotice ]; then
@@ -3160,6 +3211,7 @@ case "${arg1}" in
         echo "用法：lnmp tgnotice {--init|--test|--status} | lnmp tgnotice \"文本\" [md]"
         echo "用法：lnmp perm {check|run|status|init|uninit}"
         echo "用法：lnmp perm check [服务名] | lnmp perm {ignore|unignore} <条目ID>"
+        echo "用法：lnmp health {check|status|reset|init|uninit}"
         echo "用法：lnmp phpmyadmin {enable|disable|status}"
         echo "用法：lnmp ssl add"
         echo "用法：lnmp {dnsssl|dns} {ali|cf|dp|he|gd|aws}"

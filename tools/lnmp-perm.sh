@@ -106,6 +106,7 @@ Baseline=(
 "CMD03|cmd|stat|/bin/lnmp-tgnotice|root|root|755|soft|opt"
 "CMD04|cmd|stat|/bin/lnmp-perm|root|root|755|soft|opt"
 "CMD05|cmd|stat|/etc/profile.d/lnmp-tgnotice.sh|root|root|644|soft|opt"
+"CMD06|cmd|stat|/bin/lnmp-health|root|root|755|soft|opt"
 "SEC01|sec|stat|/etc/lnmp|root|root|700|soft|opt"
 "SEC02|sec|stat|/etc/lnmp/backup-mysql.cnf|-|-|600|soft|opt"
 "SEC03|sec|stat|/etc/lnmp/backup.conf|-|-|600|soft|opt"
@@ -115,6 +116,7 @@ Baseline=(
 "SEC07|sec|stat|/root/.lnmp_db_root_password|-|-|600|soft|opt"
 "SEC08|sec|stat|/etc/nftables.d/lnmp.nft|-|-|600|soft|opt"
 "SEC09|sec|stat|/etc/systemd/system/lnmp-nftables.service|root|root|644|soft|opt"
+"SEC10|sec|stat|/etc/lnmp/health-state|-|-|600|soft|opt"
 )
 
 # 参与启停钩子的服务名。cmd 与 sec 只在手动核对中出现；
@@ -723,6 +725,10 @@ Svc_For_Unit()
     mysql|mariadb|nginx|httpd|php-fpm|redis|pureftpd)
         printf '%s' "${unit}"
         ;;
+    # 多版本 PHP 的 unit 为 php-fpm@<版本>，权限基线与主 php-fpm 相同。
+    php-fpm@*)
+        printf 'php-fpm'
+        ;;
     *) return 1 ;;
     esac
 }
@@ -1121,9 +1127,14 @@ Cmd_Diagnose()
     esac
 
     Write_State "Diag_${svc}_Time" "${now}"
+    # unit 进入 failed 即告警。崩溃原因与权限无关时（如 OOM）计数为 0，
+    # 此时仍需通知，否则重启次数耗尽后无人知晓。
     if [ "${Hard_Count}" -gt 0 ] || [ "${Soft_Count}" -gt 0 ]; then
-        Notify "LNMP 权限告警：${unit} 启动失败
-失败条目：${Failed_Ids}"
+        Notify "LNMP 服务告警：${unit} 启动失败
+权限基线失败条目：${Failed_Ids}"
+    else
+        Notify "LNMP 服务告警：${unit} 进入 failed
+权限基线正常，需查 journalctl -xeu ${unit} 定位原因。"
     fi
     return 0
 }

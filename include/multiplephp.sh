@@ -110,7 +110,14 @@ EOF
     Ensure_Runtime_Directory /run/php-fpm root root || return 1
     Patch_Init_Runtime_Directory /etc/init.d/php-fpm${MPHP_Short_Ver} /run/php-fpm root root || return 1
 
-    StartUp php-fpm${MPHP_Short_Ver}
+    # 模板 unit 由所有版本共用，%i 取版本号。装上后多版本 PHP 与主 php-fpm
+    # 共享同一套自动重启策略，状态也与 systemctl 一致。
+    if [ -d /etc/systemd/system ]; then
+        \cp ${cur_dir}/init.d/php-fpm@.service /etc/systemd/system/php-fpm@.service
+        chmod 644 /etc/systemd/system/php-fpm@.service
+    fi
+
+    StartUp php-fpm@${MPHP_Short_Ver}
 
     \cp ${cur_dir}/conf/enable-php${MPHP_Short_Ver}.conf /usr/local/nginx/conf/enable-php${MPHP_Short_Ver}.conf
 

@@ -18,6 +18,8 @@ ExecStart=/etc/init.d/mysql start
 ExecStop=/etc/init.d/mysql stop
 ExecReload=/etc/init.d/mysql reload
 
+# mysqld_safe 已负责 mysqld 崩溃拉起，systemd 再加一层会形成双重启动者，
+# 且 PID 跟踪失真；数据损坏时反复重启会加剧损坏。存活异常由 lnmp-health 告警。
 Restart=no
 PrivateTmp=true
 

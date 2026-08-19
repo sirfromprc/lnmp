@@ -423,6 +423,75 @@ check_v14()
     ok V14 "校验清单每行格式合法且文件名不重复"
 }
 
+# ---------------------------------------------------------------------------
+# V15 崩溃自动重启与健康检查的关键配置不能缺失
+#
+# Restart= 缺失时进程崩溃后不会拉起；StartLimit* 写进 [Service] 段会被
+# systemd 忽略且不报错，退避形同虚设。数据库不参与自动重启，须保持
+# Restart=no，避免与 mysqld_safe 形成双重启动者。
+# ---------------------------------------------------------------------------
+check_v15()
+{
+    local missing="" unit
+
+    for unit in nginx httpd php-fpm redis memcached pureftpd php-fpm@; do
+        [ -s "init.d/${unit}.service" ] || { missing="${missing} ${unit}.service缺失"; continue; }
+        grep -q '^Restart=on-failure$' "init.d/${unit}.service" \
+            || missing="${missing} ${unit}-无Restart"
+        grep -q '^RestartSec=' "init.d/${unit}.service" \
+            || missing="${missing} ${unit}-无RestartSec"
+        # StartLimit* 必须落在 [Service] 之前，即 [Unit] 段内
+        awk '/^\[Service\]/ { exit } /^StartLimitIntervalSec=/ { found = 1 } END { exit !found }' \
+            "init.d/${unit}.service" || missing="${missing} ${unit}-StartLimit不在[Unit]段"
+        grep -q '^StartLimitBurst=' "init.d/${unit}.service" \
+            || missing="${missing} ${unit}-无StartLimitBurst"
+        # 熔断后只标记 failed，不得触发整机重启
+        grep -q '^StartLimitAction=' "init.d/${unit}.service" \
+            && missing="${missing} ${unit}-配了StartLimitAction"
+    done
+
+    # Type=forking 无 PIDFile 时 systemd 靠 cgroup 猜主进程，Restart 判定不可靠
+    for unit in nginx httpd php-fpm redis memcached pureftpd php-fpm@; do
+        [ -s "init.d/${unit}.service" ] || continue
+        grep -q '^Type=forking' "init.d/${unit}.service" || continue
+        grep -q '^PIDFile=' "init.d/${unit}.service" \
+            || missing="${missing} ${unit}-forking无PIDFile"
+    done
+
+    for unit in mysql mariadb; do
+        grep -q '^Restart=no$' "init.d/${unit}.service" 2>/dev/null \
+            || missing="${missing} ${unit}-应保持Restart=no"
+    done
+
+    [ -s tools/lnmp-health.sh ] || missing="${missing} lnmp-health.sh缺失"
+    # 探针的墙钟超时优先用 timeout（coreutils），装机时必须带上该包
+    grep -q 'gnupg gpgv coreutils' include/init.sh \
+        || missing="${missing} apt依赖未含coreutils"
+    grep -q 'nftables gnupg2 coreutils' include/init.sh \
+        || missing="${missing} yum依赖未含coreutils"
+    # redis 探针不能调 redis-cli：其 -t 只管连接超时，服务端卡住时不会中断。
+    # 只看实际调用，注释里提到该命令不算。
+    grep -vE '^[[:space:]]*#' tools/lnmp-health.sh | grep -q 'redis-cli' \
+        && missing="${missing} redis探针仍调用redis-cli"
+    grep -q 'tools/lnmp-health.sh:/bin/lnmp-health' include/end.sh \
+        || missing="${missing} lnmp-health未随管理命令安装"
+    grep -q 'init.d/php-fpm@.service /etc/systemd/system/' include/multiplephp.sh \
+        || missing="${missing} php-fpm@模板未部署"
+    # lnmp kill 直接发信号会被 Restart=on-failure 判为崩溃并立即拉起
+    grep -q 'Kill_By_Unit' conf/lnmp \
+        || missing="${missing} lnmp-kill未先停unit"
+    grep -q 'Kill_By_Unit' conf/lnmpa \
+        || missing="${missing} lnmpa-kill未先停unit"
+    grep -q 'Kill_By_Unit' conf/lamp \
+        || missing="${missing} lamp-kill未先停unit"
+
+    if [ -z "${missing}" ]; then
+        ok V15 "自动重启与健康检查配置完整"
+    else
+        bad V15 "自动重启配置存在问题：${missing}"
+    fi
+}
+
 echo "=== 跨文件一致性检查 ==="
 check_v1
 check_v2
@@ -438,6 +507,7 @@ check_v11
 check_v12
 check_v13
 check_v14
+check_v15
 
 echo
 echo "通过 ${pass} 项，失败 ${fail} 项。"

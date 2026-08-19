@@ -11244,3 +11244,221 @@ configure 阶段才暴露。
 服务启动，修正 `/etc/my.cnf` 后重新核对即可。
 
 - **验证状态**：文档改动，无代码影响。
+
+---
+
+## FIX-SVC-001 服务进程异常退出后不会自动拉起
+
+**位置**：`init.d/*.service`、`conf/lnmp`、`conf/lnmpa`、`conf/lamp`、
+`include/main.sh`、`include/end.sh`、`include/multiplephp.sh`、`uninstall.sh`
+
+`mysql.service` 与 `mariadb.service` 设 `Restart=no`，其余 unit 未设 `Restart=`
+（systemd 默认同样是 no）。进程被 OOM killer 终止或自身崩溃时 unit 进入 failed
+并触发 `OnFailure=` 的权限诊断，但不会重新启动。
+
+Nginx、Apache、PHP-FPM、Redis、Memcached、Pure-FTPd 的 unit 增加
+`Restart=on-failure`、`RestartSec=3`，并在 `[Unit]` 段设
+`StartLimitIntervalSec=300`、`StartLimitBurst=5`。窗口取 300 秒而非 60 秒：
+`RestartSec=3` 下 60 秒窗口约 15 秒即耗尽，且服务启动后延迟数分钟再崩的循环会
+不断复位计数，永远不触发上限。不设 `StartLimitAction`，保持默认 `none`。
+
+`httpd.service` 补 `PIDFile=/usr/local/apache/logs/httpd.pid`。`Type=forking` 且
+无 `PIDFile=` 时 systemd 靠 cgroup 猜测主进程，`Restart=` 判定不可靠。
+
+MySQL/MariaDB 保持 `Restart=no`。其 SysV 脚本基于 `mysqld_safe`，`mysqld_safe`
+本身即 mysqld 的崩溃拉起器，systemd 再叠一层会形成双重启动者并使 PID 跟踪失真。
+数据库存活异常改由 `lnmp health` 告警。彻底方案见 `todo.md` 的 OPEN-DB-001。
+
+**验证状态**：Debian 13 实测。`systemctl show nginx` 的 `Restart=on-failure`、
+`RestartUSec=3s`、`StartLimitIntervalUSec=5min`、`StartLimitBurst=5`、
+`StartLimitAction=none` 全部按预期生效；`kill -9` 主进程后 `NRestarts` 由 0 增至
+1、服务恢复 active 且站点返回 200；启动持续失败时 5 次后进入 failed 并停止重试
+（20 秒后 `Scheduled restart job` 计数不再增加）。
+
+## FIX-SVC-002 `lnmp kill` 与自动重启冲突
+
+**位置**：`conf/lnmp:291`、`conf/lnmpa`、`conf/lamp`
+
+`lnmp_kill` 直接按进程名 `pkill`。unit 设 `Restart=on-failure` 后，收到信号退出
+会被 systemd 判为异常退出并在 3 秒后重新拉起，`kill` 语义失效。
+
+新增 `Kill_By_Unit`，`kill` 改为两段：先对存在 unit 的服务执行 `systemctl stop`
+（systemd 记为主动停止，不触发 `Restart=`），再用既有 `Kill_Process` 清理 systemd
+之外启动的残留进程。原有清理野进程的语义不变。
+
+`Check_Svc_State` 同步调整：改读 `systemctl is-active` 的状态字符串，
+`activating`/`deactivating`/`reloading` 不再判为异常。加 `Restart=` 后重启期间
+unit 处于 `activating`，原先的 `is-active --quiet` 会在每次 `lnmp restart` 时误报。
+
+**验证状态**：Debian 13 实测。`lnmp stop` 后 8 秒内服务保持 inactive 未被拉起；
+`lnmp kill` 返回 0，nginx、php-fpm、mysqld 进程数均为 0 且未被拉起。
+`tests/test_svc_state.sh` 51 项通过（含新增的重启进行中不误报用例）。
+
+## FIX-SVC-003 多版本 PHP 无 systemd unit
+
+**位置**：`init.d/php-fpm@.service`、`include/multiplephp.sh`、`include/main.sh`、
+`conf/lnmp`、`uninstall.sh`
+
+多版本 PHP 只有 `/etc/init.d/php-fpm8.x`，没有 unit，因此不受自动重启策略覆盖，
+`systemctl` 也看不到其状态。
+
+新增模板 unit `init.d/php-fpm@.service`，`%i` 取版本号，路径与
+`include/multiplephp.sh` 生成的配置一致，重启策略与主 php-fpm 相同。安装时部署模板
+并 `StartUp php-fpm@<版本>`。`conf/lnmp` 的三处 `for mphpfpm in /etc/init.d/...`
+循环合并为 `Multiple_PHP_Action`，模板 unit 存在时走 systemd，否则回退 SysV 脚本，
+存量环境不受影响。
+
+`Systemd_Service_Exists`（三份管理脚本）与 `Systemd_Unit_Exists`
+（`include/main.sh`）支持模板实例：`name@instance` 没有独立 unit 文件，改判其模板
+是否存在。`lnmp-perm` 的 `Svc_For_Unit` 增加 `php-fpm@*` 映射，使模板实例进入
+failed 时 `OnFailure` 诊断能正常识别服务名。卸载路径同步 disable 实例并删除模板。
+
+**验证状态**：静态检查通过（`t/consistency.sh` V15）。该测试机未安装多版本 PHP，
+模板实例的实跑待有多版本环境时补测。
+
+## FIX-SVC-004 崩溃熔断后无告警
+
+**位置**：`tools/lnmp-perm.sh:1124`
+
+`Cmd_Diagnose` 仅在权限项 `Hard_Count` 或 `Soft_Count` 大于 0 时推送通知。
+被 OOM killer 终止、可执行文件缺失一类与权限无关的崩溃，两个计数均为 0，unit 耗尽
+启动次数进入 failed 后不会发出任何告警。
+
+改为无条件通知：权限有失败条目时附条目 ID，权限正常时明示需查 journalctl。既有的
+`Diag_Quiet_Sec` 静默窗口保留，避免持续故障刷屏。
+
+**验证状态**：Debian 13 实测。权限基线全部通过（通过 0、告警 0、严重 0）时仍发出
+「LNMP 服务告警：redis.service 进入 failed，权限基线正常，需查 journalctl」。
+
+## FIX-SVC-005 新增服务健康检查 `lnmp health`
+
+**位置**：`tools/lnmp-health.sh`、`conf/lnmp`、`conf/lnmpa`、`conf/lamp`、
+`include/end.sh`、`uninstall.sh`、`bumpversion.sh`
+
+`Restart=` 只能处理进程退出，发现不了进程存活但不响应请求：PHP-FPM worker 全部卡住、
+Nginx 活着但上游全部超时、数据库进程活着但无法响应查询。
+
+新增 `/bin/lnmp-health`，由 `lnmp-health.timer` 每分钟探测一次，无 systemd 时退回
+`/etc/cron.d/lnmp-health`。探针均为协议层探测，不引入新依赖：Web 用 `curl` 请求本机
+端口（连接失败、超时或 5xx 判为异常，2xx/3xx/4xx 算存活）；PHP-FPM 核对 socket、
+master 进程与 worker 数；Redis 用 `redis-cli ping`（`NOAUTH` 算存活）；Memcached 用
+bash 的 `/dev/tcp` 发 `version`；数据库用 `mysqladmin ping`（`Access denied` 同样
+说明服务在响应，不需要口令）。
+
+Web 端口从 `ss` 输出中取，只接受绑在通配地址上的端口并优先 80：只绑 `127.0.0.1` 的
+监听通常是状态页一类的内部端口，用它探测得不出站点是否可用。
+
+连续失败 3 次才执行一次 `systemctl restart`，重启动作交给 systemd，unit 的启动次数
+上限依然生效，因此不再实现第二套熔断状态机。30 分钟内已由健康检查重启 2 次仍未恢复
+则熔断，只告警不再重启，探测恢复正常或 `lnmp health reset` 后解除。数据库达阈值只
+告警，不自动重启。
+
+探测前先判定服务是否应处于运行状态：`inactive`（人工停止）、`failed`（systemd 已
+放弃，由 `OnFailure` 告警）、`activating`/`deactivating`（正在切换）一律跳过，
+因此 `lnmp stop` 之后服务不会被健康检查重新拉起。
+
+告警复用 `tgnotice`，同一服务 1 小时内只发一条。日志 `/var/log/lnmp/health.log`，
+状态 `/etc/lnmp/health-state`（600），阈值可在 `/etc/lnmp/health.conf` 覆盖。
+`tools/check502.sh` 无阈值也无熔断且绕过 systemd，与本机制冲突，标注废弃。
+
+**验证状态**：Debian 13 实测。`kill -STOP` 模拟卡死后连续 3 轮失败触发一次重启，
+计数清零、记录重启时间且站点恢复 200；构造持续 502 后重启 2 次仍未恢复即熔断并写入
+`Paused_nginx`，`nginx` 保持 active 不再被重启；恢复配置后一轮探测自动解除熔断；
+`lnmp health reset nginx` 清空该服务全部状态键。前置判定实测：`failed` 与
+`inactive` 的服务均跳过探测。`tests/test_health.sh` 48 项通过。
+
+## FIX-SVC-006 Redis 探针超时不覆盖「连得上但不响应」
+
+**位置**：`tools/lnmp-health.sh` `Probe_Redis`
+
+原写法 `redis-cli -h 127.0.0.1 -p <port> -t <秒> ping` 中的 `-t` 是
+`Server connection timeout in seconds`，只控制建立连接阶段的超时。Redis 进程接受
+连接后不响应时，`-t` 不会中断，探针挂死并拖住整轮探测——而这正是健康检查要发现
+的场景。
+
+改用 `timeout` 命令包裹，覆盖整个命令的墙钟时间；退出码 124 记为超时。`timeout`
+来自 coreutils，不是新增依赖，缺失时退回不带超时的调用。
+
+**验证状态**：Debian 13 实测（redis-cli 8.0.2）。`redis-cli -t 2 ping` 在
+`SIGSTOP` 挂起 redis-server 后 20 秒仍未返回；`timeout 2 redis-cli ping` 2 秒返回。
+改动后 `Probe_Redis` 在 Redis 正常时判为存活，Redis 卡住时耗时等于
+`Probe_Timeout` 并给出「redis-cli ping 超时」，`SIGCONT` 恢复后重新判为存活。
+`tests/test_health.sh` 补 11 项 Redis 探针用例（原先该探针无任何覆盖）。
+
+**说明**：审计条目 AUDIT-001 认为 `-t` 是 TLS 开关、会把正常 Redis 判成故障，
+实测不成立：`redis-cli -h 127.0.0.1 -p 6379 -t 5 ping` 返回 PONG 且退出码为 0，
+TLS 开关是 `--tls`。缺陷成立但成因不同，见上。
+
+**返工**：首版改用 `timeout` 包裹 `redis-cli`，该命令缺失时退回不带超时的调用，
+Redis 卡死仍会拖住整轮探测。改为不调 `redis-cli`：用 bash 的 `/dev/tcp` 发 inline
+`PING`，超时由内建 `read -t` 保证，不依赖任何外部命令，与 Memcached 探针一致。
+`+PONG`、`-NOAUTH`、`-LOADING` 等 RESP 回复均判为存活（进程在响应请求）；
+`port 0` 表示只监听 unixsocket，没有 TCP 端口可探测，不判为故障。
+
+## FIX-SVC-007 无 systemd 时 cron 回退不会执行探测
+
+**位置**：`tools/lnmp-health.sh` `Cmd_Init`、`Cmd_Check`、`Cmd_Status`
+
+`Cmd_Init` 在没有 systemd 的环境写入 `/etc/cron.d/lnmp-health`，但 `Should_Probe`
+要求 systemd 可用，`Managed_Services` 也只从 systemd unit 目录发现服务。cron 每分钟
+调用 `check` 时会跳过全部服务，用户看到「已写入 cron」却不会有任何探测或恢复。
+
+不补 SysV 支持：`Should_Probe` 区分「人工停止」和「崩溃」依赖 unit 的 `enabled` 与
+`active` 状态，SysV 的 `status` 非 0 既可能是崩溃也可能是人工停止，照样重启会把
+`lnmp stop` 之后的服务重新拉起；重启动作也要交给 systemd 才能复用 unit 的启动次数
+上限。改为无 systemd 时明确拒绝：新增 `Systemd_Available`，`init` 拒绝安装并说明
+原因，`check` 与 `status` 返回非 0 并提示，删除 `Write_Cron`。`uninit` 仍清理该
+cron 路径，覆盖手工写入的情况。
+
+**验证状态**：Debian 13 实测。桩掉 `Systemd_Available` 后 `init`、`check`、
+`status` 均返回 1 并输出原因，且不写 cron 文件。`tests/test_health.sh` 补 4 项
+无 systemd 行为用例。README 3.14 与 HowtoGuides 8.1 同步说明该依赖。
+
+## FIX-SVC-008 探针超时依赖 timeout 命令存在
+
+**位置**：`tools/lnmp-health.sh` `Run_With_Timeout`、`Probe_Db`、`Probe_Redis`、
+`include/init.sh`
+
+FIX-SVC-006 用 `timeout` 命令包裹探针，该命令缺失时退回不带超时的调用，服务卡死
+仍会拖住整轮探测。数据库探针同样受影响：`mysqladmin --connect-timeout` 只覆盖建立
+连接阶段，mysqld 接受连接后不响应时不会中断。
+
+- Redis 探针改为不调外部命令：用 bash 的 `/dev/tcp` 发 inline `PING`，超时由内建
+  `read -t` 保证。
+- 新增 `Run_With_Timeout`，优先用 `timeout`，缺失时退回后台执行加轮询，超时依次
+  发 TERM 与 KILL 并返回 124，临时文件用 `mktemp` 创建后清理。数据库探针改用它包裹
+  整条 `mysqladmin` 命令。
+- `include/init.sh` 的 apt 与 yum 主依赖列表加入 `coreutils`，装机即带 `timeout`；
+  代码里的回退路径保留，覆盖未经 `install.sh` 部署的环境。
+- `t/consistency.sh` V15 增加断言：两个包列表含 `coreutils`，且 `lnmp-health.sh`
+  的实际调用中不出现 `redis-cli`。
+
+**验证状态**：Debian 13 实测。Redis 被 `SIGSTOP` 挂起后，有无 `timeout` 命令两条
+路径均在 `Probe_Timeout` 秒内判为异常并给出「未响应 PING」，`SIGCONT` 后恢复存活；
+桩掉 `timeout` 后 `Run_With_Timeout 2 sleep 30` 返回 124、耗时 3 秒、无残留 sleep
+进程、无残留临时文件。`tests/test_health.sh` 63 项增至 70 项，新增用真实 TCP 服务器
+验证 RESP 回复与「连得上但不回内容」，以及超时执行器在有无 `timeout` 两条路径下的
+输出、退出码与中断能力。
+
+## FIX-SVC-009 超时回退路径只杀顶层进程，留下孤儿子进程
+
+**位置**：`tools/lnmp-health.sh` `Run_With_Timeout`、`Kill_Process_Group`
+
+没有 `timeout` 命令时，`Run_With_Timeout` 后台启动目标命令并只对记录的顶层 PID 发
+TERM/KILL。目标命令派生的子进程不在清理范围内，超时后会被 init 收养并继续运行，
+反复探测会累积资源占用。`Probe_Db` 的 `mysqladmin` 通常不派生长期子进程，但该函数
+是通用执行器，不能假设所有调用方都没有子进程。
+
+启动前开 job control（`set -m`）使目标命令成为独立进程组的组长，超时时按进程组
+发信号，连同其派生的子进程一并清理；原本就开着 job control 时不改变该状态。
+
+按组发信号有误伤风险：目标若不是组长，负号会打到调用方所在的进程组，把健康检查
+自己杀掉。因此拆出 `Kill_Process_Group`，先用 `ps -o pgid=` 确认该 PID 就是组长才
+用负号，取不到组号（无 `ps`）或它不是组长时退化为只杀该 PID。
+
+**验证状态**：Debian 13 实测。修复前
+`Run_With_Timeout 2 sh -c 'sleep 30 & wait'` 返回 124 但子进程仍可被 `kill -0`
+检测到；修复后同一步骤返回 124、记录的子进程 PID 已不存在、无残留 sleep 进程与
+临时文件、调用方存活。保护分支实测：桩掉 `ps` 后仍返回 124 且调用方存活；目标进程
+组与调用方进程组相同（非组长）时，`Kill_Process_Group` 只终止目标，调用方存活。
+有 `timeout` 的正常路径输出与退出码不变。`tests/test_health.sh` 70 项增至 77 项。

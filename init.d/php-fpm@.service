@@ -1,5 +1,5 @@
 [Unit]
-Description=The PHP FastCGI Process Manager
+Description=The PHP %i FastCGI Process Manager
 After=network.target
 
 # 崩溃循环退避：300 秒窗口内最多启动 5 次，超出后标记 failed 并停止重试。
@@ -11,16 +11,15 @@ StartLimitBurst=5
 OnFailure=lnmp-perm-diagnose@%n.service
 
 [Service]
-# Type=forking 与 php-fpm.conf 的 pid 文件配合，使 systemd、SysV 脚本和
-# lnmp status 使用同一服务状态依据。
+# %i 为版本号，如 8.3；路径与 include/multiplephp.sh 生成的配置一致。
 Type=forking
-PIDFile=/usr/local/php/var/run/php-fpm.pid
+PIDFile=/usr/local/php%i/var/run/php-fpm.pid
 RuntimeDirectory=php-fpm
 RuntimeDirectoryMode=0755
 # LNMP perm hooks
 ExecStartPre=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook pre php-fpm'
 ExecStopPost=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook post php-fpm'
-ExecStart=/usr/local/php/sbin/php-fpm --fpm-config /usr/local/php/etc/php-fpm.conf
+ExecStart=/usr/local/php%i/sbin/php-fpm --fpm-config /usr/local/php%i/etc/php-fpm.conf
 ExecReload=/bin/kill -USR2 $MAINPID
 # 停止交给 systemd 发信号，SIGQUIT 为优雅退出。
 KillSignal=SIGQUIT

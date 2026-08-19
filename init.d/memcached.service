@@ -2,6 +2,11 @@
 Description=Memcached
 After=network.target
 
+# 崩溃循环退避：300 秒窗口内最多启动 5 次，超出后标记 failed 并停止重试。
+# 不设 StartLimitAction，保持默认 none，不触发整机重启。
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=forking
 # 监听地址、端口、账号、容量和连接数统一由 SysV 脚本管理，避免参数重复。
@@ -9,6 +14,9 @@ Type=forking
 PIDFile=/run/memcached/memcached.pid
 ExecStart=/etc/init.d/memcached start
 ExecStop=-/etc/init.d/memcached stop
+# 仅进程异常退出时重启，systemctl stop 属主动停止，不触发。
+Restart=on-failure
+RestartSec=3
 PrivateTmp=true
 
 [Install]

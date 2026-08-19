@@ -93,6 +93,8 @@
 - 安装入口遇到已有 MySQL/MariaDB 数据目录时会整体移动到时间戳备份目录，
   包括隐藏文件和数据库子目录；移动或重建空目录失败就停止，不再非递归复制后删除原数据。
 - 包管理器繁忙时等待锁释放，不终止包管理进程或删除 yum/dpkg 锁文件。
+- 服务进程异常退出由 systemd 按退避策略自动拉起，进程存活但不响应请求由
+  `lnmp health` 的定时探测发现，两者职责分离，重启动作统一交给 systemd 执行。
 
 > **验证情况**：
 >
@@ -338,15 +340,28 @@ lnmp dnsssl   {ali|cf|dp|he|gd|aws}               # DNS 验证签发（支持泛
 lnmp onlyssl  {ali|cf|dp|he|gd|aws}               # 只签证书，不改 Nginx 配置
 lnmp tgnotice {--init|--test|--status}            # Telegram 通知，见 3.12
 lnmp perm     {check|status|init|uninit}          # 权限基线核对，见 3.13
+lnmp health   {check|status|reset|init|uninit}     # 服务健康检查，见 3.14
 ```
 
 > `reload` 是平滑重载配置，不中断连接；`restart` 会真正重启进程。
 > 修改 Nginx 配置后优先使用 `reload`。`kill` 仅用于正常停止失败的情况。
 
-> `kill` 按进程名逐个终止 Nginx、PHP-FPM 和数据库：先发 TERM 并等待进程真正退出
-> （数据库最多 30 秒，其余最多 10 秒），超时才发 KILL。全部终止成功才打印「完成。」
-> 并返回 0，有进程未能终止时返回非 0。该命令依赖 procps 提供的 `pgrep` 与 `pkill`，
-> 两者缺失时退回 `killall`，都没有时报错要求安装 procps。
+> `kill` 先按 unit 执行 `systemctl stop`，再按进程名逐个终止残留进程：先发 TERM
+> 并等待进程真正退出（数据库最多 30 秒，其余最多 10 秒），超时才发 KILL。
+> 先停 unit 是必需的：服务 unit 设了 `Restart=on-failure`，直接发信号会被 systemd
+> 判为异常退出并立即重新拉起。全部终止成功才打印「完成。」并返回 0，有进程未能终止
+> 时返回非 0。该命令依赖 procps 提供的 `pgrep` 与 `pkill`，两者缺失时退回 `killall`，
+> 都没有时报错要求安装 procps。
+
+**服务崩溃后会自动拉起**。Nginx、Apache、PHP-FPM（含多版本）、Redis、Memcached、
+Pure-FTPd 的 unit 均设 `Restart=on-failure`、`RestartSec=3`，进程被 OOM killer 终止
+或自身崩溃时 3 秒后自动重启；`systemctl stop` 和 `lnmp stop` 属主动停止，不会触发。
+300 秒窗口内最多启动 5 次，超出后 unit 标记为 failed 并停止重试，同时推送 Telegram
+告警，避免 CPU、日志和端口被持续消耗。不会因连续失败重启整台机器。
+
+MySQL/MariaDB 保持 `Restart=no`：其 SysV 启动脚本基于 `mysqld_safe`，`mysqld_safe`
+本身已是崩溃拉起器，systemd 再叠一层会形成双重启动者并导致 PID 跟踪失真；数据损坏
+场景下反复重启也会加剧损坏。数据库无响应时由 `lnmp health` 告警，不自动重启。
 
 **优先用 `lnmp`，不要直接调 `/etc/init.d/`**。有 systemd 的机器上，`lnmp` 会走
 `systemctl`；绕过它直接跑 init 脚本，进程确实起来了，`systemctl is-active` 却报
@@ -713,9 +728,11 @@ grep '^TLS' /usr/local/pureftpd/etc/pure-ftpd.conf
 |---|---|
 | `lnmp-backup.sh` | `lnmp backup` 的实现，安装为 /bin/lnmp-backup |
 | `lnmp-tgnotice.sh` | Telegram 通知，安装为 /bin/lnmp-tgnotice，并提供全局 `tgnotice` 函数 |
+| `lnmp-perm.sh` | `lnmp perm` 的实现，安装为 /bin/lnmp-perm |
+| `lnmp-health.sh` | `lnmp health` 的实现，安装为 /bin/lnmp-health，见 3.14 |
 | `backup.sh` | 已废弃，转发到 `lnmp backup run all` |
 | `cut_nginx_logs.sh` | Nginx 日志切割 |
-| `check502.sh` | 检测 502 并自动重启 PHP-FPM |
+| `check502.sh` | 已废弃，无阈值且绕过 systemd，改用 `lnmp health` |
 | `reset_mysql_root_password.sh` | 重置数据库 root 密码 |
 | `remove_open_basedir_restriction.sh` | 去掉防跨目录限制 |
 | `remove_disable_function.sh` | 解除 PHP 禁用函数 |
@@ -891,6 +908,54 @@ systemd 直接给出路径与修复命令，而不是让服务反复失败。其
 
 日志：`/var/log/lnmp/perm.log`。状态：`/etc/lnmp/perm-state`（600）。
 忽略清单：`/etc/lnmp/perm-ignore`（600）。
+
+### 3.14 服务健康检查：`lnmp health`
+
+unit 的 `Restart=on-failure` 只能处理进程退出，发现不了「进程还在但不再响应」：
+PHP-FPM worker 全部卡住、Nginx 活着但上游全部超时、数据库进程活着但无法响应查询。
+`lnmp health` 补上这一层，由 `lnmp-health.timer` 每分钟探测一次。
+
+> 健康检查依赖 systemd：区分「人工停止」和「崩溃」要看 unit 的 `enabled` 与
+> `active` 状态，重启也交给 systemd 执行以复用 unit 的启动次数上限。没有 systemd
+> 的环境（部分容器、WSL）下 `lnmp health init` 会明确拒绝安装并说明原因，不提供
+> cron 回退——那种环境里 unit 的 `Restart=` 同样不生效，服务异常需要自行监控。
+
+```bash
+lnmp health check          # 执行一轮探测，timer 调用的就是它
+lnmp health status         # 各服务当前探测结果、连续失败次数与熔断状态
+lnmp health reset [服务]   # 清除失败计数与熔断标记，不带参数清除全部
+lnmp health init           # 安装定时探测任务（完整安装时已自动执行）
+lnmp health uninit         # 移除定时探测任务
+```
+
+**探针**（全部为协议层探测，不引入新依赖）：
+
+| 服务 | 探针 | 判为异常的条件 |
+| --- | --- | --- |
+| Nginx / Apache | `curl` 请求 `127.0.0.1` 本机端口 | 连接失败、超时或 5xx；2xx/3xx/4xx 都算存活 |
+| PHP-FPM（含多版本） | socket 存在 + master 存活 + worker 数大于 0 | 任一不成立 |
+| Redis | `redis-cli ping` | 非 PONG；配了 `requirepass` 返回 NOAUTH 也算存活 |
+| Memcached | 发送 `version` 命令 | 连接失败或未返回 VERSION |
+| MySQL / MariaDB | `mysqladmin ping` | 非 `mysqld is alive`；`Access denied` 也算存活，不需要口令 |
+
+**动作与熔断**：连续失败 3 次（约 3 分钟）才动作，滤掉重载和瞬时抖动。达到阈值后
+执行一次 `systemctl restart`，重启动作交给 systemd，unit 的启动次数上限依然生效。
+30 分钟内已由健康检查重启 2 次仍未恢复则熔断，只告警不再重启，直到探测恢复正常或
+执行 `lnmp health reset`。数据库达到阈值只告警，不自动重启。
+
+**不会和人工操作抢动作**：探测前先看 unit 状态，`inactive`（人工停止）、`failed`
+（systemd 已放弃，由 `OnFailure` 告警）和 `activating`/`deactivating`（正在切换）
+一律跳过。所以 `lnmp stop` 之后服务不会被健康检查重新拉起。
+
+**告警**：触发重启和进入熔断时各推送一次 Telegram 通知，同一服务 1 小时内只发一条。
+未配置 Telegram 时静默跳过。
+
+日志：`/var/log/lnmp/health.log`。状态：`/etc/lnmp/health-state`（600）。
+阈值可在 `/etc/lnmp/health.conf` 中覆盖（`Fail_Threshold`、`Restart_Window_Sec`、
+`Restart_Max`、`Probe_Timeout`、`Notify_Quiet_Sec`）。
+
+> `tools/check502.sh` 是旧的 crontab 式重启脚本，无失败阈值也无熔断，且绕过 systemd，
+> 与本机制冲突，已废弃。请改用 `lnmp health`。
 
 ---
 

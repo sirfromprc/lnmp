@@ -2,17 +2,28 @@
 Description=The Apache HTTP Server
 After=network.target remote-fs.target nss-lookup.target
 
+# 崩溃循环退避：300 秒窗口内最多启动 5 次，超出后标记 failed 并停止重试。
+# 不设 StartLimitAction，保持默认 none，不触发整机重启。
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 # LNMP perm hooks
 OnFailure=lnmp-perm-diagnose@%n.service
 
 [Service]
 Type=forking
+# httpd 未显式配置 PidFile，取 ServerRoot 下的默认路径。
+# Type=forking 无 PIDFile 时 systemd 靠 cgroup 猜主进程，Restart 判定不可靠。
+PIDFile=/usr/local/apache/logs/httpd.pid
 # LNMP perm hooks
 ExecStartPre=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook pre httpd'
 ExecStopPost=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook post httpd'
 ExecStart=/usr/local/apache/bin/httpd $OPTIONS -k start
 ExecReload=/usr/local/apache/bin/httpd $OPTIONS -k graceful
 # 停止交给 systemd 发信号，SIGTERM 与 httpd -k stop 等价。
+# 仅进程异常退出时重启，systemctl stop 属主动停止，不触发。
+Restart=on-failure
+RestartSec=3
 PrivateTmp=true
 
 [Install]

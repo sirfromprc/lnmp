@@ -198,6 +198,10 @@ Remove_Multiple_PHP()
         mphp="/usr/local/php${v}"
         [ -d "${mphp}" ] || continue
         echo "正在删除多版本 PHP ${v} ..."
+        # 模板 unit 实例优先，未安装 unit 的存量环境仍走 SysV。
+        if [ -s /etc/systemd/system/php-fpm@.service ] && command -v systemctl >/dev/null 2>&1; then
+            systemctl disable --now php-fpm@${v}.service >/dev/null 2>&1
+        fi
         if [ -s /etc/init.d/php-fpm${v} ]; then
             /etc/init.d/php-fpm${v} stop
             Remove_StartUp php-fpm${v}
@@ -206,6 +210,34 @@ Remove_Multiple_PHP()
         rm -f /usr/local/nginx/conf/enable-php${v}.conf
         rm -rf "${mphp}"
     done
+
+    # 模板 unit 由所有版本共用，全部清理完毕后再删除。
+    if [ -e /etc/systemd/system/php-fpm@.service ]; then
+        rm -f /etc/systemd/system/php-fpm@.service
+        command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+    fi
+}
+
+# 清理 lnmp health init 写入的定时探测任务。
+Remove_Health_Schedule()
+{
+    local timer='/etc/systemd/system/lnmp-health.timer'
+    local service='/etc/systemd/system/lnmp-health.service'
+    # 本工具不安装 cron，该路径仅用于清理手工写入的任务。
+    local cron='/etc/cron.d/lnmp-health'
+
+    if [ -x /bin/lnmp-health ]; then
+        /bin/lnmp-health uninit >/dev/null 2>&1
+    fi
+    if [ -e "${timer}" ] && command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now lnmp-health.timer >/dev/null 2>&1
+    fi
+    if [ -e "${timer}" ] || [ -e "${service}" ]; then
+        rm -f "${timer}" "${service}"
+        command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+    fi
+    rm -f "${cron}" /etc/lnmp/health-state
+    return 0
 }
 
 # 清理 lnmp backup init 写入的定时任务，不动已有备份数据。
@@ -313,6 +345,7 @@ Uninstall_LNMP()
     Remove_Multiple_PHP
     Remove_Acme
     Remove_Backup_Schedule
+    Remove_Health_Schedule
     Remove_Perm_Hooks
 
     rm -f /etc/init.d/nginx
@@ -322,6 +355,7 @@ Uninstall_LNMP()
     rm -f /bin/lnmp-tgnotice
     rm -f /bin/lnmp-phpmyadmin
     rm -f /bin/lnmp-perm
+    rm -f /bin/lnmp-health
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
@@ -351,6 +385,7 @@ Uninstall_LNMPA()
     Remove_Multiple_PHP
     Remove_Acme
     Remove_Backup_Schedule
+    Remove_Health_Schedule
     Remove_Perm_Hooks
 
     rm -f /etc/init.d/nginx
@@ -360,6 +395,7 @@ Uninstall_LNMPA()
     rm -f /bin/lnmp-tgnotice
     rm -f /bin/lnmp-phpmyadmin
     rm -f /bin/lnmp-perm
+    rm -f /bin/lnmp-health
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
@@ -387,6 +423,7 @@ Uninstall_LAMP()
     Remove_Multiple_PHP
     Remove_Acme
     Remove_Backup_Schedule
+    Remove_Health_Schedule
     Remove_Perm_Hooks
 
     rm -f /etc/my.cnf
@@ -396,6 +433,7 @@ Uninstall_LAMP()
     rm -f /bin/lnmp-tgnotice
     rm -f /bin/lnmp-phpmyadmin
     rm -f /bin/lnmp-perm
+    rm -f /bin/lnmp-health
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
@@ -434,6 +472,7 @@ ${MySQL_Dir}
 /bin/lnmp-tgnotice
 /bin/lnmp-phpmyadmin
 /bin/lnmp-perm
+/bin/lnmp-health
 /etc/profile.d/lnmp-tgnotice.sh
 /usr/local/phpmyadmin 与 /var/lib/phpmyadmin
 /usr/local/acme.sh 及其中的证书
@@ -441,6 +480,8 @@ ${MySQL_Dir}
 lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
 各服务 unit 中的权限校验钩子、lnmp-perm-diagnose@.service
 lnmp-perm 的 systemd timer/service 与 /etc/cron.d/lnmp-perm
+lnmp-health 的 systemd timer/service 与 /etc/lnmp/health-state
+php-fpm@.service 模板单元
 /etc/lnmp（数据库口令文件删除，其余配置移到 /root）
 inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
@@ -467,6 +508,7 @@ ${MySQL_Dir}
 /bin/lnmp-tgnotice
 /bin/lnmp-phpmyadmin
 /bin/lnmp-perm
+/bin/lnmp-health
 /etc/profile.d/lnmp-tgnotice.sh
 /usr/local/phpmyadmin 与 /var/lib/phpmyadmin
 /usr/local/acme.sh 及其中的证书
@@ -474,6 +516,8 @@ ${MySQL_Dir}
 lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
 各服务 unit 中的权限校验钩子、lnmp-perm-diagnose@.service
 lnmp-perm 的 systemd timer/service 与 /etc/cron.d/lnmp-perm
+lnmp-health 的 systemd timer/service 与 /etc/lnmp/health-state
+php-fpm@.service 模板单元
 /etc/lnmp（数据库口令文件删除，其余配置移到 /root）
 inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
@@ -498,6 +542,7 @@ ${MySQL_Dir}
 /bin/lnmp-tgnotice
 /bin/lnmp-phpmyadmin
 /bin/lnmp-perm
+/bin/lnmp-health
 /etc/profile.d/lnmp-tgnotice.sh
 /usr/local/phpmyadmin 与 /var/lib/phpmyadmin
 /usr/local/acme.sh 及其中的证书
@@ -505,6 +550,8 @@ ${MySQL_Dir}
 lnmp-backup 的 systemd timer/service 与 /etc/cron.d/lnmp-backup
 各服务 unit 中的权限校验钩子、lnmp-perm-diagnose@.service
 lnmp-perm 的 systemd timer/service 与 /etc/cron.d/lnmp-perm
+lnmp-health 的 systemd timer/service 与 /etc/lnmp/health-state
+php-fpm@.service 模板单元
 /etc/lnmp（数据库口令文件删除，其余配置移到 /root）
 inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF

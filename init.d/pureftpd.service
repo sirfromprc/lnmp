@@ -2,6 +2,11 @@
 Description=Pure-FTPd is an FTP server
 After=network.target
 
+# 崩溃循环退避：300 秒窗口内最多启动 5 次，超出后标记 failed 并停止重试。
+# 不设 StartLimitAction，保持默认 none，不触发整机重启。
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 # LNMP perm hooks
 OnFailure=lnmp-perm-diagnose@%n.service
 
@@ -12,6 +17,9 @@ PIDFile=/var/run/pure-ftpd.pid
 ExecStartPre=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook pre pureftpd'
 ExecStopPost=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook post pureftpd'
 ExecStart=/usr/local/pureftpd/sbin/pure-ftpd /usr/local/pureftpd/etc/pure-ftpd.conf
+# 仅进程异常退出时重启，systemctl stop 属主动停止，不触发。
+Restart=on-failure
+RestartSec=3
 PrivateTmp=true
 
 [Install]

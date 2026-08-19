@@ -1605,9 +1605,9 @@ lnmp php-fpm {start|stop|reload|restart}
 > `lnmp restart` **不包含 Redis**（它是 addon）。Redis 单独管：
 > `/etc/init.d/redis {start|stop|restart|status}`
 
-`lnmp kill` 逐个终止 Nginx、PHP-FPM 和数据库进程：先发 TERM 并等待进程真正退出
-（数据库最多 30 秒，其余最多 10 秒），超时才发 KILL 并给出提示。进程本就不在时
-不输出内容。全部终止成功才打印「完成。」并返回 0：
+`lnmp kill` 先按 unit 执行 `systemctl stop`，再逐个终止残留进程：先发 TERM 并等待
+进程真正退出（数据库最多 30 秒，其余最多 10 秒），超时才发 KILL 并给出提示。进程本就
+不在时不输出内容。全部终止成功才打印「完成。」并返回 0：
 
 ```bash
 lnmp kill; echo "rc=$?"
@@ -1626,6 +1626,75 @@ yum install -y procps-ng       # CentOS / RHEL
 
 `kill` 之后请用 `lnmp start` 重新拉起服务，不要直接跑 `/etc/init.d/` 下的脚本，
 否则 `systemctl is-active` 与实际进程会再次对不上。
+
+#### 崩溃自动拉起
+
+Nginx、Apache、PHP-FPM（含多版本）、Redis、Memcached、Pure-FTPd 的 unit 都设了
+`Restart=on-failure`，进程被 OOM killer 终止或自身崩溃时 3 秒后自动重启。
+`lnmp stop`、`lnmp kill` 和 `systemctl stop` 属主动停止，不会触发自动拉起。
+
+```bash
+# 验证自动拉起：杀掉主进程后等 5 秒，服务应重新 active
+systemctl show nginx -p NRestarts
+kill -9 "$(cat /usr/local/nginx/logs/nginx.pid)"
+sleep 5
+systemctl is-active nginx
+systemctl show nginx -p NRestarts    # 计数比之前大 1
+```
+
+300 秒窗口内最多启动 5 次，超出后 unit 标记为 failed 并停止重试，同时推送 Telegram
+告警。此时排查原因、修好后手工拉起：
+
+```bash
+journalctl -xeu nginx.service --no-pager | tail -50
+systemctl reset-failed nginx.service
+lnmp start
+```
+
+MySQL/MariaDB 不参与自动重启（其 SysV 脚本基于 `mysqld_safe`，已自带崩溃拉起），
+无响应时由 `lnmp health` 告警。
+
+#### 健康检查
+
+`Restart=` 只处理进程退出，发现不了「进程还在但不响应」。这一层由 `lnmp health`
+覆盖，`lnmp-health.timer` 每分钟探测一次（依赖 systemd，无 systemd 的环境不可用）：
+
+```bash
+lnmp health status              # 各服务当前探测结果与失败计数
+lnmp health check               # 立即执行一轮探测
+lnmp health reset nginx         # 熔断后修好了，清计数解除熔断
+lnmp health reset               # 清除全部服务的计数与熔断标记
+systemctl list-timers lnmp-health.timer --no-pager
+tail -20 /var/log/lnmp/health.log
+```
+
+连续失败 3 次（约 3 分钟）才执行一次 `systemctl restart`；30 分钟内已重启 2 次仍
+未恢复则熔断，只告警不再重启。数据库达阈值只告警，不自动重启。`lnmp stop` 之后
+服务不会被健康检查重新拉起。
+
+阈值不合用时在 `/etc/lnmp/health.conf` 覆盖，改完不需要重启 timer：
+
+```bash
+cat > /etc/lnmp/health.conf <<'EOF'
+# 连续失败次数达到该值才动作
+Fail_Threshold=5
+# 熔断窗口与窗口内最多重启次数
+Restart_Window_Sec=3600
+Restart_Max=3
+# 单次探测超时秒数
+Probe_Timeout=8
+# 同一服务的告警间隔秒数
+Notify_Quiet_Sec=7200
+EOF
+chmod 600 /etc/lnmp/health.conf
+lnmp health check
+```
+
+不想要定时探测时移除，unit 层的崩溃自动拉起不受影响：
+
+```bash
+lnmp health uninit
+```
 
 服务起不来时先核对一次权限基线，多数属主类故障能在这里直接定位：
 

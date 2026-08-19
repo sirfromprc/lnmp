@@ -1416,10 +1416,21 @@ Systemd_Is_Running()
 
 Systemd_Unit_Exists()
 {
-    local service=$1
-    [ -s "/etc/systemd/system/${service}.service" ] || \
-    [ -s "/lib/systemd/system/${service}.service" ] || \
-    [ -s "/usr/lib/systemd/system/${service}.service" ]
+    local service=$1 dir template
+
+    for dir in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do
+        [ -s "${dir}/${service}.service" ] && return 0
+    done
+    # 模板实例（如 php-fpm@8.3）没有独立 unit 文件，改判其模板是否存在。
+    case "${service}" in
+    *@*)
+        template="${service%@*}@"
+        for dir in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do
+            [ -s "${dir}/${template}.service" ] && return 0
+        done
+        ;;
+    esac
+    return 1
 }
 
 # 统一选择 systemd 或 init 脚本，保证服务启动与状态检查使用同一管理方式。
