@@ -50,6 +50,107 @@ Check_Redis_Runtime_Access()
     return 0
 }
 
+# vm.overcommit_memory=0 时 Redis 每次启动都告警，且低内存下 fork 保存 RDB 可能失败。
+# 只在系统仍为默认值 0 时改为 1；值为 2 属使用者显式选择的严格模式，只提示不覆盖。
+Set_Redis_Overcommit()
+{
+    local conf='/etc/sysctl.d/60-lnmp-redis.conf' current=''
+
+    [ -r /proc/sys/vm/overcommit_memory ] || return 0
+    current=$(cat /proc/sys/vm/overcommit_memory 2>/dev/null)
+    case "${current}" in
+    1)  return 0 ;;
+    2)  Echo_Yellow "vm.overcommit_memory 当前为 2（严格模式），未修改。"
+        Echo_Yellow "Redis 会持续告警 Memory overcommit must be enabled，确认策略后可自行改为 1。"
+        return 0 ;;
+    esac
+
+    cat >"${conf}"<<EOF
+# Redis 后台保存 RDB 时靠 fork 复制内存，overcommit_memory=0 会在低内存下拒绝分配，
+# 导致保存失败并在每次启动时告警。由 LNMP 安装 Redis 时写入。
+vm.overcommit_memory = 1
+EOF
+    if [ ! -s "${conf}" ]; then
+        Echo_Yellow "写入 ${conf} 失败，vm.overcommit_memory 保持 ${current}，Redis 启动会有告警。"
+        return 0
+    fi
+    chmod 644 "${conf}"
+    if sysctl -w vm.overcommit_memory=1 >/dev/null 2>&1; then
+        echo "已设置 vm.overcommit_memory=1（${conf}，重启后仍生效）。"
+    else
+        Echo_Yellow "已写入 ${conf}，但当前内核不接受该设置（容器或受限环境），重启后由宿主决定。"
+    fi
+    return 0
+}
+
+# 端口占用检查复用随包安装的 redis-preflight，与 redis.service 的启动前检查同一实现。
+# 脚本尚未就位时不阻断启动，占用问题仍由启动结果判定暴露。
+Check_Redis_Port_Free()
+{
+    local port="$1"
+
+    [ -x /usr/local/redis/bin/redis-preflight ] || return 0
+    /usr/local/redis/bin/redis-preflight /usr/local/redis/etc/redis.conf && return 0
+    Echo_Red "排查：ss -lntp | grep :${port}"
+    return 1
+}
+
+# 服务是否由本机管理入口托管；systemd 可用时以 unit 状态为准。
+Redis_Service_Active()
+{
+    if Use_Systemd_Unit redis; then
+        systemctl is-active --quiet redis.service
+    else
+        /etc/init.d/redis status >/dev/null 2>&1
+    fi
+}
+
+Redis_Ping()
+{
+    local port="$1" out=''
+
+    [ -x /usr/local/redis/bin/redis-cli ] || return 1
+    if command -v timeout >/dev/null 2>&1; then
+        out=$(timeout 5 /usr/local/redis/bin/redis-cli -p "${port}" ping 2>/dev/null)
+    else
+        out=$(/usr/local/redis/bin/redis-cli -p "${port}" ping 2>/dev/null)
+    fi
+    [ "${out}" = 'PONG' ]
+}
+
+# 启动结果必须同时满足服务处于运行状态和端口可应答，避免把外部实例的
+# PONG 当成本机服务启动成功。
+Wait_Redis_Ready()
+{
+    local port="$1" i=0
+
+    while [ ${i} -lt 30 ]; do
+        if Redis_Service_Active && Redis_Ping "${port}"; then
+            return 0
+        fi
+        sleep 0.2
+        i=$((i + 1))
+    done
+    if ! Redis_Service_Active && Redis_Ping "${port}"; then
+        Echo_Red "端口 ${port} 有 Redis 应答，但不是 redis.service 管理的实例。"
+    fi
+    return 1
+}
+
+# 统一的启动入口：已托管时重启以加载新配置，未托管时先查端口再启动。
+Start_Redis_Service()
+{
+    local port="$1"
+
+    if Redis_Service_Active; then
+        StartOrStop restart redis
+    else
+        Check_Redis_Port_Free "${port}" || return 1
+        StartOrStop start redis
+    fi
+    Wait_Redis_Ready "${port}"
+}
+
 # 重装时先把现有 phpredis 备份到临时目录，新扩展落地前不破坏可用环境。
 # 只接管本包创建的 021-redis.ini，其它 *redis.ini 保留并提示。
 Backup_Existing_PHPRedis()
@@ -153,7 +254,11 @@ Install_Redis()
             sed -i 's|^loadmodule |# loadmodule |g' /usr/local/redis/etc/redis.conf
         fi
 
-        sed -i 's/daemonize no/daemonize yes/g' /usr/local/redis/etc/redis.conf
+        # systemd unit 为 Type=simple，配置保持前台模式；SysV 入口在命令行显式加
+        # --daemonize yes，两个入口都不依赖这里的取值。
+        sed -i 's/^daemonize yes/daemonize no/' /usr/local/redis/etc/redis.conf
+        grep -Eq '^daemonize[[:space:]]+no$' /usr/local/redis/etc/redis.conf || \
+            Echo_Yellow "redis.conf 未写入 daemonize no，服务仍由两个入口的命令行参数决定运行模式。"
         # 服务、init 脚本和防火墙统一使用 lnmp.conf 中的端口。
         sed -i "s/^port .*/port ${Redis_Port}/" /usr/local/redis/etc/redis.conf
         Check_Conf_Applied /usr/local/redis/etc/redis.conf             "^port[[:space:]]+${Redis_Port}\$" "Redis 端口 ${Redis_Port}" || return 1
@@ -212,16 +317,21 @@ EOF
         return 1
     fi
     \cp ${cur_dir}/init.d/redis.service /etc/systemd/system/redis.service
+    # 启动前检查随 Redis 目录安装，卸载时一并删除；unit 在其缺失时跳过该步。
+    \cp ${cur_dir}/tools/redis-preflight.sh /usr/local/redis/bin/redis-preflight
+    chmod 755 /usr/local/redis/bin/redis-preflight
     chmod +x /etc/init.d/redis
     Normalize_Redis_Perms
     if ! Check_Redis_Runtime_Access; then
         Restore_Existing_PHPRedis
         return 1
     fi
+    Set_Redis_Overcommit
     echo "正在加入开机自启..."
     StartUp redis
     Restart_PHP
-    StartOrStop start redis
+    Start_Redis_Service "${Redis_Port}"
+    local Redis_Started=$?
 
     # 测试页无鉴权、暴露 Redis 版本且会写入缓存，因此默认不部署。
     if [ "${Enable_Redis_Test_Page}" = "y" ]; then
@@ -242,7 +352,7 @@ EOF
     fi
     Clear_PHPRedis_Backup
 
-    if /etc/init.d/redis status >/dev/null 2>&1; then
+    if [ "${Redis_Started}" -eq 0 ]; then
         Echo_Green "====== Redis 安装完成 ======"
         Echo_Green "Redis 安装成功。"
         return 0
@@ -254,7 +364,8 @@ EOF
     Echo_Red "  - ${Redis_Port} 端口已被占用（旧的 redis-server 进程还在？ pgrep -a redis-server）"
     Echo_Red "  - 数据目录 /usr/local/redis/var 不存在或不可写"
     Echo_Red "  - 配置里有指向不存在文件的 loadmodule"
-    Echo_Red "排查：tail -20 /usr/local/redis/var/redis.log"
+    Echo_Red "排查：journalctl -xeu redis.service --no-pager | tail -30"
+    Echo_Red "      tail -20 /usr/local/redis/var/redis.log"
     Echo_Red "      /usr/local/redis/bin/redis-server /usr/local/redis/etc/redis.conf --daemonize no"
     return 1
 }
@@ -271,6 +382,12 @@ Uninstall_Redis()
     rm -rf /usr/local/redis
     rm -rf /etc/init.d/redis
     rm -f /usr/bin/redis-cli
+    # 该 sysctl 文件由安装 Redis 时创建，卸载后一并删除；运行中的内核值不回改，
+    # 避免影响其它正在运行的服务，重启后恢复系统默认。
+    if [ -f /etc/sysctl.d/60-lnmp-redis.conf ]; then
+        rm -f /etc/sysctl.d/60-lnmp-redis.conf
+        echo "已删除 /etc/sysctl.d/60-lnmp-redis.conf（vm.overcommit_memory 当前值保持不变）。"
+    fi
     Firewall_Unblock tcp "${Redis_Port}"
     Firewall_Save
     Echo_Green "Redis 卸载完成。"

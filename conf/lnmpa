@@ -39,7 +39,7 @@ Print_Banner()
     printf '+%s+\n' "${border}"
 }
 
-Print_Banner "LNMPA 管理工具" "https://lnmp.org"
+Print_Banner "LNMPA 管理工具" 
 
 # 服务名由 Detect_Managed_Services 在每次执行时按当前系统重新确定。
 NGINX_SERVICE=

@@ -11,16 +11,21 @@ StartLimitBurst=5
 OnFailure=lnmp-perm-diagnose@%n.service
 
 [Service]
-Type=forking
+Type=simple
 User=redis
 Group=redis
-# PIDFile 必须与 redis.conf 保持一致。
-PIDFile=/usr/local/redis/var/redis.pid
+# 端口占用检查：Type=simple 下 systemd 不等 bind 结果，占用时在这里同步失败。
+ExecStartPre=+/bin/sh -c 'test -x /usr/local/redis/bin/redis-preflight || exit 0; exec /usr/local/redis/bin/redis-preflight /usr/local/redis/etc/redis.conf'
 # LNMP perm hooks
 ExecStartPre=+/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook pre redis'
 ExecStopPost=-+/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook post redis'
-ExecStart=/usr/local/redis/bin/redis-server /usr/local/redis/etc/redis.conf
-ExecStop=-/usr/local/redis/bin/redis-cli shutdown
+# 命令行的 --daemonize no 覆盖 redis.conf 取值，保证 systemd 跟踪的就是 Redis 主进程，
+# 无需 PIDFile；旧版本遗留 daemonize yes 的配置升级后也能正常托管。
+ExecStart=/usr/local/redis/bin/redis-server /usr/local/redis/etc/redis.conf --daemonize no
+# 停止依赖 SIGTERM：Redis 收到后按 save 规则落盘再退出，端口与实例无关，
+# 不会像 redis-cli shutdown 那样因端口不是 6379 而失效。
+KillSignal=SIGTERM
+TimeoutStopSec=90
 # 仅进程异常退出时重启，systemctl stop 属主动停止，不触发。
 Restart=on-failure
 RestartSec=3

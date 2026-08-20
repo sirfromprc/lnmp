@@ -1,3 +1,5 @@
+<a id="top"></a>
+
 # LNMP 2.3 从零搭建 WordPress 生产环境
 
 > 主安装、建站、WordPress、Redis、HTTPS 和备份流程已在
@@ -74,12 +76,16 @@ ss -lntup
 
 ### 1.3 获取代码
 
+从项目 Release 页面下载固定版本，并使用同一 Release 公布的 SHA-256 核对文件。
+项目尚未在源码中固定公开仓库地址，因此本文不提供可能指向错误仓库的占位下载命令。
+假设已将验证通过的压缩包保存为 `/root/lnmp-v2.3.tar.gz`：
+
 ```bash
-# 请查阅最新版本，将v2.3-20260816替换为最新版本号
-wget https://github.com/{your-github-username}/lnmp/archive/refs/tags/v2.3-20260816.tar.gz -O /root/lnmp.tar.gz
-tar zxf /root/lnmp.tar.gz -C /root/
-cd /root/lnmp
-chmod +x install.sh addons.sh uninstall.sh upgrade.sh
+install -d -m 700 /root/lnmp-src
+tar -xzf /root/lnmp-v2.3.tar.gz -C /root/lnmp-src --strip-components=1
+cd /root/lnmp-src
+chmod +x install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
+bash -n install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
 id -u
 # 必须输出 0
 ```
@@ -89,6 +95,8 @@ tar 包通常会保留可执行位，但 ZIP、面板上传或跨文件系统复
 
 > 优先使用 tag 或 release，而不是 `main` 分支。`main` 的内容可能在两次安装之间
 > 变化，两台机器装出来的东西就不一样了。
+
+[返回顶部](#top)
 
 ---
 
@@ -218,7 +226,7 @@ bash upgrade.sh openresty
 
 只在 `ORMode=2`（源码编译）下有效。全部配置项在 `lnmp.conf` 的 OpenResty 段：
 
-```bash
+```text
 ## 每条：名称|下载地址|SHA256|类型
 OpenResty_Custom_Modules=(
     "ngx_http_geoip2|https://github.com/leev/ngx_http_geoip2_module/archive/refs/tags/3.4.tar.gz|<64位SHA256>|dynamic"
@@ -283,7 +291,7 @@ luarocks 需要系统里先装好（`apt-get install luarocks`），本包不负
 
 ```bash
 lnmp status
-nginx -v && php -v && mysql --version
+/usr/local/nginx/sbin/nginx -v && /usr/local/php/bin/php -v && mysql --version
 ```
 
 实测输出：
@@ -455,7 +463,7 @@ CheckMirror=n Bin=y bash install.sh lnmp
 | rewrite | `/usr/local/nginx/conf/rewrite/<名称>.conf` | 同上 |
 | PHP 路由 | `/usr/local/nginx/conf/enable-php*.conf` | 同上；多版本 socket 必须匹配 |
 | TLS 证书 | `/usr/local/nginx/conf/ssl/<域名>/` | 由 `lnmp ssl`/acme.sh 管理，不手工覆盖自动续期文件 |
-| PHP | `/usr/local/php/etc/php.ini`、`/usr/local/php/etc/php-fpm.conf`、`/usr/local/php/conf.d/*.ini` | `php --ini`、`php-fpm -t`，然后 `lnmp php-fpm reload` |
+| PHP | `/usr/local/php/etc/php.ini`、LNMP 模式下的 `/usr/local/php/etc/php-fpm.conf`、`/usr/local/php/conf.d/*.ini` | LNMP：`php --ini`、`php-fpm -t`，然后 `lnmp php-fpm reload`；LNMPA/LAMP：`httpd -t`，然后 `lnmp httpd reload` |
 | 多版本 PHP | `/usr/local/php8.x/etc/`、`/usr/local/php8.x/conf.d/` | 用该版本二进制检查；重载对应 FPM 服务 |
 | MySQL/MariaDB | `/etc/my.cnf` | `mysql -e` 回读变量；需要 restart 的参数安排维护窗口 |
 | Redis | `/usr/local/redis/etc/redis.conf` | Redis 没有等价的完整 `-t`；安排维护窗口重启后用日志、`CONFIG GET` 和 `INFO` 回读 |
@@ -514,6 +522,8 @@ LNMP_Auto=y bash addons.sh install redis </dev/null
 
 卸载不接受这种方式，须使用 `LNMP_Uninstall_Confirm=uninstall-<栈名>`。
 
+[返回顶部](#top)
+
 ---
 
 ## 三、安装 Redis
@@ -537,8 +547,8 @@ checking for redis igbinary support... enabled
 验证：
 
 ```bash
-/etc/init.d/redis status
-# Redis server is running (pid 833640).
+systemctl status redis --no-pager
+# Active: active (running)   MainPID 就是实际的 redis-server 进程
 
 redis-cli ping
 # PONG
@@ -585,22 +595,47 @@ Redis 的安全默认值（本包已配好，不要随意放开）：
 
 ```bash
 # 1. 生成并保存密码（配置文件是 root:redis 640，密码文件是 root 600）
-umask 077
-REDISPW=$(openssl rand -base64 24)
-printf '%s\n' "${REDISPW}" > /root/.lnmp_redis_password
-sed -i '/^[[:space:]]*#\?[[:space:]]*requirepass[[:space:]]/d' /usr/local/redis/etc/redis.conf
-printf 'requirepass %s\n' "${REDISPW}" >> /usr/local/redis/etc/redis.conf
+REDIS_CONF=/usr/local/redis/etc/redis.conf
+REDIS_BACKUP=$(mktemp "${REDIS_CONF}.bak.XXXXXX") || exit 1
+REDIS_TMP=$(mktemp "${REDIS_CONF}.tmp.XXXXXX") || exit 1
+REDIS_PASSWORD_TMP=$(mktemp /root/.lnmp_redis_password.tmp.XXXXXX) || exit 1
+trap 'rm -f -- "$REDIS_TMP" "$REDIS_PASSWORD_TMP"; unset REDISPW' EXIT
+cp -a -- "$REDIS_CONF" "$REDIS_BACKUP" || exit 1
+
+REDISPW=$(openssl rand -base64 24) || exit 1
+[ -n "$REDISPW" ] || exit 1
+printf '%s\n' "$REDISPW" > "$REDIS_PASSWORD_TMP" || exit 1
+chmod 600 "$REDIS_PASSWORD_TMP" || exit 1
+sed '/^[[:space:]]*#\?[[:space:]]*requirepass[[:space:]]/d' "$REDIS_CONF" > "$REDIS_TMP" || exit 1
+printf 'requirepass %s\n' "$REDISPW" >> "$REDIS_TMP" || exit 1
+chown --reference="$REDIS_CONF" "$REDIS_TMP" || exit 1
+chmod --reference="$REDIS_CONF" "$REDIS_TMP" || exit 1
+mv -f -- "$REDIS_TMP" "$REDIS_CONF" || exit 1
 unset REDISPW
 
 # 2. 重启使配置生效
-/etc/init.d/redis restart
+if ! systemctl restart redis.service; then
+    cp -a -- "$REDIS_BACKUP" "$REDIS_CONF"
+    systemctl restart redis.service
+    echo "Redis 新配置启动失败，已恢复：$REDIS_BACKUP" >&2
+    exit 1
+fi
+if ! mv -f -- "$REDIS_PASSWORD_TMP" /root/.lnmp_redis_password; then
+    cp -a -- "$REDIS_BACKUP" "$REDIS_CONF"
+    systemctl restart redis.service
+    echo "无法保存 Redis 密码，已恢复旧配置" >&2
+    exit 1
+fi
 
 # 3. 验证：不带密码应该被拒绝，带密码才能执行命令
 redis-cli ping
 # (error) NOAUTH Authentication required.
 REDISCLI_AUTH="$(cat /root/.lnmp_redis_password)" redis-cli ping
 # PONG
+trap - EXIT
 ```
+
+确认应用连接正常后再删除 `REDIS_BACKUP` 指向的旧配置；该备份可能含旧密码，权限应保持原配置值。
 
 设了密码之后，WordPress 那边的 redis-cache 插件也要同步改，
 在 [5.3 生成 wp-config.php](#53-生成-wp-configphp) 的 Redis 常量块里加一行：
@@ -611,6 +646,8 @@ define( 'WP_REDIS_PASSWORD', '读取 /root/.lnmp_redis_password 后填入的密�
 
 不改这一行的话，插件仍按无密码连接，会直接报连接失败。写入后保持 `wp-config.php`
 的 root 所有和 640 权限，不要让密码文件进入备份之外的日志、Git 或聊天记录。
+
+[返回顶部](#top)
 
 ---
 
@@ -844,6 +881,8 @@ lnmp app del myapp             # 取消托管；询问是否删除专属账号�
 元数据在 `/etc/lnmp/apps/<应用名>.env`（0640），模板单元是
 `/etc/systemd/system/lnmp-app@.service`。`lnmp health` 会一并检查这些实例的存活。
 
+[返回顶部](#top)
+
 ---
 
 ## 五、部署 WordPress
@@ -877,19 +916,23 @@ echo "校验通过"
 
 ```bash
 SITE=/home/wwwroot/wp.example.com
-echo ${SITE}        # 执行 chown -R 前先确认变量已展开成站点目录
-tar zxf wordpress.tar.gz
-cp -a wordpress/. ${SITE}/
+SITE=$(readlink -f -- "$SITE")
+case "$SITE" in
+    /home/wwwroot/*) ;;
+    *) echo "拒绝操作预期目录以外的路径：$SITE" >&2; exit 1 ;;
+esac
+[ -d "$SITE" ] || { echo "站点目录不存在：$SITE" >&2; exit 1; }
 
-chown -R www:www ${SITE}/
-find ${SITE} -type d -exec chmod 755 {} \;
-find ${SITE} -type f -exec chmod 644 {} \;
+tar zxf wordpress.tar.gz
+cp -a wordpress/. "$SITE/"
+
+find "$SITE" -xdev -type d -exec chown www:www {} + -exec chmod 755 {} +
+find "$SITE" -xdev -type f ! -name .user.ini -exec chown www:www {} + -exec chmod 644 {} +
 ```
 
-> `SITE` 为空时 `chown -R www:www ${SITE}/` 会作用到 `/`，把
-> `/usr/local/mariadb/var` 等数据目录的属主一并改掉，数据库将无法启动
-> （错误日志不可写，服务端在写日志前就退出）。递归改属主前务必先
-> `echo ${SITE}` 核对。
+上面的 `case` 是必须保留的路径边界：空值、`/`、`/home/wwwroot` 本身及其它系统目录
+都会被拒绝。`find -xdev` 不跨入站点内另行挂载的文件系统，也不跟随符号链接；
+`.user.ini` 由项目设置为 immutable，示例不尝试改动它。
 
 `wp-config.php` 含明文数据库密码，单独收紧到 600，见 5.3。
 
@@ -909,14 +952,21 @@ find ${SITE} -type f -exec chmod 644 {} \;
 ### 5.3 生成 wp-config.php
 
 ```bash
-cd ${SITE}
-SALT=$(curl -fsSL https://api.wordpress.org/secret-key/1.1/salt/)
+cd "$SITE"
+[ ! -e wp-config.php ] || { echo "wp-config.php 已存在，拒绝覆盖" >&2; exit 1; }
+SALT=$(curl -fsSL https://api.wordpress.org/secret-key/1.1/salt/) || exit 1
+[ -n "$SALT" ] || { echo "无法取得 WordPress salts" >&2; exit 1; }
+read -r -s -p "数据库用户 wpdemo 的密码: " DB_PASSWORD; echo
+[ -n "$DB_PASSWORD" ] || { echo "数据库密码不能为空" >&2; exit 1; }
+DB_PASSWORD_PHP=$(printf '%s' "$DB_PASSWORD" | /usr/local/php/bin/php -r '$v=stream_get_contents(STDIN); echo var_export($v, true);') || exit 1
+OLD_UMASK=$(umask)
+umask 077
 
 cat > wp-config.php <<PHPEOF
 <?php
 define( 'DB_NAME', 'wpdemo' );
 define( 'DB_USER', 'wpdemo' );
-define( 'DB_PASSWORD', '库用户密码' );
+define( 'DB_PASSWORD', ${DB_PASSWORD_PHP} );
 define( 'DB_HOST', '127.0.0.1' );
 define( 'DB_CHARSET', 'utf8mb4' );
 define( 'DB_COLLATE', '' );
@@ -941,11 +991,15 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 require_once ABSPATH . 'wp-settings.php';
 PHPEOF
+[ -s wp-config.php ] || { echo "生成 wp-config.php 失败" >&2; exit 1; }
 
 # 文件含明文数据库密码，只给属主读写；采用 5.6 的加固时改为
 # chown root:www wp-config.php && chmod 640 wp-config.php
-chown www:www wp-config.php && chmod 600 wp-config.php
-php -l wp-config.php
+chown www:www wp-config.php && chmod 600 wp-config.php || exit 1
+/usr/local/php/bin/php -l wp-config.php || exit 1
+unset DB_PASSWORD DB_PASSWORD_PHP SALT
+umask "$OLD_UMASK"
+unset OLD_UMASK
 ```
 
 几个要点：
@@ -998,7 +1052,7 @@ curl -s -X POST \
   -d "pw_weak=1" \
   -d "admin_email=你的邮箱@example.com" \
   -d "blog_public=0" \
-  "http://wp.example.com/wp-admin/install.php?step=2" | grep -o "<h1>[^<]*</h1>"
+  "https://wp.example.com/wp-admin/install.php?step=2" | grep -o "<h1>[^<]*</h1>"
 # <h1>Success!</h1>
 ```
 
@@ -1007,9 +1061,8 @@ curl -s -X POST \
 安装完成后立即修改密码，使安装阶段使用的凭据失效：
 
 ```bash
-# 后台「用户 → 个人资料」改，或用 wp-cli：
-# wp user update 管理员用户名 --user_pass='新密码' --path=/home/wwwroot/wp.example.com
-history -c   # 清理当前 shell 历史
+# 后台「用户 → 个人资料」修改，然后清除当前变量
+unset WP_ADMIN_PW
 ```
 
 </details>
@@ -1057,17 +1110,24 @@ PHP 能改写自身代码文件，是站点被入侵后落 webshell、篡改核�
 
 ```bash
 SITE=/home/wwwroot/wp.example.com
-echo ${SITE}        # 执行 chown -R 前先确认变量已展开成站点目录
+SITE=$(readlink -f -- "$SITE")
+case "$SITE" in
+    /home/wwwroot/*) ;;
+    *) echo "拒绝操作预期目录以外的路径：$SITE" >&2; exit 1 ;;
+esac
+[ -d "$SITE" ] || { echo "站点目录不存在：$SITE" >&2; exit 1; }
 
-chown -R root:www ${SITE}/
-find ${SITE} -type d -exec chmod 750 {} \;
-find ${SITE} -type f -exec chmod 640 {} \;
-chown root:www ${SITE}/wp-config.php && chmod 640 ${SITE}/wp-config.php
+find "$SITE" -xdev -type d -exec chown root:www {} + -exec chmod 750 {} +
+find "$SITE" -xdev -type f ! -name .user.ini -exec chown root:www {} + -exec chmod 640 {} +
+chown root:www "$SITE/wp-config.php" && chmod 640 "$SITE/wp-config.php"
 
 # 只有这几个目录需要 PHP 写：上传、缓存、升级临时目录
-mkdir -p ${SITE}/wp-content/uploads ${SITE}/wp-content/cache ${SITE}/wp-content/upgrade
-chown -R www:www ${SITE}/wp-content/uploads ${SITE}/wp-content/cache ${SITE}/wp-content/upgrade
-chmod -R 750     ${SITE}/wp-content/uploads ${SITE}/wp-content/cache ${SITE}/wp-content/upgrade
+for writable_dir in uploads cache upgrade; do
+    target="$SITE/wp-content/$writable_dir"
+    mkdir -p -- "$target" || exit 1
+    find "$target" -xdev -type d -exec chown www:www {} + -exec chmod 750 {} +
+    find "$target" -xdev -type f -exec chown www:www {} + -exec chmod 640 {} +
+done
 ```
 
 执行后逐项确认站点仍然可用：
@@ -1091,11 +1151,12 @@ curl -o /dev/null -w "文章页: %{http_code}\n" https://wp.example.com/hello-wo
 **回退**：加固后出现无法定位的功能异常，先恢复默认权限排除权限因素：
 
 ```bash
-chown -R www:www ${SITE}/
-find ${SITE} -type d -exec chmod 755 {} \;
-find ${SITE} -type f -exec chmod 644 {} \;
-chown www:www ${SITE}/wp-config.php && chmod 600 ${SITE}/wp-config.php
+find "$SITE" -xdev -type d -exec chown www:www {} + -exec chmod 755 {} +
+find "$SITE" -xdev -type f ! -name .user.ini -exec chown www:www {} + -exec chmod 644 {} +
+chown www:www "$SITE/wp-config.php" && chmod 600 "$SITE/wp-config.php"
 ```
+
+[返回顶部](#top)
 
 ---
 
@@ -1116,8 +1177,10 @@ curl -fsSL -o redis-cache.zip "https://downloads.wordpress.org/plugin/redis-cach
 sha256sum redis-cache.zip | tee redis-cache.${PLUGIN_VER}.sha256
 echo "↑ 记录下来。以后重新部署同一版本时，哈希必须一致。"
 
+[ ! -e redis-cache ] || { echo "redis-cache 目录已存在，请先核对现有插件" >&2; exit 1; }
 unzip -q redis-cache.zip && rm -f redis-cache.zip
-chown -R www:www redis-cache
+find redis-cache -xdev -type d -exec chown www:www {} +
+find redis-cache -xdev -type f -exec chown www:www {} +
 
 # 部署 drop-in（也可以在后台插件页点"Enable Object Cache"）
 cp redis-cache/includes/object-cache.php ../object-cache.php
@@ -1186,6 +1249,9 @@ OPcache 已由 `Enable_PHP_Default_Opcache=y` 默认安装，配置在
 /usr/local/php/bin/php --ini
 /usr/local/php/sbin/php-fpm -t && lnmp php-fpm reload
 ```
+
+以上 PHP-FPM 命令只适用于 LNMP。LNMPA/LAMP 把 PHP 加载到 Apache 进程中，应改为
+`/usr/local/apache/bin/httpd -t && lnmp httpd reload`。
 
 `disable_functions` 是降低插件误用风险的补充措施，不是安全边界。WordPress 核心不需要
 `exec`/`system`/`shell_exec`，保持项目默认；某个插件确实需要时，先确认它调用的准确
@@ -1443,6 +1509,8 @@ Debian 12 与 13 的主要差异不需要两套“调优参数”。Debian 13 �
 来路不明的 `.deb` 或恢复已移除库。系统升级前保留快照/异地备份，并在克隆机验证源码
 组件能重新链接和启动。
 
+[返回顶部](#top)
+
 ---
 
 ## 七、配置 HTTPS
@@ -1515,12 +1583,9 @@ Let's Encrypt 后，本包会自动转为 **IP 地址证书**流程，
 | **必须是公网 IP** | 私有地址（10.x / 172.16-31.x / 192.168.x / 127.x / 169.254.x）以及运营商级 NAT 的 100.64-127.x，**任何公信 CA 都不会签发** |
 | **80 端口要公网可达** | HTTP-01 验证 |
 
-实际执行的命令：
-
-```bash
-/usr/local/acme.sh/acme.sh --issue -d <你的公网IPv4> -w /home/wwwroot/default \
-  --server letsencrypt --certificate-profile shortlived --days 6
-```
+用户入口是 `lnmp ssl add`，站点选择 `default` 后由脚本校验公网 IPv4，并在内部调用
+acme.sh 的 `shortlived` profile。不要绕过入口直接拼接 IP：入口还负责私有地址拒绝、
+证书目录备份、安装和失败回滚。
 
 > 注意：**NAT 环境要特别注意**：脚本探测到的公网 IP 可能是**出口地址**，
 > 未必指向本机。只有将该 IP 的 80 端口转发到本机后，
@@ -1541,9 +1606,12 @@ Let's Encrypt 后，本包会自动转为 **IP 地址证书**流程，
 
 ```bash
 lnmp ssl add                          # HTTP 验证，为已有站点签发
-lnmp dnsssl  {ali|cf|dp|he|gd|aws}    # DNS 验证，为已有站点签发，支持泛域名
-lnmp onlyssl {ali|cf|dp|he|gd|aws}    # DNS 验证，只签证书，不动任何站点配置
+lnmp dnsssl cf                        # Cloudflare DNS 验证，为已有站点签发
+lnmp onlyssl cf                       # Cloudflare DNS 验证，只签证书，不动站点配置
 ```
+
+其它内置服务商参数为 `ali`、`dp`、`he`、`gd`、`aws`；也可以使用已安装的
+acme.sh DNS 插件名。
 
 | | `lnmp ssl add` | `lnmp dnsssl` | `lnmp onlyssl` |
 |---|---|---|---|
@@ -1661,6 +1729,8 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo -e \
    WHERE option_name IN ('siteurl','home');"
 ```
 
+[返回顶部](#top)
+
 ---
 
 ## 八、日常运维命令
@@ -1668,18 +1738,24 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo -e \
 ### 8.1 服务管理
 
 ```bash
-lnmp status                      # 查看 nginx / php-fpm / mysql 状态
-lnmp start | stop | restart | reload
+lnmp status                      # 查看当前模式已安装的 Web、PHP 与数据库服务
+lnmp start
+lnmp stop
+lnmp restart
+lnmp reload
 lnmp kill                        # 强制杀进程（仅在正常 stop 失败时用）
 
 # 单独控制某个组件
-lnmp nginx   {start|stop|reload|restart}
-lnmp mysql   {start|stop|restart}
-lnmp php-fpm {start|stop|reload|restart}
+lnmp nginx status
+lnmp mysql status
+lnmp php-fpm status              # 仅 LNMP 模式
+lnmp httpd status                # LNMPA/LAMP 模式
 ```
 
 > `lnmp restart` **不包含 Redis**（它是 addon）。Redis 单独管：
-> `/etc/init.d/redis {start|stop|restart|status}`
+> 有 systemd 时分别使用 `systemctl status redis.service`、`systemctl start redis.service`、
+> `systemctl stop redis.service` 或 `systemctl restart redis.service`；
+> 只有无 systemd 的兼容环境才使用 `/etc/init.d/redis`。
 
 `lnmp kill` 先按 unit 执行 `systemctl stop`，再逐个终止残留进程：先发 TERM 并等待
 进程真正退出（数据库最多 30 秒，其余最多 10 秒），超时才发 KILL 并给出提示。进程本就
@@ -1709,13 +1785,23 @@ Nginx、Apache、PHP-FPM（含多版本）、Redis、Memcached、Pure-FTPd 的 u
 `Restart=on-failure`，进程被 OOM killer 终止或自身崩溃时 3 秒后自动重启。
 `lnmp stop`、`lnmp kill` 和 `systemctl stop` 属主动停止，不会触发自动拉起。
 
+下面的故障注入会立即终止 Nginx 主进程并造成短暂中断，只能在测试机或已批准的维护窗口执行；
+日常状态检查不要运行它：
+
 ```bash
-# 验证自动拉起：杀掉主进程后等 5 秒，服务应重新 active
+systemctl is-active --quiet nginx.service || exit 1
+NGINX_PID=$(systemctl show -p MainPID --value nginx.service)
+NGINX_RESTARTS_BEFORE=$(systemctl show -p NRestarts --value nginx.service)
+case "$NGINX_PID" in ''|0|*[!0-9]*) echo "无法取得 Nginx MainPID" >&2; exit 1;; esac
+ps -p "$NGINX_PID" -o comm= | grep -q nginx || { echo "MainPID 不是 Nginx" >&2; exit 1; }
 systemctl show nginx -p NRestarts
-kill -9 "$(cat /usr/local/nginx/logs/nginx.pid)"
+kill -KILL "$NGINX_PID"
 sleep 5
-systemctl is-active nginx
-systemctl show nginx -p NRestarts    # 计数比之前大 1
+systemctl is-active --quiet nginx.service || { echo "Nginx 未自动恢复" >&2; exit 1; }
+NGINX_RESTARTS_AFTER=$(systemctl show -p NRestarts --value nginx.service)
+echo "NRestarts: $NGINX_RESTARTS_BEFORE -> $NGINX_RESTARTS_AFTER"
+[ "$NGINX_RESTARTS_AFTER" -gt "$NGINX_RESTARTS_BEFORE" ] || { echo "自动拉起计数未增加" >&2; exit 1; }
+unset NGINX_PID NGINX_RESTARTS_BEFORE NGINX_RESTARTS_AFTER
 ```
 
 300 秒窗口内最多启动 5 次，超出后 unit 标记为 failed 并停止重试，同时推送 Telegram
@@ -1751,7 +1837,16 @@ tail -20 /var/log/lnmp/health.log
 阈值不合用时在 `/etc/lnmp/health.conf` 覆盖，改完不需要重启 timer：
 
 ```bash
-cat > /etc/lnmp/health.conf <<'EOF'
+install -d -m 700 /etc/lnmp || exit 1
+HEALTH_CONF=/etc/lnmp/health.conf
+if [ -e "$HEALTH_CONF" ]; then
+    HEALTH_BACKUP=$(mktemp /etc/lnmp/health.conf.bak.XXXXXX) || exit 1
+    cp -a -- "$HEALTH_CONF" "$HEALTH_BACKUP" || exit 1
+    echo "健康检查配置备份：$HEALTH_BACKUP"
+fi
+HEALTH_TMP=$(mktemp /etc/lnmp/health.conf.tmp.XXXXXX) || exit 1
+trap 'rm -f -- "$HEALTH_TMP"' EXIT
+cat > "$HEALTH_TMP" <<'EOF'
 # 连续失败次数达到该值才动作
 Fail_Threshold=5
 # 熔断窗口与窗口内最多重启次数
@@ -1762,7 +1857,9 @@ Probe_Timeout=8
 # 同一服务的告警间隔秒数
 Notify_Quiet_Sec=7200
 EOF
-chmod 600 /etc/lnmp/health.conf
+chmod 600 "$HEALTH_TMP" || exit 1
+mv -f -- "$HEALTH_TMP" "$HEALTH_CONF" || exit 1
+trap - EXIT
 lnmp health check
 ```
 
@@ -1786,7 +1883,9 @@ DenyHosts 误封时使用源码目录里的严格地址入口；参数必须是�
 停止服务和修改列表前退出：
 
 ```bash
-bash tools/denyhosts_removeip.sh <被误封的IP>
+read -r -p "被误封的完整 IPv4 或 IPv6: " BLOCKED_IP
+bash tools/denyhosts_removeip.sh "$BLOCKED_IP"
+unset BLOCKED_IP
 ```
 
 ### 8.2 站点管理
@@ -1797,14 +1896,15 @@ lnmp vhost list      # 列出所有站点
 lnmp vhost del       # 删除站点（只删 nginx 配置，保留网站文件）
 lnmp app add         # 托管 Node/Go 等应用进程，见 4.5
 lnmp app list        # 已托管应用及运行状态
-lnmp app logs <名字> # 查看应用日志
+lnmp app logs example-app # 查看名为 example-app 的应用日志
 ```
 
 > `vhost del` 会保留网站文件并给出提示，以避免误删数据。
 > 删除本身是原子的：先备份待删配置，语法检查和 reload 都通过才清理备份；
 > 任一步失败会把文件全部还原并返回非零，不会出现配置已删但服务仍在提供站点的状态。
-> 需要彻底删除时手工 `rm -rf`，`.user.ini` 的 immutable 属性
-> 已由删除流程自动解除。
+> 网站文件需要彻底删除时，先把目录规范化并确认它是预期的网站子目录，再单独处理；
+> 不提供通用 `rm -rf` 示例，避免空变量或错误目录造成跨站点删除。`.user.ini` 的
+> immutable 属性已由删站流程自动解除。
 >
 > `vhost add` 会问 `是否开启 PHP? (Y/n，默认 y)`。选 `n` 建出的站点不执行 PHP，
 > `.php` 请求一律 404，适合纯静态站点和 Node、Go 等自带后端的站点；
@@ -1818,13 +1918,13 @@ lnmp database list   # 列出所有库
 lnmp database edit   # 改库用户密码
 lnmp database del    # 删除库
 
-lnmp database export <库名> <文件.sql.gz>   # 导出单个库，gzip 压缩
-lnmp database import <库名> <文件.sql.gz>   # 导入到已存在的库
+lnmp database export example_db /root/example_db.sql.gz
+lnmp database import example_db /root/example_db.sql.gz
 ```
 
 `database import` 在执行前检查 SQL 边界：文件里出现 `DROP DATABASE`、`DROP/CREATE USER`、
 `GRANT`、跨库 `USE`、`其它库`.`表` 这类语句时直接拒绝，不会因为“只是恢复一个库”而删掉别的库。
-先看报告用 `lnmp-sqlguard report <库名> <文件>`；确认要执行时用
+先看报告可用 `lnmp-sqlguard report example_db /root/example_db.sql.gz`；确认要执行时用
 `LNMP_Import_Allow_Cross_Db=yes lnmp database import ...`。
 
 `database add` 不接管已有对象：库名或 `<库名>@localhost`、`<库名>@127.0.0.1` 任一已存在时，
@@ -1904,7 +2004,8 @@ lnmp backup test                     # 试恢复验证：导入临时库校验�
   最后才清理远端旧批次 —— 传输中断不会损失已有的恢复点。
 - 同一时刻只允许一个备份在跑（flock，没有 flock 的环境退回 mkdir 锁）。
 
-恢复：
+恢复会覆盖目标数据库或网站文件。先执行 `lnmp backup test`、核对批次，并在维护窗口停止写入；
+以下命令不是只读检查：
 
 ```bash
 lnmp backup list                       # 先看有哪些批次
@@ -1919,27 +2020,46 @@ lnmp backup restore web wp.example.com 20260810-033000
 （主题、插件、上传的媒体文件）。核心文件可以重新下载，这两样不能。
 
 ```bash
-# 数据库：无人值守场景使用 option file，不将密码放入命令行参数
+install -d -m 700 /root/backup || exit 1
+OLD_UMASK=$(umask)
 umask 077
-cat > /root/.wpdemo.cnf <<'EOF'
-[client]
-user=wpdemo
-password=换成你的库用户密码
-host=127.0.0.1
-EOF
-chmod 600 /root/.wpdemo.cnf
+BACKUP_STAMP=$(date +%Y%m%d-%H%M%S)
 
-mysqldump --defaults-file=/root/.wpdemo.cnf --single-transaction \
-  wpdemo | gzip > /root/backup/wpdemo-$(date +%F).sql.gz
+# 数据库：-p 交互读取密码；pipefail 防止 gzip 的成功掩盖 mysqldump 失败
+DB_BACKUP="/root/backup/wpdemo-${BACKUP_STAMP}.sql.gz"
+[ ! -e "$DB_BACKUP" ] || { echo "备份文件已存在：$DB_BACKUP" >&2; exit 1; }
+DB_TMP=$(mktemp /root/backup/.wpdemo.sql.gz.XXXXXX) || exit 1
+set -o pipefail
+if mysqldump -u wpdemo -p -h 127.0.0.1 --single-transaction wpdemo | gzip > "$DB_TMP" \
+   && gzip -t "$DB_TMP"; then
+    mv -f -- "$DB_TMP" "$DB_BACKUP"
+else
+    rm -f -- "$DB_TMP"
+    echo "数据库备份失败，已删除不完整文件" >&2
+    exit 1
+fi
 
-# 站点文件
-tar czf /root/backup/wp-content-$(date +%F).tar.gz \
-  -C /home/wwwroot/wp.example.com wp-content
+# 站点文件：先写临时文件，能完整列出内容后再提交正式文件名
+WEB_BACKUP="/root/backup/wp-content-${BACKUP_STAMP}.tar.gz"
+[ ! -e "$WEB_BACKUP" ] || { echo "备份文件已存在：$WEB_BACKUP" >&2; exit 1; }
+WEB_TMP=$(mktemp /root/backup/.wp-content.tar.gz.XXXXXX) || exit 1
+if tar -czf "$WEB_TMP" -C /home/wwwroot/wp.example.com wp-content \
+   && tar -tzf "$WEB_TMP" >/dev/null; then
+    mv -f -- "$WEB_TMP" "$WEB_BACKUP"
+else
+    rm -f -- "$WEB_TMP"
+    echo "网站文件备份失败，已删除不完整文件" >&2
+    exit 1
+fi
+umask "$OLD_UMASK"
+unset OLD_UMASK BACKUP_STAMP DB_BACKUP DB_TMP WEB_BACKUP WEB_TMP
 ```
 
 > `--single-transaction` 让 InnoDB 表在备份期间不锁表，站点不用停。
 
 ### 8.5 异地备份（SFTP）
+
+[返回顶部](#top)
 
 > 上传、大小核对、目录改名与 systemd timer 安装已在受限 `internal-sftp`
 > 账号（chroot + `ForceCommand`）上实测通过。仍建议第一次配置时按 8.5.4
@@ -1970,7 +2090,7 @@ tar czf /root/backup/wp-content-$(date +%F).tar.gz \
 
 ```bash
 # 专用账号，不给 shell
-useradd -m -d /home/backupuser -s /usr/sbin/nologin backupuser
+id backupuser >/dev/null 2>&1 || useradd -m -d /home/backupuser -s /usr/sbin/nologin backupuser
 
 # chroot 根目录：必须 root 所有，且不能被组或其他人写，
 # 否则 sshd 会拒绝登录并在日志里报 "bad ownership or modes"
@@ -1990,8 +2110,14 @@ chmod 700 /srv/sftp/backupuser/backup
 
 #### 8.5.2 备份机：限制这个账号只能做 SFTP
 
-编辑 `/etc/ssh/sshd_config`，在**文件末尾**追加（`Match` 块必须放在最后，
+先备份配置，再编辑 `/etc/ssh/sshd_config`。在**文件末尾**追加（`Match` 块必须放在最后，
 它之后的配置都属于这个块）：
+
+```bash
+SSHD_BACKUP=$(mktemp /etc/ssh/sshd_config.bak.XXXXXX) || exit 1
+cp -a -- /etc/ssh/sshd_config "$SSHD_BACKUP" || exit 1
+echo "SSH 配置备份：$SSHD_BACKUP"
+```
 
 ```
 Match User backupuser
@@ -2002,16 +2128,19 @@ Match User backupuser
     PermitTTY no
 ```
 
-检查语法后重载：
+检查语法后重载。下面是 Debian/Ubuntu 的服务名；如果语法或 reload 失败，立即恢复备份：
 
 ```bash
-# Debian/Ubuntu：
-sshd -t && systemctl reload ssh
-
-# EL（按需执行，不要和上一条同时执行）：
-# sshd -t && systemctl reload sshd
+: "${SSHD_BACKUP:?请先按上一步备份 sshd_config，并在同一 shell 中继续}"
+if ! sshd -t || ! systemctl reload ssh; then
+    cp -a -- "$SSHD_BACKUP" /etc/ssh/sshd_config
+    sshd -t && systemctl reload ssh
+    echo "SSH 新配置未生效，已恢复：$SSHD_BACKUP" >&2
+    exit 1
+fi
 ```
 
+EL 系使用 `systemctl reload sshd`，不要同时执行两个服务名。
 `sshd -t` 没有输出就是通过了。**先别关掉当前的 SSH 会话**，
 另开一个连接确认登录正常，再关闭旧会话。
 
@@ -2036,7 +2165,7 @@ restrict,command="internal-sftp" ssh-ed25519 AAAAC3NzaC1...（你的公钥）
 备份机上这两个权限必须对，否则公钥认证会被静默拒绝：
 
 ```bash
-chown -R backupuser:backupuser /home/backupuser/.ssh
+chown backupuser:backupuser /home/backupuser/.ssh /home/backupuser/.ssh/authorized_keys
 chmod 700 /home/backupuser/.ssh
 chmod 600 /home/backupuser/.ssh/authorized_keys
 ```
@@ -2049,8 +2178,11 @@ chmod 600 /home/backupuser/.ssh/authorized_keys
 那样在首次连接时盲信 —— 所以这一步必须做：
 
 ```bash
-ssh-keyscan -p 22 备份机地址 > /root/.ssh/lnmp_backup_known_hosts
-ssh-keygen -lf /root/.ssh/lnmp_backup_known_hosts
+read -r -p "备份机主机名或 IP: " BACKUP_HOST
+case "$BACKUP_HOST" in ''|-*|*[!A-Za-z0-9._:-]*) echo "主机名或 IP 格式不合法" >&2; exit 1;; esac
+KNOWN_HOSTS_CANDIDATE=$(mktemp /root/.ssh/lnmp_backup_known_hosts.candidate.XXXXXX) || exit 1
+ssh-keyscan -p 22 "$BACKUP_HOST" > "$KNOWN_HOSTS_CANDIDATE" || exit 1
+ssh-keygen -lf "$KNOWN_HOSTS_CANDIDATE"
 ```
 
 记下输出的指纹，然后**到备份机本机上**（不要通过刚才那条网络连接）执行：
@@ -2062,14 +2194,21 @@ ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 两边的指纹逐字比对，对上了才算可信。对不上说明中间有人，别继续。
 
 ```bash
+if [ -e /root/.ssh/lnmp_backup_known_hosts ]; then
+    KNOWN_HOSTS_BACKUP=$(mktemp /root/.ssh/lnmp_backup_known_hosts.bak.XXXXXX) || exit 1
+    cp -a -- /root/.ssh/lnmp_backup_known_hosts "$KNOWN_HOSTS_BACKUP" || exit 1
+    echo "旧主机指纹备份：$KNOWN_HOSTS_BACKUP"
+fi
+mv -f -- "$KNOWN_HOSTS_CANDIDATE" /root/.ssh/lnmp_backup_known_hosts
 chmod 600 /root/.ssh/lnmp_backup /root/.ssh/lnmp_backup_known_hosts
+unset BACKUP_HOST KNOWN_HOSTS_CANDIDATE KNOWN_HOSTS_BACKUP
 ```
 
 #### 8.5.4 生产机：开启上传并验证
 
 编辑 `/etc/lnmp/backup.conf`（权限 600），改这几项：
 
-```bash
+```text
 Enable_Remote_Backup=1
 Remote_Host="备份机地址"
 Remote_Port=22
@@ -2278,13 +2417,16 @@ log_format main '$time_iso8601 $status "$request_time" $remote_addr $scheme://$h
 实际连接到源站的代理地址。未限制源站时不要启用，因为直连客户端可以伪造
 `X-Forwarded-For` 和 `X-Real-IP`。
 
+[返回顶部](#top)
+
 ---
 
 ## 九、故障排查
 
 ### 9.1 站点 502 Bad Gateway
 
-按顺序查：
+以下步骤适用于 LNMP。LNMPA/LAMP 不使用 PHP-FPM socket，应改查
+`lnmp httpd status` 和 Apache 错误日志。LNMP 按顺序查：
 
 ```bash
 # 1. php-fpm 是否在跑
@@ -2303,11 +2445,14 @@ grep "server reached pm.max_children" /usr/local/php/var/log/php-fpm.log
 最后一条如果有输出，调大 `pm.max_children`（见 6.3），
 但**先确认内存够**，否则只会从 502 变成 OOM。
 
-本包自带一个快速自检脚本：
+需要一次汇总探测时，使用健康检查的只读状态命令：
 
 ```bash
-bash tools/check502.sh
+lnmp health status
 ```
+
+该命令会探测服务并报告当前状态，但不会重启服务。不要使用已废弃的
+`tools/check502.sh`；它会绕过 systemd 直接重启 PHP-FPM，也没有连续失败阈值和熔断。
 
 ### 9.2 WordPress 后台白屏
 
@@ -2315,33 +2460,40 @@ bash tools/check502.sh
 
 ```bash
 SITE=/home/wwwroot/wp.example.com
+SITE=$(readlink -f -- "$SITE")
+case "$SITE" in /home/wwwroot/*) ;; *) echo "拒绝危险路径：$SITE" >&2; exit 1;; esac
 
 # 日志目录放在站点根目录之外，Web 完全够不着
-mkdir -p /var/log/wordpress && chown www:www /var/log/wordpress && chmod 750 /var/log/wordpress
+WP_DEBUG_LOG_DIR=/var/log/wordpress/wp.example.com
+install -d -o www -g www -m 750 "$WP_DEBUG_LOG_DIR" || exit 1
 
 # 三个常量必须一起设：
 #   WP_DEBUG = true
 #   WP_DEBUG_DISPLAY = false
 #     这一项不能省略，否则绝对路径、SQL、插件上下文甚至请求密钥会直接显示给访客
 #   WP_DEBUG_LOG = 站点目录之外的日志路径
-chattr -i ${SITE}/.user.ini 2>/dev/null
-cat >> ${SITE}/wp-config-debug.snippet <<'EOF'
+DEBUG_SNIPPET="$SITE/wp-config-debug.snippet"
+[ ! -e "$DEBUG_SNIPPET" ] || { echo "调试片段已存在，拒绝覆盖" >&2; exit 1; }
+cat > "$DEBUG_SNIPPET" <<'EOF'
 define( 'WP_DEBUG', true );
 define( 'WP_DEBUG_DISPLAY', false );   // 不得能少
 @ini_set( 'display_errors', 0 );
-define( 'WP_DEBUG_LOG', '/var/log/wordpress/debug.log' );
+define( 'WP_DEBUG_LOG', '/var/log/wordpress/wp.example.com/debug.log' );
 EOF
 echo "把上面几行加到 wp-config.php 里 require_once 之前，复现问题后立刻删除"
 
 # 复现后看（日志在站外，Web 下载不到）
-tail -50 /var/log/wordpress/debug.log
+tail -50 "$WP_DEBUG_LOG_DIR/debug.log"
 ```
 
 > 注意：**不要使用默认的 `WP_DEBUG_LOG = true`**，否则日志会写入
 > `wp-content/debug.log`，位于 **Web 根目录内**，任何人都可能直接下载。
-> 已存在此类配置时应立即删除：
+> 已存在此类配置时，应在确认具体站点目录后删除，不要使用会匹配所有站点的通配符：
 > ```bash
-> rm -f /home/wwwroot/*/wp-content/debug.log
+> SITE=/home/wwwroot/wp.example.com
+> SITE=$(readlink -f -- "$SITE")
+> case "$SITE" in /home/wwwroot/*) ;; *) echo "拒绝危险路径：$SITE" >&2; exit 1;; esac
+> rm -f -- "$SITE/wp-content/debug.log"
 > ```
 > 并在站点配置中增加回退规则（放在 `include enable-php.conf;` 之前）：
 > ```nginx
@@ -2363,7 +2515,8 @@ grep rewrite /usr/local/nginx/conf/vhost/wp.example.com.conf
 # 应该有：include rewrite/wordpress.conf;
 ```
 
-没有就手工加进 `server {}` 块，然后 `lnmp nginx reload`。
+没有就手工加进 `server {}` 块，然后先执行 `/usr/local/nginx/sbin/nginx -t`；
+只有语法检查通过才执行 `lnmp nginx reload`。
 
 **LNMPA / LAMP（Apache）**：规则来自 `.htaccess`：
 
@@ -2391,14 +2544,15 @@ ls -ld /usr/local/mysql/var                  # 数据目录仍在
 恢复：
 
 ```bash
-cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
-chmod 755 /etc/init.d/mysql
-systemctl daemon-reload && systemctl start mysql
-apt-get purge 'mariadb-server*' 'mysql-server*'
+install -m 755 /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
+systemctl daemon-reload
+systemctl start mysql
 ```
 
 MariaDB 把上面的 `/usr/local/mysql` 换成 `/usr/local/mariadb`。`lnmp health` 的数据库探针
-也会报出该情况。
+也会报出该情况。如果确实安装过发行版数据库包，先用
+`apt-get -s purge 'mariadb-server*' 'mysql-server*'` 预览将被删除的包；只有确认不会删除
+其它业务依赖后，才去掉 `-s` 执行。不要把包卸载与 init 脚本恢复合并成一条命令。
 
 ### 9.4 上传大文件失败
 
@@ -2416,16 +2570,70 @@ grep client_max_body_size /usr/local/nginx/conf/nginx.conf
 redis-cli ping
 
 # 检查 PHP 扩展
-php -m | grep redis
+/usr/local/php/bin/php -m | grep redis
 
 # 检查 drop-in 是否部署
-ls -la /home/wwwroot/<域名>/wp-content/object-cache.php
+ls -la /home/wwwroot/wp.example.com/wp-content/object-cache.php
 
 # 检查对象缓存是否真的在写入
-redis-cli --scan --pattern "<前缀>:*" | wc -l
+redis-cli --scan --pattern "wpdemo:*" | wc -l
+```
+
+### 9.5b Redis 服务状态与启动失败
+
+`redis-cli ping` 返回 `PONG` 不等于本服务在跑：端口被外部 Redis 占用时，应答的是那个实例。
+两项都要看：
+
+```bash
+systemctl is-active redis          # 必须是 active
+redis-cli -p 6379 ping             # 必须是 PONG（端口按 lnmp.conf 的 Redis_Port）
+ss -lntp | grep :6379              # 监听者的 pid 应等于下面这条给出的 MainPID
+systemctl show -p MainPID --value redis
+```
+
+`systemctl start redis` 报端口被占用时，先确认占用进程再决定处理方式，LNMP 不会结束它：
+
+```bash
+journalctl -u redis.service --no-pager -n 20     # 会打印占用进程所在行
+ss -lntp | grep :6379
+```
+
+连续启动失败达到 unit 限制（300 秒内 5 次）后进入 `failed`，日志显示
+`Start request repeated too quickly`。修复原因后清除计数再启动：
+
+```bash
+journalctl -xeu redis.service --no-pager | tail -50
+tail -20 /usr/local/redis/var/redis.log          # Redis 自身的错误写在这里，不进 journal
+systemctl reset-failed redis.service
+systemctl start redis
+```
+
+前台跑一次能看到最直接的报错（不写 pid、不受 unit 影响，Ctrl+C 结束）：
+
+```bash
+/usr/local/redis/bin/redis-server /usr/local/redis/etc/redis.conf --daemonize no
+```
+
+已执行过 `lnmp health init` 时，健康检查每分钟探测一次 Redis，连续 3 次失败会自动
+`systemctl restart redis.service`，30 分钟内最多 2 次，之后熔断只告警：
+
+```bash
+lnmp health status
+lnmp health check
+lnmp health reset redis          # 修复后清除失败计数和熔断标记
+```
+
+启动日志里的 `Memory overcommit must be enabled` 表示 `vm.overcommit_memory` 不是 1。
+安装 Redis 时会自动写入 `/etc/sysctl.d/60-lnmp-redis.conf` 并生效；仍出现该告警时：
+
+```bash
+cat /proc/sys/vm/overcommit_memory     # 期望 1
+sysctl -w vm.overcommit_memory=1       # 值为 2 时属严格模式，安装脚本不覆盖，需自行确认
 ```
 
 ### 9.6 数据库连接失败
+
+[返回顶部](#top)
 
 ```bash
 # 用 wp-config.php 里的凭据手工连一次，直接看真实报错
@@ -2535,10 +2743,15 @@ Nginx 与 PHP-FPM 多为配置语法错误，先做配置测试：
 
 按给出的命令恢复属主即可。属主被改坏通常源于递归 `chown` 时路径变量为空，
 例如站点加固命令 `chown -R root:www ${SITE}/` 在 `SITE` 未赋值时作用到 `/`，
-把数据目录一并改掉（见 5.2 的提示）。恢复后确认：
+把数据目录一并改掉（见 5.2 的提示）。只修复错误信息明确指出的数据目录，不要递归修改
+整个 `/usr/local/mariadb` 或 `/usr/local/mysql`：
 
 ```bash
-chown -R mariadb:mariadb /usr/local/mariadb    # MySQL 分支为 mysql:mysql /usr/local/mysql
+DB_DATA_DIR=$(readlink -f -- /usr/local/mariadb/var)
+[ "$DB_DATA_DIR" = /usr/local/mariadb/var ] || { echo "数据目录不是预期路径：$DB_DATA_DIR" >&2; exit 1; }
+find "$DB_DATA_DIR" -xdev -type d -exec chown mariadb:mariadb {} +
+find "$DB_DATA_DIR" -xdev -type f -exec chown mariadb:mariadb {} +
+# MySQL 分支把路径和账号分别换成 /usr/local/mysql/var 与 mysql:mysql
 lnmp start
 lnmp status
 ```
@@ -2658,6 +2871,8 @@ lnmp perm uninit; echo "rc=$?"
 用户自建站点目录（5.6 加固后属主本就不同）、已存在时项目不会改写的
 `/etc/nftables.conf`。
 
+[返回顶部](#top)
+
 ---
 
 ## 十、安全基线
@@ -2770,7 +2985,7 @@ lnmp perm uninit; echo "rc=$?"
    改完两类地址都要验证，`nginx -t` 只能查语法：
 
    ```bash
-   nginx -t && lnmp nginx reload
+   /usr/local/nginx/sbin/nginx -t && lnmp nginx reload
    # 非白名单地址访问 .php 和静态文件都应返回 403
    curl -o /dev/null -w "%{http_code}\n" http://你的域名/49763abb_phpmyadmin/index.php
    ```
@@ -2782,6 +2997,8 @@ lnmp perm uninit; echo "rc=$?"
 5. **定期执行异地备份恢复测试**，确认备份文件有效、密钥可用且恢复时间可接受
 
 ### 10.2 WordPress 应用层基线
+
+[返回顶部](#top)
 
 LNMP 的防火墙、`open_basedir` 和禁用函数不能弥补 WordPress 插件漏洞。生产站至少落实
 以下各项，并保留变更记录：
@@ -2857,16 +3074,29 @@ location ~* ^/wp-content/uploads/.*\.(php|php5|phtml)$ {
 修改后应验证实际请求结果；`nginx -t` 通过不代表规则已经生效：
 
 ```bash
-nginx -t && lnmp nginx reload
+/usr/local/nginx/sbin/nginx -t && lnmp nginx reload
 
 # 放一个测试文件，确认它不会被执行（应返回 403，而不是输出内容）
-echo '<?php echo "EXECUTED";' > /home/wwwroot/<域名>/wp-content/uploads/t.php
-curl -o /dev/null -w "%{http_code}\n" http://<域名>/wp-content/uploads/t.php   # 期望 403
-rm -f /home/wwwroot/<域名>/wp-content/uploads/t.php
+SITE=/home/wwwroot/wp.example.com
+DOMAIN=wp.example.com
+SITE=$(readlink -f -- "$SITE")
+case "$SITE" in /home/wwwroot/*) ;; *) echo "拒绝危险路径：$SITE" >&2; exit 1;; esac
+TEST_FILE="$SITE/wp-content/uploads/lnmp-php-deny-test.php"
+[ ! -e "$TEST_FILE" ] || { echo "测试文件已存在，拒绝覆盖：$TEST_FILE" >&2; exit 1; }
+trap 'rm -f -- "$TEST_FILE"' EXIT
+printf '%s\n' '<?php echo "EXECUTED";' > "$TEST_FILE" || exit 1
+HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" "https://$DOMAIN/wp-content/uploads/lnmp-php-deny-test.php") || exit 1
+[ "$HTTP_CODE" = 403 ] || { echo "上传目录 PHP 阻断未生效，HTTP $HTTP_CODE" >&2; exit 1; }
+echo "上传目录 PHP 阻断已生效：HTTP $HTTP_CODE"
+rm -f -- "$TEST_FILE"
+trap - EXIT
+unset SITE DOMAIN TEST_FILE HTTP_CODE
 ```
 
 实测确认：规则插在 `include enable-php.conf;` 之前时返回 **403**；
 放在末尾时返回 **200 并执行**。
+
+[返回顶部](#top)
 
 ---
 
@@ -2911,6 +3141,8 @@ rm -f /home/wwwroot/<域名>/wp-content/uploads/t.php
 上游文档说明“参数是什么”，本机指标说明“应该设多少”。变更流程固定为：备份当前配置，
 记录基线，只改一组参数，做语法检查和真实请求验证，覆盖一个业务高峰，再决定保留或回滚。
 
+[返回顶部](#top)
+
 ---
 
 ## 附：验证环境的完整结果
@@ -2932,3 +3164,5 @@ Apache 栈   LAMP / LNMPA 均完成源码安装与 PHP、PATH_INFO、目录边�
 Pure-FTPd   TLS 2；明文登录拒绝，显式 FTPS 列目录与上传成功
 防火墙      inet lnmp 表；实际 SSH 端口与 80/443 放行，3306/6379 drop；未动系统主表
 ```
+
+[返回顶部](#top)

@@ -24,26 +24,29 @@ REDIS_CLI=/usr/local/redis/bin/redis-cli
 PIDFILE=/usr/local/redis/var/redis.pid
 CONF="/usr/local/redis/etc/redis.conf"
 RUNAS=redis
+# 兼容入口必须后台运行：redis.conf 按 systemd 前台模式配置，这里在命令行显式覆盖，
+# 并固定 pid 文件位置，保证本脚本的状态判断与实际进程一致。
+DAEMON_OPTS="--daemonize yes --pidfile ${PIDFILE}"
 Redis_Exec()
 {
     if ! id -u "${RUNAS}" >/dev/null 2>&1; then
         echo "警告：账号 ${RUNAS} 不存在，将以当前用户($(id -un))启动 Redis。"
         echo "      建议创建专用账号：useradd -r -M -s /sbin/nologin ${RUNAS}"
         echo "      并把 /usr/local/redis/var 的属主改为它。"
-        "$EXEC" "$CONF"
+        "$EXEC" "$CONF" ${DAEMON_OPTS}
         return $?
     fi
 
     # 当前用户已是 Redis 专用账号时直接启动。
     if [ "$(id -un)" = "${RUNAS}" ]; then
-        "$EXEC" "$CONF"
+        "$EXEC" "$CONF" ${DAEMON_OPTS}
         return $?
     fi
 
     if command -v setpriv >/dev/null 2>&1; then
-        setpriv --reuid="${RUNAS}" --regid="${RUNAS}" --init-groups "$EXEC" "$CONF"
+        setpriv --reuid="${RUNAS}" --regid="${RUNAS}" --init-groups "$EXEC" "$CONF" ${DAEMON_OPTS}
     else
-        su -s /bin/sh -c "'$EXEC' '$CONF'" "${RUNAS}"
+        su -s /bin/sh -c "'$EXEC' '$CONF' ${DAEMON_OPTS}" "${RUNAS}"
     fi
 }
 

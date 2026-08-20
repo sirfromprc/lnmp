@@ -48,6 +48,29 @@ Install_PHPMemcached()
     cd ../
 }
 
+# memcached 依赖 libevent 开发头文件；addons 是独立入口，不能假定主安装的依赖已装齐。
+Install_Memcached_Deps()
+{
+    [ -s /usr/include/event2/event.h ] && return 0
+    Get_Dist_Name
+    if [ "${PM}" = "apt" ]; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get install -y libevent-dev >/dev/null 2>&1
+    elif [ "${PM}" = "yum" ]; then
+        yum install -y libevent-devel >/dev/null 2>&1
+    fi
+    [ -s /usr/include/event2/event.h ]
+}
+
+# 服务端未装成时的统一出口：撤掉本次写入的 PHP ini，不部署 unit、开机自启和防火墙规则。
+Memcached_Abort()
+{
+    rm -f ${PHP_Path}/conf.d/005-memcached.ini
+    Echo_Red "$1"
+    Echo_Red "已移除 005-memcached.ini，未部署服务单元、开机自启和防火墙规则。"
+    return 0
+}
+
 Install_Memcached()
 {
     ver="1"
@@ -88,9 +111,19 @@ EOF
     else
         Download_Files https://memcached.org/files/${Memcached_Ver}.tar.gz ${Memcached_Ver}.tar.gz
         Require_File "${Memcached_Ver}.tar.gz" "memcached"
+        Install_Memcached_Deps || { Memcached_Abort "缺少 libevent 开发包，无法编译 memcached。"; return 1; }
         Tar_Cd ${Memcached_Ver}.tar.gz ${Memcached_Ver}
-        ./configure --prefix=/usr/local/memcached
-        make &&make install
+        # configure 失败时不能继续往下部署服务，否则失败点被推迟到启动阶段。
+        if ! ./configure --prefix=/usr/local/memcached; then
+            cd ../
+            Memcached_Abort "memcached 的 configure 失败，请按上面的输出补齐依赖后重试。"
+            return 1
+        fi
+        if ! Make_Install; then
+            cd ../
+            Memcached_Abort "memcached 编译或安装失败。"
+            return 1
+        fi
         cd ../
         rm -rf ${cur_dir}/src/${Memcached_Ver}
 
@@ -99,7 +132,10 @@ EOF
         \cp ${cur_dir}/init.d/init.d.memcached /etc/init.d/memcached
         # 服务监听端口与 lnmp.conf 及防火墙规则保持一致。
         sed -i "s/^PORT=.*/PORT=${Memcached_Port}/" /etc/init.d/memcached
-        Check_Conf_Applied /etc/init.d/memcached "^PORT=${Memcached_Port}\$"             "Memcached 端口 ${Memcached_Port}" || return 1
+        if ! Check_Conf_Applied /etc/init.d/memcached "^PORT=${Memcached_Port}\$"             "Memcached 端口 ${Memcached_Port}"; then
+            Memcached_Abort "Memcached init 脚本端口未写入。"
+            return 1
+        fi
         chmod +x /etc/init.d/memcached
 
         if ! id -u memcached >/dev/null 2>&1; then
