@@ -130,6 +130,33 @@ Svc_If_Installed()
     Svc "${service}" "${action}"
 }
 
+# systemctl 成功时通常不输出内容，因此管理命令补充明确的成功或失败结果。
+# status 已包含完整状态，不再重复提示。
+Svc_Feedback()
+{
+    local service="$1" action="$2" rc
+
+    Svc "${service}" "${action}"
+    rc=$?
+
+    case "${action}" in
+    ''|status)
+        ;;
+    *)
+        if [ ${rc} -eq 0 ]; then
+            Echo_Green "${service} ${action} 成功"
+        else
+            Echo_Red "${service} ${action} 失败（退出码 ${rc}）"
+            case "${service}" in
+            mysql|mariadb) Diagnose_DB_Start_Failure "${action}" ;;
+            esac
+        fi
+        ;;
+    esac
+
+    return ${rc}
+}
+
 # 输出服务对应的进程名。服务名与进程名不一致时在这里映射。
 Svc_Process_Names()
 {
@@ -3874,19 +3901,24 @@ case "${arg1}" in
         lnmpa_status
         ;;
     nginx)
-        Svc nginx ${arg2}
+        Svc_Feedback nginx ${arg2}
+        exit $?
         ;;
     mysql)
-        Svc mysql ${arg2} || Diagnose_DB_Start_Failure "${arg2}"
+        Svc_Feedback mysql ${arg2}
+        exit $?
         ;;
     mariadb)
-        Svc mariadb ${arg2} || Diagnose_DB_Start_Failure "${arg2}"
+        Svc_Feedback mariadb ${arg2}
+        exit $?
         ;;
     pureftpd)
-        Svc pureftpd ${arg2}
+        Svc_Feedback pureftpd ${arg2}
+        exit $?
         ;;
     httpd)
-        Svc httpd ${arg2}
+        Svc_Feedback httpd ${arg2}
+        exit $?
         ;;
     vhost)
         Function_Vhost ${arg2}

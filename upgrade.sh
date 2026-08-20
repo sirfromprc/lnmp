@@ -21,6 +21,7 @@ Upgrade_Date=$(date +"%Y%m%d%H%M%S")
 . include/dbcommon.sh
 . include/init.sh
 . include/php.sh
+. include/php_default_ext.sh
 . include/nginx.sh
 # 提供安装和升级流程使用的 Telegram 通知函数。
 . tools/lnmp-tgnotice.sh

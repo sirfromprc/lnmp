@@ -114,7 +114,13 @@ Install_LNMP_Command()
     Install_Tgnotice_Profile || return 1
     Install_Perm_Diagnose_Unit || return 1
     Install_App_Unit_Tpl || return 1
-    # 工具脚本需要可执行权限，以支持通过 ./tools/xxx.sh 直接调用。
+    return 0
+}
+
+# 工具脚本需要可执行权限，以支持通过 ./tools/xxx.sh 直接调用。
+# 只在初次安装时设置：源码目录的权限装完就已确定，后续同步管理命令不会改变它。
+Set_Tools_Permission()
+{
     if ! chmod 755 "${cur_dir}"/tools/*.sh 2>/dev/null; then
         Echo_Red "设置 tools/ 目录脚本权限失败，请手动执行: chmod 755 ${cur_dir}/tools/*.sh"
         return 1
@@ -189,6 +195,7 @@ Add_LNMP_Startup()
 {
     echo "正在设置开机启动并启动 LNMP..."
     Install_LNMP_Command lnmp || return 1
+    Set_Tools_Permission || return 1
     StartUp nginx
     StartOrStop start nginx
     Startup_DB || return 1
@@ -215,6 +222,7 @@ Add_LNMPA_Startup()
 {
     echo "正在设置开机启动并启动 LNMPA..."
     Install_LNMP_Command lnmpa || return 1
+    Set_Tools_Permission || return 1
     StartUp nginx
     StartOrStop start nginx
     Startup_DB || return 1
@@ -227,6 +235,7 @@ Add_LAMP_Startup()
 {
     echo "正在设置开机启动并启动 LAMP..."
     Install_LNMP_Command lamp || return 1
+    Set_Tools_Permission || return 1
     StartUp httpd
     StartOrStop start httpd
     Startup_DB || return 1

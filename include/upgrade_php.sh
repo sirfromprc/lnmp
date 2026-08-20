@@ -83,6 +83,40 @@ Rollback_PHP()
     Echo_Red "已恢复升级前的 PHP。请检查站点是否正常。"
 }
 
+# 新 PHP 来自暂存目录，conf.d 是空的，旧版本的扩展 .so 与新版本 ABI 不兼容，
+# 不能直接把旧 ini 搬过来。这里只重建不需要编译的 OPcache，其余扩展列出名字
+# 供使用者用 addons.sh 重装，避免升级后扩展静默消失。
+Report_PHP_Ext_After_Upgrade()
+{
+    # Enable_Opcache_Config 与本函数都按 PHP_Path 取路径，升级流程未设置该变量。
+    local PHP_Path='/usr/local/php'
+    local old_conf="${PHP_Old_Dir}/conf.d" f base name lost=''
+
+    if [ "${Enable_PHP_Default_Opcache}" = 'y' ]; then
+        Enable_Opcache_Config
+    fi
+
+    [ -d "${old_conf}" ] || return 0
+
+    for f in "${old_conf}"/*.ini; do
+        [ -f "${f}" ] || continue
+        base=${f##*/}
+        # 新 conf.d 已有同名 ini 时无需提示，例如刚重建的 opcache。
+        [ -s "${PHP_Path}/conf.d/${base}" ] && continue
+        # 文件名形如 009-swoole.ini，去掉三位序号和后缀取扩展名。
+        name=${base%.ini}
+        name=${name#*-}
+        lost="${lost} ${name}"
+    done
+
+    [ -n "${lost}" ] || return 0
+
+    Echo_Yellow "升级后以下 PHP 扩展需要重装（新版本扩展目录已变，旧 .so 不可用）："
+    Echo_Yellow "  ${lost# }"
+    Echo_Yellow "重装：bash addons.sh install <名字>；旧配置保留在 ${old_conf}"
+    return 0
+}
+
 # 确认暂存目录中的 PHP 可执行且版本正确。
 Smoke_Test_PHP()
 {
@@ -356,6 +390,7 @@ fi
         Rollback_PHP
         return 1
     fi
+    Report_PHP_Ext_After_Upgrade
     Echo_Green "旧版本保留在 ${PHP_Old_Dir}，确认无误后可自行删除。"
     return 0
 }

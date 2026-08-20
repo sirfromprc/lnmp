@@ -194,7 +194,7 @@ lnmp backup test
 - `run all` 立即执行数据库和网站备份。
 - `test` 将最新数据库备份导入临时库验证，不覆盖现有站点。
 - `restore` 会覆盖目标数据库或网站文件，具体语法和恢复前检查见
-  `HowtoGuides.md` 第 8.4 节。
+  `HowtoGuides.md` 第 8.5 节。
 
 ### 3.5 证书与 phpMyAdmin
 

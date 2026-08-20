@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 维护用同步脚本：将源码树中的管理命令覆盖到已安装位置，并设置执行权限。
+# 维护用同步脚本：将源码树中的管理命令覆盖到已安装位置。
+# tools/ 目录的脚本权限由初次安装设置，代码改动不影响它，这里不再重复处理。
 # 该脚本仅同步 conf/lnmp、conf/lnmpa、conf/lamp 与 tools/lnmp-*.sh，
 # 不执行组件安装或升级，不应替代 install.sh 或 upgrade.sh。
 #
@@ -51,7 +52,7 @@ fi
 . "${cur_dir}/include/main.sh"
 . "${cur_dir}/include/end.sh"
 
-echo "同步 ${Stack} 管理命令与 tools/ 脚本权限（源码目录：${cur_dir}）..."
+echo "同步 ${Stack} 管理命令（源码目录：${cur_dir}）..."
 Install_LNMP_Command "${Stack}" || exit 1
 
 Rc=0
@@ -63,7 +64,7 @@ for f in /bin/lnmp /bin/lnmp-backup /bin/lnmp-tgnotice /bin/lnmp-phpmyadmin /bin
 done
 
 if [ ${Rc} -eq 0 ]; then
-    Echo_Green "同步完成：${Stack} -> /bin/lnmp，tools/*.sh 已设为 755。"
+    Echo_Green "同步完成：${Stack} -> /bin/lnmp。"
 fi
 
 exit ${Rc}

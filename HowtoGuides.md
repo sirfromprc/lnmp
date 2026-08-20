@@ -4,7 +4,7 @@
 
 > 主安装、建站、WordPress、Redis、HTTPS 和备份流程已在
 > **Debian 12、Debian 13 / x86_64 / 6G 内存 / 4 核** 上实测，文中的“实测输出”来自
-> 这些环境。1~2GB、3~4GB 和 5GB 以上的容量表依据当前配置生成逻辑与内存预算给出
+> 这些环境。1～2GB、3～4GB 和 5GB 以上的容量表依据当前配置生成逻辑与内存预算给出
 > 保守起点，未对每个容量档进行同等真机压测。
 > LNMP 环境组合：nginx 1.30.4 + PHP 8.3.33 + MySQL 8.4.7 或
 > MariaDB 11.8.8（均为官方通用二进制）+ Redis 8.10.0 + phpMyAdmin 5.2.3 +
@@ -13,6 +13,8 @@
 >
 > 本项目所提供的功能纯终端命令操作，建议配合 WinSCP 处理上下传文件工作，提高工作效率。
 > 阅读 [readme.md](readme.md) 文件，了解LNMP项目更多使用信息。
+
+**本文中很多终端脚本操作，多为自动化操作提供的脚本示例，不熟练或不清楚的建议使用WinSCP修改参数，然后终端输入命令，脚本仅供参考。**
 
 ---
 
@@ -143,10 +145,10 @@ unset DB_Root_Password
 | 变量 | 值 | 含义 |
 |---|---|---|
 | `LNMP_Auto` | `y` | 跳过安装前的所有交互确认（检查 lnmp.conf、SSH 端口提示、最终摘要确认） |
-| `DBSelect` | `1`~`5` | 1=MySQL8.0 **2=MySQL8.4(默认)** 3=MariaDB10.11 4=MariaDB11.4 5=MariaDB11.8 |
+| `DBSelect` | `1`～`5` | 1=MySQL8.0 **2=MySQL8.4(默认)** 3=MariaDB10.11 4=MariaDB11.4 5=MariaDB11.8 |
 | `Bin` | `y`/`n` | `y`=下载官方通用二进制（快，几分钟）；`n`=源码编译（慢，30-60 分钟） |
-| `PHPSelect` | `1`~`6` | 1=8.0 2=8.1 3=8.2 **4=8.3(默认)** 5=8.4 6=8.5 |
-| `SelectMalloc` | `1`~`3` | 1=不装 2=Jemalloc 3=TCMalloc |
+| `PHPSelect` | `1`～`6` | 1=8.0 2=8.1 3=8.2 **4=8.3(默认)** 5=8.4 6=8.5 |
+| `SelectMalloc` | `1`～`3` | 1=不装 2=Jemalloc 3=TCMalloc |
 | `InstallInnodb` | `y` | WordPress 必须用 InnoDB |
 | `Enable_PhpMyAdmin` | `y`/`n` | **默认 `n`**（安全考虑）。要 phpMyAdmin 必须显式开启 |
 | `Enable_Composer` | `y`/`n` | 默认 `y`；不需要 Composer 时设 `n`，不会下载或执行安装器 |
@@ -224,7 +226,9 @@ bash upgrade.sh openresty
 
 ### 2.3.1 OpenResty 自定义编译模块与 Lua 库
 
-只在 `ORMode=2`（源码编译）下有效。全部配置项在 `lnmp.conf` 的 OpenResty 段：
+只在 `ORMode=2`（源码编译）下有效。全部配置项在 `lnmp.conf` 的 OpenResty 段。
+普通 Nginx 没有等价机制，加第三方模块的做法见
+[8.2.7 安装本项目未提供的 Nginx 模块](#827-安装本项目未提供的-nginx-模块)。
 
 ```text
 ## 每条：名称|下载地址|SHA256|类型
@@ -291,7 +295,7 @@ luarocks 需要系统里先装好（`apt-get install luarocks`），本包不负
 
 ```bash
 lnmp status
-/usr/local/nginx/sbin/nginx -v && /usr/local/php/bin/php -v && mysql --version
+nginx -v && php -v && mysql --version
 ```
 
 实测输出：
@@ -450,7 +454,7 @@ CheckMirror=n Bin=y bash install.sh lnmp
 | `Bin` | `y` 通用二进制；`n` 源码 | x86_64 默认 `y`；只有确实需要定制构建才选 `n` |
 | `DB_Root_Password` | 字符串或留空 | 自动化应从受限 secret 注入；留空会随机生成到 root-only 文件 |
 | `InstallInnodb` | `y` / `n` | WordPress 必须 `y` |
-| `PHPSelect` | `1`~`6` 对应 PHP 8.0~8.5 | 新站优先仍在上游安全支持期且插件已兼容的 8.3/8.4；不要仅因“版本最新”跳过兼容测试 |
+| `PHPSelect` | `1`～`6` 对应 PHP 8.0～8.5 | 新站优先仍在上游安全支持期且插件已兼容的 8.3/8.4；不要仅因“版本最新”跳过兼容测试 |
 | `SelectMalloc` | `1` 无；`2` Jemalloc；`3` TCMalloc | VPS 默认 1；没有分配器碎片证据就不要增加变量 |
 | `ApacheSelect` | 当前仅 `1`=2.4 | 只在 LNMPA/LAMP 询问；Debian 13 已实测，其它发行版仍需复验 |
 
@@ -482,7 +486,7 @@ CheckMirror=n Bin=y bash install.sh lnmp
 `Enable_Remote_Backup`、`Remote_Protocol`、`Remote_Host`、`Remote_Port`、
 `Remote_User`、`Remote_Dir`、`Remote_Password`、`Remote_Ftp_Verify`、
 `Remote_Ftp_CA`、`Remote_SSH_Key`、`Remote_Known_Hosts`、`Enable_Encrypt`、
-`Encrypt_Tool`、`Encrypt_Recipient`、`Encrypt_Identity`。具体取值与验证见 8.4、8.5。
+`Encrypt_Tool`、`Encrypt_Recipient`、`Encrypt_Identity`。具体取值与验证见 8.5、8.6。
 
 通知配置支持 `TG_Enable`、`TG_Bot_Token`、`TG_Chat_Id`、`TG_Parse_Mode`、
 `TG_Timeout`、`TG_Retry`、`TG_Disable_Preview`；用 `lnmp tgnotice --init` 生成，
@@ -590,55 +594,39 @@ Redis 的安全默认值（本包已配好，不要随意放开）：
 不要把本项目编译的 Redis 直接开放到公网。确需跨机访问时使用私网/VPN/SSH 隧道，限制
 来源，并确认链路加密；仅设置密码不能防止明文协议上的凭据和数据被窃听。
 
-单站点希望给回环连接再加一道认证时，可以使用兼容性较好的 `requirepass`。下面把密码
+单站点希望给回环连接再加一道认证时，可以使用兼容性较好的 `requirepass`。可以手工修改 `/usr/local/redis/etc/redis.conf` 里的 `requirepass` 后重启；也可以用下面的脚本。
+
+把密码
 保存到 root-only 文件，不打印到终端，也不通过 `redis-cli -a` 暴露在进程参数中：
 
 ```bash
-# 1. 生成并保存密码（配置文件是 root:redis 640，密码文件是 root 600）
+# 1. 先备份原配置，改坏了可原样还回去
 REDIS_CONF=/usr/local/redis/etc/redis.conf
-REDIS_BACKUP=$(mktemp "${REDIS_CONF}.bak.XXXXXX") || exit 1
-REDIS_TMP=$(mktemp "${REDIS_CONF}.tmp.XXXXXX") || exit 1
-REDIS_PASSWORD_TMP=$(mktemp /root/.lnmp_redis_password.tmp.XXXXXX) || exit 1
-trap 'rm -f -- "$REDIS_TMP" "$REDIS_PASSWORD_TMP"; unset REDISPW' EXIT
-cp -a -- "$REDIS_CONF" "$REDIS_BACKUP" || exit 1
+REDIS_BACKUP="${REDIS_CONF}.$(date +%Y%m%d%H%M%S).bak"
+cp -a "${REDIS_CONF}" "${REDIS_BACKUP}"
 
-REDISPW=$(openssl rand -base64 24) || exit 1
-[ -n "$REDISPW" ] || exit 1
-printf '%s\n' "$REDISPW" > "$REDIS_PASSWORD_TMP" || exit 1
-chmod 600 "$REDIS_PASSWORD_TMP" || exit 1
-sed '/^[[:space:]]*#\?[[:space:]]*requirepass[[:space:]]/d' "$REDIS_CONF" > "$REDIS_TMP" || exit 1
-printf 'requirepass %s\n' "$REDISPW" >> "$REDIS_TMP" || exit 1
-chown --reference="$REDIS_CONF" "$REDIS_TMP" || exit 1
-chmod --reference="$REDIS_CONF" "$REDIS_TMP" || exit 1
-mv -f -- "$REDIS_TMP" "$REDIS_CONF" || exit 1
+# 2. 生成并保存密码（配置文件是 root:redis 640，密码文件是 root 600）
+umask 077
+REDISPW=$(openssl rand -base64 24)
+printf '%s\n' "${REDISPW}" > /root/.lnmp_redis_password
+sed -i '/^[[:space:]]*#\?[[:space:]]*requirepass[[:space:]]/d' "${REDIS_CONF}"
+printf 'requirepass %s\n' "${REDISPW}" >> "${REDIS_CONF}"
 unset REDISPW
 
-# 2. 重启使配置生效
-if ! systemctl restart redis.service; then
-    cp -a -- "$REDIS_BACKUP" "$REDIS_CONF"
-    systemctl restart redis.service
-    echo "Redis 新配置启动失败，已恢复：$REDIS_BACKUP" >&2
-    exit 1
-fi
-if ! mv -f -- "$REDIS_PASSWORD_TMP" /root/.lnmp_redis_password; then
-    cp -a -- "$REDIS_BACKUP" "$REDIS_CONF"
-    systemctl restart redis.service
-    echo "无法保存 Redis 密码，已恢复旧配置" >&2
-    exit 1
-fi
+# 3. 重启使配置生效（无 systemd 的环境用 /etc/init.d/redis restart）
+systemctl restart redis
 
-# 3. 验证：不带密码应该被拒绝，带密码才能执行命令
+# 4. 验证：不带密码应该被拒绝，带密码才能执行命令
 redis-cli ping
 # (error) NOAUTH Authentication required.
 REDISCLI_AUTH="$(cat /root/.lnmp_redis_password)" redis-cli ping
 # PONG
-trap - EXIT
 ```
 
 确认应用连接正常后再删除 `REDIS_BACKUP` 指向的旧配置；该备份可能含旧密码，权限应保持原配置值。
 
 设了密码之后，WordPress 那边的 redis-cache 插件也要同步改，
-在 [5.3 生成 wp-config.php](#53-生成-wp-configphp) 的 Redis 常量块里加一行：
+在 [5.3 生成 wp-config.php](#53-脚本生成-wp-configphp) 的 Redis 常量块里加一行：
 
 ```php
 define( 'WP_REDIS_PASSWORD', '读取 /root/.lnmp_redis_password 后填入的密码' );
@@ -949,7 +937,9 @@ find "$SITE" -xdev -type f ! -name .user.ini -exec chown www:www {} + -exec chmo
 > （`chattr +i`），防止站点被入侵后篡改目录限制。这是安全设计。
 > 真要改它：`chattr -i .user.ini` → 改 → `chattr +i .user.ini`。
 
-### 5.3 生成 wp-config.php
+### 5.3 脚本生成 wp-config.php
+
+权限未收紧可在浏览器端配置，或使用以下脚本：
 
 ```bash
 cd "$SITE"
@@ -1229,7 +1219,7 @@ php -r '$r=new Redis(); $r->connect("127.0.0.1",6379);
 | `memory_limit` | 普通站 128M；电商/页面构建器 256M | 先看 PHP fatal error 和插件文档；它是单请求上限，不是预留内存 |
 | `upload_max_filesize` | 50M | 只按业务最大上传调，不建议用 PHP 上传大视频/备份 |
 | `post_max_size` | 不小于上传上限，另留表单开销 | 必须与 Nginx `client_max_body_size` 一起改 |
-| `max_input_vars` | 1000 | 菜单/复杂表单确认发生截断后再升到 2000~3000 |
+| `max_input_vars` | 1000 | 菜单/复杂表单确认发生截断后再升到 2000～3000 |
 | `max_execution_time` | 300 是项目值，普通页面应远低于此值 | 长任务移到队列/CLI；不要靠继续加超时掩盖慢请求 |
 
 OPcache 已由 `Enable_PHP_Default_Opcache=y` 默认安装，配置在
@@ -1281,7 +1271,7 @@ max_children = floor(PHP 可用内存 / 单 worker 的高峰 PSS)
 
 RSS 会把共享库/OPcache 重复计入每个进程，条件允许时安装 `smem` 看 PSS；没有 `smem`
 可先用 RSS 做保守上界。必须在插件、主题、缓存预热和代表性请求都到位后采样，空白首页
-的 20~30MB 没有规划意义：
+的 20～30MB 没有规划意义：
 
 ```bash
 ps --no-headers -o pid,rss,etime,cmd -C php-fpm --sort=-rss | head -20
@@ -1289,7 +1279,7 @@ grep -E '^(MemAvailable|SwapFree):' /proc/meminfo
 journalctl -k --since today | grep -Ei 'oom|out of memory|killed process'
 ```
 
-低流量 1~4GB VPS 可用 `pm=ondemand` 降低常驻内存，并保留
+低流量 1～4GB VPS 可用 `pm=ondemand` 降低常驻内存，并保留
 `pm.process_idle_timeout=10s`；稳定高流量用 `dynamic` 减少冷启动。两种模式都保留
 `pm.max_requests=500~1000` 控制长期碎片。调整后观察 502、FPM 日志中的
 `server reached pm.max_children` 和系统 Swap/OOM，而不是看到 CPU 空闲就继续加 worker。
@@ -1297,7 +1287,7 @@ journalctl -k --since today | grep -Ei 'oom|out of memory|killed process'
 ### 6.4 MySQL 8.4 / MariaDB
 
 MySQL 与 MariaDB 安装都调用项目的 `MySQL_Opt`：按总内存把
-`innodb_buffer_pool_size` 设为 128M（1~2GB）、256M（2~4GB）、512M（4~8GB），
+`innodb_buffer_pool_size` 设为 128M（1～2GB）、256M（2～4GB）、512M（4～8GB），
 同时固定 `max_connections=500`，并随内存放大 `sort_buffer_size`、`read_buffer_size` 等
 连接级 buffer。这是程序实际生成值，不代表两种引擎在 WordPress 混部 VPS 上都应保持
 500 个连接。FPM worker 才是主要数据库并发来源，连接级 buffer 会在活跃连接上叠加。
@@ -1379,7 +1369,7 @@ max_heap_table_size = 32M
 innodb_flush_log_at_trx_commit = 1
 ```
 
-这里的 512M/50 对应 3~4GB 单站混部示例。MariaDB 保留自己的 redo/binlog 参数；
+这里的 512M/50 对应 3～4GB 单站混部示例。MariaDB 保留自己的 redo/binlog 参数；
 MySQL 8.4 保留项目生成的 `innodb_redo_log_capacity`。不要把通用片段扩展成几十个来源不明
 的变量，也不要用 `skip-name-resolve`、关闭 Performance Schema 等老式清单作为默认动作；
 前者会改变账号 Host 匹配语义，后者会丢失诊断能力，只有证据充分时才改。
@@ -1421,20 +1411,20 @@ redis-cli INFO stats  | grep -E 'keyspace_hits|keyspace_misses|evicted_keys'
 需额外空间，因此不要把所有剩余内存都给它。命中率低且 `evicted_keys` 持续增长时先检查
 key 前缀、TTL 和插件行为，再决定扩容；低流量站点甚至可能不需要 Redis。
 
-### 6.6 1~2GB、3~4GB、5GB 以上的起始方案
+### 6.6 1～2GB、3～4GB、5GB 以上的起始方案
 
 下表假设 **Nginx + PHP 8.3 + MySQL 8.4 或 MariaDB LTS + Redis 与 WordPress 同机**、
-1 个普通站点，Redis 只做对象缓存，PHP worker 高峰按约 80~120MB 估算。两种数据库先用
+1 个普通站点，Redis 只做对象缓存，PHP worker 高峰按约 80～120MB 估算。两种数据库先用
 相同 buffer pool 和连接预算；MariaDB 另按 6.4 关闭 query cache 后再测。它是避免 OOM 的
 上线起点，不是跑分结论；WooCommerce、页面构建器、导入任务和多站点必须重新测。
 
 | 物理内存 | MySQL/MariaDB `innodb_buffer_pool_size` | MySQL/MariaDB `max_connections` | Redis `maxmemory` | PHP-FPM 建议起点 | 系统与突发余量 |
 |---:|---:|---:|---:|---|---:|
-| 1GB | 128M | 20 | 32~64M | `ondemand`，`max_children=4` | 至少 350M + 1~2GB Swap |
-| 2GB | 256M | 30 | 64~128M | `ondemand`，`max_children=8` | 至少 500M + 1~2GB Swap |
-| 3~4GB | 512M | 40~50 | 128~256M | `ondemand` 或 `dynamic`，`max_children=12~20` | 700M~1G |
-| 5~8GB | 1G~1.5G | 60~80 | 256~512M | `dynamic`，`max_children=24~40` | 1G~1.5G |
-| 8GB 以上 | 先给整机 20~30%，再按工作集调 | FPM 总 worker + 20 | 先给 5~10%，按命中/淘汰调 | 用实测高峰 PSS 计算，不固定照抄 80 | 至少 15~20% |
+| 1GB | 128M | 20 | 32～64M | `ondemand`，`max_children=4` | 至少 350M + 1～2GB Swap |
+| 2GB | 256M | 30 | 64～128M | `ondemand`，`max_children=8` | 至少 500M + 1～2GB Swap |
+| 3～4GB | 512M | 40～50 | 128～256M | `ondemand` 或 `dynamic`，`max_children=12~20` | 700M～1G |
+| 5～8GB | 1G～1.5G | 60～80 | 256～512M | `dynamic`，`max_children=24~40` | 1G～1.5G |
+| 8GB 以上 | 先给整机 20～30%，再按工作集调 | FPM 总 worker + 20 | 先给 5～10%，按命中/淘汰调 | 用实测高峰 PSS 计算，不固定照抄 80 | 至少 15～20% |
 
 1GB 机器只能承载轻量站点，编译阶段和插件更新阶段都容易触发内存峰值；优先用数据库
 通用二进制、减少插件、开启页面缓存/CDN，并避免在流量高峰做备份压缩。5GB 以上也不是
@@ -1489,7 +1479,7 @@ WP-CLI 应以站点文件所属的受限账号运行；本文示例路径需按�
 2. **时间与磁盘**：确认 `timedatectl` 同步正常、`df -h`/`df -i` 有余量；云盘支持 discard
    时启用并检查 `fstrim.timer`，不要在未知后端强制连续 discard。
 3. **Swap 只做保险**：项目在缺少 Swap 时可能创建 `/var/swapfile`，并只在 swappiness=0
-   时改到 10。对 1~2GB VPS 保留 Swap，但持续换页代表应用内存分配错误。
+   时改到 10。对 1～2GB VPS 保留 Swap，但持续换页代表应用内存分配错误。
 4. **按实际并发设置文件描述符**：项目已把 `nofile` 和 `fs.file-max` 写到 65535，Nginx
    `worker_connections` 也很高。实际并发未逼近限制时，改成几十万没有收益。
 5. **网络只按证据调**：先用 `ss -s`、丢包/RTT 和云厂商带宽上限定位。BBR 只对特定
@@ -1735,7 +1725,107 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo -e \
 
 ## 八、日常运维命令
 
-### 8.1 服务管理
+### 8.1 系统命令详解
+
+<a id="cmd-index"></a>
+
+`lnmp` 是本项目唯一的管理命令入口。本节按实际分发表逐条说明每个子命令的作用、
+参数与使用边界。Redis、Memcached 等不受 `lnmp` 整体命令纳管的服务见
+[8.2 lnmp 命令不纳管的服务与自定义](#82-lnmp-命令不纳管的服务与自定义)。
+
+| 分组 | 子节 |
+|---|---|
+| 概览 | [8.1.1 命令入口与三种模式](#811-命令入口与三种模式) · [8.1.2 命令总览](#812-命令总览) |
+| 服务控制 | [8.1.3 整体服务控制](#813-整体服务控制) · [8.1.4 kill 强制终止](#814-kill-强制终止) · [8.1.5 单组件控制](#815-单组件控制) |
+| 站点与应用 | [8.1.6 vhost 站点管理](#816-vhost-站点管理) · [8.1.7 app 应用托管](#817-app-应用托管) |
+| 数据与账号 | [8.1.8 database 数据库](#818-database-数据库) · [8.1.9 ftp 账号](#819-ftp-账号) · [8.1.10 backup 备份](#8110-backup-备份) |
+| 运维与安全 | [8.1.11 崩溃自动拉起](#8111-崩溃自动拉起) · [8.1.12 health 健康检查](#8112-health-健康检查) · [8.1.13 perm 权限基线](#8113-perm-权限基线) · [8.1.14 phpmyadmin 入口开关](#8114-phpmyadmin-入口开关) · [8.1.15 tgnotice 通知](#8115-tgnotice-通知) · [8.1.16 ssl 证书签发](#8116-ssl-证书签发) |
+| 参考 | [8.1.17 返回码与非交互边界](#8117-返回码与非交互边界) · [8.1.18 不属于 lnmp 命令的入口](#8118-不属于-lnmp-命令的入口) |
+
+#### 8.1.1 命令入口与三种模式
+
+命令实体是 `/bin/lnmp`，安装结束时同步一份到 `/usr/bin/lnmp`，两者内容一致、权限 755。
+三种运行模式共用 `lnmp` 这个命令名，脚本来源不同：
+
+| 安装模式 | 命令来源 | Web 层 | PHP 运行方式 |
+|---|---|---|---|
+| LNMP | `conf/lnmp` | Nginx | 独立 php-fpm |
+| LNMPA | `conf/lnmpa` | Nginx 反代 Apache | Apache 内置 PHP 模块 |
+| LAMP | `conf/lamp` | Apache | Apache 内置 PHP 模块 |
+
+由此产生的差异只有两处，其余子命令三种模式完全一致：
+
+- **LNMPA 和 LAMP 没有 `php-fpm` 子命令**，也不存在 php-fpm 服务，PHP 随 Apache 一同起停。
+- **LAMP 没有 `nginx` 子命令**。
+
+所有子命令都必须以 root 执行，非 root 直接退出并返回 1。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.2 命令总览
+
+**服务控制** — 详见 [8.1.3](#813-整体服务控制) 至 [8.1.5](#815-单组件控制)
+
+- `lnmp status` — 显示已纳管服务的状态与 phpMyAdmin 访问路径
+- `lnmp start` — 启动已纳管的服务
+- `lnmp stop` — 停止已纳管的服务
+- `lnmp restart` — 先 stop 再 start
+- `lnmp reload` — 重载配置，不中断服务
+- `lnmp kill` — 强制终止 Web、PHP 与数据库进程，仅在 stop 失败时用
+- `lnmp nginx <动作>` — 单独控制 Nginx（LAMP 无此命令）
+- `lnmp httpd <动作>` — 单独控制 Apache（仅 LNMPA / LAMP）
+- `lnmp php-fpm <动作>` — 单独控制 php-fpm（仅 LNMP）
+- `lnmp mysql <动作>` / `lnmp mariadb <动作>` — 单独控制数据库，用实际安装的那个
+- `lnmp pureftpd <动作>` — 单独控制 Pure-FTPd
+
+**站点与应用** — 详见 [8.1.6](#816-vhost-站点管理) 至 [8.1.7](#817-app-应用托管)
+
+- `lnmp vhost add` — 新增站点（交互）
+- `lnmp vhost list` — 列出所有站点
+- `lnmp vhost del` — 删除站点，保留网站文件（交互）
+- `lnmp app add` — 登记一个 Node、Go 等自带后端的应用（交互）
+- `lnmp app list` — 已托管应用及运行状态
+- `lnmp app start|stop|restart|status <应用名>` — 控制单个应用
+- `lnmp app logs <应用名>` — 查看应用日志
+- `lnmp app del <应用名>` — 注销应用
+
+**数据与账号** — 详见 [8.1.8](#818-database-数据库) 至 [8.1.10](#8110-backup-备份)
+
+- `lnmp database add|list|edit|del` — 库与同名账号的增删改查（交互）
+- `lnmp database export <库名> <文件.sql.gz>` — 导出单个库
+- `lnmp database import <库名> <文件.sql.gz>` — 导入到指定库
+- `lnmp ftp add|list|edit|del|show` — Pure-FTPd 账号管理（交互，需先装 Pure-FTPd）
+- `lnmp backup init` — 生成备份配置、目录与定时任务（交互）
+- `lnmp backup run [db|web|all] [域名...]` — 执行备份
+- `lnmp backup status` — 上次结果、下次计划与配置概览
+- `lnmp backup list [db|web]` — 列出本地与远端批次
+- `lnmp backup restore db <库名> [批次]` — 从备份恢复数据库
+- `lnmp backup restore web <域名> [批次]` — 从备份恢复网站文件
+- `lnmp backup test` — 试恢复验证，导入临时库校验后删除
+
+**运维与安全** — 详见 [8.1.11](#8111-崩溃自动拉起) 至 [8.1.16](#8116-ssl-证书签发)
+
+- `lnmp health check|status` — 立即探测一轮 / 查看各服务探测结果与失败计数
+- `lnmp health reset [服务]` — 清除失败计数与熔断标记
+- `lnmp health init|uninit` — 安装 / 移除每分钟探测的 timer
+- `lnmp perm check [服务名]` — 核对权限基线
+- `lnmp perm status` — 钩子状态、忽略清单与上次结果
+- `lnmp perm run` — 定期核对入口，结果有变化才通知
+- `lnmp perm init|uninit` — 注入 / 剥离校验钩子与每日核对任务
+- `lnmp perm ignore <条目ID>` / `lnmp perm unignore <条目ID>` — 忽略与取消忽略
+- `lnmp phpmyadmin enable|disable|status` — phpMyAdmin 访问开关
+- `lnmp tgnotice --init|--test|--status` — Telegram 通知配置、测试与查看
+- `lnmp tgnotice "文本" [md]` — 发送一条消息
+- `lnmp ssl add` — HTTP 验证签发证书并写入站点配置（交互）
+- `lnmp dnsssl <provider>` — DNS 验证签发并写入站点配置（交互）
+- `lnmp onlyssl <provider>` — DNS 验证只签发，不写入任何站点配置（交互）
+
+单组件命令的 `<动作>` 为 `start|stop|restart|reload|status`。不带参数或参数无法识别时，
+命令打印全部用法并返回 1。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.3 整体服务控制
 
 ```bash
 lnmp status                      # 查看当前模式已安装的 Web、PHP 与数据库服务
@@ -1743,23 +1833,50 @@ lnmp start
 lnmp stop
 lnmp restart
 lnmp reload
-lnmp kill                        # 强制杀进程（仅在正常 stop 失败时用）
-
-# 单独控制某个组件
-lnmp nginx status
-lnmp mysql status
-lnmp php-fpm status              # 仅 LNMP 模式
-lnmp httpd status                # LNMPA/LAMP 模式
 ```
 
-> `lnmp restart` **不包含 Redis**（它是 addon）。Redis 单独管：
-> 有 systemd 时分别使用 `systemctl status redis.service`、`systemctl start redis.service`、
-> `systemctl stop redis.service` 或 `systemctl restart redis.service`；
-> 只有无 systemd 的兼容环境才使用 `/etc/init.d/redis`。
+**纳管范围。** 整体命令只处理三类服务，各模式的实际清单如下：
 
-`lnmp kill` 先按 unit 执行 `systemctl stop`，再逐个终止残留进程：先发 TERM 并等待
-进程真正退出（数据库最多 30 秒，其余最多 10 秒），超时才发 KILL 并给出提示。进程本就
-不在时不输出内容。全部终止成功才打印「完成。」并返回 0：
+| 模式 | 起停顺序 |
+|---|---|
+| LNMP | Nginx → 数据库 → php-fpm → 已安装的多版本 php-fpm |
+| LNMPA | Nginx → 数据库 → Apache |
+| LAMP | Apache → 数据库 |
+
+**不在纳管范围内**：Redis、Memcached、Pure-FTPd、phpMyAdmin。前三者有各自的 unit
+和 init 脚本，需要单独起停，详见 [8.2](#82-lnmp-命令不纳管的服务与自定义)；Pure-FTPd
+虽然有 `lnmp pureftpd` 子命令，但 `lnmp start` / `lnmp stop` 不会带上它。
+
+**服务名每次执行时重新探测。** 数据库取 MariaDB 优先、否则 MySQL；组件是否存在按
+systemd unit 或 `/etc/init.d` 脚本判断。因此主安装之后再单独装的组件，下一次执行
+`lnmp` 命令就会自动纳入，不需要改配置。未安装的组件打印“未检测到已安装服务，跳过”
+并继续处理其余服务，不算失败。
+
+**动作优先走 systemd。** 系统在 systemd 下运行且该服务有 unit 时执行
+`systemctl <动作> <服务>.service`，否则回退 `/etc/init.d/<服务> <动作>`。这样进程状态
+与 `systemctl` 和监控结果一致。
+
+**`restart` 是先 `stop` 再 `start`，不是原子操作**，中间存在服务不可用的窗口；只改配置
+不换二进制时优先用 `reload`。
+
+**`start` 之后会核对 unit 状态**，并区分两种异常：
+
+- *在运行但不受 systemd 管理*：进程存在而 unit 不是 active，说明它被 systemd 之外的
+  方式启动过，`systemctl` 停不掉也重载不了。按提示执行 `lnmp kill` 后再 `lnmp start` 对齐。
+- *未能启动*：进程不存在，直接给出 `systemctl status` 与 `journalctl` 的排查命令。
+
+重启期间 unit 状态为 `activating` 时不判定为异常，避免误报。
+
+**`lnmp status`** 除服务状态外，还会显示安装时随机生成的 phpMyAdmin 访问路径；访问被
+禁用时显示“访问已禁用（程序和配置仍保留）”。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.4 kill 强制终止
+
+`lnmp kill` 仅在正常 `stop` 失败时使用。它先按 unit 执行 `systemctl stop`，再逐个终止
+残留进程：先发 TERM 并等待进程真正退出（数据库最多 30 秒，其余最多 10 秒），超时才发
+KILL 并给出提示。进程本就不在时不输出内容。全部终止成功才打印“完成。”并返回 0：
 
 ```bash
 lnmp kill; echo "rc=$?"
@@ -1767,6 +1884,9 @@ lnmp kill; echo "rc=$?"
 # 完成。
 # rc=0
 ```
+
+先按 unit 停止是必要的：unit 设了 `Restart=on-failure`，直接发信号会被 systemd 判为
+异常退出并重新拉起。
 
 该命令依赖 procps 提供的 `pgrep` 与 `pkill`。两者缺失时退回 `killall`（此路径无法
 确认进程是否已退出），都没有时报错并要求安装 procps：
@@ -1779,7 +1899,132 @@ yum install -y procps-ng       # CentOS / RHEL
 `kill` 之后请用 `lnmp start` 重新拉起服务，不要直接跑 `/etc/init.d/` 下的脚本，
 否则 `systemctl is-active` 与实际进程会再次对不上。
 
-#### 崩溃自动拉起
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.5 单组件控制
+
+```bash
+lnmp nginx status
+lnmp mysql restart               # 或 lnmp mariadb restart，按实际安装的数据库
+lnmp php-fpm reload              # 仅 LNMP
+lnmp httpd status                # 仅 LNMPA / LAMP
+lnmp pureftpd start
+```
+
+动作为 `start|stop|restart|reload|status`。这些动作优先走 systemd；其它动作直接交给
+`/etc/init.d/<服务>` 处理，能否执行取决于该脚本本身。
+
+边界：
+
+- `mysql` 与 `mariadb` 只有实际安装的那个可用，另一个会提示找不到 unit 和 init 脚本并返回 1。
+- **单组件命令不处理多版本 PHP。** 只有 `lnmp start` / `stop` / `reload` 会遍历
+  `/etc/init.d/php-fpm<版本>`。要单独控制某个版本，用
+  `systemctl restart php-fpm@8.2`（模板 unit 已安装时）或 `/etc/init.d/php-fpm8.2 restart`。
+- `pureftpd` 可以单独控制，但不被整体命令纳管。
+- LNMP 模式下，除 `status` 外的动作会打印明确的成功或失败结果并附退出码；数据库启动
+  失败时额外输出诊断信息。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.6 vhost 站点管理
+
+```bash
+lnmp vhost add       # 新增站点
+lnmp vhost list      # 列出所有站点
+lnmp vhost del       # 删除站点（只删 Web 配置，保留网站文件）
+```
+
+`add` 与 `del` 是交互式命令。`add` 可用环境变量预设答案实现非交互创建，
+完整字段与示例见 [4.2 非交互创建](#42-非交互创建)；行为细节与删除保护见
+[8.3 站点管理](#83-站点管理)。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.7 app 应用托管
+
+```text
+lnmp app add                 # 交互式登记一个应用
+lnmp app list                # 已托管应用及运行状态
+lnmp app start   <应用名>
+lnmp app stop    <应用名>
+lnmp app restart <应用名>
+lnmp app status  <应用名>
+lnmp app logs    <应用名>
+lnmp app del     <应用名>
+```
+
+元数据写在 `/etc/lnmp/apps/<应用名>.env`，由 `lnmp-app@.service` 模板 unit 读取，
+每个应用以专属账号 `lnmp-app-<应用名>` 运行。
+
+边界：
+
+- 应用名同时用作 unit 实例名、系统账号名和文件名，只接受小写字母、数字和中划线，
+  必须以字母或数字开头结尾，**最长 23 字符**（账号名加前缀后不得超过 Linux 用户名上限 32）。
+- 登记时会检查端口是否已被其它进程占用，占用则拒绝。
+- 依赖 systemd，无 systemd 的环境不可用。
+
+配套的反向代理站点建法见 [4.5 托管 Node / Go 应用进程](#45-托管-node--go-应用进程)。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.8 database 数据库
+
+```text
+lnmp database add    # 新建库 + 同名用户
+lnmp database list   # 列出所有库
+lnmp database edit   # 改库用户密码
+lnmp database del    # 删除库
+
+lnmp database export <库名> <文件.sql.gz>
+lnmp database import <库名> <文件.sql.gz>
+```
+
+六个动作**都会先要求输入数据库 root 密码**，凭据写入 `~/.my.cnf`，命令结束即删除。
+动作名先于口令校验，因此拼错动作名不会白输一次密码，直接打印用法并返回非 0。
+
+全部 `database` 子命令成功返回 0、失败返回非 0，可直接用于脚本判断。导入的 SQL 边界
+检查、导出导入的具体行为与 `add` 的冲突保护见 [8.4 数据库管理](#84-数据库管理)。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.9 ftp 账号
+
+```bash
+lnmp ftp add     # 新增 FTP 账号
+lnmp ftp list    # 列出账号
+lnmp ftp edit    # 改密码
+lnmp ftp del     # 删除账号
+lnmp ftp show    # 显示指定账号的详细信息
+```
+
+**前置条件**：必须已安装 Pure-FTPd（`bash pureftpd.sh`）。检测不到
+`/usr/local/pureftpd/sbin/pure-ftpd` 时命令直接报错退出，不进入交互。
+
+全部为交互式命令，不适合放进脚本。服务本身用 `lnmp pureftpd <动作>` 控制，
+TLS 与端口配置见 [2.5.3 安装后的配置位置](#253-安装后的配置位置)。
+不需要传统 FTP 时不要安装该服务。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.10 backup 备份
+
+```text
+lnmp backup init                       # 生成配置、备份目录与定时任务
+lnmp backup run [db|web|all] [域名...] # 执行备份
+lnmp backup status                     # 上次执行结果、下次计划与配置概览
+lnmp backup list [db|web]              # 列出批次（配了异地上传则一并列远端）
+lnmp backup restore db  <库名> [批次]
+lnmp backup restore web <域名> [批次]
+lnmp backup test                       # 试恢复：导入临时库校验后删除
+```
+
+配置文件 `/etc/lnmp/backup.conf`（权限 600），日志 `/var/log/lnmp/backup.log`。
+`run` 不带参数时按配置的周期决定是否备份网站。完整流程、异地上传与加密见
+[8.5 备份](#85-备份) 和 [8.6 异地备份（SFTP）](#86-异地备份sftp)。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.11 崩溃自动拉起
 
 Nginx、Apache、PHP-FPM（含多版本）、Redis、Memcached、Pure-FTPd 的 unit 都设了
 `Restart=on-failure`，进程被 OOM killer 终止或自身崩溃时 3 秒后自动重启。
@@ -1789,19 +2034,12 @@ Nginx、Apache、PHP-FPM（含多版本）、Redis、Memcached、Pure-FTPd 的 u
 日常状态检查不要运行它：
 
 ```bash
-systemctl is-active --quiet nginx.service || exit 1
-NGINX_PID=$(systemctl show -p MainPID --value nginx.service)
-NGINX_RESTARTS_BEFORE=$(systemctl show -p NRestarts --value nginx.service)
-case "$NGINX_PID" in ''|0|*[!0-9]*) echo "无法取得 Nginx MainPID" >&2; exit 1;; esac
-ps -p "$NGINX_PID" -o comm= | grep -q nginx || { echo "MainPID 不是 Nginx" >&2; exit 1; }
+# 验证自动拉起：杀掉主进程后等 5 秒，服务应重新 active
 systemctl show nginx -p NRestarts
-kill -KILL "$NGINX_PID"
+kill -9 "$(cat /usr/local/nginx/logs/nginx.pid)"
 sleep 5
-systemctl is-active --quiet nginx.service || { echo "Nginx 未自动恢复" >&2; exit 1; }
-NGINX_RESTARTS_AFTER=$(systemctl show -p NRestarts --value nginx.service)
-echo "NRestarts: $NGINX_RESTARTS_BEFORE -> $NGINX_RESTARTS_AFTER"
-[ "$NGINX_RESTARTS_AFTER" -gt "$NGINX_RESTARTS_BEFORE" ] || { echo "自动拉起计数未增加" >&2; exit 1; }
-unset NGINX_PID NGINX_RESTARTS_BEFORE NGINX_RESTARTS_AFTER
+systemctl is-active nginx
+systemctl show nginx -p NRestarts    # 计数比之前大 1
 ```
 
 300 秒窗口内最多启动 5 次，超出后 unit 标记为 failed 并停止重试，同时推送 Telegram
@@ -1816,7 +2054,9 @@ lnmp start
 MySQL/MariaDB 不参与自动重启（其 SysV 脚本基于 `mysqld_safe`，已自带崩溃拉起），
 无响应时由 `lnmp health` 告警。
 
-#### 健康检查
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.12 health 健康检查
 
 `Restart=` 只处理进程退出，发现不了「进程还在但不响应」。这一层由 `lnmp health`
 覆盖，`lnmp-health.timer` 每分钟探测一次（依赖 systemd，无 systemd 的环境不可用）：
@@ -1826,27 +2066,28 @@ lnmp health status              # 各服务当前探测结果与失败计数
 lnmp health check               # 立即执行一轮探测
 lnmp health reset nginx         # 熔断后修好了，清计数解除熔断
 lnmp health reset               # 清除全部服务的计数与熔断标记
+lnmp health init                # 安装 lnmp-health.timer
+lnmp health uninit              # 移除定时探测，unit 层的崩溃自动拉起不受影响
 systemctl list-timers lnmp-health.timer --no-pager
 tail -20 /var/log/lnmp/health.log
 ```
+
+**探测覆盖 `nginx`、`httpd`、`php-fpm`、`mysql`、`mariadb`、`redis`、`memcached`**，
+按实际安装情况选取。注意 Redis 和 Memcached 在这里被探测和重启，却**不**被
+`lnmp start` / `stop` 纳管，见 [8.2](#82-lnmp-命令不纳管的服务与自定义)。Redis 探针
+直接用 bash 的 `/dev/tcp` 发 inline 命令，不调 `redis-cli`，端口从
+`/usr/local/redis/etc/redis.conf` 读取，改端口后无须另行配置。
 
 连续失败 3 次（约 3 分钟）才执行一次 `systemctl restart`；30 分钟内已重启 2 次仍
 未恢复则熔断，只告警不再重启。数据库达阈值只告警，不自动重启。`lnmp stop` 之后
 服务不会被健康检查重新拉起。
 
-阈值不合用时在 `/etc/lnmp/health.conf` 覆盖，改完不需要重启 timer：
+阈值需自定义在 `/etc/lnmp/health.conf` 文件修改，改完不需要重启 timer。
+
+也可以用脚本修改：
 
 ```bash
-install -d -m 700 /etc/lnmp || exit 1
-HEALTH_CONF=/etc/lnmp/health.conf
-if [ -e "$HEALTH_CONF" ]; then
-    HEALTH_BACKUP=$(mktemp /etc/lnmp/health.conf.bak.XXXXXX) || exit 1
-    cp -a -- "$HEALTH_CONF" "$HEALTH_BACKUP" || exit 1
-    echo "健康检查配置备份：$HEALTH_BACKUP"
-fi
-HEALTH_TMP=$(mktemp /etc/lnmp/health.conf.tmp.XXXXXX) || exit 1
-trap 'rm -f -- "$HEALTH_TMP"' EXIT
-cat > "$HEALTH_TMP" <<'EOF'
+cat > /etc/lnmp/health.conf <<'EOF'
 # 连续失败次数达到该值才动作
 Fail_Threshold=5
 # 熔断窗口与窗口内最多重启次数
@@ -1857,46 +2098,486 @@ Probe_Timeout=8
 # 同一服务的告警间隔秒数
 Notify_Quiet_Sec=7200
 EOF
-chmod 600 "$HEALTH_TMP" || exit 1
-mv -f -- "$HEALTH_TMP" "$HEALTH_CONF" || exit 1
-trap - EXIT
+chmod 600 /etc/lnmp/health.conf
 lnmp health check
 ```
 
-不想要定时探测时移除，unit 层的崩溃自动拉起不受影响：
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
 
-```bash
-lnmp health uninit
-```
+#### 8.1.13 perm 权限基线
 
 服务起不来时先核对一次权限基线，多数属主类故障能在这里直接定位：
 
-```bash
+```text
 lnmp perm check           # 核对全部条目
 lnmp perm check mariadb   # 只核对数据库相关条目
-lnmp perm status          # 校验钩子安装状态
+lnmp perm status          # 校验钩子安装状态、忽略清单与上次结果
+lnmp perm init            # 注入校验钩子并安装每日定期核对任务
+lnmp perm uninit          # 剥离钩子并移除定期核对任务
+lnmp perm run             # 定期核对入口，仅在结果与上次不同时推送通知
+lnmp perm ignore <条目ID>    # 忽略有意做出的权限调整
+lnmp perm unignore <条目ID>
 ```
 
-详见 9.11。
+`check` 可选的服务名：`mysql`、`mariadb`、`nginx`、`httpd`、`php-fpm`、`redis`、
+`pureftpd`、`cmd`、`sec`。Redis 和 Pure-FTPd 在这里同样被覆盖，尽管它们不受
+`lnmp start` 纳管。
+
+返回码用于脚本判断：**0** 全部通过；**1** 存在权限告警；**2** 存在会导致服务启动失败
+的问题。日志在 `/var/log/lnmp/perm.log`，忽略清单在 `/etc/lnmp/perm-ignore`（权限 600）。
+
+`hook` 和 `diagnose` 是钩子与诊断 unit 的内部入口，不用于手工调用。
+
+详见 [9.11 权限被改动导致服务异常](#911-权限被改动导致服务异常)。
 
 DenyHosts 误封时使用源码目录里的严格地址入口；参数必须是完整 IPv4 或 IPv6，非法值会在
 停止服务和修改列表前退出：
 
 ```bash
 read -r -p "被误封的完整 IPv4 或 IPv6: " BLOCKED_IP
-bash tools/denyhosts_removeip.sh "$BLOCKED_IP"
-unset BLOCKED_IP
+bash tools/denyhosts_removeip.sh "${BLOCKED_IP}"
 ```
 
-### 8.2 站点管理
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.14 phpmyadmin 入口开关
 
 ```bash
+lnmp phpmyadmin status     # 当前是否可访问
+lnmp phpmyadmin disable    # 关闭访问，保留程序和配置
+lnmp phpmyadmin enable     # 重新开放访问
+```
+
+开关的实现是移动 Web 层的访问配置文件，改完做语法检查并 reload；任一步失败会把配置
+移回原位再报错，不会留下"配置已改但服务没生效"的中间状态。LNMPA 模式下 Nginx 与
+Apache 两侧都要成功才算成功。
+
+随机访问路径由 `lnmp status` 显示。长期不用时保持 `disable`。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.15 tgnotice 通知
+
+```bash
+lnmp tgnotice --init          # 交互式写入 /etc/lnmp/notify.conf
+lnmp tgnotice --test          # 发送一条测试消息
+lnmp tgnotice --status        # 显示当前配置，不显示完整令牌
+lnmp tgnotice "文本" [md]     # 发送一条消息，带 md 时按 Markdown 解析
+```
+
+`notice` 是 `tgnotice` 的等价别名。命令转交 `/bin/lnmp-tgnotice` 执行，该文件缺失时
+给出补装命令并返回 1。崩溃自动拉起超限、`lnmp health` 熔断和 `lnmp perm run` 的结果
+变化都通过这个通道推送。配置项含义见
+[2.5.3 安装后的配置位置](#253-安装后的配置位置)，令牌文件权限必须保持 600 或 400。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.16 ssl 证书签发
+
+```text
+lnmp ssl add                  # HTTP 验证，签发并写入已有站点配置
+lnmp dnsssl <provider>        # DNS 验证，签发并写入已有站点配置；dns 是等价别名
+lnmp onlyssl <provider>       # DNS 验证，只签发证书，不写入任何站点配置
+```
+
+`ssl` 只有 `add` 一个动作，其它参数直接打印用法并返回 1，不进入交互。
+
+`<provider>` 取 acme.sh 的插件名去掉 `dns_` 前缀，如 `ali`、`cf`、`dp`、`he`、`gd`、
+`aws`、`nsone`、`gcloud`，可用清单见 `/usr/local/acme.sh/dnsapi/`。插件不存在时在进入
+交互前就报错。`dnsssl` 与 `onlyssl` 都可以不带 provider，此时走手工添加 TXT 记录的模式，
+**该模式无法自动续期**，证书到期前必须手动重签。
+
+三者的选择依据、泛域名处理和续期见 [7.3 三条签发命令怎么选](#73-三条签发命令怎么选)。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.17 返回码与非交互边界
+
+可直接用于脚本判断（返回码真实反映结果）：
+
+- 整体与单组件服务控制、`kill`
+- `database` 全部动作（但仍会交互索要 root 密码）
+- `backup`、`perm`、`health`、`phpmyadmin`、`tgnotice`
+
+必须交互、不适合放进无人值守脚本：
+
+- `vhost add` / `vhost del`
+- `ftp` 的全部动作
+- `ssl add`、`dnsssl`、`onlyssl`
+
+现有的非交互开关：
+
+| 变量 | 作用 | 说明 |
+|---|---|---|
+| `VHOST_PHP=n` | 建站时关闭 PHP | 见 [4.4 建不带 PHP 的站点](#44-建不带-php-的站点) |
+| `LNMP_Import_Allow_Cross_Db=yes` | 放行跨库导入 | 见 [8.4 数据库管理](#84-数据库管理) |
+
+`install.sh` 的整套非交互变量见 [2.2 非交互安装（站群自动部署）](#22-非交互安装站群自动部署)。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.18 不属于 lnmp 命令的入口
+
+下列功能不通过 `lnmp` 调用，需在保存本项目源码的目录内执行。
+
+**组件与扩展的增删**
+
+```text
+bash addons.sh install   {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}
+bash addons.sh uninstall {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}
+```
+
+```bash
+bash addons.sh install redis      # 实际执行时传一个名字
+bash addons.sh uninstall swoole
+bash addons.sh                    # 不带参数进菜单，编号与上面的名字一一对应
+```
+
+装了多个 PHP 版本时会先让你选版本，直接回车用主版本。安装动作要求 PHP 已存在；
+卸载不要求，便于在 PHP 已移除后清理残留。各名字的作用：
+
+- `memcached` — 编译 Memcached 服务端并装 PHP 侧扩展，参数与自定义见
+  [8.2.4 Memcached 自定义](#824-memcached-自定义)
+- `redis` — 编译 Redis 服务端。**PHP 的 redis 扩展主安装已默认装好**
+  （`Enable_PHP_Default_Redis=y`），这一项装的是服务端，见 [三、安装 Redis](#三安装-redis)
+- `opcache` — PHP 字节码缓存。**主安装已默认启用**（`Enable_PHP_Default_Opcache=y`），
+  只在关闭过或需要重装时用，调优见 [6.2 PHP 与 OPcache](#62-php-与-opcache)
+- `apcu` — 进程内的本地内存缓存，从 PECL 编译。适合单机小对象缓存，
+  跨进程共享要用 Redis 或 Memcached
+- `imagemagick` — 装 ImageMagick 与 PHP 的 imagick 扩展。
+  **主安装已默认提供 imagick**（`Enable_PHP_Default_Imagick=y`）
+- `ioncube` — **当前版本未接入**。执行后只打印说明并返回 1，不做任何改动。
+  原因是尚未按架构补齐 `src/checksums.sha256` 的校验条目，不是安全判定。
+  确需使用时到官方站点取包自行安装
+- `exif` — 读取图片 EXIF 元数据，从 PHP 源码树编译
+- `fileinfo` — 按内容判断文件 MIME 类型，WordPress 上传校验会用到
+- `ldap` — LDAP 目录服务客户端，自动装 `libldap2-dev`、`libsasl2-dev`
+- `bz2` — bzip2 压缩解压
+- `sodium` — libsodium 现代加密库，自动装 `libsodium-dev`
+- `imap` — IMAP/POP3/NNTP 客户端，自动装 `libc-client-dev`、`libkrb5-dev`
+- `swoole` — 常驻内存的异步协程运行时，从 PECL 编译。WordPress 用不到
+
+`eaccelerator`、`xcache`、`sourceguardian` 已在 2.3 移除：它们只支持已停止维护的
+PHP 5.x，或属于没有官方公开下载源的闭源组件。传这些名字会明确报错并返回 1。
+其它不在清单里的名字同样只打印用法并返回 1，不做任何系统改动；这类扩展的手工安装
+步骤见 [8.2.6 安装本项目未提供的 PHP 扩展](#826-安装本项目未提供的-php-扩展)。
+
+**服务与整体维护**
+
+```text
+bash upgrade.sh {nginx|openresty|mysql|mariadb|m2m|php|phpa|phpmyadmin|mphp}
+```
+
+```bash
+bash pureftpd.sh          # 安装 Pure-FTPd 服务
+bash upgrade.sh nginx     # 升级单个组件
+bash uninstall.sh         # 卸载整套环境
+```
+
+`upgrade.sh` 的 `m2m` 是 MySQL 转 MariaDB，`phpa` 是 Apache 模式的 PHP，
+`mphp` 是多版本 PHP。数据库升级没有自动回滚，务必先备份并在测试环境验证。
+`upgrade.sh php` 会清空 `/usr/local/php/conf.d/`，升级后所有 PHP 扩展都要重装。
+Nginx 模块是编译期决定的，增删模块需要重新编译，见
+[8.2.7 安装本项目未提供的 Nginx 模块](#827-安装本项目未提供的-nginx-模块)。
+
+**运维辅助脚本**
+
+```bash
+bash tools/cut_nginx_logs.sh                      # Nginx 日志切割，见 8.7
+bash tools/denyhosts.sh                           # 安装 DenyHosts
+bash tools/fail2ban.sh                            # 安装 Fail2ban
+bash tools/denyhosts_removeip.sh "${BLOCKED_IP}"  # 解除 DenyHosts 误封，见 8.1.13
+bash tools/reset_mysql_root_password.sh           # 重置数据库 root 密码，见 9.7
+bash tools/remove_disable_function.sh             # 解除 PHP 禁用函数限制，见 9.8
+bash tools/remove_open_basedir_restriction.sh     # 解除站点 open_basedir 限制，见 9.9
+```
+
+`tools/backup.sh` 与 `tools/check502.sh` 已废弃，保留仅为兼容存量 crontab，
+分别改用 `lnmp backup` 和 `lnmp health`。后者会绕过 systemd 直接重启 PHP-FPM，
+且没有失败阈值与熔断，与 unit 的 `Restart=` 冲突。
+
+**安装到系统路径、可在任意目录执行的命令**
+
+```text
+lnmp-sqlguard check  <目标库名> <文件.sql 或 .sql.gz>    发现越界语句返回 1
+lnmp-sqlguard report <目标库名> <文件.sql 或 .sql.gz>    只列出问题，恒返回 0
+lnmp-tgnotice ...                                        与 lnmp tgnotice 等价
+```
+
+`/usr/local/redis/bin/redis-preflight` 是 `redis.service` 的启动前端口占用检查，
+由 unit 自己调用，一般不手工执行。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+### 8.2 lnmp 命令不纳管的服务与自定义
+
+#### 8.2.1 纳管边界
+
+`lnmp start` / `stop` / `restart` / `reload` 只处理 Web 层、PHP-FPM 和数据库
+（见 [8.1.3 整体服务控制](#813-整体服务控制)）。Redis、Memcached、Pure-FTPd 由
+`addons.sh` 或 `pureftpd.sh` 单独安装，生命周期与主栈解耦，起停必须单独执行。
+容易被误解的是，它们虽然不受整体命令纳管，却仍被 `lnmp health` 和 `lnmp perm` 覆盖：
+
+| 服务 | `lnmp start/stop` | `lnmp <服务> <动作>` | unit 崩溃自动拉起 | `lnmp health` 探测 | `lnmp perm check` |
+|---|---|---|---|---|---|
+| Nginx / Apache | ✓ | ✓ | ✓ | ✓ | ✓ |
+| php-fpm | ✓ | ✓ | ✓ | ✓ | ✓ |
+| MySQL / MariaDB | ✓ | ✓ | — | ✓ | ✓ |
+| Pure-FTPd | — | ✓ | ✓ | — | ✓ |
+| Redis | — | — | ✓ | ✓ | ✓ |
+| Memcached | — | — | ✓ | ✓ | — |
+
+因此：`lnmp restart` 之后 Redis 不会被重启；`lnmp stop` 之后 Redis 仍在运行，且
+`lnmp health` 会继续探测它。整机维护需要一并停掉时，显式执行 `systemctl stop redis`。
+
+#### 8.2.2 统一的起停方式
+
+有 systemd 时一律用 `systemctl`，只有无 systemd 的兼容环境才使用 `/etc/init.d/`：
+
+```bash
+systemctl status  redis --no-pager
+systemctl restart redis
+systemctl status  memcached --no-pager
+systemctl restart memcached
+lnmp pureftpd restart                 # Pure-FTPd 有 lnmp 子命令
+```
+
+混用两种入口会让 `systemctl is-active` 与实际进程对不上，处理办法见
+[9.10 服务起不来，或状态与 systemd 对不上](#910-服务起不来或状态与-systemd-对不上)。
+
+#### 8.2.3 Redis 自定义
+
+配置文件 `/usr/local/redis/etc/redis.conf`，属主 `root:redis`、权限 640——服务进程
+只能读不能改，防止运行期被改掉持久化路径等安全设置。改配置需要 root。
+
+安装时已固定的值：
+
+| 配置项 | 安装值 | 说明 |
+|---|---|---|
+| `bind` | `127.0.0.1 -::1` | 只监听回环，同时 nftables 阻断 `Redis_Port` |
+| `port` | `lnmp.conf` 的 `Redis_Port` | 默认 6379 |
+| `daemonize` | `no` | unit 用 `Type=simple` 直接跟踪主进程 |
+| `dir` | `/usr/local/redis/var` | 固定数据目录 |
+| `logfile` | `/usr/local/redis/var/redis.log` | Redis 自身错误写这里，不进 journal |
+| `pidfile` | `/usr/local/redis/var/redis.pid` | 位于 Redis 账号可写目录 |
+| `loadmodule` | 全部注释 | 对应模块未随 `make install` 安装 |
+
+**改动前必须知道的三条约束：**
+
+1. **`daemonize` 不要改回 `yes`。** unit 的 `ExecStart` 带 `--daemonize no`，命令行
+   参数覆盖配置文件取值，改了也不生效，只会造成理解偏差。
+2. **数据和日志路径不能移出 `/usr/local/redis/var`。** unit 设了
+   `ProtectSystem=full` 与 `ReadWritePaths=/usr/local/redis/var`，写别处会被内核拒绝。
+   确需换盘时改 unit 的 `ReadWritePaths`，改完 `systemctl daemon-reload`。
+3. **改 `port` 之后要同步防火墙规则。** `lnmp health` 的 Redis 探针会自动从
+   `redis.conf` 读取新端口，无须另行配置；但 nftables 里阻断的是安装时那个端口号，
+   新端口需要自己补一条阻断规则。
+
+常用的自定义项：
+
+```bash
+# 内存上限与淘汰策略，容量取值依据见 6.5
+maxmemory 512mb
+maxmemory-policy allkeys-lru
+
+# 纯缓存用途可关闭持久化，减少磁盘写入；缓存丢失后由应用重建
+save ""
+appendonly no
+```
+
+改完重启并回读确认（Redis 没有等价于 `nginx -t` 的完整配置检查，只能重启后验证）：
+
+```bash
+systemctl restart redis
+systemctl is-active redis
+redis-cli config get maxmemory
+redis-cli config get maxmemory-policy
+redis-cli info memory | grep used_memory_human
+```
+
+`requirepass` 的设置步骤见 [三、安装 Redis](#三安装-redis)；对象缓存容量规划见
+[6.5 Redis 对象缓存容量](#65-redis-对象缓存容量)；启动失败排查见
+[9.5.1 Redis 服务状态与启动失败](#951-redis-服务状态与启动失败)。
+
+改完之后自检：
+
+```bash
+lnmp health check
+lnmp perm check redis
+ss -lntp | grep redis-server        # 确认监听地址仍是回环
+ps -o user,cmd -C redis-server      # 确认不以 root 运行
+```
+
+#### 8.2.4 Memcached 自定义
+
+Memcached 没有独立配置文件，参数写在 `/etc/init.d/memcached` 顶部，unit 通过该脚本
+启动，改脚本即改运行参数：
+
+| 变量 | 安装值 | 说明 |
+|---|---|---|
+| `IP` | `127.0.0.1` | 只监听回环 |
+| `PORT` | `lnmp.conf` 的 `Memcached_Port`，默认 11211 | |
+| `USER` | `memcached` | 专用低权限账号，不存在时启动脚本自动创建 |
+| `CACHESIZE` | `64` | 缓存上限，单位 MB |
+| `MAXCONN` | `1024` | 最大并发连接数 |
+| `OPTIONS` | 空 | 追加的原始启动参数 |
+
+改完重启并回读：
+
+```bash
+systemctl restart memcached
+ss -lntp | grep :11211
+echo -e 'stats settings\r' | nc 127.0.0.1 11211 | grep -E 'maxbytes|maxconns'
+```
+
+`lnmp health` 的 Memcached 探针同样从 `/etc/init.d/memcached` 读取 `IP` 和 `PORT`，
+改端口后无须另行配置；但和 Redis 一样，nftables 里阻断的是原端口号。
+
+Memcached 协议不提供鉴权和租户隔离，不要对公网开放；互不信任的站点应拆分实例和
+系统账号。演示页开关 `Enable_Memcached_Test_Page` 生产环境保持 `n`。
+
+#### 8.2.5 Pure-FTPd 自定义
+
+服务由 `bash pureftpd.sh` 单独安装，配置文件
+`/usr/local/pureftpd/etc/pure-ftpd.conf`。它是三者中唯一有 `lnmp` 子命令的：
+用 `lnmp pureftpd <动作>` 控制服务，用 `lnmp ftp <动作>` 管理账号
+（见 [8.1.9 ftp 账号](#819-ftp-账号)）。
+
+新安装模板固定 `TLS 2`（拒绝明文登录，客户端须选显式 FTPS），该项不在 `lnmp.conf` 中，
+运行期值以配置文件为准。端口和被动模式范围来自安装时的 `lnmp.conf`，改动后：
+
+```bash
+lnmp pureftpd restart
+ss -lntp | grep pure-ftpd
+lnmp perm check pureftpd
+```
+
+改被动端口范围时防火墙要同步放行对应区间，否则列目录会卡住。不需要传统 FTP 时不要
+安装该服务；仅传文件建议改用 SFTP。
+
+#### 8.2.6 安装本项目未提供的 PHP 扩展
+
+`addons.sh` 传入不认识的名字时，只打印用法并返回 1，**不做任何系统改动**：
+
+```bash
+bash addons.sh install yaml; echo "rc=$?"
+# 用法：./addons.sh install {memcached|opcache|redis|apcu|imagemagick|...}
+# rc=1
+```
+
+清单外的扩展需要手工编译。步骤与本项目内部安装扩展的做法一致，以 PECL 上的
+`yaml` 为例：
+
+```bash
+# 1. 先确认没装，重复加载会让 PHP 启动报错
+/usr/local/php/bin/php -m | grep -i yaml
+
+# 2. 取源码。PECL 不提供逐文件签名，自行核对来源与哈希后再解压
+cd /usr/local/src
+curl -fLO https://pecl.php.net/get/yaml-2.2.4.tgz
+sha256sum yaml-2.2.4.tgz
+tar zxf yaml-2.2.4.tgz && cd yaml-2.2.4
+
+# 3. 用本项目 PHP 的 phpize 和 php-config，不要用系统自带的
+/usr/local/php/bin/phpize
+./configure --with-php-config=/usr/local/php/bin/php-config
+make && make install
+
+# 4. 写 ini。文件名沿用「三位编号-扩展名.ini」，普通扩展用 009
+cat > /usr/local/php/conf.d/009-yaml.ini <<'EOF'
+extension = "yaml.so"
+EOF
+
+# 5. 重启后验证；.so 不存在或加载失败时删掉这个 ini 再排查
+lnmp php-fpm restart
+/usr/local/php/bin/php -m | grep -i yaml
+```
+
+几条必须知道的约束：
+
+- **编号决定加载顺序，有依赖关系时不能随便取。** 现有占用：`004` opcache、
+  `005` memcached、`008` imagick、`009` 各普通扩展、`020` igbinary、`021` redis。
+  phpredis 依赖 igbinary，所以排在它后面。新扩展无依赖时用 `009`。
+- **多版本 PHP 要用绝对路径。** `/usr/bin/php`、`/usr/bin/phpize`、`/usr/bin/pecl`
+  这三个软链接指向主版本 `/usr/local/php`。要装到别的版本，全程换成
+  `/usr/local/php8.2/bin/phpize` 这样的完整路径，ini 也写进对应版本的 `conf.d`。
+- **`bash upgrade.sh php` 会清空 `/usr/local/php/conf.d/`**，手工装的扩展和
+  `addons.sh` 装的扩展都会失效，升级后需要重新安装并重建 ini。
+- 手工装的扩展不进本项目的校验清单和升级流程，来源可信度、版本兼容和后续维护
+  由使用者自己负责。
+- Apache 模式（LNMPA / LAMP）第 5 步改用 `lnmp httpd restart`。
+
+#### 8.2.7 安装本项目未提供的 Nginx 模块
+
+Nginx 模块是编译期决定的，装完之后不能追加，只能改参数重新编译。
+
+**只需 configure 参数、不用下载源码的模块**，写进 `lnmp.conf` 的
+`Nginx_Modules_Options`，或在命令前传同名环境变量：
+
+```bash
+Nginx_Modules_Options="--with-http_dav_module --with-http_slice_module" bash install.sh nginx
+```
+
+该变量在安装和 `upgrade.sh nginx` 时都会读取，因此把它固定写进 `lnmp.conf`
+才能在后续升级中保留；只用环境变量传一次，下次升级就没了。
+
+**需要下载源码的第三方模块**，自行准备源码目录，用 `--add-module=` 指向它：
+
+```bash
+# 源码放在项目 src 之外的固定位置，避免被清理
+mkdir -p /usr/local/src/nginx-modules
+cd /usr/local/src/nginx-modules
+curl -fLO https://example.com/some-nginx-module-1.0.tar.gz
+sha256sum some-nginx-module-1.0.tar.gz     # 自行核对
+tar zxf some-nginx-module-1.0.tar.gz
+
+Nginx_Modules_Options="--add-module=/usr/local/src/nginx-modules/some-nginx-module-1.0" \
+    bash install.sh nginx
+```
+
+编译完成后核对模块确实编进去了，并做配置语法检查：
+
+```bash
+/usr/local/nginx/sbin/nginx -V 2>&1 | tr ' ' '\n' | grep -- --add-module
+/usr/local/nginx/sbin/nginx -t && lnmp nginx reload
+```
+
+边界：
+
+- **本项目不为普通 Nginx 提供带校验的自定义模块机制。** `Nginx_Modules_Options`
+  只是原样拼进 `./configure`，不下载源码、不校验 SHA256、不记录构建配置。
+  源码目录必须自己维护，升级 Nginx 时目录还得在，否则编译失败。
+- **动态模块要自己加载。** 用 `--add-dynamic-module=` 编出的 `.so` 不会被自动引用，
+  需要手工在 `/usr/local/nginx/conf/nginx.conf` 顶部加 `load_module` 指令。
+- **OpenResty 有完整机制，普通 Nginx 没有。** 走 OpenResty 时用
+  `OpenResty_Custom_Modules` 数组按「名称|下载地址|SHA256|static 或 dynamic」登记，
+  安装流程会下载校验、动态模块自动生成 `load_module`，配置记录到
+  `/etc/lnmp/openresty-build.conf` 供升级沿用。需要长期维护第三方模块时优先选它，
+  用法见 [2.3.1 OpenResty 自定义编译模块与 Lua 库](#231-openresty-自定义编译模块与-lua-库)。
+- 重新编译会替换 `/usr/local/nginx/sbin/nginx` 并重启服务，站点配置和证书不受影响，
+  但仍应安排在维护窗口执行。
+
+#### 8.2.8 自定义后的统一自检
+
+任何一项改动后都执行一遍：
+
+```bash
+systemctl is-active redis memcached pureftpd    # 只看实际安装的
+lnmp health check                               # 探针是否仍能连上
+lnmp perm check                                 # 权限基线是否被改动破坏
+ss -lntp                                        # 监听地址与端口是否符合预期
+nft list ruleset | grep -E '6379|11211'         # 对外阻断规则是否覆盖新端口
+```
+
+### 8.3 站点管理
+
+```text
 lnmp vhost add       # 新增站点
 lnmp vhost list      # 列出所有站点
 lnmp vhost del       # 删除站点（只删 nginx 配置，保留网站文件）
 lnmp app add         # 托管 Node/Go 等应用进程，见 4.5
 lnmp app list        # 已托管应用及运行状态
-lnmp app logs example-app # 查看名为 example-app 的应用日志
+lnmp app logs <name> # 查看应用日志
 ```
 
 > `vhost del` 会保留网站文件并给出提示，以避免误删数据。
@@ -1910,7 +2591,7 @@ lnmp app logs example-app # 查看名为 example-app 的应用日志
 > `.php` 请求一律 404，适合纯静态站点和 Node、Go 等自带后端的站点；
 > 非交互执行用 `VHOST_PHP=n`。详见 4.4。
 
-### 8.3 数据库管理
+### 8.4 数据库管理
 
 ```bash
 lnmp database add    # 新建库 + 同名用户
@@ -1947,7 +2628,7 @@ MariaDB 11.8 会在直接调用旧程序名时打印弃用提示。新版安装�
 `mariadb`、`mariadb-dump`、`mariadb-admin` 等新名称，同时用包装器保留
 `mysql`、`mysqldump`、`mysqladmin` 等旧命令，因此原有运维脚本仍可继续使用。
 
-### 8.4 备份
+### 8.5 备份
 
 推荐用内置的备份命令，它会自动导出数据库与网站程序、生成校验清单，
 配置了异地之后自动上传：
@@ -1999,7 +2680,7 @@ lnmp backup test                     # 试恢复验证：导入临时库校验�
 - 中途失败的批次不会留下空目录：全部产物都失败时（例如目标磁盘写满）
   批次目录会被删掉；部分成功时保留已产出的文件并标为不完整，
   同时跳过旧批次清理，已有的恢复点不受影响。
-- 异地上传默认关闭，开启方法和备份机侧的配置见 [8.5 异地备份（SFTP）](#85-异地备份sftp)。
+- 异地上传默认关闭，开启方法和备份机侧的配置见 [8.6 异地备份（SFTP）](#86-异地备份sftp)。
   上传先传到远端 `.incoming/<批次>/`，逐个核对大小无误后才改名到正式目录，
   最后才清理远端旧批次 —— 传输中断不会损失已有的恢复点。
 - 同一时刻只允许一个备份在跑（flock，没有 flock 的环境退回 mkdir 锁）。
@@ -2014,55 +2695,38 @@ lnmp backup restore web wp.example.com 20260810-033000
 ```
 
 > `tools/backup.sh` 是旧模板，已废弃，现在只会把请求转发到
-> `lnmp backup run all`。老的 cron 条目请改成 `/bin/lnmp-backup run`。
+> `lnmp backup run all`。
 
 如果要手工备份，WordPress 站点至少要备份两样：**数据库** 和 **`wp-content/` 目录**
-（主题、插件、上传的媒体文件）。核心文件可以重新下载，这两样不能。
+（主题、插件、上传的媒体文件）。核心文件可以重新下载，这两样不能。手工备份可用如下脚本：
 
 ```bash
-install -d -m 700 /root/backup || exit 1
-OLD_UMASK=$(umask)
+# 数据库：无人值守场景使用 option file，不将密码放入命令行参数
 umask 077
-BACKUP_STAMP=$(date +%Y%m%d-%H%M%S)
+cat > /root/.wpdemo.cnf <<'EOF'
+[client]
+user=wpdemo
+password=换成你的库用户密码
+host=127.0.0.1
+EOF
+chmod 600 /root/.wpdemo.cnf
 
-# 数据库：-p 交互读取密码；pipefail 防止 gzip 的成功掩盖 mysqldump 失败
-DB_BACKUP="/root/backup/wpdemo-${BACKUP_STAMP}.sql.gz"
-[ ! -e "$DB_BACKUP" ] || { echo "备份文件已存在：$DB_BACKUP" >&2; exit 1; }
-DB_TMP=$(mktemp /root/backup/.wpdemo.sql.gz.XXXXXX) || exit 1
-set -o pipefail
-if mysqldump -u wpdemo -p -h 127.0.0.1 --single-transaction wpdemo | gzip > "$DB_TMP" \
-   && gzip -t "$DB_TMP"; then
-    mv -f -- "$DB_TMP" "$DB_BACKUP"
-else
-    rm -f -- "$DB_TMP"
-    echo "数据库备份失败，已删除不完整文件" >&2
-    exit 1
-fi
+mysqldump --defaults-file=/root/.wpdemo.cnf --single-transaction \
+  wpdemo | gzip > /root/backup/wpdemo-$(date +%F).sql.gz
 
-# 站点文件：先写临时文件，能完整列出内容后再提交正式文件名
-WEB_BACKUP="/root/backup/wp-content-${BACKUP_STAMP}.tar.gz"
-[ ! -e "$WEB_BACKUP" ] || { echo "备份文件已存在：$WEB_BACKUP" >&2; exit 1; }
-WEB_TMP=$(mktemp /root/backup/.wp-content.tar.gz.XXXXXX) || exit 1
-if tar -czf "$WEB_TMP" -C /home/wwwroot/wp.example.com wp-content \
-   && tar -tzf "$WEB_TMP" >/dev/null; then
-    mv -f -- "$WEB_TMP" "$WEB_BACKUP"
-else
-    rm -f -- "$WEB_TMP"
-    echo "网站文件备份失败，已删除不完整文件" >&2
-    exit 1
-fi
-umask "$OLD_UMASK"
-unset OLD_UMASK BACKUP_STAMP DB_BACKUP DB_TMP WEB_BACKUP WEB_TMP
+# 站点文件
+tar czf /root/backup/wp-content-$(date +%F).tar.gz \
+  -C /home/wwwroot/wp.example.com wp-content
 ```
 
 > `--single-transaction` 让 InnoDB 表在备份期间不锁表，站点不用停。
 
-### 8.5 异地备份（SFTP）
+### 8.6 异地备份（SFTP）
 
 [返回顶部](#top)
 
 > 上传、大小核对、目录改名与 systemd timer 安装已在受限 `internal-sftp`
-> 账号（chroot + `ForceCommand`）上实测通过。仍建议第一次配置时按 8.5.4
+> 账号（chroot + `ForceCommand`）上实测通过。仍建议第一次配置时按 8.6.4
 > 的顺序逐步确认，不要直接依赖定时任务 —— 出错多半出在备份机侧的
 > 权限与主机指纹上，逐步走一遍能立刻定位。
 
@@ -2084,7 +2748,7 @@ unset OLD_UMASK BACKUP_STAMP DB_BACKUP DB_TMP WEB_BACKUP WEB_TMP
 全部对上之后把整个目录 `rename` 到正式位置，最后才清理远端过期批次。
 所以传输中断不会损失已有的恢复点，也不会在正式目录里留下残缺文件。
 
-#### 8.5.1 备份机：建账号和目录
+#### 8.6.1 备份机：建账号和目录
 
 以下命令在**备份服务器**上执行。
 
@@ -2108,16 +2772,12 @@ chmod 700 /srv/sftp/backupuser/backup
 > 备份写在下面那个 `backup/` 子目录里，生产机配置中的
 > `Remote_Dir="backup"` 指的就是它（相对 chroot 根）。
 
-#### 8.5.2 备份机：限制这个账号只能做 SFTP
+#### 8.6.2 备份机：限制这个账号只能做 SFTP
 
-先备份配置，再编辑 `/etc/ssh/sshd_config`。在**文件末尾**追加（`Match` 块必须放在最后，
+命令不熟练的请参阅下方手工配置。
+
+**先备份配置**，再编辑 `/etc/ssh/sshd_config`。在**文件末尾**追加（`Match` 块必须放在最后，
 它之后的配置都属于这个块）：
-
-```bash
-SSHD_BACKUP=$(mktemp /etc/ssh/sshd_config.bak.XXXXXX) || exit 1
-cp -a -- /etc/ssh/sshd_config "$SSHD_BACKUP" || exit 1
-echo "SSH 配置备份：$SSHD_BACKUP"
-```
 
 ```
 Match User backupuser
@@ -2131,20 +2791,17 @@ Match User backupuser
 检查语法后重载。下面是 Debian/Ubuntu 的服务名；如果语法或 reload 失败，立即恢复备份：
 
 ```bash
-: "${SSHD_BACKUP:?请先按上一步备份 sshd_config，并在同一 shell 中继续}"
-if ! sshd -t || ! systemctl reload ssh; then
-    cp -a -- "$SSHD_BACKUP" /etc/ssh/sshd_config
-    sshd -t && systemctl reload ssh
-    echo "SSH 新配置未生效，已恢复：$SSHD_BACKUP" >&2
-    exit 1
-fi
+# Debian/Ubuntu：
+sshd -t && systemctl reload ssh
+
+# EL（按需执行，不要和上一条同时执行）：
+# sshd -t && systemctl reload sshd
 ```
 
-EL 系使用 `systemctl reload sshd`，不要同时执行两个服务名。
 `sshd -t` 没有输出就是通过了。**先别关掉当前的 SSH 会话**，
 另开一个连接确认登录正常，再关闭旧会话。
 
-#### 8.5.3 生产机：密钥与主机指纹
+#### 8.6.3 生产机：密钥与主机指纹
 
 以下命令回到**生产服务器**上执行。
 
@@ -2165,7 +2822,7 @@ restrict,command="internal-sftp" ssh-ed25519 AAAAC3NzaC1...（你的公钥）
 备份机上这两个权限必须对，否则公钥认证会被静默拒绝：
 
 ```bash
-chown backupuser:backupuser /home/backupuser/.ssh /home/backupuser/.ssh/authorized_keys
+chown -R backupuser:backupuser /home/backupuser/.ssh
 chmod 700 /home/backupuser/.ssh
 chmod 600 /home/backupuser/.ssh/authorized_keys
 ```
@@ -2178,11 +2835,8 @@ chmod 600 /home/backupuser/.ssh/authorized_keys
 那样在首次连接时盲信 —— 所以这一步必须做：
 
 ```bash
-read -r -p "备份机主机名或 IP: " BACKUP_HOST
-case "$BACKUP_HOST" in ''|-*|*[!A-Za-z0-9._:-]*) echo "主机名或 IP 格式不合法" >&2; exit 1;; esac
-KNOWN_HOSTS_CANDIDATE=$(mktemp /root/.ssh/lnmp_backup_known_hosts.candidate.XXXXXX) || exit 1
-ssh-keyscan -p 22 "$BACKUP_HOST" > "$KNOWN_HOSTS_CANDIDATE" || exit 1
-ssh-keygen -lf "$KNOWN_HOSTS_CANDIDATE"
+ssh-keyscan -p 22 备份机地址 > /root/.ssh/lnmp_backup_known_hosts
+ssh-keygen -lf /root/.ssh/lnmp_backup_known_hosts
 ```
 
 记下输出的指纹，然后**到备份机本机上**（不要通过刚才那条网络连接）执行：
@@ -2194,17 +2848,10 @@ ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 两边的指纹逐字比对，对上了才算可信。对不上说明中间有人，别继续。
 
 ```bash
-if [ -e /root/.ssh/lnmp_backup_known_hosts ]; then
-    KNOWN_HOSTS_BACKUP=$(mktemp /root/.ssh/lnmp_backup_known_hosts.bak.XXXXXX) || exit 1
-    cp -a -- /root/.ssh/lnmp_backup_known_hosts "$KNOWN_HOSTS_BACKUP" || exit 1
-    echo "旧主机指纹备份：$KNOWN_HOSTS_BACKUP"
-fi
-mv -f -- "$KNOWN_HOSTS_CANDIDATE" /root/.ssh/lnmp_backup_known_hosts
 chmod 600 /root/.ssh/lnmp_backup /root/.ssh/lnmp_backup_known_hosts
-unset BACKUP_HOST KNOWN_HOSTS_CANDIDATE KNOWN_HOSTS_BACKUP
 ```
 
-#### 8.5.4 生产机：开启上传并验证
+#### 8.6.4 生产机：开启上传并验证
 
 编辑 `/etc/lnmp/backup.conf`（权限 600），改这几项：
 
@@ -2246,7 +2893,7 @@ journalctl -u lnmp-backup.service -n 50    # 看最近一次自动执行的输�
 tail -f /var/log/lnmp/backup.log           # 备份任务日志
 ```
 
-#### 8.5.5 出错时对照排查
+#### 8.6.5 出错时对照排查
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
@@ -2259,7 +2906,7 @@ tail -f /var/log/lnmp/backup.log           # 备份任务日志
 | `另一个备份任务正在运行` | 上一次还没跑完，或异常退出留下了锁 | 用 `lnmp backup status` 看上次执行时间；确认没有在跑的任务后删除 `/var/lock/lnmp-backup.lock*` |
 | 备份成功但没有自动执行 | timer 没启用 | `systemctl enable --now lnmp-backup.timer` |
 
-#### 8.5.6 只有 FTP 服务器可用时
+#### 8.6.6 只有 FTP 服务器可用时
 
 有些机房只提供一台老 FTP 服务器，没有 SSH。备份支持这种情况，但**它不是
 推荐做法**，两种方式的差别要先看清楚：
@@ -2294,7 +2941,7 @@ Remote_Ftp_CA=""              # 自签证书填 CA 路径，不要直接关校�
 选 `ftp` 时每次运行都会在日志里留下明文告警。条件允许就换 `ftps`，
 再不济也可以先建 SSH 隧道再让 FTP 跑在隧道里。
 
-#### 8.5.7 备份加密（age 或 GPG）
+#### 8.6.7 备份加密（age 或 GPG）
 
 默认不加密。备份存放在第三方机房、对象存储或外部 FTP 时应启用加密；
 本机磁盘上的加密主要降低磁盘离线泄露风险。
@@ -2358,7 +3005,7 @@ lnmp backup test                 # 解密 + 校验 + 试恢复，退出码必须
 开了加密就不会有明文留在备份目录里。解密侧私钥不对或文件缺失时
 `test` / `restore` 报"解密失败。"并返回 1，不会导入半截数据。
 
-#### 8.5.8 关于远端校验的边界
+#### 8.6.8 关于远端校验的边界
 
 远端只做**逐个文件的大小核对**，不是内容校验。
 
@@ -2371,7 +3018,7 @@ SHA-256。大小核对能发现传输截断和文件缺失，发现不了内容�
 `sha256sum -c SHA256SUMS` 的任务；或者改用允许执行受限命令的通道。
 这部分不属于本包能单独完成的范围。
 
-### 8.6 日志
+### 8.7 日志
 
 | 日志 | 路径 |
 |---|---|
@@ -2393,8 +3040,10 @@ SHA-256。大小核对能发现传输截断和文件缺失，发现不了内容�
 bash tools/cut_nginx_logs.sh
 ```
 
-脚本按 `log_files_name` 数组切割，每个名字同时处理 `<名字>.log` 和
-`<名字>.error.log`，归档为 `<名字>_<日期>.log` 与 `<名字>.error_<日期>.log`。
+脚本按 `log_files_name` 数组切割前一天的日志，每个名字同时处理 `<名字>.log` 和
+`<名字>.error.log`，按年月归档到 `/home/wwwlogs/<年>/<月>/`，文件名为
+`<名字>_<日期>.log` 与 `<名字>.error_<日期>.log`，最后 `nginx -s reload` 重开日志文件。
+超过 `save_days`（默认 30）天的归档自动删除，清空后的年月目录一并移除。
 `lnmp vhost add` 建的站点用域名作日志名，需要手动加进该数组，例如：
 
 ```bash
@@ -2529,7 +3178,7 @@ ls -l /home/wwwroot/wp.example.com/.htaccess
 这两套栈不要加 `include rewrite/wordpress.conf;`，会与 `proxy-pass-php.conf`
 的 `location /` 冲突。
 
-### 9.3b 数据库启动命令返回 0 但服务没起来
+#### 9.3.1 数据库启动命令返回 0 但服务没起来
 
 先确认不是数据问题：数据目录（MySQL 默认 `/usr/local/mysql/var`）仍在即数据没丢。
 最常见的原因是机器上用 apt/yum 装过 `mariadb-server` 或 `mysql-server`：包会覆盖
@@ -2579,7 +3228,7 @@ ls -la /home/wwwroot/wp.example.com/wp-content/object-cache.php
 redis-cli --scan --pattern "wpdemo:*" | wc -l
 ```
 
-### 9.5b Redis 服务状态与启动失败
+#### 9.5.1 Redis 服务状态与启动失败
 
 `redis-cli ping` 返回 `PONG` 不等于本服务在跑：端口被外部 Redis 占用时，应答的是那个实例。
 两项都要看：
@@ -2747,11 +3396,7 @@ Nginx 与 PHP-FPM 多为配置语法错误，先做配置测试：
 整个 `/usr/local/mariadb` 或 `/usr/local/mysql`：
 
 ```bash
-DB_DATA_DIR=$(readlink -f -- /usr/local/mariadb/var)
-[ "$DB_DATA_DIR" = /usr/local/mariadb/var ] || { echo "数据目录不是预期路径：$DB_DATA_DIR" >&2; exit 1; }
-find "$DB_DATA_DIR" -xdev -type d -exec chown mariadb:mariadb {} +
-find "$DB_DATA_DIR" -xdev -type f -exec chown mariadb:mariadb {} +
-# MySQL 分支把路径和账号分别换成 /usr/local/mysql/var 与 mysql:mysql
+chown -R mariadb:mariadb /usr/local/mariadb    # MySQL 分支为 mysql:mysql /usr/local/mysql
 lnmp start
 lnmp status
 ```
@@ -3106,7 +3751,7 @@ unset SITE DOMAIN TEST_FILE HTTP_CODE
 
 - **项目实现事实**：版本、默认值、路径、端口、菜单和自动分档均来自当前
   `install.sh`、`lnmp.conf`、`include/*.sh`、`conf/lnmp`、`tools/*.sh`。例如项目确实会
-  将 4~8GB 主机的 FPM `max_children` 设为 60、MySQL buffer pool 设为 512M；指南明确
+  将 4～8GB 主机的 FPM `max_children` 设为 60、MySQL buffer pool 设为 512M；指南明确
   记录该行为，但不把它直接当作混部 VPS 推荐值。
 - **容量建议**：先从整机内存预算和并发上界推导保守起点，再要求用高峰 PSS、
   `Max_used_connections`、Redis 命中/淘汰、Swap/PSI/OOM 和恢复演练校准。没有一个百分比

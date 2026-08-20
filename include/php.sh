@@ -175,7 +175,6 @@ Ln_PHP_Bin()
     if [ "${Stack}" = "lnmp" ]; then
         ln -sf /usr/local/php/sbin/php-fpm /usr/bin/php-fpm
     fi
-    rm -f /usr/local/php/conf.d/*
 }
 
 # php.ini 基线参数。安装、多版本安装与两条升级路径共用同一份，
@@ -310,6 +309,8 @@ Install_PHP_8x()
 
     echo "正在复制新的 PHP 配置文件..."
     mkdir -p /usr/local/php/{etc,conf.d}
+    # 重装时清掉旧 ini：它们指向上一次安装的扩展目录，保留会让 PHP 启动告警。
+    rm -f /usr/local/php/conf.d/*
     \cp php.ini-production /usr/local/php/etc/php.ini
 
     # 配置 PHP 扩展及运行参数。
