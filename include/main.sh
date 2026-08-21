@@ -644,12 +644,14 @@ Get_OS_Bit()
     fi
 }
 
-# Verify_Download_File <文件名>：SHA256 完整性校验。
+# Verify_Download_File <文件名> [retry]：SHA256 完整性校验。
 # 清单缺失、条目缺失或哈希不匹配时终止安装。
+# 带 retry 时哈希不匹配只删除文件并返回 2，由调用方重新下载一次。
 # 组件版本变更必须同步更新 src/checksums.sha256。
 Verify_Download_File()
 {
     local FileName=$1
+    local Retry_Mode=${2:-}
     local Checksum_File="${cur_dir}/src/checksums.sha256"
     local Expected_SHA256=""
     local Actual_SHA256=""
@@ -688,11 +690,18 @@ Verify_Download_File()
     fi
 
     if [ "${Actual_SHA256}" != "${Expected_SHA256}" ]; then
+        rm -f "${FileName}"
+        if [ "${Retry_Mode}" = "retry" ]; then
+            Echo_Yellow "${FileName} 的 SHA256 与清单不符，已删除该文件。"
+            Echo_Yellow "  期望值：${Expected_SHA256}"
+            Echo_Yellow "  实际值：${Actual_SHA256}"
+            Echo_Yellow "上次下载中断会留下残缺文件，现在重新下载一次。"
+            return 2
+        fi
         Echo_Red "致命错误：${FileName} 的 SHA256 不匹配。"
         Echo_Red "  期望值：${Expected_SHA256}"
         Echo_Red "  实际值：${Actual_SHA256}"
-        Echo_Red "该文件已删除；下载内容可能被篡改。"
-        rm -f "${FileName}"
+        Echo_Red "该文件已删除；重新下载后仍不匹配，下载内容可能被篡改。"
         exit 1
     fi
     Echo_Green "${FileName} 的 SHA256 校验通过。"
@@ -718,16 +727,24 @@ Download_Files()
 {
     local URL=$1
     local FileName=$2
+    local Verify_RC=0
 
     [ "${FileName}" = "" ] && FileName="${URL##*/}"
 
+    # 已存在的文件校验失败时，多半是上次下载被中断留下的残缺包，
+    # 删除后走下面的下载流程重取一次，再失败才按内容异常终止。
     if [ -s "${FileName}" ]; then
         echo "${FileName} [已存在]"
-        Verify_Download_File "${FileName}"
-        return $?
+        Verify_Download_File "${FileName}" retry
+        Verify_RC=$?
+        [ "${Verify_RC}" -eq 2 ] || return "${Verify_RC}"
     fi
 
-    echo "提示：未找到 ${FileName}，现在开始下载..."
+    if [ "${Verify_RC}" -eq 2 ]; then
+        echo "提示：正在重新下载 ${FileName}..."
+    else
+        echo "提示：未找到 ${FileName}，现在开始下载..."
+    fi
     if [ "${Download_Insecure}" = "y" ]; then
         # 仅用于证书故障诊断；该模式不验证 TLS 证书。
         Echo_Red "警告：Download_Insecure='y' 会关闭 TLS 证书校验。"
@@ -1068,13 +1085,15 @@ Print_APP_Ver()
     echo "完整性校验：${Enable_Download_Checksum}"
 
     if [ "${Stack}" = "lamp" ]; then
-        nginx_modules='未安装'
+        printf -v nginx_modules '未安装'
     elif [ "${WebServer}" = "openresty" ]; then
-        nginx_modules='OpenResty 内置 LuaJIT/lua-resty 模块'
+        printf -v nginx_modules 'OpenResty 内置 LuaJIT/lua-resty 模块'
         [ -n "${OpenResty_Modules_Options}" ] && \
-            nginx_modules="${nginx_modules}；自定义选项：${OpenResty_Modules_Options}"
+            printf -v nginx_modules '%s；自定义选项：%s' \
+                "${nginx_modules}" "${OpenResty_Modules_Options}"
         [ "${#OpenResty_Custom_Modules[@]}" -gt 0 ] && \
-            nginx_modules="${nginx_modules}；自定义源码模块：${#OpenResty_Custom_Modules[@]} 个"
+            printf -v nginx_modules '%s；自定义源码模块：%s 个' \
+                "${nginx_modules}" "${#OpenResty_Custom_Modules[@]}"
     else
         [ "${Enable_Nginx_Lua}" = "y" ] && nginx_modules='Lua'
         if [ "${Enable_Ngx_Brotli}" = "y" ]; then
@@ -1087,8 +1106,9 @@ Print_APP_Ver()
             nginx_modules="${nginx_modules}${nginx_modules:+, }FancyIndex"
         fi
         [ -n "${Nginx_Modules_Options}" ] && \
-            nginx_modules="${nginx_modules}${nginx_modules:+；}自定义选项：${Nginx_Modules_Options}"
-        [ -n "${nginx_modules}" ] || nginx_modules='无'
+            printf -v nginx_modules '%s%s自定义选项：%s' "${nginx_modules}" \
+                "${nginx_modules:+；}" "${Nginx_Modules_Options}"
+        [ -n "${nginx_modules}" ] || printf -v nginx_modules '无'
     fi
 
     [ "${Enable_PHP_Fileinfo}" = "y" ] && php_modules='fileinfo'
@@ -1102,11 +1122,18 @@ Print_APP_Ver()
     [ "${Enable_PHP_Default_Redis}" = "y" ] && php_modules="${php_modules}${php_modules:+, }redis"
     [ "${Enable_PHP_Default_Imagick}" = "y" ] && php_modules="${php_modules}${php_modules:+, }imagick"
     [ -n "${PHP_Modules_Options}" ] && \
-        php_modules="${php_modules}${php_modules:+；}自定义选项：${PHP_Modules_Options}"
-    [ -n "${php_modules}" ] || php_modules='无'
+        printf -v php_modules '%s%s自定义选项：%s' "${php_modules}" \
+            "${php_modules:+；}" "${PHP_Modules_Options}"
+    [ -n "${php_modules}" ] || printf -v php_modules '无'
 
     echo "Nginx 附加模块：${nginx_modules}"
     echo "PHP 附加模块：${php_modules}"
+    # 摘要中给出 lnmp.conf 里 Web 工具开关的最终取值，便于确认前复核。
+    echo "Web 工具（lnmp.conf 开关）："
+    echo "  phpMyAdmin：${Enable_PhpMyAdmin}"
+    echo "  phpinfo 页面：${Enable_PHPInfo_Page}"
+    echo "  Memcached 演示页：${Enable_Memcached_Test_Page}"
+    echo "  Redis 演示页：${Enable_Redis_Test_Page}"
     if [ "${DB_Kind}" = "none" ]; then
         echo "不安装 MySQL/MariaDB。"
     else
@@ -1257,7 +1284,8 @@ Version_GE()
 # 升级入口只接受三段或四段数字版本，防止版本值改变下载与解压路径。
 Check_Version_String()
 {
-    local value="$1" label="${2:-版本号}"
+    local value="$1" label="$2"
+    [ -n "${label}" ] || printf -v label '版本号'
 
     if [[ ! "${value}" =~ ^[0-9]+(\.[0-9]+){2,3}$ ]]; then
         Echo_Red "${label}格式无效：'${value}'（只接受三段或四段数字版本）"

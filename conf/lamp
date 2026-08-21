@@ -146,6 +146,7 @@ Svc_Feedback()
             Echo_Red "${service} ${action} 失败（退出码 ${rc}）"
             case "${service}" in
             mysql|mariadb) Diagnose_DB_Start_Failure "${action}" ;;
+            nginx|httpd)   Diagnose_Web_Start_Failure "${service}" ;;
             esac
         fi
         ;;
@@ -450,7 +451,10 @@ Add_App()
         Read_Input dir "应用目录"
         # 复用站点目录的边界校验：随后要对该目录执行 chown -R，
         # 必须挡住 /etc、/usr 这类系统目录、允许根本身和符号链接越界。
-        Check_Vhost_Dir "${dir}" || continue
+        if ! Check_Vhost_Dir "${dir}"; then
+            Echo_Red "该目录不能作为应用目录，请另选。"
+            continue
+        fi
         if [ ! -d "${dir}" ]; then
             Echo_Red "目录不存在：${dir}"
             continue
@@ -1367,6 +1371,27 @@ Check_DB_Init_Script_Integrity()
     return 1
 }
 
+# nginx 与 httpd 的启动或重载失败多半出在配置上，直接给出配置测试结果，
+# 免得只看到退出码还要再手工跑一遍。
+Diagnose_Web_Start_Failure()
+{
+    local service="$1" tester=''
+
+    case "${service}" in
+    nginx)
+        [ -x /usr/local/nginx/sbin/nginx ] && tester='/usr/local/nginx/sbin/nginx -t'
+        ;;
+    httpd)
+        [ -x /usr/local/apache/bin/apachectl ] && tester='/usr/local/apache/bin/apachectl -t'
+        ;;
+    esac
+    [ -n "${tester}" ] || return 0
+
+    echo "配置测试结果："
+    ${tester} 2>&1 | sed 's/^/  /'
+    return 0
+}
+
 Diagnose_DB_Start_Failure()
 {
     local action="${1:-start}" conf="${2:-/etc/my.cnf}"
@@ -1571,7 +1596,8 @@ Check_DB_Identifier()
 # 检测 EOF，防止非交互输入耗尽后校验循环空转。
 Read_Input()
 {
-    local __var="$1" __what="${2:-输入}"
+    local __var="$1" __what="$2"
+    [ -n "${__what}" ] || printf -v __what '输入'
     if ! read -r "${__var}"; then
         echo
         Echo_Red "读取${__what}时遇到 EOF —— 标准输入已经没有内容了。"
@@ -1584,7 +1610,8 @@ Read_Input()
 # 读取不回显的密码，并检测 EOF。
 Read_Secret()
 {
-    local __var="$1" __what="${2:-密码}"
+    local __var="$1" __what="$2"
+    [ -n "${__what}" ] || printf -v __what '密码'
     if ! read -r -s "${__var}"; then
         echo
         Echo_Red "读取${__what}时遇到 EOF —— 标准输入已经没有内容了。"
@@ -1596,7 +1623,8 @@ Read_Secret()
 # 其它输入在原问题处重问，EOF 由 Read_Input 终止，不按默认值继续。
 Read_YN()
 {
-    local __var="$1" __prompt="$2" __def="$3" __what="${4:-选择}" __in
+    local __var="$1" __prompt="$2" __def="$3" __what="$4" __in
+    [ -n "${__what}" ] || printf -v __what '选择'
     while :;do
         Echo_Yellow "${__prompt}"
         Read_Input __in "${__what}"
@@ -1683,7 +1711,8 @@ Check_More_Domains()
 # rewrite 与日志名会成为文件名或配置片段，只允许单个安全文件名。
 Check_Config_Name()
 {
-    local value="$1" what="${2:-配置名称}"
+    local value="$1" what="$2"
+    [ -n "${what}" ] || printf -v what '配置名称'
     if [ -z "${value}" ] || [ "${value}" = '.' ] || [ "${value}" = '..' ] \
        || [[ ! "${value}" =~ ^[A-Za-z0-9._-]+$ ]]; then
         Echo_Red "${what}不合法：'${value}'"
@@ -1706,7 +1735,8 @@ Check_Server_Admin_Email()
 # Web 配置中的证书路径不加 shell 转义，必须是已存在且无配置元字符的绝对路径。
 Check_Config_File_Path()
 {
-    local value="$1" what="${2:-配置文件}"
+    local value="$1" what="$2"
+    [ -n "${what}" ] || printf -v what '配置文件'
     if [[ ! "${value}" =~ ^/[A-Za-z0-9._/+@,:=-]+$ ]] \
        || [[ "/${value#/}/" == *'/../'* ]] \
        || [[ "/${value#/}/" == *'/./'* ]] \
@@ -1746,6 +1776,11 @@ Check_Vhost_Dir()
 
     # 规范化路径，不要求目标已经存在。
     norm=$(printf '%s' "${d}" | sed -e 's#/\+#/#g' -e 's#/\./#/#g' -e 's#/$##')
+    # 归一化会把 / 抹成空串，单独判掉，否则报错里显示的是空目录名。
+    if [ -z "${norm}" ]; then
+        Echo_Red "不能使用根目录 '${d}'，请指定它下面的子目录。"
+        return 1
+    fi
     case "${norm}" in
     *..*)
         Echo_Red "目录不能包含 .. ：'${d}'"
@@ -1759,7 +1794,7 @@ Check_Vhost_Dir()
         esac
     done
     if [ "${ok}" != 'y' ]; then
-        Echo_Red "目录 '${norm}' 不在允许的站点根之下。"
+        Echo_Red "目录 '${d}' 不在允许的根目录之下。"
         Echo_Red "允许：/home /var/www /srv /data /www"
         Echo_Red "（限制它是因为随后要对该目录执行 chmod -R / chown -R，"
         Echo_Red "  打到 / 或 /usr 上是不可逆的。）"
@@ -1768,7 +1803,7 @@ Check_Vhost_Dir()
 
     # 网站必须位于允许根的子目录，避免递归授权整个根目录。
     if [ "${norm}" = "${matched_root}" ]; then
-        Echo_Red "不能直接用 '${norm}' 作为站点目录，请在它下面建子目录。"
+        Echo_Red "不能直接用 '${norm}'，请在它下面建子目录。"
         Echo_Red "（随后的 chown -R 会作用于整个目录树。）"
         return 1
     fi
@@ -1782,7 +1817,7 @@ Check_Vhost_Dir()
         if [ "${comp}" = "${rest}" ]; then rest=''; else rest="${rest#*/}"; fi
         probe="${probe}/${comp}"
         if [ -L "${probe}" ]; then
-            Echo_Red "路径组件 '${probe}' 是符号链接，拒绝作为站点目录。"
+            Echo_Red "路径组件 '${probe}' 是符号链接，拒绝使用该目录。"
             Echo_Red "（递归改权限会跟着链接跑到目录树之外去。）"
             return 1
         fi
@@ -1800,7 +1835,7 @@ Check_Vhost_Dir()
             esac
         done
         if [ "${ok}" != 'y' ]; then
-            Echo_Red "'${norm}' 解析后指向 '${resolved}'，不在允许的站点根之下，拒绝。"
+            Echo_Red "'${norm}' 解析后指向 '${resolved}'，不在允许的根目录之下，拒绝。"
             return 1
         fi
     fi
@@ -2262,6 +2297,7 @@ Add_Ftp_Menu()
             # FTP 根目录会被递归授权，必须限制在允许的网站目录内。
             # 校验通过后使用规范化的路径。
             Check_Vhost_Dir "${vhostdir}" && break
+            Echo_Red "该目录不能作为 FTP 账号目录，请另选。"
             vhostdir=''
         done
     fi
@@ -3080,9 +3116,19 @@ Is_Private_IP()
     return 1
 }
 
+# IP 是否绑定在本机某个接口上。ip 命令不可用时返回 0，不阻断流程。
+Ip_On_Local_Interface()
+{
+    local addr="$1"
+    [ -n "${addr}" ] || return 1
+    command -v ip >/dev/null 2>&1 || return 0
+    ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 |
+        grep -qxF "${addr}"
+}
+
 Prepare_Default_Site_IP_Cert()
 {
-    local ip
+    local ip nat_confirm=''
     ip=$(Detect_Server_IP)
     if [ -z "${ip}" ] || Is_Private_IP "${ip}"; then
         Echo_Red "default 站点未探测到可签发证书的公网 IPv4，无法使用 Let's Encrypt。"
@@ -3096,6 +3142,20 @@ Prepare_Default_Site_IP_Cert()
     echo
     Echo_Yellow "该证书使用 shortlived profile，有效期 7 天，必须保留 acme.sh 自动续期任务。"
     echo
+    # 出口地址未绑定在本机接口时，HTTP-01 验证到不了本机，签发必然失败，
+    # 失败次数还计入 CA 的速率限制，因此要求显式确认后才继续。
+    if ! Ip_On_Local_Interface "${ip}"; then
+        Echo_Red "${ip} 未绑定在本机任何接口上，这台机器在 NAT 后面。"
+        echo "只有已把该 IP 的 80 端口转发到本机，HTTP-01 验证才可能通过；"
+        echo "否则本次申请会失败，并消耗账户的失败验证次数。"
+        read -p "确认已做端口转发并继续申请？(y/N)：" nat_confirm
+        case "${nat_confirm}" in
+            y|Y|yes|YES) ;;
+            *) Echo_Red "已取消 default 站点的证书申请。"; return 1 ;;
+        esac
+        echo
+    fi
+
     letsdomain="-d ${ip}"
     cert_profile_opt="--certificate-profile shortlived --days 6"
     default_site_ip="${ip}"
@@ -3369,6 +3429,28 @@ Recover_Cert_Backups()
 
 # 证书目录在签发前改名保留，任一环节失败即回滚。直接删除会在签发或安装
 # 失败时留下不可用的证书路径，而旧证书可能仍被站点配置引用。
+# 记录本次签发前 acme.sh 工作目录的状态，供失败时判断能否清理。
+Note_Acme_Workdir()
+{
+    Acme_Workdir="$1/$2_ecc"
+    Acme_Workdir_Was_Absent='n'
+    [ -e "${Acme_Workdir}" ] || Acme_Workdir_Was_Absent='y'
+}
+
+# 签发失败时清理本次新建的 acme.sh 工作目录，避免遗留私钥与 csr。
+# 目录在本次签发前就存在，或其中已有证书时保持不动。
+Cleanup_Failed_Acme_Workdir()
+{
+    [ "${Acme_Workdir_Was_Absent:-n}" = 'y' ] || return 0
+    [ -n "${Acme_Workdir:-}" ] && [ -d "${Acme_Workdir}" ] || return 0
+    case "${Acme_Workdir}" in
+        */conf/ssl/?*_ecc) ;;
+        *) return 0 ;;
+    esac
+    [ -s "${Acme_Workdir}/fullchain.cer" ] && return 0
+    rm -rf "${Acme_Workdir}" && echo "已清理签发失败遗留的 ${Acme_Workdir}"
+}
+
 Backup_Cert_Dir()
 {
     local dir="$1"
@@ -3461,6 +3543,9 @@ Add_SSL()
         Install_Check_Acme.sh || exit 1
 
         Backup_Cert_Dir "/usr/local/apache/conf/ssl/${domain}" || return 1
+        acme_target="${domain}"
+        [ "${domain}" = "default" ] && acme_target="${default_site_ip}"
+        Note_Acme_Workdir "/usr/local/apache/conf/ssl" "${acme_target}"
 
         if [ "${ssl_choice}" == "2" ]; then
             echo "正在使用 Let's Encrypt 签发 SSL 证书..."
@@ -3495,6 +3580,7 @@ Add_SSL()
             Echo_Green "SSL 证书签发成功。"
         else
             Restore_Cert_Dir
+            Cleanup_Failed_Acme_Workdir
             Echo_Red "SSL 证书签发失败。"
             return 1
         fi
@@ -3533,6 +3619,7 @@ Add_Dns_SSL()
     cert_dir_name="${domain/#\*./_wildcard.}"
     cert_dir="/usr/local/apache/conf/ssl/${cert_dir_name}"
     Backup_Cert_Dir "${cert_dir}" || return 1
+    Note_Acme_Workdir "/usr/local/apache/conf/ssl" "${domain}"
 
     # 泛域名已覆盖同级子域名，重复申请只会多一次 TXT 验证。
     cert_domains=$(Filter_Cert_Domains "${domain}" "${moredomain}")
@@ -3578,6 +3665,7 @@ Add_Dns_SSL()
 
     if [ "${lets_status}" != 0 ]; then
         Restore_Cert_Dir
+        Cleanup_Failed_Acme_Workdir
         Echo_Red "SSL 证书签发失败。"
         return 1
     fi
@@ -3623,6 +3711,7 @@ Add_Dns_SSL_Only()
     cert_dir_name="${domain/#\*./_wildcard.}"
     cert_dir="/usr/local/apache/conf/ssl/${cert_dir_name}"
     Backup_Cert_Dir "${cert_dir}" || return 1
+    Note_Acme_Workdir "/usr/local/apache/conf/ssl" "${domain}"
 
     # 泛域名已覆盖同级子域名，重复申请只会多一次 TXT 验证。
     cert_domains=$(Filter_Cert_Domains "${domain}" "${moredomain}")
@@ -3667,6 +3756,7 @@ Add_Dns_SSL_Only()
 
     if [ "${lets_status}" != 0 ]; then
         Restore_Cert_Dir
+        Cleanup_Failed_Acme_Workdir
         Echo_Red "SSL 证书签发失败。"
         return 1
     fi
@@ -3766,7 +3856,14 @@ case "${arg1}" in
     database)
         # 先认动作名，避免无效参数也要求输入数据库口令。
         case "${arg2}" in
-        [aA][dD][dD]|[lL][iI][sS][tT]|[dD][eE][lL]|[eE][dD][iI][tT]|[eE][xX][pP][oO][rR][tT]|[iI][mM][pP][oO][rR][tT])
+        [aA][dD][dD]|[lL][iI][sS][tT]|[dD][eE][lL]|[eE][dD][iI][tT])
+            ;;
+        [eE][xX][pP][oO][rR][tT]|[iI][mM][pP][oO][rR][tT])
+            # 导出与导入需要库名和文件名，参数不全时先报用法，不必先输口令。
+            if [ -z "${arg3}" ] || [ -z "${arg4}" ]; then
+                echo "用法：lnmp database $(echo "${arg2}" | tr '[:upper:]' '[:lower:]') <数据库名> <文件.sql.gz>"
+                exit 1
+            fi
             ;;
         *)
             Function_Database "${arg2}"

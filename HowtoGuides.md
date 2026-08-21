@@ -11,10 +11,12 @@
 > WordPress 7.0.3；WordPress 主链路已分别在两种数据库上完成。
 > LAMP 与 LNMPA 另用 Apache 2.4.68 + PHP 8.3.33 完整安装验证。
 >
-> 本项目所提供的功能纯终端命令操作，建议配合 WinSCP 处理上下传文件工作，提高工作效率。
+> 本项目所提供的功能纯终端命令操作，新手建议配合 WinSCP 修改配置参数或使用`nano`命令，避免出错。
 > 阅读 [readme.md](readme.md) 文件，了解LNMP项目更多使用信息。
 
-**本文中很多终端脚本操作，多为自动化操作提供的脚本示例，不熟练或不清楚的建议使用WinSCP修改参数，然后终端输入命令，脚本仅供参考。**
+**⚠️ 注意： 本文包含较多终端脚本操作，主要用于提供自动化场景下的脚本示例。部分脚本中的变量可能未进行赋值，或因 SSH 连接中断等原因导致变量值丢失，从而引发不可预期的问题。**
+
+**⚠️如果对脚本内容或其作用不熟悉不理解，避免直接拷贝黏贴脚本在终端处使用。建议优先使用 WinSCP 修改相关参数或浏览器端设置，再通过终端手动执行相关命令。文中的脚本仅供参考，请根据实际环境确认参数及执行结果后再使用。**
 
 ---
 
@@ -928,13 +930,11 @@ find "$SITE" -xdev -type f ! -name .user.ini -exec chown www:www {} + -exec chmo
 见 5.6。**不要在建站前就收紧**：那样网页安装向导无法写 `wp-config.php`，
 插件安装和自动更新也会失败，问题会与配置错误、伪静态失效混在一起，难以定位。
 
-> **会看到这两行报错，属正常，不用管：**
-> ```
-> chown: changing ownership of '.../.user.ini': Operation not permitted
-> chmod: changing permissions of '.../.user.ini': Operation not permitted
-> ```
+> **为什么示例里要用 `! -name .user.ini` 排除它：**
 > `.user.ini`（存放 `open_basedir` 限制）被刻意加了 immutable 属性
-> （`chattr +i`），防止站点被入侵后篡改目录限制。这是安全设计。
+> （`chattr +i`），防止站点被入侵后篡改目录限制。带上这个排除条件，
+> `find` 就不会对它执行 `chown` 与 `chmod`；去掉排除条件则会看到
+> `Operation not permitted`，其余文件仍会正常处理。
 > 真要改它：`chattr -i .user.ini` → 改 → `chattr +i .user.ini`。
 
 ### 5.3 脚本生成 wp-config.php
@@ -1578,8 +1578,10 @@ acme.sh 的 `shortlived` profile。不要绕过入口直接拼接 IP：入口还
 证书目录备份、安装和失败回滚。
 
 > 注意：**NAT 环境要特别注意**：脚本探测到的公网 IP 可能是**出口地址**，
-> 未必指向本机。只有将该 IP 的 80 端口转发到本机后，
-> 否则验证会失败。申请前先自查：从外网访问 `http://<该IP>/` 能否打开本站。
+> 未必指向本机。只有把该 IP 的 80 端口转发到本机，HTTP-01 验证才能通过。
+> 该 IP 没有绑定在本机任何接口上时，脚本会停下来要求确认（默认取消），
+> 确认后才继续申请；失败的验证会计入 Let's Encrypt 的速率限制。
+> 申请前先自查：从外网访问 `http://<该IP>/` 能否打开本站。
 
 **如果是私有 IP**，脚本会明确告知无法申请并给出三条出路，
 其中自签名证书的完整命令会直接打印出来（加密有效，但浏览器会告警，
@@ -2072,6 +2074,10 @@ systemctl list-timers lnmp-health.timer --no-pager
 tail -20 /var/log/lnmp/health.log
 ```
 
+`/var/log/lnmp/health.log` 记录探测失败、熔断、恢复与服务未运行的告警，
+正常运行时每 24 小时写一条摘要（正常、探测失败、未运行的服务数）。
+一次异常都没有且不满一天时该文件可能尚未生成。
+
 **探测覆盖 `nginx`、`httpd`、`php-fpm`、`mysql`、`mariadb`、`redis`、`memcached`**，
 按实际安装情况选取。注意 Redis 和 Memcached 在这里被探测和重启，却**不**被
 `lnmp start` / `stop` 纳管，见 [8.2](#82-lnmp-命令不纳管的服务与自定义)。Redis 探针
@@ -2081,6 +2087,10 @@ tail -20 /var/log/lnmp/health.log
 连续失败 3 次（约 3 分钟）才执行一次 `systemctl restart`；30 分钟内已重启 2 次仍
 未恢复则熔断，只告警不再重启。数据库达阈值只告警，不自动重启。`lnmp stop` 之后
 服务不会被健康检查重新拉起。
+
+服务已停止（unit 仍是开机自启但不在运行）时不做探测，连续 3 轮仍未运行会写日志
+并告警一次；unit 处于 `failed` 时立即告警。这类情况**不会**自动重启，需要人工确认
+是维护中停机还是异常退出。已被 `systemctl disable` 的服务不告警。
 
 阈值需自定义在 `/etc/lnmp/health.conf` 文件修改，改完不需要重启 timer。
 
@@ -2283,7 +2293,7 @@ Nginx 模块是编译期决定的，增删模块需要重新编译，见
 **运维辅助脚本**
 
 ```bash
-bash tools/cut_nginx_logs.sh                      # Nginx 日志切割，见 8.7
+/bin/lnmp-cutlogs                                 # Nginx 日志切割，已自动定时执行，见 8.7
 bash tools/denyhosts.sh                           # 安装 DenyHosts
 bash tools/fail2ban.sh                            # 安装 Fail2ban
 bash tools/denyhosts_removeip.sh "${BLOCKED_IP}"  # 解除 DenyHosts 误封，见 8.1.13
@@ -3034,21 +3044,32 @@ SHA-256。大小核对能发现传输截断和文件缺失，发现不了内容�
 
 日志切割：
 
-在保存本项目源码的目录内执行：
+安装 Nginx 的栈会自动装上 `/bin/lnmp-cutlogs` 与 `lnmp-cutlogs.timer`，
+每天 00:05 切割一次，无需手工配置定时任务：
 
 ```bash
-bash tools/cut_nginx_logs.sh
+systemctl list-timers lnmp-cutlogs.timer --no-pager
+/bin/lnmp-cutlogs                 # 立即切割一次
 ```
 
-脚本按 `log_files_name` 数组切割前一天的日志，每个名字同时处理 `<名字>.log` 和
-`<名字>.error.log`，按年月归档到 `/home/wwwlogs/<年>/<月>/`，文件名为
-`<名字>_<日期>.log` 与 `<名字>.error_<日期>.log`，最后 `nginx -s reload` 重开日志文件。
+脚本切割前一天的日志，每个日志名同时处理 `<名字>.log` 和 `<名字>.error.log`，
+按年月归档到 `/home/wwwlogs/<年>/<月>/`，文件名为 `<名字>_<日期>.log` 与
+`<名字>.error_<日期>.log`，最后 `nginx -s reload` 重开日志文件。
 超过 `save_days`（默认 30）天的归档自动删除，清空后的年月目录一并移除。
-`lnmp vhost add` 建的站点用域名作日志名，需要手动加进该数组，例如：
+
+默认处理 `/home/wwwlogs` 下的全部一级日志，`lnmp vhost add` 新建的站点无需登记。
+需要改保留天数或只切割指定站点时写 `/etc/lnmp/cutlogs.conf`，该文件不会被
+管理命令同步覆盖：
 
 ```bash
-log_files_name=(default access www.example.com)
+cat > /etc/lnmp/cutlogs.conf <<'EOF'
+save_days=14
+log_files_name=(default www.example.com)
+EOF
 ```
+
+LAMP 栈不安装该定时任务：切割后需要 `nginx -s reload` 才会重开日志句柄，
+Apache 的日志不由该脚本处理。
 
 default 站点的日志是 `/home/wwwlogs/default.log` 和
 `/home/wwwlogs/default.error.log`。访问日志使用 `nginx.conf` 中的 `main` 格式：
@@ -3591,6 +3612,12 @@ lnmp perm uninit; echo "rc=$?"
      源码和 `config.inc.php` 也不会被当作静态文件下载。
    - **访问路径每次安装随机生成**，形如 `49763abb_phpmyadmin`，
      针对固定 `/phpmyadmin/` 的批量扫描直接落空。
+   - **程序目录对 PHP 只读**：属主 `root`、属组 `www`，目录 750、文件 640。
+     PHP-FPM 以 `www` 运行，被攻破后无法往该目录写入并执行 webshell。
+     可写内容只有 `/var/lib/phpmyadmin/tmp`（`www:www 700`，模板缓存）。
+     `config.inc.php` 含随机生成的 `blowfish_secret`（用于加密 Cookie 中的
+     数据库口令），640 使本机其它账号读不到它；`.access_url` 为 600。
+     `lnmp perm check` 的 PMA01、PMA04、PMA05 核对这组权限。
 
    路径在安装结束时打印，之后可以随时查：
 

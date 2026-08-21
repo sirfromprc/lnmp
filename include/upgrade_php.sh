@@ -223,13 +223,13 @@ Install_PHP_Dependent()
     fi
 
     if [ -d /usr/include/x86_64-linux-gnu/curl ]; then
-        ln -sf /usr/include/x86_64-linux-gnu/curl /usr/include/
+        ln -sfn /usr/include/x86_64-linux-gnu/curl /usr/include/
     elif [ -d /usr/include/i386-linux-gnu/curl ]; then
-        ln -sf /usr/include/i386-linux-gnu/curl /usr/include/
+        ln -sfn /usr/include/i386-linux-gnu/curl /usr/include/
     fi
 
     if [ -d /usr/include/arm-linux-gnueabihf/curl ]; then
-        ln -sf /usr/include/arm-linux-gnueabihf/curl /usr/include/
+        ln -sfn /usr/include/arm-linux-gnueabihf/curl /usr/include/
     fi
 
     ldconfig

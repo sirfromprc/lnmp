@@ -137,10 +137,41 @@ Remove_DB_Files()
 {
     [ "${DB_Name}" = "None" ] && return 0
     Remove_DB_Command_Links
+    Remove_DB_Dev_Links
     rm -rf /usr/local/${DB_Name}
     rm -f /etc/my.cnf
     rm -f /etc/init.d/${DB_Name}
     Remove_Libaio_Compat_Link
+}
+
+# 清理本包建立的头文件与库链接和动态库搜索路径配置。
+# 只处理仍指向 /usr/local/mysql 或 /usr/local/mariadb 的链接，
+# 留下的悬空链接会让下次安装的 ln 建出自指链接。
+Remove_DB_Dev_Links()
+{
+    local link target conf changed='n'
+
+    for link in /usr/include/mysql /usr/lib/mysql \
+                /usr/include/mariadb /usr/lib/mariadb; do
+        [ -L "${link}" ] || continue
+        target=$(readlink "${link}" 2>/dev/null)
+        case "${target}" in
+            /usr/local/mysql/*|/usr/local/mariadb/*)
+                rm -f "${link}"
+                changed='y'
+                ;;
+        esac
+    done
+
+    for conf in /etc/ld.so.conf.d/mysql.conf /etc/ld.so.conf.d/mariadb.conf; do
+        [ -f "${conf}" ] || continue
+        grep -Eq '^[[:space:]]*/usr/local/(mysql|mariadb)/lib' "${conf}" || continue
+        rm -f "${conf}"
+        changed='y'
+    done
+
+    [ "${changed}" = 'y' ] && ldconfig 2>/dev/null
+    return 0
 }
 
 # 仅清理本包为数据库通用二进制包建立的 libaio.so.1 兼容链接：必须是符号链接，
@@ -269,6 +300,22 @@ Remove_Health_Schedule()
     return 0
 }
 
+# 清理日志切割定时任务，不动已归档的日志。
+Remove_Cutlogs_Schedule()
+{
+    local timer='/etc/systemd/system/lnmp-cutlogs.timer'
+    local service='/etc/systemd/system/lnmp-cutlogs.service'
+
+    if [ -e "${timer}" ] && command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now lnmp-cutlogs.timer >/dev/null 2>&1
+    fi
+    if [ -e "${timer}" ] || [ -e "${service}" ]; then
+        rm -f "${timer}" "${service}"
+        command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+    fi
+    return 0
+}
+
 # 清理 lnmp backup init 写入的定时任务，不动已有备份数据。
 Remove_Backup_Schedule()
 {
@@ -375,6 +422,7 @@ Uninstall_LNMP()
     Remove_Acme
     Remove_Backup_Schedule
     Remove_Health_Schedule
+    Remove_Cutlogs_Schedule
     Remove_App_Hosting
     Remove_Perm_Hooks
 
@@ -387,6 +435,7 @@ Uninstall_LNMP()
     rm -f /bin/lnmp-perm
     rm -f /bin/lnmp-health
     rm -f /bin/lnmp-sqlguard
+    rm -f /bin/lnmp-cutlogs
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
@@ -417,6 +466,7 @@ Uninstall_LNMPA()
     Remove_Acme
     Remove_Backup_Schedule
     Remove_Health_Schedule
+    Remove_Cutlogs_Schedule
     Remove_App_Hosting
     Remove_Perm_Hooks
 
@@ -429,6 +479,7 @@ Uninstall_LNMPA()
     rm -f /bin/lnmp-perm
     rm -f /bin/lnmp-health
     rm -f /bin/lnmp-sqlguard
+    rm -f /bin/lnmp-cutlogs
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
@@ -457,6 +508,7 @@ Uninstall_LAMP()
     Remove_Acme
     Remove_Backup_Schedule
     Remove_Health_Schedule
+    Remove_Cutlogs_Schedule
     Remove_App_Hosting
     Remove_Perm_Hooks
 
@@ -469,6 +521,7 @@ Uninstall_LAMP()
     rm -f /bin/lnmp-perm
     rm -f /bin/lnmp-health
     rm -f /bin/lnmp-sqlguard
+    rm -f /bin/lnmp-cutlogs
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge

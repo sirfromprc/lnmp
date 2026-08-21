@@ -1237,6 +1237,8 @@ Discover_Sites()
         domain=$(awk '/^[ \t]*server_name/ {gsub(/;/,""); print $2; exit}' "${f}")
         root=$(awk '/^[ \t]*root/ {gsub(/;/,""); print $2; exit}' "${f}")
         [ -n "${domain}" ] && [ -n "${root}" ] || continue
+        # default 站点的 server_name 是 _，列表与 -default 排除写法统一显示为 default。
+        [ "${domain}" = '_' ] && domain='default'
         db=$(Guess_Db "${root}")
         printf '%s|%s|%s\n' "${domain}" "${root%/}" "${db}"
     done

@@ -70,8 +70,11 @@ Upgrade_phpMyAdmin()
     mkdir -p /var/lib/phpmyadmin/tmp
     chown -R www:www /var/lib/phpmyadmin
     chmod 700 /var/lib/phpmyadmin/tmp
-    chmod 755 -R "${stage}/${pma_src}/"
-    chown www:www -R "${stage}/${pma_src}/"
+    if ! Set_PhpMyAdmin_Dir_Perm "${stage}/${pma_src}"; then
+        Echo_Red "设置 phpMyAdmin 目录权限失败，线上未改动。"
+        rm -rf "${stage}"
+        exit 1
+    fi
 
     echo "正在把旧 phpMyAdmin 备份到 ${pma_bak}..."
     if [ -d "${pma_live}" ]; then
@@ -93,7 +96,7 @@ Upgrade_phpMyAdmin()
     # 保留原随机访问路径及权限，使现有 Web 映射和 lnmp status 继续可用。
     if [ -s "${pma_bak}/.access_url" ]; then
         \cp "${pma_bak}/.access_url" "${pma_live}/.access_url"
-        chown www:www "${pma_live}/.access_url"
+        chown root:root "${pma_live}/.access_url"
         chmod 600 "${pma_live}/.access_url"
     fi
 

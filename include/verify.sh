@@ -353,6 +353,20 @@ Verify_OpenResty_Signature()
     return 0
 }
 
+# Retry_Cached_Download <是否为既有文件> <url> <落地文件名>
+# 既有文件校验失败多半是上次下载中断留下的残缺包：删除后重取一次。
+# 文件本来就是这次下的（第一个参数为 n）则不重试，返回 1 由调用方终止。
+Retry_Cached_Download()
+{
+    local was_cached="$1" url="$2" fname="$3"
+
+    [ "${was_cached}" = 'y' ] || return 1
+    Echo_Yellow "${fname} 校验未通过；上次下载中断会留下残缺文件，正在重新下载..."
+    rm -f "${fname}"
+    Download_Fetch "${url}" "${fname}" || { rm -f "${fname}"; return 1; }
+    return 0
+}
+
 # Download_Verified <project> <version> <url> <落地文件名>
 # 升级侧统一入口，按以下顺序选择验证方式：
 #   1) src/checksums.sha256 中的静态值；
@@ -363,6 +377,7 @@ Download_Verified()
 {
     local project="$1" ver="$2" url="$3" fname="$4"
     local manifest="${cur_dir}/src/checksums.sha256" expected=''
+    local was_cached='n'
 
     if [ "${Enable_Download_Checksum}" != "y" ]; then
         Echo_Red "警告：Enable_Download_Checksum='n'，本次下载不做完整性校验。"
@@ -386,10 +401,15 @@ Download_Verified()
         fi
     else
         echo "${fname} [已存在]"
+        was_cached='y'
     fi
 
     if [ -n "${expected}" ]; then
-        Verify_SHA256_Value "${fname}" "${expected}" || { rm -f "${fname}"; return 1; }
+        if ! Verify_SHA256_Value "${fname}" "${expected}"; then
+            Retry_Cached_Download "${was_cached}" "${url}" "${fname}" || \
+                { rm -f "${fname}"; return 1; }
+            Verify_SHA256_Value "${fname}" "${expected}" || { rm -f "${fname}"; return 1; }
+        fi
         return 0
     fi
 
@@ -404,12 +424,20 @@ Download_Verified()
             rm -f "${fname}"
             return 1
         fi
-        Verify_SHA256_Value "${fname}" "${expected}" || { rm -f "${fname}"; return 1; }
+        if ! Verify_SHA256_Value "${fname}" "${expected}"; then
+            Retry_Cached_Download "${was_cached}" "${url}" "${fname}" || \
+                { rm -f "${fname}"; return 1; }
+            Verify_SHA256_Value "${fname}" "${expected}" || { rm -f "${fname}"; return 1; }
+        fi
         return 0
         ;;
     # Nginx 使用上游 PGP 签名。
     nginx)
-        Verify_Nginx_Signature "${fname}" "${url}" || { rm -f "${fname}"; return 1; }
+        if ! Verify_Nginx_Signature "${fname}" "${url}"; then
+            Retry_Cached_Download "${was_cached}" "${url}" "${fname}" || \
+                { rm -f "${fname}"; return 1; }
+            Verify_Nginx_Signature "${fname}" "${url}" || { rm -f "${fname}"; return 1; }
+        fi
         return 0
         ;;
     esac

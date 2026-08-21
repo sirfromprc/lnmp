@@ -97,7 +97,8 @@ Install_LNMP_Command()
         "${cur_dir}/tools/lnmp-phpmyadmin.sh:/bin/lnmp-phpmyadmin" \
         "${cur_dir}/tools/lnmp-perm.sh:/bin/lnmp-perm" \
         "${cur_dir}/tools/lnmp-health.sh:/bin/lnmp-health" \
-        "${cur_dir}/tools/lnmp-sqlguard.sh:/bin/lnmp-sqlguard"
+        "${cur_dir}/tools/lnmp-sqlguard.sh:/bin/lnmp-sqlguard" \
+        "${cur_dir}/tools/cut_nginx_logs.sh:/bin/lnmp-cutlogs"
     do
         target=${source#*:}
         source=${source%%:*}
@@ -176,6 +177,47 @@ Install_Health_Timer()
     return 0
 }
 
+# Nginx 访问日志与错误日志的每日切割任务。切割的日志名由脚本自动发现，
+# 新建站点无需登记。只在有 Nginx 的栈调用：切割后要 reload 才会重开日志，
+# Apache 的日志不由该脚本处理。
+Install_Cutlogs_Timer()
+{
+    [ -d /etc/systemd/system ] || return 0
+    command -v systemctl >/dev/null 2>&1 || return 0
+    if [ ! -x /bin/lnmp-cutlogs ]; then
+        Echo_Yellow "缺少 /bin/lnmp-cutlogs，跳过日志切割定时任务。"
+        return 0
+    fi
+
+    cat > /etc/systemd/system/lnmp-cutlogs.service <<'EOF' || return 0
+[Unit]
+Description=LNMP nginx log rotation
+
+[Service]
+Type=oneshot
+ExecStart=/bin/lnmp-cutlogs
+EOF
+    cat > /etc/systemd/system/lnmp-cutlogs.timer <<'EOF' || return 0
+[Unit]
+Description=Daily LNMP nginx log rotation
+
+[Timer]
+OnCalendar=*-*-* 00:05:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
+EOF
+    chmod 644 /etc/systemd/system/lnmp-cutlogs.service \
+              /etc/systemd/system/lnmp-cutlogs.timer
+    systemctl daemon-reload >/dev/null 2>&1
+    if ! systemctl enable --now lnmp-cutlogs.timer >/dev/null 2>&1; then
+        Echo_Yellow "启用日志切割定时任务失败，可稍后执行 systemctl enable --now lnmp-cutlogs.timer 重试。"
+    fi
+    return 0
+}
+
 # 在 Bash 登录环境中加载 tgnotice；该函数依赖 Bash 数组与字符串操作。
 Install_Tgnotice_Profile()
 {
@@ -206,6 +248,7 @@ Add_LNMP_Startup()
         Sync_LNMP_Command_Alias || return 1
     fi
     Install_Health_Timer
+    Install_Cutlogs_Timer
 }
 
 # 各安装栈共用数据库启动流程，并按已安装的服务类型启用对应服务。
@@ -229,6 +272,7 @@ Add_LNMPA_Startup()
     StartUp httpd
     StartOrStop start httpd
     Install_Health_Timer
+    Install_Cutlogs_Timer
 }
 
 Add_LAMP_Startup()
@@ -387,14 +431,17 @@ Print_Sucess_Info()
         "运行 lnmp {start|stop|reload|restart|kill|status} 管理服务" \
         "仅使用上游官方源码，并强制校验完整性"
     # 安装摘要统一使用横幅格式，便于查看访问地址和常用管理入口。
-    local summary_lines=()
+    local summary_lines=() line=''
     if [ "${Enable_PhpMyAdmin}" = "y" ]; then
         summary_lines+=("phpMyAdmin：http://IP/$(cat ${PhpMyAdmin_Url_File} 2>/dev/null)/")
-        summary_lines+=("上面这个路径是随机生成的，请自行记录；忘记可执行 lnmp status 查看。")
+        printf -v line '上面这个路径是随机生成的，请自行记录；忘记可执行 lnmp status 查看。'
+        summary_lines+=("${line}")
     fi
     [ "${Enable_PHPInfo_Page}" = "y" ] && summary_lines+=("phpinfo：http://IP/phpinfo.php")
-    summary_lines+=("添加虚拟主机：lnmp vhost add")
-    summary_lines+=("默认网站目录：${Default_Website_Dir}")
+    printf -v line '添加虚拟主机：lnmp vhost add'
+    summary_lines+=("${line}")
+    printf -v line '默认网站目录：%s' "${Default_Website_Dir}"
+    summary_lines+=("${line}")
     Print_Banner "${summary_lines[@]}"
     if [ "${DB_Kind}" != "none" ]; then
         Print_DB_Password_Notice

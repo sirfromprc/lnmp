@@ -18,7 +18,8 @@
 #
 # 探测前先确认服务应处于运行状态：unit 为 inactive（人工停止）、failed
 # （systemd 已放弃并由 OnFailure 告警）或 activating/deactivating（正在切换）
-# 时一律跳过，避免与人工操作和 systemd 自身的重启抢动作。
+# 时不探测，避免与人工操作和 systemd 自身的重启抢动作。其中 unit 仍是开机
+# 自启却没在运行的，连续多轮后告警一次，但不自动重启。
 #
 # 数据库不执行重启，只发送告警。mysqld_safe 已负责 mysqld 的崩溃拉起，
 # 且数据损坏场景下反复重启会加剧损坏。
@@ -47,6 +48,8 @@ Restart_Max=2
 Probe_Timeout=5
 # 同一服务的告警间隔，防止持续故障刷屏。
 Notify_Quiet_Sec=3600
+# 全部服务正常时的日志摘要间隔，用于确认检查任务确实在跑。
+Summary_Interval_Sec=86400
 
 # 状态文件仅 root 可读。
 umask 077
@@ -205,6 +208,57 @@ Should_Probe()
     return 0
 }
 
+# unit 仍是开机自启却没在运行：可能是崩溃后 systemd 已放弃，也可能是停止后
+# 无人处理。连续多轮仍未运行才告警，避开维护期间的短暂停止；不自动重启，
+# 以免与人工操作抢服务。
+Report_Not_Running()
+{
+    local svc="$1" enabled active downs
+
+    enabled=$(systemctl is-enabled "${svc}.service" 2>/dev/null)
+    case "${enabled}" in
+        enabled|enabled-runtime|static|indirect) ;;
+        *) Clear_State "Down_${svc}"; return 0 ;;
+    esac
+
+    active=$(systemctl is-active "${svc}.service" 2>/dev/null)
+    case "${active}" in
+        active) Clear_State "Down_${svc}"; return 0 ;;
+        activating|deactivating|reloading) return 0 ;;
+    esac
+
+    downs=$(Read_State "Down_${svc}")
+    case "${downs}" in
+        ''|*[!0-9]*) downs=0 ;;
+    esac
+    downs=$((downs + 1))
+    Write_State "Down_${svc}" "${downs}"
+    Log WARN "${svc} 未在运行（unit 状态 ${active:-未知}，第 ${downs} 轮）。"
+
+    # failed 表示 systemd 已放弃重启，不必再等确认轮次。
+    if [ "${active}" != "failed" ] && [ "${downs}" -lt "${Fail_Threshold}" ]; then
+        return 0
+    fi
+    Notify_Throttled "${svc}" "LNMP 健康检查：${svc} 未在运行（unit ${active:-未知}），本工具不会自动重启，请人工确认。"
+    return 0
+}
+
+# 正常运行时日志没有任何输出，无法确认检查是否在跑，因此按间隔写一条摘要。
+Log_Periodic_Summary()
+{
+    local ok_count="$1" fail_count="$2" down_count="$3" summary now last
+    now=$(date +%s)
+    last=$(Read_State "Summary_Ts")
+    case "${last}" in
+        ''|*[!0-9]*) last=0 ;;
+    esac
+    [ $((now - last)) -ge "${Summary_Interval_Sec}" ] || return 0
+    Write_State "Summary_Ts" "${now}"
+    printf -v summary '正常 %s，探测失败 %s，未运行 %s' \
+        "${ok_count}" "${fail_count}" "${down_count}"
+    Log INFO "周期摘要：${summary}"
+}
+
 # ---------------------------------------------------------------------------
 # 探针
 #
@@ -330,11 +384,11 @@ Probe_Http()
                 "http://127.0.0.1:${port}/" 2>/dev/null)
     rc=$?
     if [ ${rc} -ne 0 ] || [ -z "${code}" ] || [ "${code}" = "000" ]; then
-        Probe_Detail="连接 127.0.0.1:${port} 失败或超时"
+        printf -v Probe_Detail '连接 127.0.0.1:%s 失败或超时' "${port}"
         return 1
     fi
     case "${code}" in
-        5??) Probe_Detail="127.0.0.1:${port} 返回 ${code}"; return 1 ;;
+        5??) printf -v Probe_Detail '127.0.0.1:%s 返回 %s' "${port}" "${code}"; return 1 ;;
     esac
     return 0
 }
@@ -356,19 +410,22 @@ Probe_Fpm()
     fi
 
     if [ ! -S "${sock}" ]; then
-        Probe_Detail="监听套接字 ${sock} 不存在"
+        printf -v Probe_Detail '监听套接字 %s 不存在' "${sock}"
         return 1
     fi
 
     pid=$(systemctl show "${svc}.service" -p MainPID --value 2>/dev/null)
     case "${pid}" in
-        ''|0|*[!0-9]*) Probe_Detail="master 进程不存在"; return 1 ;;
+        ''|0|*[!0-9]*) printf -v Probe_Detail 'master 进程不存在'; return 1 ;;
     esac
-    [ -d "/proc/${pid}" ] || { Probe_Detail="master 进程 ${pid} 已消失"; return 1; }
+    [ -d "/proc/${pid}" ] || {
+        printf -v Probe_Detail 'master 进程 %s 已消失' "${pid}"
+        return 1
+    }
 
     workers=$(pgrep -P "${pid}" 2>/dev/null | wc -l)
     if [ "${workers}" -eq 0 ]; then
-        Probe_Detail="master 存活但 worker 数为 0"
+        printf -v Probe_Detail 'master 存活但 worker 数为 0'
         return 1
     fi
     return 0
@@ -394,7 +451,7 @@ Probe_Redis()
     [ "${port}" = "0" ] && return 0
 
     exec 9<>"/dev/tcp/127.0.0.1/${port}" 2>/dev/null || {
-        Probe_Detail="连接 127.0.0.1:${port} 失败"
+        printf -v Probe_Detail '连接 127.0.0.1:%s 失败' "${port}"
         return 1
     }
     printf 'PING\r\n' >&9 2>/dev/null
@@ -407,9 +464,10 @@ Probe_Redis()
         +*|-*) return 0 ;;
     esac
     if [ -z "${line}" ]; then
-        Probe_Detail="127.0.0.1:${port} 未响应 PING（${Probe_Timeout} 秒超时）"
+        printf -v Probe_Detail '127.0.0.1:%s 未响应 PING（%s 秒超时）' \
+            "${port}" "${Probe_Timeout}"
     else
-        Probe_Detail="127.0.0.1:${port} PING 返回异常内容：${line}"
+        printf -v Probe_Detail '127.0.0.1:%s PING 返回异常内容：%s' "${port}" "${line}"
     fi
     return 1
 }
@@ -427,7 +485,7 @@ Probe_Memcached()
     esac
 
     exec 9<>"/dev/tcp/${ip}/${port}" 2>/dev/null || {
-        Probe_Detail="连接 ${ip}:${port} 失败"
+        printf -v Probe_Detail '连接 %s:%s 失败' "${ip}" "${port}"
         return 1
     }
     printf 'version\r\n' >&9 2>/dev/null
@@ -436,7 +494,7 @@ Probe_Memcached()
     case "${line}" in
         VERSION*) return 0 ;;
     esac
-    Probe_Detail="${ip}:${port} 未返回 VERSION"
+    printf -v Probe_Detail '%s:%s 未返回 VERSION' "${ip}" "${port}"
     return 1
 }
 
@@ -475,7 +533,7 @@ Probe_Db()
     if [ ! -x "${admin}" ]; then
         # 没有客户端工具时退回套接字存在性判断，避免误判为故障。
         [ -S "${sock}" ] && return 0
-        Probe_Detail="套接字 ${sock} 不存在，且找不到 mysqladmin"
+        printf -v Probe_Detail '套接字 %s 不存在，且找不到 mysqladmin' "${sock}"
         return 1
     fi
 
@@ -483,7 +541,9 @@ Probe_Db()
     # 避免把启动脚本被替换误判成数据问题。数据目录不受影响。
     if [ -f "/etc/init.d/${svc}" ] &&
        ! grep -q "/usr/local/${svc}" "/etc/init.d/${svc}"; then
-        Probe_Detail="/etc/init.d/${svc} 已不指向 /usr/local/${svc}，疑似被系统包覆盖；数据目录未受影响"
+        printf -v Probe_Detail \
+            '/etc/init.d/%s 已不指向 /usr/local/%s，疑似被系统包覆盖；数据目录未受影响' \
+            "${svc}" "${svc}"
         [ -S "${sock}" ] || return 1
     fi
 
@@ -497,9 +557,14 @@ Probe_Db()
         *"is alive"*|*"Access denied"*) return 0 ;;
     esac
     if [ "${rc}" -eq 124 ]; then
-        Probe_Detail="mysqladmin ping 超时（${Probe_Timeout} 秒），进程可能已无响应"
+        printf -v Probe_Detail 'mysqladmin ping 超时（%s 秒），进程可能已无响应' \
+            "${Probe_Timeout}"
     else
-        Probe_Detail="mysqladmin ping 失败：${out:-无响应}"
+        if [ -n "${out}" ]; then
+            printf -v Probe_Detail 'mysqladmin ping 失败：%s' "${out}"
+        else
+            printf -v Probe_Detail 'mysqladmin ping 失败：无响应'
+        fi
     fi
     return 1
 }
@@ -597,7 +662,7 @@ ${detail}"
 # 探测到故障不应让 timer 触发的 oneshot unit 进入 failed 状态。
 Cmd_Check()
 {
-    local svc fails paused
+    local svc fails paused ok_count=0 fail_count=0 down_count=0
 
     if ! Systemd_Available; then
         Log WARN "本机没有运行中的 systemd，健康检查不执行。"
@@ -607,6 +672,8 @@ Cmd_Check()
 
     for svc in $(Managed_Services); do
         if ! Should_Probe "${svc}"; then
+            Report_Not_Running "${svc}"
+            [ -n "$(Read_State "Down_${svc}")" ] && down_count=$((down_count + 1))
             continue
         fi
 
@@ -617,9 +684,12 @@ Cmd_Check()
                 Log INFO "${svc} 探测恢复正常，解除熔断。"
                 Notify "LNMP 健康检查：${svc} 已恢复正常，解除熔断。"
             fi
+            Clear_State "Down_${svc}"
             Write_State "Fail_${svc}" 0
+            ok_count=$((ok_count + 1))
             continue
         fi
+        fail_count=$((fail_count + 1))
 
         fails=$(Read_State "Fail_${svc}")
         case "${fails}" in
@@ -633,12 +703,13 @@ Cmd_Check()
         Handle_Failure "${svc}" "${Probe_Detail}"
     done
 
+    Log_Periodic_Summary "${ok_count}" "${fail_count}" "${down_count}"
     return 0
 }
 
 Cmd_Status()
 {
-    local svc fails paused active detail
+    local svc fails paused active detail downs
 
     if ! Systemd_Available; then
         Err "本机没有运行中的 systemd，健康检查不可用。"
@@ -652,14 +723,19 @@ Cmd_Status()
         [ -n "${fails}" ] || fails=0
 
         if ! Should_Probe "${svc}"; then
-            Say "${svc}：unit 状态 ${active:-未知}，本轮不探测"
+            downs=$(Read_State "Down_${svc}")
+            if [ -n "${downs}" ]; then
+                Warn "${svc}：unit 状态 ${active:-未知}，已连续 ${downs} 轮未运行，不自动重启"
+            else
+                Say "${svc}：unit 状态 ${active:-未知}，本轮不探测"
+            fi
             continue
         fi
 
         if Probe "${svc}"; then
-            detail="探测正常"
+            printf -v detail '探测正常'
         else
-            detail="探测失败：${Probe_Detail}"
+            printf -v detail '探测失败：%s' "${Probe_Detail}"
         fi
         if [ -n "${paused}" ]; then
             Warn "${svc}：${detail}，连续失败 ${fails} 次，已熔断"
@@ -686,6 +762,7 @@ Cmd_Reset()
         Clear_State "Paused_${svc}"
         Clear_State "Rst_${svc}"
         Clear_State "Notify_${svc}"
+        Clear_State "Down_${svc}"
         Ok "已清除 ${svc} 的失败计数与熔断标记。"
     done
     return 0

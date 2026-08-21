@@ -940,7 +940,7 @@ Install_Freetype()
 /usr/local/freetype/lib
 EOF
     ldconfig
-    ln -sf /usr/local/freetype/include/freetype2/* /usr/include/
+    ln -sfn /usr/local/freetype/include/freetype2/* /usr/include/
     cd ${cur_dir}/src/
     rm -rf ${cur_dir}/src/${Freetype_New_Ver}
 }
@@ -1197,7 +1197,7 @@ eof
     echo "fs.file-max=65535" >> /etc/sysctl.conf
 
     if echo "${Fedora_Version}" | grep -Eqi "3[0-9]" && [ ! -d "/etc/init.d" ]; then
-        ln -sf /etc/rc.d/init.d /etc/init.d
+        ln -sfn /etc/rc.d/init.d /etc/init.d
     fi
 
     if [ -s /usr/lib64/libtinfo.so.6 ]; then
@@ -1221,13 +1221,13 @@ Deb_Lib_Opt()
     else
         ln -sf /usr/lib/i386-linux-gnu/libpng* /usr/lib/
         ln -sf /usr/lib/i386-linux-gnu/libjpeg* /usr/lib/
-        ln -sf /usr/include/i386-linux-gnu/asm /usr/include/asm
+        ln -sfn /usr/include/i386-linux-gnu/asm /usr/include/asm
     fi
 
     if [ -d "/usr/lib/arm-linux-gnueabihf" ]; then
         ln -sf /usr/lib/arm-linux-gnueabihf/libpng* /usr/lib/
         ln -sf /usr/lib/arm-linux-gnueabihf/libjpeg* /usr/lib/
-        ln -sf /usr/include/arm-linux-gnueabihf/curl /usr/include/
+        ln -sfn /usr/include/arm-linux-gnueabihf/curl /usr/include/
     fi
 
     ulimit -v unlimited
@@ -1249,17 +1249,17 @@ Deb_Lib_Opt()
     fi
 
     if [ -d /usr/include/x86_64-linux-gnu/curl ]; then
-        ln -sf /usr/include/x86_64-linux-gnu/curl /usr/include/
+        ln -sfn /usr/include/x86_64-linux-gnu/curl /usr/include/
     elif [ -d /usr/include/i386-linux-gnu/curl ]; then
-        ln -sf /usr/include/i386-linux-gnu/curl /usr/include/
+        ln -sfn /usr/include/i386-linux-gnu/curl /usr/include/
     fi
 
     if [ -d /usr/include/arm-linux-gnueabihf/curl ]; then
-        ln -sf /usr/include/arm-linux-gnueabihf/curl /usr/include/
+        ln -sfn /usr/include/arm-linux-gnueabihf/curl /usr/include/
     fi
 
     if [ -d /usr/include/aarch64-linux-gnu/curl ]; then
-        ln -sf /usr/include/aarch64-linux-gnu/curl /usr/include/
+        ln -sfn /usr/include/aarch64-linux-gnu/curl /usr/include/
     fi
 
     ldconfig

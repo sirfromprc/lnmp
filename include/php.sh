@@ -463,9 +463,7 @@ eof
         if ! mkdir -p /var/lib/phpmyadmin/tmp ||
            ! chown -R www:www /var/lib/phpmyadmin ||
            ! chmod 700 /var/lib/phpmyadmin/tmp ||
-           ! chmod 755 -R "${pma_stage}/${PhpMyAdmin_Ver}" ||
-           ! chown -R www:www "${pma_stage}/${PhpMyAdmin_Ver}" ||
-           ! chmod 600 "${pma_stage}/${PhpMyAdmin_Ver}/.access_url" ||
+           ! Set_PhpMyAdmin_Dir_Perm "${pma_stage}/${PhpMyAdmin_Ver}" ||
            ! mv "${pma_stage}/${PhpMyAdmin_Ver}" "${PhpMyAdmin_Dir}"; then
             Echo_Red "部署 phpMyAdmin 失败。"
             rm -rf "${pma_stage}"
@@ -488,6 +486,20 @@ eof
         return 1
     fi
     return 0
+}
+
+# 收紧 phpMyAdmin 程序目录权限：属主 root、属组 www，目录 750、文件 640。
+# PHP-FPM 以 www 运行，只读即可；可写内容位于 /var/lib/phpmyadmin/tmp。
+# config.inc.php 含 blowfish_secret，不能让本机其它账号读取。
+Set_PhpMyAdmin_Dir_Perm()
+{
+    local dir="$1"
+    [ -n "${dir}" ] && [ -d "${dir}" ] || return 1
+    chown -R root:www "${dir}" || return 1
+    find "${dir}" -type d -exec chmod 750 {} + || return 1
+    find "${dir}" -type f -exec chmod 640 {} + || return 1
+    [ -e "${dir}/.access_url" ] || return 0
+    chown root:root "${dir}/.access_url" && chmod 600 "${dir}/.access_url"
 }
 
 # 删除 phpMyAdmin 程序目录；路径为空或为根目录时拒绝执行，防止越界删除。
@@ -941,9 +953,7 @@ Install_Only_phpMyAdmin()
     mkdir -p /var/lib/phpmyadmin/tmp || { rm -rf "${pma_stage}"; return 1; }
     chown -R www:www /var/lib/phpmyadmin || { rm -rf "${pma_stage}"; return 1; }
     chmod 700 /var/lib/phpmyadmin/tmp || { rm -rf "${pma_stage}"; return 1; }
-    chmod 755 -R "${pma_stage}/${PhpMyAdmin_Ver}" || { rm -rf "${pma_stage}"; return 1; }
-    chown -R www:www "${pma_stage}/${PhpMyAdmin_Ver}" || { rm -rf "${pma_stage}"; return 1; }
-    chmod 600 "${pma_stage}/${PhpMyAdmin_Ver}/.access_url" || {
+    Set_PhpMyAdmin_Dir_Perm "${pma_stage}/${PhpMyAdmin_Ver}" || {
         rm -rf "${pma_stage}"; return 1; }
 
     if ! mv "${pma_stage}/${PhpMyAdmin_Ver}" "${PhpMyAdmin_Dir}"; then

@@ -317,8 +317,8 @@ EOF
     /usr/local/lib
 EOF
     ldconfig
-    ln -sf /usr/local/mysql/lib/mysql /usr/lib/mysql
-    ln -sf /usr/local/mysql/include/mysql /usr/include/mysql
+    ln -sfn /usr/local/mysql/lib/mysql /usr/lib/mysql
+    ln -sfn /usr/local/mysql/include/mysql /usr/include/mysql
 
     MySQL_Sec_Setting || return 1
 }
@@ -434,8 +434,8 @@ EOF
     /usr/local/lib
 EOF
     ldconfig
-    ln -sf /usr/local/mysql/lib/mysql /usr/lib/mysql
-    ln -sf /usr/local/mysql/include/mysql /usr/include/mysql
+    ln -sfn /usr/local/mysql/lib/mysql /usr/lib/mysql
+    ln -sfn /usr/local/mysql/include/mysql /usr/include/mysql
 
     MySQL_Sec_Setting || return 1
 }

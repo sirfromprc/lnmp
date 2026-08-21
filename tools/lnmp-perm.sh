@@ -98,9 +98,11 @@ Baseline=(
 "RDS03|redis|stat|/usr/local/redis/etc/redis.conf|root|redis|640|soft|opt"
 "FTP01|pureftpd|stat|/usr/local/pureftpd/etc/pure-ftpd.pem|-|-|600|soft|opt"
 "FTP02|pureftpd|maxmode|/usr/local/pureftpd/etc/pureftpd.passwd|-|-|077|soft|opt"
-"PMA01|nginx,httpd|stat_r|/usr/local/phpmyadmin|www|www|-|soft|opt,ex=.access_url"
+"PMA01|nginx,httpd|stat_r|/usr/local/phpmyadmin|root|www|-|soft|opt,ex=.access_url"
 "PMA02|nginx,httpd|stat|/usr/local/phpmyadmin/.access_url|-|-|600|soft|opt"
 "PMA03|nginx,httpd|stat|/var/lib/phpmyadmin/tmp|www|www|700|soft|opt"
+"PMA04|nginx,httpd|stat|/usr/local/phpmyadmin/config.inc.php|root|www|640|soft|opt"
+"PMA05|nginx,httpd|maxmode|/usr/local/phpmyadmin|-|-|027|soft|opt"
 "CMD01|cmd|stat|/bin/lnmp|root|root|755|soft|req"
 "CMD02|cmd|stat|/bin/lnmp-backup|root|root|755|soft|opt"
 "CMD03|cmd|stat|/bin/lnmp-tgnotice|root|root|755|soft|opt"
@@ -344,13 +346,13 @@ Check_Stat()
     mode=$(Stat_Mode "${path}")
 
     if [ "${want_owner}" != "-" ] && [ "${owner}" != "${want_owner}" ]; then
-        Detail="属主是 ${owner}，期望 ${want_owner}"
+        printf -v Detail '属主是 %s，期望 %s' "${owner}" "${want_owner}"
         Fix="chown ${want_owner}:${want_group} ${path}"
         [ "${want_group}" = "-" ] && Fix="chown ${want_owner} ${path}"
         return 1
     fi
     if [ "${want_group}" != "-" ] && [ "${group}" != "${want_group}" ]; then
-        Detail="属组是 ${group}，期望 ${want_group}"
+        printf -v Detail '属组是 %s，期望 %s' "${group}" "${want_group}"
         Fix="chgrp ${want_group} ${path}"
         return 1
     fi
@@ -358,7 +360,7 @@ Check_Stat()
         if [ "${want_mode}" = "600" ] && [ "${mode}" = "400" ]; then
             return 0
         fi
-        Detail="权限是 ${mode}，期望 ${want_mode}"
+        printf -v Detail '权限是 %s，期望 %s' "${mode}" "${want_mode}"
         Fix="chmod ${want_mode} ${path}"
         return 1
     fi
@@ -389,17 +391,15 @@ EOF
     [ -n "${hits}" ] || return 0
 
     count=$(printf '%s\n' "${hits}" | wc -l)
-    Detail="属主不是 ${want_owner}:${want_group} 的路径："
+    printf -v Detail '属主不是 %s:%s 的路径：' "${want_owner}" "${want_group}"
     while IFS= read -r line; do
         [ -n "${line}" ] || continue
-        Detail="${Detail}
-    ${line}"
+        printf -v Detail '%s\n    %s' "${Detail}" "${line}"
     done <<EOF
 $(printf '%s\n' "${hits}" | head -n ${Recurse_Report_Max})
 EOF
     if [ "${count}" -gt "${Recurse_Report_Max}" ]; then
-        Detail="${Detail}
-    （另有未列出的路径）"
+        printf -v Detail '%s\n    （另有未列出的路径）' "${Detail}"
     fi
     Fix="chown -R ${want_owner}:${want_group} ${path}"
     return 1
@@ -411,11 +411,15 @@ Check_Maxmode()
     local path="$1" mask="$2" mode extra
 
     mode=$(Stat_Mode "${path}")
-    [ -n "${mode}" ] || { Detail="无法读取权限"; Fix=""; return 1; }
+    [ -n "${mode}" ] || {
+        printf -v Detail '无法读取权限'
+        Fix=""
+        return 1
+    }
     extra=$(( 8#${mode} & 8#${mask} ))
     [ "${extra}" -eq 0 ] && return 0
 
-    Detail="权限是 ${mode}，不应包含 ${mask} 中的位"
+    printf -v Detail '权限是 %s，不应包含 %s 中的位' "${mode}" "${mask}"
     Fix="chmod o-rwx,g-w ${path}"
     [ "${mask}" = "077" ] && Fix="chmod 600 ${path}"
     return 1
@@ -427,7 +431,7 @@ Check_Immutable()
 
     command -v lsattr >/dev/null 2>&1 || return 0
     lsattr -d "${path}" 2>/dev/null | awk '{print $1}' | grep -q 'i' && return 0
-    Detail="缺少 immutable 属性"
+    printf -v Detail '缺少 immutable 属性'
     Fix="chattr +i ${path}"
     return 1
 }
@@ -438,7 +442,7 @@ Check_Marker()
     local path="$1"
 
     grep -q '^# LNMP runtime directory$' "${path}" 2>/dev/null && return 0
-    Detail="缺少运行目录重建逻辑，重启后 /run 下的目录不会被重建"
+    printf -v Detail '缺少运行目录重建逻辑，重启后 /run 下的目录不会被重建'
     Fix=""
     return 1
 }
@@ -478,7 +482,8 @@ EOF
         path=$(Expand_Token "${raw}")
         if [ $? -ne 0 ]; then
             # 配置里有该项但定位不到实际路径：降级为告警，不按硬条件阻止启动。
-            Detail="无法定位 ${raw} 指向的路径，请检查 ${My_Cnf} 中的相关配置"
+            printf -v Detail '无法定位 %s 指向的路径，请检查 %s 中的相关配置' \
+                "${raw}" "${My_Cnf}"
             Fix=""
             Perm_Report "${id}" soft "${raw}" 1
             continue
@@ -492,7 +497,7 @@ EOF
                 path="${path%/*}"
                 [ -n "${path}" ] && [ -e "${path}" ] || continue
             elif Opt_Has "${opt}" "req"; then
-                Detail="路径不存在"
+                printf -v Detail '路径不存在'
                 Fix=""
                 Perm_Report "${id}" "${sev}" "${path}" 1
                 continue
@@ -519,7 +524,7 @@ EOF
             0) rc=0 ;;
             1)
                 rc=1
-                Detail="对运行账号 ${acct} 不可写"
+                printf -v Detail '对运行账号 %s 不可写' "${acct}"
                 if [ -d "${path}" ]; then
                     Fix="chown -R ${acct}:${acct} ${path}"
                 else
@@ -531,7 +536,7 @@ EOF
                 degraded=y
                 if ! Check_Stat "${path}" "${acct}" "-" "-"; then
                     rc=1
-                    Detail="${Detail}（未做可写性探测）"
+                    printf -v Detail '%s（未做可写性探测）' "${Detail}"
                 fi
                 ;;
             esac
@@ -926,8 +931,10 @@ Cmd_Run()
     Perm_Run all full
     rc=$?
     digest=$(Result_Digest)
-    summary="通过 ${Pass_Count}，告警 ${Soft_Count}，严重 ${Hard_Count}"
-    [ "${Ignored_Count}" -gt 0 ] && summary="${summary}，已忽略 ${Ignored_Count}"
+    printf -v summary '通过 %s，告警 %s，严重 %s' \
+        "${Pass_Count}" "${Soft_Count}" "${Hard_Count}"
+    [ "${Ignored_Count}" -gt 0 ] && \
+        printf -v summary '%s，已忽略 %s' "${summary}" "${Ignored_Count}"
 
     case "${rc}" in
     0) Log INFO "${summary}" ;;

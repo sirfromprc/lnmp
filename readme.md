@@ -242,7 +242,10 @@ lnmp perm init
 ```
 
 - `health status` 只读探测服务并显示失败计数；`health check` 会累计失败，达到阈值后可能
-  重启对应服务；`health init` 安装周期探测和有限重启策略。
+  重启对应服务；`health init` 安装周期探测和有限重启策略。服务已停止（unit 仍是开机
+  自启）时只告警，不自动拉起。
+- 装有 Nginx 的栈会自动安装 `lnmp-cutlogs.timer`，每天切割并归档 `/home/wwwlogs`
+  下的日志，保留天数等可在 `/etc/lnmp/cutlogs.conf` 覆盖。
 - `perm` 核对服务所需目录和文件权限；默认只报告，不自动递归修改权限。
 - 有意调整某条权限后，可用 `lnmp perm ignore <条目ID>` 单独忽略，使用
   `lnmp perm unignore <条目ID>` 恢复检查。

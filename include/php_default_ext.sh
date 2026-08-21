@@ -29,7 +29,8 @@ Build_Pecl_Ext()
     Download_Files https://pecl.php.net/get/${pkg}.tgz ${pkg}.tgz
     if [ ! -s "${cur_dir}/src/${pkg}.tgz" ]; then
         Echo_Red "${pkg} 下载失败，跳过"
-        PHP_Default_Ext_Failed="${PHP_Default_Ext_Failed} ${pkg}(下载失败)"
+        printf -v PHP_Default_Ext_Failed '%s %s(下载失败)' \
+            "${PHP_Default_Ext_Failed}" "${pkg}"
         return 1
     fi
     Require_File "${pkg}.tgz" "pecl ${pkg}"
@@ -53,7 +54,8 @@ EOF
         return 0
     else
         Echo_Red "${pkg} 编译失败：${ext_dir}/${so} 未生成"
-        PHP_Default_Ext_Failed="${PHP_Default_Ext_Failed} ${pkg}(编译失败)"
+        printf -v PHP_Default_Ext_Failed '%s %s(编译失败)' \
+            "${PHP_Default_Ext_Failed}" "${pkg}"
         return 1
     fi
 }
@@ -68,7 +70,8 @@ Enable_Opcache_Config()
 
     if [ ! -s "${ext_dir}/opcache.so" ]; then
         Echo_Red "opcache.so 不存在，跳过（PHP 编译时未带 --enable-opcache？）"
-        PHP_Default_Ext_Failed="${PHP_Default_Ext_Failed} opcache(未编译)"
+        printf -v PHP_Default_Ext_Failed '%s opcache(未编译)' \
+            "${PHP_Default_Ext_Failed}"
         return 1
     fi
 
@@ -125,7 +128,8 @@ Install_PHP_Default_Ext()
             Build_Pecl_Ext "${Imagick_Ver}" imagick.so 008-imagick.ini --with-imagick=/usr/local/imagemagick
         else
             Echo_Red "ImageMagick 库编译失败，跳过 imagick 扩展"
-            PHP_Default_Ext_Failed="${PHP_Default_Ext_Failed} ImageMagick(库编译失败)"
+            printf -v PHP_Default_Ext_Failed '%s ImageMagick(库编译失败)' \
+            "${PHP_Default_Ext_Failed}"
         fi
     fi
 
@@ -133,7 +137,8 @@ Install_PHP_Default_Ext()
     if [ "${Enable_PHP_Fileinfo}" = 'y' ]; then
         if ! ${PHP_Path}/bin/php -m 2>/dev/null | grep -qi '^fileinfo$'; then
             Echo_Red "fileinfo 未编入 PHP（检查 lnmp.conf 的 Enable_PHP_Fileinfo 是否在编译前就是 y）"
-            PHP_Default_Ext_Failed="${PHP_Default_Ext_Failed} fileinfo(未编入)"
+            printf -v PHP_Default_Ext_Failed '%s fileinfo(未编入)' \
+            "${PHP_Default_Ext_Failed}"
         fi
     fi
 
