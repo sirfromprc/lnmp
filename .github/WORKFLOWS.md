@@ -22,7 +22,6 @@ t/lint.sh
 t/consistency.sh
 t/test_profile.sh
 t/test_dispatch.sh
-t/test_audit_fixes.sh
 t/test_bump.sh
 t/test_upstream.sh
 ```

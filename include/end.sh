@@ -423,11 +423,21 @@ Print_DB_Password_Notice()
     Print_Banner "密码不再打印到屏幕与安装日志，见 changelog SEC-CRED-001。"
 }
 
+# 安装结果提示按当前栈显示名称，避免 LNMPA/LAMP 被提示为 LNMP。
+Stack_Display_Name()
+{
+    case "${Stack}" in
+    lnmpa) printf 'LNMPA' ;;
+    lamp) printf 'LAMP' ;;
+    *) printf 'LNMP' ;;
+    esac
+}
+
 Print_Sucess_Info()
 {
     Clean_Web_Src_Dir
     Print_Banner \
-        "LNMP V${LNMP_Ver} 安装完成" \
+        "$(Stack_Display_Name) V${LNMP_Ver} 安装完成" \
         "运行 lnmp {start|stop|reload|restart|kill|status} 管理服务" \
         "仅使用上游官方源码，并强制校验完整性"
     # 安装摘要统一使用横幅格式，便于查看访问地址和常用管理入口。
@@ -453,8 +463,8 @@ Print_Sucess_Info()
         netstat -ntl
     fi
     stop_time=$(date +%s)
-    echo "LNMP 安装耗时 $(((stop_time-start_time)/60)) 分钟。"
-    Echo_Green "LNMP V${LNMP_Ver} 安装完成。"
+    echo "$(Stack_Display_Name) 安装耗时 $(((stop_time-start_time)/60)) 分钟。"
+    Echo_Green "$(Stack_Display_Name) V${LNMP_Ver} 安装完成。"
 
     # 完整性校验关闭时在安装结束处再次提示，便于确认组件来源可信度。
 
@@ -475,7 +485,7 @@ Print_Failed_Info()
     if [ -s /bin/lnmp ]; then
         rm -f /bin/lnmp
     fi
-    Echo_Red "LNMP 安装失败。"
+    Echo_Red "$(Stack_Display_Name) 安装失败。"
     Echo_Red "请查看安装日志了解详情：/root/lnmp-install.log"
     Echo_Red "注意：该日志可能含数据库 root 密码等敏感信息，外发前请先清理。"
     return 1

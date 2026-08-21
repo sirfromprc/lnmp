@@ -3414,10 +3414,13 @@ Nginx 与 PHP-FPM 多为配置语法错误，先做配置测试：
 按给出的命令恢复属主即可。属主被改坏通常源于递归 `chown` 时路径变量为空，
 例如站点加固命令 `chown -R root:www ${SITE}/` 在 `SITE` 未赋值时作用到 `/`，
 把数据目录一并改掉（见 5.2 的提示）。只修复错误信息明确指出的数据目录，不要递归修改
-整个 `/usr/local/mariadb` 或 `/usr/local/mysql`：
+整个 `/usr/local/mariadb` 或 `/usr/local/mysql`。
+
+先确认数据目录路径（`/etc/my.cnf` 的 `[mysqld] datadir`），再只对该目录恢复属主：
 
 ```bash
-chown -R mariadb:mariadb /usr/local/mariadb    # MySQL 分支为 mysql:mysql /usr/local/mysql
+grep -E '^\s*datadir' /etc/my.cnf              # 确认数据目录路径
+chown -R mariadb:mariadb /usr/local/mariadb/var # MySQL 分支为 mysql:mysql /usr/local/mysql/var
 lnmp start
 lnmp status
 ```

@@ -14,6 +14,8 @@ ExecStartPre=/usr/bin/install -d -o mariadb -g mariadb -m 0755 /run/mysqld
 # LNMP perm hooks
 ExecStartPre=/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook pre mariadb'
 ExecStopPost=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook post mariadb'
+# 通用二进制依赖 libaio.so.1，兼容链接丢失时在这里补齐并给出明确原因。
+ExecStartPre=+/bin/sh -c 'test -x /usr/local/mariadb/bin/db-preflight || exit 0; exec /usr/local/mariadb/bin/db-preflight /usr/local/mariadb/bin/mariadbd'
 ExecStart=/etc/init.d/mariadb start
 ExecStop=/etc/init.d/mariadb stop
 ExecReload=/etc/init.d/mariadb reload

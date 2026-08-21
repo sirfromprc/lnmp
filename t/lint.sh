@@ -17,9 +17,10 @@ else
     SEARCH="grep"
 fi
 
+# src/ 存放安装时解压的第三方源码，不属于本项目代码，扫到会误报。
 _filter()
 {
-    grep -v -E '^\./t/|^t/' | grep -v -E ':[0-9]+:[[:space:]]*#'
+    grep -v -E '^\./(t|src)/|^(t|src)/' | grep -v -E ':[0-9]+:[[:space:]]*#'
 }
 
 _search()
@@ -185,7 +186,7 @@ expect_empty C16 "并行编译任务数统一由 Build_Jobs 决定" 'make[^|;#]*
 # T1 语法检查
 [ -z "${only}" ] || [ "${only}" = "T1" ] && {
     syntax_fail=0
-    for f in $(find . -name '*.sh' -not -path './t/*') conf/lnmp conf/lnmpa conf/lamp; do
+    for f in $(find . -name '*.sh' -not -path './t/*' -not -path './src/*') conf/lnmp conf/lnmpa conf/lamp; do
         [ -f "$f" ] || continue
         if ! bash -n "$f" 2>/dev/null; then
             echo "       SYNTAX FAIL: $f"

@@ -1543,11 +1543,20 @@ Add_VHost()
     if [ "${enable_site_php}" != "n" ]; then
         # 更新前解除 immutable 属性，使 open_basedir 与当前网站目录一致。
         [ -f "${vhostdir}/.user.ini" ] && chattr -i "${vhostdir}/.user.ini" 2>/dev/null
-        cat >"${vhostdir}/.user.ini"<<EOF
+        if ! cat >"${vhostdir}/.user.ini"<<EOF
 open_basedir=${vhostdir}:/tmp/:/proc/
 EOF
-        chmod 644 "${vhostdir}/.user.ini"
-        chattr +i "${vhostdir}/.user.ini"
+        then
+            Echo_Red "写入 ${vhostdir}/.user.ini 失败，该站点缺少 open_basedir 限制。"
+            Echo_Red "站点已创建，请手工补齐该文件后重载 php-fpm。"
+        else
+            chmod 644 "${vhostdir}/.user.ini"
+            # immutable 是加固项，置不上不影响站点可用，但必须让用户看到。
+            if ! chattr +i "${vhostdir}/.user.ini" 2>/dev/null; then
+                Echo_Yellow "警告：无法为 ${vhostdir}/.user.ini 设置 immutable 属性，"
+                Echo_Yellow "该文件可被站点内的写入覆盖。"
+            fi
+        fi
 
         /etc/init.d/php-fpm reload
     fi
@@ -1566,6 +1575,7 @@ EOF
 
     if [ "${create_ssl}" == "y" ]; then
         Add_SSL
+        ssl_add_rc=$?
     fi
 
     Echo_Green "================================================"
@@ -1609,15 +1619,20 @@ EOF
         echo "创建 FTP 账号：否"
     fi
     if [ "${create_ssl}" == "y" ]; then
-        echo "SSL：已启用"
-        if [ "${ssl_choice}" == "1" ]; then
-            echo "  =>自有证书文件"
-        elif [ "${ssl_choice}" == "2" ]; then
-            echo "  =>Let's Encrypt"
-        elif [ "${ssl_choice}" == "3" ]; then
-            echo "  =>BuyPass"
-        elif [ "${ssl_choice}" == "4" ]; then
-            echo "  =>ZeroSSL"
+        if [ "${ssl_add_rc:-1}" -eq 0 ]; then
+            echo "SSL：已启用"
+            if [ "${ssl_choice}" == "1" ]; then
+                echo "  =>自有证书文件"
+            elif [ "${ssl_choice}" == "2" ]; then
+                echo "  =>Let's Encrypt"
+            elif [ "${ssl_choice}" == "3" ]; then
+                echo "  =>BuyPass"
+            elif [ "${ssl_choice}" == "4" ]; then
+                echo "  =>ZeroSSL"
+            fi
+        else
+            Echo_Red "SSL: 证书添加失败，站点本身已建好，当前只有 HTTP。"
+            Echo_Red "可稍后执行 lnmp ssl add 单独重试。"
         fi
     fi
     if [ "${enable_ipv6}" == "y" ]; then
@@ -1988,6 +2003,43 @@ Get_Actual_DB_Socket()
     printf '%s' "${sock:-/run/mysqld/mysqld.sock}"
 }
 
+# 输出数据库实际监听的端口，取自 [mysqld]，取不到时退回默认端口 3306。
+# 语义与 include/main.sh 的同名函数一致：返回 1 表示用的是退回值。
+Get_Actual_DB_Port()
+{
+    local conf="${1:-/etc/my.cnf}" port=''
+
+    if [ -s "${conf}" ]; then
+        port=$(awk '
+            /^[[:space:]]*\[/ {
+                section = $0
+                sub(/^[[:space:]]*\[[[:space:]]*/, "", section)
+                sub(/[[:space:]]*\].*$/, "", section)
+                next
+            }
+            section == "mysqld" && /^[[:space:]]*port[[:space:]]*=/ {
+                value = $0
+                sub(/^[^=]*=[[:space:]]*/, "", value)
+                sub(/[[:space:]#].*$/, "", value)
+                if (value != "") last = value
+            }
+            END { if (last != "") print last }
+        ' "${conf}" 2>/dev/null)
+    fi
+
+    case "${port}" in
+        ''|*[!0-9]*) port='' ;;
+        *) [ "${port}" -ge 1 ] && [ "${port}" -le 65535 ] || port='' ;;
+    esac
+
+    if [ -z "${port}" ]; then
+        printf '%s\n' 3306
+        return 1
+    fi
+    printf '%s\n' "${port}"
+    return 0
+}
+
 Make_TempMycnf()
 {
     local pw sock
@@ -2012,6 +2064,27 @@ EOF
     LNMP_Set_Trap
 }
 
+# 强制通过 TCP 校验口令：root@localhost 使用 unix_socket 认证时，
+# socket 连接对任意口令都会成功，结果不能反映口令是否正确。
+# 返回值：0 口令正确；1 口令错误；2 无法通过 TCP 连接。
+Check_DB_Password_TCP()
+{
+    local port err rc
+
+    Check_DB
+    [ "${MySQL_Bin}" = "None" ] && return 2
+    port=$(Get_Actual_DB_Port)
+    err=$(${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" \
+        --protocol=TCP --host=127.0.0.1 --port="${port}" \
+        --connect-timeout=5 -e 'SELECT 1' 2>&1 >/dev/null)
+    rc=$?
+    [ ${rc} -eq 0 ] && return 0
+    case "${err}" in
+    *"ERROR 1045"*|*"Access denied"*) return 1 ;;
+    esac
+    return 2
+}
+
 # 数据库 root 密码最多校验 3 次，避免输入错误或 EOF 导致无休止重试。
 Verify_DB_Password()
 {
@@ -2023,10 +2096,21 @@ Verify_DB_Password()
         Read_Secret DB_Root_Password "数据库 root 密码"
         echo
         Make_TempMycnf "${DB_Root_Password}"
-        if Do_Query ""; then
+        Check_DB_Password_TCP
+        case $? in
+        0)
             echo "数据库 root 密码验证通过。"
             return 0
-        fi
+            ;;
+        2)
+            # TCP 不可用时退回 socket 连接，该结果不能证明口令正确。
+            if Do_Query ""; then
+                Echo_Yellow "数据库未监听 127.0.0.1，已改用 socket 连接校验；socket 认证下该结果不代表口令正确。"
+                echo
+                return 0
+            fi
+            ;;
+        esac
         Echo_Red "数据库 root 密码校验失败（第 ${attempt}/${max_attempt} 次）。"
     done
     Echo_Red "连续 ${max_attempt} 次校验失败，已放弃。"

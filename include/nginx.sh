@@ -459,11 +459,23 @@ Install_Nginx()
     Write_Nginx_Default_VHost /usr/local/nginx/conf || exit 1
 
     if [ "${Stack}" = "lnmp" ]; then
-        cat >${Default_Website_Dir}/.user.ini<<EOF
+        # 重复安装时旧文件可能仍带 immutable，不先解除就写不进新的 open_basedir。
+        [ -f "${Default_Website_Dir}/.user.ini" ] && \
+            chattr -i "${Default_Website_Dir}/.user.ini" 2>/dev/null
+        if ! cat >"${Default_Website_Dir}/.user.ini"<<EOF
 open_basedir=${Default_Website_Dir}:/tmp/:/proc/
 EOF
-        chmod 644 ${Default_Website_Dir}/.user.ini
-        chattr +i ${Default_Website_Dir}/.user.ini
+        then
+            Echo_Red "错误：写入 ${Default_Website_Dir}/.user.ini 失败，默认站点缺少 open_basedir 限制。"
+            exit 1
+        fi
+        chmod 644 "${Default_Website_Dir}/.user.ini"
+        # immutable 是加固项，置不上不中断安装，但必须让用户看到。
+        if ! chattr +i "${Default_Website_Dir}/.user.ini" 2>/dev/null; then
+            Echo_Yellow "警告：无法为 ${Default_Website_Dir}/.user.ini 设置 immutable 属性。"
+            Echo_Yellow "该文件可被站点内的写入覆盖，可稍后手工执行："
+            Echo_Yellow "  chattr +i ${Default_Website_Dir}/.user.ini"
+        fi
         cat >>/usr/local/nginx/conf/fastcgi.conf<<EOF
 fastcgi_param PHP_ADMIN_VALUE "open_basedir=\$document_root/:/tmp/:/proc/";
 EOF

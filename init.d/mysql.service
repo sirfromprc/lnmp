@@ -14,6 +14,8 @@ ExecStartPre=/usr/bin/install -d -o mysql -g mysql -m 0755 /run/mysqld
 # LNMP perm hooks
 ExecStartPre=/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook pre mysql'
 ExecStopPost=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook post mysql'
+# 通用二进制依赖 libaio.so.1，兼容链接丢失时在这里补齐并给出明确原因。
+ExecStartPre=+/bin/sh -c 'test -x /usr/local/mysql/bin/db-preflight || exit 0; exec /usr/local/mysql/bin/db-preflight /usr/local/mysql/bin/mysqld'
 ExecStart=/etc/init.d/mysql start
 ExecStop=/etc/init.d/mysql stop
 ExecReload=/etc/init.d/mysql reload

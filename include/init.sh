@@ -11,7 +11,7 @@ CentOS_InstallNTP()
 {
     if [ "${CheckMirror}" != "n" ]; then
         if command -v ntpdate >/dev/null 2>&1; then
-            ntpdate -u pool.ntp.org
+            Run_Ntpdate
         elif command -v chronyd >/dev/null 2>&1; then
             chronyd -d -q "server pool.ntp.org iburst"
         else
@@ -19,7 +19,7 @@ CentOS_InstallNTP()
             if [ "${check_ntp}" = "y" ]; then
                 Echo_Blue "[+] 正在安装 ntp..."
                 yum install -y ntpdate
-                ntpdate -u pool.ntp.org
+                Run_Ntpdate
             else
                 Echo_Blue "[+] 正在安装 chrony..."
                 yum install chrony -y
@@ -31,14 +31,49 @@ CentOS_InstallNTP()
     start_time=$(date +%s)
 }
 
+# 执行一次时间校准。ntpdate 校准失败不阻断安装，但提示与实际结果一致。
+Run_Ntpdate()
+{
+    if ntpdate -u pool.ntp.org; then
+        Echo_Green "系统时间已校准。"
+    else
+        Echo_Yellow "时间校准失败，请自行确认系统时间。"
+    fi
+}
+
+# Debian 12 起 ntpdate 无候选包，同名命令改由 ntpsec-ntpdate 提供。
+# 已有 ntpdate 或 systemd-timesyncd 时不再安装，无可用工具时明确提示跳过。
+Deb_SyncTime()
+{
+    local pkg
+
+    if command -v ntpdate >/dev/null 2>&1; then
+        Run_Ntpdate
+        return 0
+    fi
+    if systemctl is-active --quiet systemd-timesyncd 2>/dev/null; then
+        Echo_Green "systemd-timesyncd 正在运行，跳过时间校准。"
+        return 0
+    fi
+    for pkg in ntpsec-ntpdate ntpdate; do
+        # 先模拟安装，避免在无候选包的发行版上执行必然失败的安装。
+        apt-get install -s -y "${pkg}" >/dev/null 2>&1 || continue
+        Echo_Blue "[+] 正在安装 ${pkg}..."
+        apt-get install -y "${pkg}" || continue
+        command -v ntpdate >/dev/null 2>&1 || continue
+        Run_Ntpdate
+        return 0
+    done
+    Echo_Yellow "未找到可用的时间同步工具，跳过时间校准，请自行确认系统时间。"
+    return 0
+}
+
 Deb_InstallNTP()
 {
     if [ "${CheckMirror}" != "n" ]; then
         apt-get update -y
         [[ $? -ne 0 ]] && apt-get update --allow-releaseinfo-change -y
-        Echo_Blue "[+] 正在安装 ntp..."
-        apt-get install -y ntpdate
-        ntpdate -u pool.ntp.org
+        Deb_SyncTime
     fi
     date
     start_time=$(date +%s)

@@ -174,7 +174,8 @@ check_v6()
 # .gitattributes 里的 `* text=auto eol=lf` 负责在提交/检出时统一，
 # CI 再次检查工作区中的实际换行格式。
 #
-# 排除 .gif 等二进制（它们在 .gitattributes 里标了 binary）。
+# 排除 .gif 等二进制（它们在 .gitattributes 里标了 binary），以及 src/：
+# 安装时会在其中解压第三方源码，二进制文件里的 \r 字节不是换行问题。
 # ---------------------------------------------------------------------------
 check_v7()
 {
@@ -196,7 +197,10 @@ check_v7()
             git ls-files
         else
             find . -path ./.git -prune -o -path ./.claude -prune -o \
-                   -path ./.upstream -prune -o -type f -print
+                   -path ./.upstream -prune -o -path ./src -prune -o \
+                   -type f -print
+            # src/ 整体跳过后，把其中项目自带的文件单独加回来检查。
+            find src/patch src/checksums.sha256 -type f -print 2>/dev/null
         fi
     )
 

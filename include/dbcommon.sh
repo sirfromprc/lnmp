@@ -15,54 +15,18 @@ DB_Bin_Glibc_Ver()
 }
 
 
-# MySQL 和 MariaDB 通用二进制需要 libaio.so.1。仅在动态库解析缺失时，
-# 为兼容 ABI 的 64 位架构在 libaio.so.1t64 所在目录建立兼容链接。
+# MySQL 和 MariaDB 通用二进制需要 libaio.so.1。检查与建链由 tools/db-preflight.sh
+# 实现，systemd unit 的 ExecStartPre 调用同一份脚本，安装期和启动期行为一致。
 Ensure_Libaio_Compat()
 {
-    local server_bin=$1 t64 link_dir link
+    local server_bin=$1 preflight="${cur_dir}/tools/db-preflight.sh"
 
     [ -x "${server_bin}" ] || return 0
-    ldd "${server_bin}" 2>/dev/null | grep -q 'libaio\.so\.1 => not found' || return 0
-
-    # 32 位 time_t 架构存在 ABI 差异，不能链接到 libaio.so.1t64。
-    case "$(uname -m)" in
-        x86_64|aarch64|ppc64le|s390x|riscv64|loongarch64) ;;
-        *)
-            Echo_Red "错误：当前架构 $(uname -m) 缺少 libaio.so.1，且不能安全使用 libaio.so.1t64。"
-            Echo_Red "请安装提供 libaio.so.1 的软件包，或改用源码方式安装数据库。"
-            return 1
-            ;;
-    esac
-
-    t64=$(ldconfig -p 2>/dev/null | awk '$1 == "libaio.so.1t64" {print $NF; exit}')
-    if [ -z "${t64}" ] || [ ! -e "${t64}" ]; then
-        Echo_Red "错误：${server_bin} 需要 libaio.so.1，但系统里找不到可用的 libaio。"
-        Echo_Red "请先安装 libaio（Debian/Ubuntu：libaio1 或 libaio1t64；RHEL 系：libaio），再重新安装。"
+    if [ ! -r "${preflight}" ]; then
+        Echo_Red "错误：缺少 ${preflight}，无法检查数据库运行库依赖。"
         return 1
     fi
-
-    link_dir=$(dirname "${t64}")
-    link="${link_dir}/libaio.so.1"
-
-    # 不覆盖发行版提供的同名实体文件，避免替换系统库。
-    if [ -e "${link}" ] && [ ! -L "${link}" ]; then
-        Echo_Red "错误：${link} 已存在且不是符号链接，${server_bin} 仍无法加载 libaio.so.1。"
-        Echo_Red "请手工确认该文件后重新安装。"
-        return 1
-    fi
-    if ! ln -sf "$(basename "${t64}")" "${link}"; then
-        Echo_Red "错误：创建 ${link} -> ${t64} 失败。"
-        return 1
-    fi
-    ldconfig
-
-    if ldd "${server_bin}" 2>/dev/null | grep -q 'libaio\.so\.1 => not found'; then
-        Echo_Red "错误：已建立 ${link}，${server_bin} 仍然找不到 libaio.so.1。"
-        return 1
-    fi
-
-    Echo_Green "当前发行版只提供 libaio.so.1t64，已建立 ${link} -> $(basename "${t64}")。"
-    return 0
+    sh "${preflight}" "${server_bin}"
 }
 
 # 清理异常终止后遗留且无进程占用的数据库 socket。
@@ -258,6 +222,13 @@ Install_DB_Bin_Tarball()
         Echo_Red "错误：${target}/bin 不存在或为空，通用二进制包没有正确安装。"
         exit 1
     fi
+
+    # 启动前检查随包安装，供 systemd unit 在每次启动前调用。
+    if ! \cp "${cur_dir}/tools/db-preflight.sh" "${target}/bin/db-preflight"; then
+        Echo_Red "错误：安装 ${target}/bin/db-preflight 失败。"
+        exit 1
+    fi
+    chmod 755 "${target}/bin/db-preflight"
 
     # 初始化数据目录前确认服务端二进制所需动态库可用。
     for server_bin in "${target}/bin/mariadbd" "${target}/bin/mysqld"; do

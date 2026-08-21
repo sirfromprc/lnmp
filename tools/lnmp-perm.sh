@@ -84,7 +84,7 @@ Baseline=(
 "DB02|mysql,mariadb|write|@DB_LOGERROR|@DB_USER|-|-|hard|parentok"
 "DB03|mysql,mariadb|maxmode|@MY_CNF|-|-|022|soft|opt"
 "DB04|mysql|stat_r|/usr/local/mysql|mysql|mysql|-|soft|opt"
-"DB05|mariadb|stat_r|/usr/local/mariadb|mariadb|mariadb|-|soft|opt"
+"DB05|mariadb|stat_r|/usr/local/mariadb|mariadb|mariadb|-|soft|opt,ex=auth_pam_tool"
 "DB06|mysql|stat|/etc/init.d/mysql|root|root|755|soft|opt"
 "DB07|mariadb|stat|/etc/init.d/mariadb|root|root|755|soft|opt"
 "DB08|mysql|marker|/etc/init.d/mysql|-|-|-|soft|opt"
@@ -372,7 +372,7 @@ Check_Stat_R()
 {
     local path="$1" want_owner="$2" want_group="$3" excludes="$4"
     local -a find_args
-    local hits count line ex
+    local hits count line ex spec fix_list
 
     find_args=("${path}")
     while IFS= read -r ex; do
@@ -392,16 +392,27 @@ EOF
 
     count=$(printf '%s\n' "${hits}" | wc -l)
     printf -v Detail '属主不是 %s:%s 的路径：' "${want_owner}" "${want_group}"
+    local -a fix_paths=()
     while IFS= read -r line; do
         [ -n "${line}" ] || continue
         printf -v Detail '%s\n    %s' "${Detail}" "${line}"
+        fix_paths+=("${line}")
     done <<EOF
 $(printf '%s\n' "${hits}" | head -n ${Recurse_Report_Max})
 EOF
     if [ "${count}" -gt "${Recurse_Report_Max}" ]; then
         printf -v Detail '%s\n    （另有未列出的路径）' "${Detail}"
     fi
-    Fix="chown -R ${want_owner}:${want_group} ${path}"
+    # 修复命令只处理实际命中的路径：递归 chown 整个安装目录会覆盖
+    # auth_pam_tool 这类专用属主和 SUID 文件。
+    spec="${want_owner}:${want_group}"
+    [ "${want_owner}" = "-" ] && spec=":${want_group}"
+    [ "${want_group}" = "-" ] && spec="${want_owner}"
+    fix_list=$(printf '%q ' "${fix_paths[@]}")
+    Fix="chown ${spec} ${fix_list% }"
+    if [ "${count}" -gt "${Recurse_Report_Max}" ]; then
+        Fix="${Fix} # 其余未列出路径按同样方式处理"
+    fi
     return 1
 }
 
