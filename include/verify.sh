@@ -44,11 +44,13 @@ Download_Fetch()
          --max-redirect=${DL_MAX_REDIRECT} -O "${out}" "${url}"
 }
 
-# Download_Head_OK <url>：通过 HEAD 请求确认 HTTPS 地址返回 2xx。
+# Download_Head_OK <url> [超时秒数]：确认 HTTPS 地址可下载。
+# 先发 HEAD；部分服务器禁用 HEAD（405/403），此时改用只取首字节的
+# Range GET 再判一次，避免把可下载的地址判成不可用。
 # 在修改本地配置前检查上游资源是否存在，例如 OpenResty 发行版仓库。
 Download_Head_OK()
 {
-    local url="$1" code
+    local url="$1" timeout="${2:-30}" code
 
     case "${url}" in
     https://*) : ;;
@@ -56,17 +58,27 @@ Download_Head_OK()
     esac
 
     if command -v curl >/dev/null 2>&1; then
-        code=$(curl -sS -o /dev/null -w '%{http_code}' -I \
+        # 必须带 -L：MariaDB 的 rest-api 等地址先返回 302，不跟随就取不到最终状态码。
+        code=$(curl -sS -o /dev/null -w '%{http_code}' -I -L \
                --proto '=https' --proto-redir '=https' \
-               --max-redirs ${DL_MAX_REDIRECT} --max-time 30 "${url}" 2>/dev/null)
+               --max-redirs ${DL_MAX_REDIRECT} --max-time "${timeout}" "${url}" 2>/dev/null)
+        case "${code}" in
+        2*) return 0 ;;
+        esac
+        code=$(curl -sS -o /dev/null -w '%{http_code}' -r 0-0 -L \
+               --proto '=https' --proto-redir '=https' \
+               --max-redirs ${DL_MAX_REDIRECT} --max-time "${timeout}" "${url}" 2>/dev/null)
         case "${code}" in
         2*) return 0 ;;
         *)  return 1 ;;
         esac
     fi
 
-    # curl 不可用时使用 wget --spider 探测。
-    wget -q --spider --max-redirect=${DL_MAX_REDIRECT} --timeout=30 "${url}" 2>/dev/null
+    # curl 不可用时使用 wget --spider（HEAD）探测，同样在失败后回退 Range GET。
+    wget -q --spider --max-redirect=${DL_MAX_REDIRECT} --timeout="${timeout}" "${url}" 2>/dev/null \
+        && return 0
+    wget -q -O /dev/null --tries=1 --header='Range: bytes=0-0' \
+         --max-redirect=${DL_MAX_REDIRECT} --timeout="${timeout}" "${url}" 2>/dev/null
 }
 
 # Verify_SHA256_Value <文件> <期望值>

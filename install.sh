@@ -41,6 +41,7 @@ LNMP_Ver='2.3'
 . include/php_default_ext.sh
 . include/cleanup.sh
 . include/residue.sh
+. include/precheck.sh
 
 Validate_Service_Ports || exit 1
 Get_Dist_Name
@@ -58,6 +59,11 @@ Print_Banner \
     "在 ${DISTRO} Linux 上安装 LNMP、LNMPA 或 LAMP" \
     "仅使用上游官方源码，并强制校验完整性"
 
+# 编译耗时长，ssh 直连掉线会中断安装，因此在做任何选择之前先提示。
+case "${Stack}" in
+    lnmp|lnmpa|lamp) Warn_Detached_Session ;;
+esac
+
 # 已安装的组件和中断安装留下的残留都会让本次安装装到一半失败，
 # 因此在安装开始前统一检测，确认后清理成干净环境再继续。
 # LNMP_Resume_Broken_Install=yes 保留为不清理直接续装的显式入口。
@@ -72,6 +78,10 @@ fi
 Init_Install()
 {
     Press_Install
+    # 确认开始安装后、系统被改动前的集中预检：磁盘、内存、端口和本次要下载的
+    # 地址一次查完，无风险不输出，有风险由用户决定是否继续。
+    # 返回码原样传出，供入口区分「预检就退出」和「安装中途失败」。
+    Precheck_Install || return $?
     Get_Dist_Version
     Print_Sys_Info
     Check_Hosts
@@ -139,7 +149,7 @@ Install_WebServer()
 
 LNMP_Stack()
 {
-    Init_Install || return 1
+    Init_Install || return $?
     Install_PHP
     LNMP_PHP_Opt
     Install_WebServer || return 1
@@ -153,7 +163,7 @@ LNMPA_Stack()
 {
     Apache_Selection || return 1
     Save_Install_Answers
-    Init_Install || return 1
+    Init_Install || return $?
     Dispatch "${Apache_Install}"
     Install_PHP
     Install_WebServer || return 1
@@ -167,7 +177,7 @@ LAMP_Stack()
 {
     Apache_Selection || return 1
     Save_Install_Answers
-    Init_Install || return 1
+    Init_Install || return $?
     Dispatch "${Apache_Install}"
     Install_PHP
     Creat_PHP_Tools || return 1
@@ -252,6 +262,12 @@ fi
 if [ "${Install_Rc}" -eq 0 ]; then
     case "${Stack}" in
         lnmp|lnmpa|lamp) Install_Progress_Done ;;
+    esac
+elif [ "${Install_Rc}" -eq 2 ]; then
+    # 预检就结束安装，系统尚未被改动：清掉本次进度标记，避免下次运行误报残留。
+    # 菜单选择记录保留，重跑时仍可沿用。
+    case "${Stack}" in
+        lnmp|lnmpa|lamp) rm -f "${Install_Progress_File}" ;;
     esac
 else
     # 失败后用户面对的是半成品环境，这里直接说明重跑会做什么，避免手工收拾。

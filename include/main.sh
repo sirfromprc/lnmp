@@ -14,11 +14,15 @@ PhpMyAdmin_Dir='/usr/local/phpmyadmin'
 # 保存随机访问路径，供安装完成提示和 lnmp status 查询。
 PhpMyAdmin_Url_File="${PhpMyAdmin_Dir}/.access_url"
 
+# 源码编译数据库的磁盘下限，与安装前集中预检（include/precheck.sh）共用。
+DB_Source_Build_Min_Disk_MB=15360
+
 # 源码编译 MySQL 需要较多内存、磁盘和时间。低于最低资源要求时停止并建议
 # 使用官方通用二进制；低于推荐内存时要求交互确认，非交互执行仅提示风险。
 Check_DB_Source_Build()
 {
-    local mem_mb disk_mb min_mem rec_mem=4096 min_disk=15360 ans jobs
+    local mem_mb disk_mb min_mem rec_mem=4096 ans jobs
+    local min_disk="${DB_Source_Build_Min_Disk_MB}"
 
     [ "${DB_Kind}" = "none" ] && return 0
     [ "${Bin}" = "y" ] && return 0
@@ -121,6 +125,10 @@ Database_Selection()
             echo "将禁用 InnoDB 存储引擎。"
             InstallInnodb="n"
             ;;
+        "")
+            echo "未输入，默认启用 InnoDB 存储引擎。"
+            InstallInnodb="y"
+            ;;
         *)
             echo "输入无效，按默认设置启用 InnoDB 存储引擎。"
             InstallInnodb="y"
@@ -176,6 +184,10 @@ MemoryAllocator_Selection()
     3)
         echo "将安装 TCMalloc。"
         ;;
+    "")
+        echo "未输入，默认不安装内存分配器。"
+        SelectMalloc="1"
+        ;;
     *)
         echo "输入无效，按默认设置不安装内存分配器。"
         SelectMalloc="1"
@@ -227,12 +239,15 @@ Web_Selection()
     case "${WebSelect}" in
     2|[oO][pP][eE][nN][rR][eE][sS][tT][yY])
         WebServer='openresty'
+        # 回填编号，使中断重装沿用记录时不再重复询问。
+        WebSelect='2'
         echo "将安装 OpenResty。"
         ;;
     *)
         WebServer='nginx'
         [ -z "${WebSelect}" ] && echo "未输入选项，使用默认项 Nginx。" \
                               || echo "已选择安装 Nginx。"
+        WebSelect='1'
         # Nginx 与现有 OpenResty 不能同时占用相同服务入口。
         Check_WebServer_Conflict nginx || exit 1
         return 0
@@ -251,10 +266,12 @@ Web_Selection()
     case "${ORMode}" in
     2|[sS][oO][uU][rR][cC][eE])
         OpenResty_Install_Mode='source'
+        ORMode='2'
         echo "将从源码编译安装 OpenResty ${OpenResty_Ver#openresty-}。"
         ;;
     *)
         OpenResty_Install_Mode='pkg'
+        ORMode='1'
         echo "将从官方软件仓库安装 OpenResty。"
         ;;
     esac
@@ -612,6 +629,21 @@ Kill_PM()
     Wait_PM
 }
 
+# 编译耗时较长，ssh 直连时掉线会使安装中断在半途。提示放在选择开始前，
+# 避免选完各项才发现要改用 screen/tmux 重跑一遍。
+Warn_Detached_Session()
+{
+    [ -n "${STY:-}" ] && return 0
+    [ -n "${TMUX:-}" ] && return 0
+    [ -n "${SSH_CONNECTION:-}" ] || return 0
+
+    Echo_Yellow "=========================================================================="
+    Echo_Yellow "当前为 ssh 直连会话，编译期间掉线会中断安装。"
+    Echo_Yellow "建议先按 Ctrl+C 退出，执行 screen -S lnmp（或 tmux new -s lnmp）后再运行本脚本，"
+    Echo_Yellow "掉线后用 screen -r lnmp（或 tmux attach -t lnmp）接回。"
+    Echo_Yellow "=========================================================================="
+}
+
 Press_Install()
 {
     . include/version.sh
@@ -623,12 +655,6 @@ Press_Install()
         Echo_Yellow "=========================================================================="
         Echo_Yellow "您即将安装/编译以下模块，请确认！" 
         Print_APP_Ver
-        # 编译耗时较长，ssh 直连时掉线会使安装中断在半途。
-        if [ -z "${STY:-}" ] && [ -z "${TMUX:-}" ] && [ -n "${SSH_CONNECTION:-}" ]; then
-            Echo_Yellow "当前为 ssh 直连会话，编译期间掉线会中断安装。"
-            Echo_Yellow "建议先执行 screen -S lnmp（或 tmux new -s lnmp）再运行本脚本，"
-            Echo_Yellow "掉线后用 screen -r lnmp（或 tmux attach -t lnmp）接回。"
-        fi
         Confirm_Start_Install || exit 1
         ;;
     *)
@@ -968,11 +994,17 @@ Verify_Download_File()
     return 0
 }
 
+# 探测模式：Download_Files 只把待下载地址写入 Download_Probe_File，不下载也不校验，
+# 供安装前预检复用现有下载流程收集本次安装真正要取的链接。
+Download_Probe_Only='n'
+Download_Probe_File=''
+
 # Require_File <文件名> <描述>
 # 下载后的存在性检查，防止下载失败后继续编译。
 # 所有入口脚本均加载 main.sh，因此该函数在此统一定义。
 Require_File()
 {
+    [ "${Download_Probe_Only}" = "y" ] && return 0
     if [ ! -s "$1" ]; then
         Echo_Red "错误：无法下载 $2。"
         Echo_Red "请手动下载到 src 目录：$1"
@@ -990,6 +1022,14 @@ Download_Files()
     local Verify_RC=0
 
     [ "${FileName}" = "" ] && FileName="${URL##*/}"
+
+    # 探测模式只登记「文件名 + 地址」，src 下已有的文件不依赖网络，不必登记。
+    # 返回非零使调用方继续登记备用地址（如 MySQL 的 archives 路径），
+    # 预检按文件名分组判定，任一地址可用即算可下载。
+    if [ "${Download_Probe_Only}" = "y" ]; then
+        [ -s "${FileName}" ] || printf '%s\t%s\n' "${FileName}" "${URL}" >> "${Download_Probe_File}"
+        return 1
+    fi
 
     # 已存在的文件校验失败时，多半是上次下载被中断留下的残缺包，
     # 删除后走下面的下载流程重取一次，再失败才按内容异常终止。
@@ -1339,7 +1379,7 @@ Print_APP_Ver()
     elif [ "${SelectMalloc}" = "3" ]; then
         echo "${TCMalloc_Ver}"
     fi
-    echo "启用 InnoDB：${InstallInnodb}"
+    [ "${DB_Kind}" != "none" ] && echo "启用 InnoDB：${InstallInnodb}"
     echo "lnmp.conf 配置信息："
     echo "下载来源：仅限上游官方来源"
     echo "完整性校验：${Enable_Download_Checksum}"
@@ -1394,9 +1434,8 @@ Print_APP_Ver()
     echo "  phpinfo 页面：${Enable_PHPInfo_Page}"
     echo "  Memcached 演示页：${Enable_Memcached_Test_Page}"
     echo "  Redis 演示页：${Enable_Redis_Test_Page}"
-    if [ "${DB_Kind}" = "none" ]; then
-        echo "不安装 MySQL/MariaDB。"
-    else
+    # 是否安装数据库在组件列表处已经说过，这里只补数据库目录。
+    if [ "${DB_Kind}" != "none" ]; then
         echo "数据库目录：${DB_Data_Dir}"
     fi
     echo "默认网站目录：${Default_Website_Dir}"
