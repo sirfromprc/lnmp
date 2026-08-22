@@ -25,14 +25,16 @@ Check_WebServer_Conflict()
             Echo_Red "检测到已安装 nginx（/usr/local/nginx 是真实目录）。"
             Echo_Red "OpenResty 与 nginx 官方版互斥，不能同时安装 ——"
             Echo_Red "两者都提供 nginx 二进制、都要监听 80/443。"
-            Echo_Red "如需改用 OpenResty，请先卸载现有环境：./uninstall.sh lnmp"
+            Echo_Red "如需改用 OpenResty，重新执行 bash install.sh ${Stack:-lnmp}，"
+            Echo_Red "安装前的残留检测会列出现有组件并在确认后清理。"
             return 1
         fi
     else
         if [ -d /usr/local/openresty ]; then
             Echo_Red "检测到已安装 OpenResty（/usr/local/openresty 存在）。"
             Echo_Red "nginx 官方版与 OpenResty 互斥，不能同时安装。"
-            Echo_Red "如需改用 nginx，请先卸载现有环境：./uninstall.sh lnmp"
+            Echo_Red "如需改用 nginx，重新执行 bash install.sh ${Stack:-lnmp}，"
+            Echo_Red "安装前的残留检测会列出现有组件并在确认后清理。"
             return 1
         fi
     fi

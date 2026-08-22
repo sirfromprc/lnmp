@@ -322,7 +322,7 @@ Install_Progress_Mark()
 
 Install_Progress_Done()
 {
-    rm -f "${Install_Progress_File}"
+    rm -f "${Install_Progress_File}" "${Install_Answers_File}"
 }
 
 # Install_Progress_Get <键>：输出最后一次写入的值；无标记或无该键时输出空并返回 1。
@@ -333,6 +333,195 @@ Install_Progress_Get()
     value=$(awk -F= -v k="$1" '$1 == k {v = $2} END {print v}' "${Install_Progress_File}")
     [ -n "${value}" ] || return 1
     printf '%s' "${value}"
+}
+
+# 完整安装的菜单选择记录。中断后重装可直接沿用，不必重走一遍选择。
+# 只记录菜单选项，数据库 root 口令等敏感值一律不写入，安装成功后删除。
+Install_Answers_File="${Install_Answers_File:-/root/.lnmp-install-answers}"
+
+Install_Answers_Vars='DBSelect Bin InstallInnodb PHPSelect SelectMalloc
+WebSelect ORMode ApacheSelect ServerAdmin'
+
+Save_Install_Answers()
+{
+    local var val tmp
+
+    tmp=$(mktemp "${Install_Answers_File}.XXXXXX") || {
+        Echo_Yellow "无法写入安装选择记录，中断后重装需要重新选择。"
+        return 1
+    }
+    chmod 600 "${tmp}"
+    {
+        echo "# LNMP 安装选择记录，中断后重装时可沿用；不含数据库口令。"
+        printf 'Answers_Stack=%s\n' "${Stack:-lnmp}"
+        printf 'Answers_Saved=%s\n' "$(date '+%F_%T')"
+        for var in ${Install_Answers_Vars}; do
+            val=${!var-}
+            [ -n "${val}" ] || continue
+            printf '%s=%s\n' "${var}" "${val}"
+        done
+    } > "${tmp}" || { rm -f "${tmp}"; return 1; }
+
+    if ! mv -f "${tmp}" "${Install_Answers_File}"; then
+        rm -f "${tmp}"
+        Echo_Yellow "无法保存安装选择记录 ${Install_Answers_File}。"
+        return 1
+    fi
+    return 0
+}
+
+# Read_Saved_Answer <键>：输出记录中该键的值，无该键时输出空。
+Read_Saved_Answer()
+{
+    [ -s "${Install_Answers_File}" ] || return 1
+    awk -F= -v k="$1" '$1 !~ /^#/ && $1 == k {print $2; exit}' "${Install_Answers_File}"
+}
+
+# Saved_Answer_Valid <键> <值>：键必须在白名单内，值只允许菜单编号、
+# y/n 及邮箱用到的字符。记录文件被改坏时按无效丢弃，不会带进安装流程。
+Saved_Answer_Valid()
+{
+    local key="$1" val="$2" var known='n'
+
+    for var in ${Install_Answers_Vars}; do
+        [ "${var}" = "${key}" ] && { known='y'; break; }
+    done
+    [ "${known}" = 'y' ] || return 1
+    [ -n "${val}" ] || return 1
+    case "${val}" in
+        *[!A-Za-z0-9._@+-]*) return 1 ;;
+    esac
+    return 0
+}
+
+# 按菜单上的文字打印记录里的选择，供用户确认后再决定是否沿用。
+# 中英文混排下按字节补空格对不齐，因此用「项：值」逐行输出。
+Print_Saved_Answers()
+{
+    local db php web malloc apache admin innodb saved
+
+    saved=$(Read_Saved_Answer Answers_Saved)
+    db=$(Read_Saved_Answer DBSelect)
+    php=$(Read_Saved_Answer PHPSelect)
+    web=$(Read_Saved_Answer WebSelect)
+    malloc=$(Read_Saved_Answer SelectMalloc)
+    apache=$(Read_Saved_Answer ApacheSelect)
+    admin=$(Read_Saved_Answer ServerAdmin)
+    innodb=$(Read_Saved_Answer InstallInnodb)
+
+    echo "==========================="
+    echo "上次的安装选择（记录于 ${saved:-未知时间}）："
+    echo "  安装栈：${Stack}"
+
+    if [ "${db}" = "0" ]; then
+        echo "  数据库：不安装"
+    elif [ -n "${db}" ] && [ "${db}" -ge 1 ] 2>/dev/null && [ "${db}" -le "${DB_Count}" ]; then
+        if [ "$(Read_Saved_Answer Bin)" = "y" ]; then
+            echo "  数据库：${DB_Info[$((db-1))]}（官方通用二进制）"
+        else
+            echo "  数据库：${DB_Info[$((db-1))]}（源码编译）"
+        fi
+        echo "  启用 InnoDB：${innodb:-y}"
+    fi
+
+    if [ -n "${php}" ] && [ "${php}" -ge 1 ] 2>/dev/null && [ "${php}" -le "${PHP_Count}" ]; then
+        echo "  PHP：${PHP_Info[$((php-1))]}"
+    fi
+
+    if [ "${Stack}" != "lamp" ]; then
+        case "${web}" in
+        2)
+            if [ "$(Read_Saved_Answer ORMode)" = "2" ]; then
+                echo "  Web 服务器：OpenResty（源码编译）"
+            else
+                echo "  Web 服务器：OpenResty（官方仓库预编译包）"
+            fi
+            ;;
+        *) echo "  Web 服务器：Nginx" ;;
+        esac
+    fi
+
+    if [ "${Stack}" != "lnmp" ]; then
+        if [ -n "${apache}" ] && [ "${apache}" -ge 1 ] 2>/dev/null &&
+           [ "${apache}" -le "${Apache_Count}" ]; then
+            echo "  Apache：${Apache_Info[$((apache-1))]}"
+        fi
+        [ -n "${admin}" ] && echo "  管理员邮箱：${admin}"
+    fi
+
+    case "${malloc}" in
+    2) echo "  内存分配器：Jemalloc" ;;
+    3) echo "  内存分配器：TCMalloc" ;;
+    *) echo "  内存分配器：不安装" ;;
+    esac
+
+    echo "  数据库 root 口令不记录，沿用时需要重新输入。"
+    echo "==========================="
+}
+
+# 载入上次的安装选择。无记录或安装栈不同返回 1。
+# 命令行和环境变量已给出的选择优先，记录只补空缺。
+Load_Install_Answers()
+{
+    local key val
+
+    [ -s "${Install_Answers_File}" ] || return 1
+    [ "$(Read_Saved_Answer Answers_Stack)" = "${Stack}" ] || return 1
+
+    while IFS='=' read -r key val; do
+        Saved_Answer_Valid "${key}" "${val}" || continue
+        [ -n "${!key}" ] && continue
+        printf -v "${key}" '%s' "${val}"
+    done < "${Install_Answers_File}"
+    return 0
+}
+
+# 有上次记录时先列出具体选择，确认后才沿用；不确认则走正常菜单。
+Reuse_Install_Answers()
+{
+    local ans
+
+    [ -s "${Install_Answers_File}" ] || return 0
+    # 安装栈不同的记录不参与本次安装，也不打扰用户。
+    [ "$(Read_Saved_Answer Answers_Stack)" = "${Stack}" ] || return 0
+
+    case "${LNMP_Reuse_Answers:-}" in
+    no)
+        return 0
+        ;;
+    yes)
+        ;;
+    *)
+        if [ "${LNMP_Auto:-}" != "y" ]; then
+            if [ ! -t 0 ]; then
+                return 0
+            fi
+            echo ""
+            Echo_Yellow "检测到上次未完成安装时的选择记录 ${Install_Answers_File}。"
+            Print_Saved_Answers
+            if ! read -r -p "沿用以上选择请输入 y ，输入其它任意键重新选择：" ans; then
+                echo
+                return 0
+            fi
+            case "${ans}" in
+            y|Y|yes|YES) ;;
+            *)
+                Echo_Yellow "不沿用，按正常流程重新选择。"
+                return 0
+                ;;
+            esac
+        else
+            Print_Saved_Answers
+        fi
+        ;;
+    esac
+
+    if Load_Install_Answers; then
+        Echo_Green "已沿用上次的安装选择，只需重新输入数据库 root 口令。"
+    else
+        Echo_Yellow "选择记录不可用，按正常流程重新选择。"
+    fi
+    return 0
 }
 
 # Install_Log_Begin <日志文件>：写入本次运行的分隔行，供追加写入的日志区分批次。

@@ -97,30 +97,107 @@ tmux 的等价命令为 `tmux new -s lnmp` 与 `tmux attach -t lnmp`。
 `install.sh lnmp|lnmpa|lamp` 在最终确认页会检测该情况：`SSH_CONNECTION` 非空且
 `STY`、`TMUX` 均为空时输出上述建议，独立入口（`nginx`、`db` 等）不作此提示。
 
-安装已经中断时，重跑的影响取决于中断阶段。完整安装期间会在
-`/root/.lnmp-install-progress` 记录进度，安装成功结束后自动删除，
-重跑据此区分「上次没装完的残留」与「机器上正在用的环境」：
+### 2.3.1 安装中断后重新安装
 
-- 依赖安装、下载、编译基础库阶段中断：直接重跑同一命令即可，已装的包会跳过，
-  残缺的下载文件因 SHA256 不匹配被删除后重新下载。
-- 数据库安装完成之后中断：`/usr/local/mysql/var` 已非空，重跑会指出该目录来自哪次
-  未完成的安装并中止。确认要搬走后显式声明重试，旧目录整体移动到
-  `/root/mysql-data-dir-backup<时间戳>`，不会被删除：
+安装中断后直接重跑同一条命令，不需要先卸载：
 
-  ```bash
-  LNMP_Move_Existing_DB_Data=yes bash install.sh lnmp
-  ```
+```bash
+bash install.sh lnmp
+```
 
-  该目录累计超过一份时会提示自行清理，脚本不会自动删除任何一份。
-- 已生成 `/bin/lnmp` 之后中断：重跑会指出上次安装未完成，确认要在现有环境上继续时
-  显式声明重试；想从干净环境开始则先执行 `./uninstall.sh`：
+`lnmp`、`lnmpa`、`lamp` 入口在开始前检测下列本包安装物，检测到任何一项就列出清单：
 
-  ```bash
-  LNMP_Resume_Broken_Install=yes bash install.sh lnmp
-  ```
+| 类别 | 检测范围 |
+|---|---|
+| 目录 | `/usr/local` 下的 mysql、mariadb、nginx、openresty、php、php8.x、apache、zend、phpmyadmin |
+| 配置 | `/etc/my.cnf`、`/etc/lnmp` |
+| 服务 | `/etc/init.d` 与 `/etc/systemd/system` 下的 mysql、mariadb、nginx、httpd、php-fpm |
+| 命令 | `/bin` 与 `/usr/bin` 下的 lnmp、lnmp-backup、lnmp-perm 等 |
+| 进程 | 可执行文件位于 `/usr/local` 下的 mysqld、mariadbd、nginx、php-fpm、httpd |
+| 其它 | `/root/.lnmp-install-progress`、`/run/mysqld/mysqld.sock` |
 
-进度标记不存在时（例如安装早已正常完成），上述两处均维持原有的拒绝行为：
-数据目录按「可能是正在使用的数据库」处理，`/bin/lnmp` 按「已安装」处理。
+确认方式取决于上次安装有没有装成功。进度标记 `/root/.lnmp-install-progress`
+只在安装成功收尾时删除，检测据此区分两种情况。
+
+上次已经装成功时，这些组件是正在用的，要求输入完整的 `yes`：
+
+```
+你已成功安装过 lnmp，如需重新安装，请先备份相关数据。
+本机现有以下组件：
+  - 目录：/usr/local/mariadb
+  ...
+重新安装会停止上述服务并删除上述目录、配置和命令。
+数据库数据目录不会被删除，会先移动到 /root/databases_backup_<时间戳>；
+网站目录、证书和 /root 下的备份不在清理范围内。
+确认重新安装请输入 yes ，其它输入一律取消：
+```
+
+上次安装没完成时，提示中断的时间点，输入 `y` 即可：
+
+```
+检测到 2026-08-21 09:00:00 开始的安装没有完成，环境里留下了以下内容：
+  - 目录：/usr/local/mariadb
+  ...
+是否清理这些残留并重新安装？[y/N]：
+```
+
+确认后依次执行：停止上述服务与进程（先 TERM，10 秒未退出再 KILL）、
+把数据库数据目录移动到 `/root/databases_backup_<时间戳>`、
+删除上述目录与配置、清理定时任务与权限钩子、清除防火墙表，最后复检一次。
+复检仍有残留时列出剩余项并中止，不会带着半成品环境继续装。
+
+进程只按可执行文件路径识别，发行版自带的同名服务不在清理范围内。
+数据库数据目录任何情况下都不删除；移动失败即中止，不删除任何文件。
+
+非交互环境（标准输入不是终端）必须显式给出答复，两种情况用同一个变量：
+
+```bash
+LNMP_Purge_Residue=yes bash install.sh lnmp   # 直接清理
+LNMP_Purge_Residue=no  bash install.sh lnmp   # 保留现有环境并中止
+```
+
+不想清理、要在现有环境上直接续装时跳过整个检测：
+
+```bash
+LNMP_Resume_Broken_Install=yes bash install.sh lnmp
+```
+
+菜单选择在选完后写入 `/root/.lnmp-install-answers`（0600，不含数据库口令），
+安装成功后删除。重跑时先按菜单上的文字列出上次的选择，输入 `y` 才沿用，
+输入其它任意键走正常的选择流程：
+
+```
+===========================
+上次的安装选择（记录于 2026-08-21_10:03:22）：
+  安装栈：lnmp
+  数据库：MariaDB 11.8.8 LTS（官方通用二进制）
+  启用 InnoDB：y
+  PHP：PHP 8.3.33
+  Web 服务器：Nginx
+  内存分配器：不安装
+  数据库 root 口令不记录，沿用时需要重新输入。
+===========================
+沿用以上选择请输入 y ，输入其它任意键重新选择：
+```
+
+记录属于另一个安装栈时不参与本次安装，也不提示。命令行或环境变量已经给出的
+选择优先，记录只补空缺，因此可以只覆盖其中一两项：
+
+```bash
+PHPSelect=5 bash install.sh lnmp              # PHP 换 8.4，其余沿用记录
+LNMP_Reuse_Answers=yes bash install.sh lnmp   # 不询问，直接沿用
+LNMP_Reuse_Answers=no  bash install.sh lnmp   # 不询问，重新选择
+```
+
+下载文件不受清理影响：`src/` 下已下载的包保留，SHA256 与 `src/checksums.sha256`
+不符时删除并重新下载一次，再不符才中止。
+
+`db` 等独立入口不做残留检测。数据目录非空时仍按原有规则处理，
+显式声明后旧目录整体移动到 `/root/mysql-data-dir-backup<时间戳>`：
+
+```bash
+LNMP_Move_Existing_DB_Data=yes bash install.sh db
+```
 
 安装日志追加写入 `/root/lnmp-install.log`，每次运行前插入一行
 `===== <时间> <栈名> pid=<进程号> =====` 分隔，重跑不会覆盖上次内容；

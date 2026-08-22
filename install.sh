@@ -39,6 +39,8 @@ LNMP_Ver='2.3'
 . include/multiplephp.sh
 . include/imageMagick.sh
 . include/php_default_ext.sh
+. include/cleanup.sh
+. include/residue.sh
 
 Validate_Service_Ports || exit 1
 Get_Dist_Name
@@ -48,28 +50,6 @@ if [ "${DISTRO}" = "unknow" ]; then
     exit 1
 fi
 
-if [[ "${Stack}" = "lnmp" || "${Stack}" = "lnmpa" || "${Stack}" = "lamp" ]]; then
-    if [ -f /bin/lnmp ]; then
-        # 进度标记存在说明上次安装没走到成功收尾，据此区分已装好的环境与中断残留。
-        if started_at=$(Install_Progress_Get started); then
-            Echo_Yellow "检测到 ${started_at} 开始的安装没有完成，但 /bin/lnmp 已生成。"
-            if [ "${LNMP_Resume_Broken_Install:-}" != "yes" ]; then
-                Echo_Red "继续安装会覆盖已编译的组件，已中止。"
-                Echo_Yellow "确认要在现有环境上重装时，显式声明后重试："
-                echo
-                echo "  LNMP_Resume_Broken_Install=yes bash install.sh ${Stack}"
-                Echo_Yellow "想从干净环境开始时，先执行 ./uninstall.sh。"
-                exit 1
-            fi
-            Echo_Yellow "LNMP_Resume_Broken_Install=yes，继续在现有环境上重装。"
-        else
-            Echo_Red "检测到 LNMP 已安装。"
-            echo -e "如需重新安装，请先备份数据，\n然后执行 ./uninstall.sh 卸载现有环境。"
-            exit 1
-        fi
-    fi
-fi
-
 Check_LNMPConf
 
 clear 2>/dev/null || true
@@ -77,6 +57,17 @@ Print_Banner \
     "LNMP V${LNMP_Ver} 安装程序" \
     "在 ${DISTRO} Linux 上安装 LNMP、LNMPA 或 LAMP" \
     "仅使用上游官方源码，并强制校验完整性"
+
+# 已安装的组件和中断安装留下的残留都会让本次安装装到一半失败，
+# 因此在安装开始前统一检测，确认后清理成干净环境再继续。
+# LNMP_Resume_Broken_Install=yes 保留为不清理直接续装的显式入口。
+if [[ "${Stack}" = "lnmp" || "${Stack}" = "lnmpa" || "${Stack}" = "lamp" ]]; then
+    if [ "${LNMP_Resume_Broken_Install:-}" = "yes" ]; then
+        Echo_Yellow "LNMP_Resume_Broken_Install=yes，跳过残留检测，继续在现有环境上重装。"
+    else
+        Check_Install_Residue || exit 1
+    fi
+fi
 
 Init_Install()
 {
@@ -161,6 +152,7 @@ LNMP_Stack()
 LNMPA_Stack()
 {
     Apache_Selection || return 1
+    Save_Install_Answers
     Init_Install || return 1
     Dispatch "${Apache_Install}"
     Install_PHP
@@ -174,6 +166,7 @@ LNMPA_Stack()
 LAMP_Stack()
 {
     Apache_Selection || return 1
+    Save_Install_Answers
     Init_Install || return 1
     Dispatch "${Apache_Install}"
     Install_PHP
@@ -197,21 +190,27 @@ Install_Rc=0
 
 case "${Stack}" in
     lnmp)
+        Reuse_Install_Answers
         Dispaly_Selection
+        Save_Install_Answers
         Install_Log_Begin /root/lnmp-install.log
         Install_Progress_Begin
         LNMP_Stack 2>&1 | tee -a /root/lnmp-install.log
         Install_Rc=${PIPESTATUS[0]}
         ;;
     lnmpa)
+        Reuse_Install_Answers
         Dispaly_Selection
+        Save_Install_Answers
         Install_Log_Begin /root/lnmp-install.log
         Install_Progress_Begin
         LNMPA_Stack 2>&1 | tee -a /root/lnmp-install.log
         Install_Rc=${PIPESTATUS[0]}
         ;;
     lamp)
+        Reuse_Install_Answers
         Dispaly_Selection
+        Save_Install_Answers
         Install_Log_Begin /root/lnmp-install.log
         Install_Progress_Begin
         LAMP_Stack 2>&1 | tee -a /root/lnmp-install.log
@@ -249,10 +248,25 @@ if [ "${Install_Rc}" -eq 0 ] && [ -s /bin/lnmp ]; then
     Sync_LNMP_Command_Alias || Install_Rc=1
 fi
 
-# 完整安装成功结束才清除进度标记；失败时保留，供下次运行识别中断阶段。
+# 完整安装成功结束才清除进度标记和选择记录；失败时保留，供下次运行识别中断阶段。
 if [ "${Install_Rc}" -eq 0 ]; then
     case "${Stack}" in
         lnmp|lnmpa|lamp) Install_Progress_Done ;;
+    esac
+else
+    # 失败后用户面对的是半成品环境，这里直接说明重跑会做什么，避免手工收拾。
+    case "${Stack}" in
+    lnmp|lnmpa|lamp)
+        echo
+        Echo_Yellow "本次安装未完成。直接重新执行即可："
+        echo
+        echo "  bash install.sh ${Stack}"
+        echo
+        Echo_Yellow "重跑会先列出本次留下的目录、服务和进程，确认后清理成干净环境，"
+        Echo_Yellow "并沿用本次已经做过的菜单选择，不需要手工卸载或重选。"
+        Echo_Yellow "数据库数据目录不会被删除，会先移动到 /root/databases_backup_<时间戳>。"
+        Echo_Yellow "完整日志：/root/lnmp-install.log"
+        ;;
     esac
 fi
 

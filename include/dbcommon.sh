@@ -33,7 +33,7 @@ Ensure_Libaio_Compat()
 # socket 路径以 /etc/my.cnf 的 [mysqld] 配置为准，正在使用时拒绝删除。
 Clean_Stale_DB_Socket()
 {
-    local sock
+    local sock pid exe
 
     sock=$(awk -F= '/^[[:space:]]*\[/{sec=$0} \
                     sec ~ /\[mysqld\]/ && /^[[:space:]]*socket[[:space:]]*=/ \
@@ -45,7 +45,13 @@ Clean_Stale_DB_Socket()
     if fuser "${sock}" >/dev/null 2>&1 \
        || ss -lxH 2>/dev/null | awk '{print $5}' | grep -qx "${sock}"; then
         Echo_Red "错误：${sock} 正在被进程使用，可能已有数据库实例在运行。"
-        Echo_Red "请先停止该实例，确认无误后再重新安装。"
+        # 中断的安装不会留下可用的 lnmp 命令，这里直接给出占用进程和处理办法。
+        for pid in $(fuser "${sock}" 2>/dev/null); do
+            exe=$(readlink -f "/proc/${pid}/exe" 2>/dev/null)
+            Echo_Red "  占用进程：pid ${pid} ${exe:-未知}"
+        done
+        Echo_Red "确认该实例无用时，先 kill 上述进程，再重新执行安装。"
+        Echo_Red "重新执行 install.sh 时会检测到该残留并询问是否清理。"
         return 1
     fi
 

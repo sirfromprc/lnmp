@@ -63,8 +63,10 @@ echo "=== 静态自检 ==="
 #                    读进来后立刻经 Set_PHP_Profile 翻译为 PHP_Branch，
 #                    之后不再参与任何版本判断）
 [ -z "${only}" ] || [ "${only}" = "C1" ] && {
+    # tests/ 是定向测试，需要直接构造这些变量来验证菜单读取行为。
     out=$(_search 'DBSelect|PHPSelect|ApacheSelect|MPHP_Select' -g '*.sh' \
-          | grep -v -E '^\.?/?include[/\\](profile|main|multiplephp|upgrade_mphp)\.sh:')
+          | grep -v -E '^\.?/?include[/\\](profile|main|multiplephp|upgrade_mphp)\.sh:' \
+          | grep -v -E '^\.?/?tests[/\\]')
     if [ -z "${out}" ]; then
         printf 'ok   %-4s %s\n' C1 "编号变量只出现在 profile/main/multiplephp/upgrade_mphp"
     else

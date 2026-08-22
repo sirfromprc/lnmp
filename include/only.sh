@@ -172,7 +172,11 @@ Install_Only_Database()
     Get_Dist_Name
     Check_DB
     if [ "${DB_Name}" != "None" ]; then
-        echo "检测到 ${DB_Name} 已安装。"
+        Echo_Red "检测到 ${DB_Name} 已安装（/usr/local/${DB_Name} 与 /etc/my.cnf 都存在）。"
+        Echo_Red "本入口只装数据库，不会动现有实例，已中止。"
+        Echo_Yellow "要重装整套环境时执行 bash install.sh lnmp，"
+        Echo_Yellow "安装前的残留检测会列出现有组件并在确认后清理，数据目录先移到 /root 备份。"
+        Echo_Yellow "只想换掉数据库时，请先自行停止并备份现有实例。"
         exit 1
     fi
 
