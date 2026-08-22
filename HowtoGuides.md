@@ -97,7 +97,68 @@ tmux 的等价命令为 `tmux new -s lnmp` 与 `tmux attach -t lnmp`。
 `install.sh lnmp|lnmpa|lamp` 在最终确认页会检测该情况：`SSH_CONNECTION` 非空且
 `STY`、`TMUX` 均为空时输出上述建议，独立入口（`nginx`、`db` 等）不作此提示。
 
-### 2.3.1 安装中断后重新安装
+安装真的中断在半途时怎么重跑，见 [2.1.1 安装中断或重新安装](#211-安装中断或重新安装)。
+
+
+安装日志追加写入 `/root/lnmp-install.log`，每次运行前插入一行
+`===== <时间> <栈名> pid=<进程号> =====` 分隔，重跑不会覆盖上次内容；
+超过 10MB 时滚动为 `/root/lnmp-install.log.1`，只保留一份历史。
+
+依赖安装期间若系统自动更新占用了 dpkg 锁，apt 会等待至多 `APT_LOCK_TIMEOUT`
+（默认 300）秒而不是直接失败；仍未取得锁而失败的包会在本轮结束后重试一次。
+需要更长的等待时间时在命令前指定：
+
+```bash
+APT_LOCK_TIMEOUT=900 bash install.sh lnmp
+```
+
+### 1.3 获取代码
+
+从项目 Release 页面下载固定版本，并使用同一 Release 公布的 SHA-256 核对文件。
+项目尚未在源码中固定公开仓库地址，因此本文不提供可能指向错误仓库的占位下载命令。
+假设已将验证通过的压缩包保存为 `/root/lnmp-v2.3.tar.gz`：
+
+```bash
+install -d -m 700 /root/lnmp-src
+tar -xzf /root/lnmp-v2.3.tar.gz -C /root/lnmp-src --strip-components=1
+cd /root/lnmp-src
+chmod +x install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
+bash -n install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
+id -u
+# 必须输出 0
+```
+
+tar 包通常会保留可执行位，但 ZIP、面板上传或跨文件系统复制可能丢失；显式执行一次
+`chmod` 可以保证后续既能用 `bash install.sh`，也能直接运行这些入口脚本。
+
+> 优先使用 tag 或 release，而不是 `main` 分支。`main` 的内容可能在两次安装之间
+> 变化，两台机器装出来的东西就不一样了。
+
+[返回顶部](#top)
+
+---
+
+## 二、安装 LNMP
+
+### 2.1 交互式安装
+
+```bash
+bash install.sh lnmp
+```
+
+先提醒检查 `lnmp.conf`（端口、目录等）并要求输入 `y` 才继续，然后自动探测
+系统实际监听的 SSH 端口并按此放行；监听 22 时会提示改端口的步骤并要求再输入
+一次 `y`。
+之后依次会问：数据库版本 → 是否用通用二进制 → 数据库 root 密码 →
+是否启用 InnoDB → PHP 版本 → Nginx/OpenResty → 内存分配器。选完会打印一份完整摘要（版本、
+编译参数、即将放行/阻断的端口），要求输入 `y` 确认后才真正开始装依赖、
+编译。最终确认前可用 Ctrl+C 退出并重新选择，此时尚未开始系统变更。
+该确认页在 ssh 直连且未使用 screen/tmux 时会提示先建立可保持的会话，详见 [1.2](#12-编译耗时参考)。
+
+安装 LAMP/LNMPA 时还会询问 Apache `ServerAdmin`，这里只接受合法邮箱；空白、斜杠、
+分号和配置片段会在写 Apache 配置前被拒绝。ACME 邮箱支持最长 63 位顶级域，三种栈规则一致。
+
+### 2.1.1 安装中断或重新安装
 
 安装中断后直接重跑同一条命令，不需要先卸载：
 
@@ -198,64 +259,6 @@ LNMP_Reuse_Answers=no  bash install.sh lnmp   # 不询问，重新选择
 ```bash
 LNMP_Move_Existing_DB_Data=yes bash install.sh db
 ```
-
-安装日志追加写入 `/root/lnmp-install.log`，每次运行前插入一行
-`===== <时间> <栈名> pid=<进程号> =====` 分隔，重跑不会覆盖上次内容；
-超过 10MB 时滚动为 `/root/lnmp-install.log.1`，只保留一份历史。
-
-依赖安装期间若系统自动更新占用了 dpkg 锁，apt 会等待至多 `APT_LOCK_TIMEOUT`
-（默认 300）秒而不是直接失败；仍未取得锁而失败的包会在本轮结束后重试一次。
-需要更长的等待时间时在命令前指定：
-
-```bash
-APT_LOCK_TIMEOUT=900 bash install.sh lnmp
-```
-
-### 1.3 获取代码
-
-从项目 Release 页面下载固定版本，并使用同一 Release 公布的 SHA-256 核对文件。
-项目尚未在源码中固定公开仓库地址，因此本文不提供可能指向错误仓库的占位下载命令。
-假设已将验证通过的压缩包保存为 `/root/lnmp-v2.3.tar.gz`：
-
-```bash
-install -d -m 700 /root/lnmp-src
-tar -xzf /root/lnmp-v2.3.tar.gz -C /root/lnmp-src --strip-components=1
-cd /root/lnmp-src
-chmod +x install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
-bash -n install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
-id -u
-# 必须输出 0
-```
-
-tar 包通常会保留可执行位，但 ZIP、面板上传或跨文件系统复制可能丢失；显式执行一次
-`chmod` 可以保证后续既能用 `bash install.sh`，也能直接运行这些入口脚本。
-
-> 优先使用 tag 或 release，而不是 `main` 分支。`main` 的内容可能在两次安装之间
-> 变化，两台机器装出来的东西就不一样了。
-
-[返回顶部](#top)
-
----
-
-## 二、安装 LNMP
-
-### 2.1 交互式安装
-
-```bash
-bash install.sh lnmp
-```
-
-先提醒检查 `lnmp.conf`（端口、目录等）并要求输入 `y` 才继续，然后自动探测
-系统实际监听的 SSH 端口并按此放行；监听 22 时会提示改端口的步骤并要求再输入
-一次 `y`。
-之后依次会问：数据库版本 → 是否用通用二进制 → 数据库 root 密码 →
-是否启用 InnoDB → PHP 版本 → Nginx/OpenResty → 内存分配器。选完会打印一份完整摘要（版本、
-编译参数、即将放行/阻断的端口），要求输入 `y` 确认后才真正开始装依赖、
-编译。最终确认前可用 Ctrl+C 退出并重新选择，此时尚未开始系统变更。
-该确认页在 ssh 直连且未使用 screen/tmux 时会提示先建立可保持的会话，详见 [1.2](#12-编译耗时参考)。
-
-安装 LAMP/LNMPA 时还会询问 Apache `ServerAdmin`，这里只接受合法邮箱；空白、斜杠、
-分号和配置片段会在写 Apache 配置前被拒绝。ACME 邮箱支持最长 63 位顶级域，三种栈规则一致。
 
 ### 2.2 非交互安装（站群自动部署）
 
@@ -1656,9 +1659,16 @@ lnmp ssl add
 交互顺序：域名 → **证书来源(1-4)** → 是否 301 跳转。选择自有证书时会继续询问
 证书和私钥路径；选择 CA 时按需询问账户邮箱。
 
-证书来源：`1`=用自己的证书 `2`=Let's Encrypt `3`=BuyPass `4`=ZeroSSL。
-选 2-4 时会要一个邮箱（**不能用 `example.com` 这类保留域名**，
-Let's Encrypt 会直接拒绝并报 `invalidContact`）。
+证书来源：`1`=用自己的证书 `2`=Let's Encrypt `3`=ZeroSSL。
+选 2-3 时会问一个邮箱，可以直接回车留空——ACME 规范里账户邮箱是可选的，
+Let's Encrypt 无邮箱也能签发。填写时**不能用 `example.com` 这类保留域名**，
+Let's Encrypt 会直接拒绝并报 `invalidContact`。选 ZeroSSL 时会再单独确认一次
+账户邮箱：ZeroSSL 必须用邮箱换取 EAB 凭据，不能留空，acme.sh 按 CA 单独保存，
+可以和 Let's Encrypt 用不同邮箱，已保存过则回车沿用。
+
+选 ZeroSSL 还会先探测一次 `https://acme.zerossl.com/v2/DV90/newNonce`，
+超时或返回非 200/204 时给出状态码并询问是否改用 Let's Encrypt。该端点故障时
+acme.sh 只会反复打印 `Could not get nonce`，重试约 5 分钟后才失败。
 
 域名证书有效期 90 天，acme.sh 的 cron 会自动续期：
 
@@ -1703,7 +1713,7 @@ Let's Encrypt 后，本包会自动转为 **IP 地址证书**流程，
 | **有效期只有 7 天** | Let's Encrypt 的 shortlived profile；只有该 profile 支持 IP 地址 |
 | **必须依赖自动续期** | 本包按 `--days 6` 申请（比有效期提前 1 天续）。**不得能关掉 acme.sh 的 cron**，否则一周内证书过期、站点不可访问 |
 | **只支持 IPv4** | IPv6 地址申请不了 |
-| **只能用 Let's Encrypt** | BuyPass 与 ZeroSSL 都不提供 IP 证书，因此 `default` 菜单不显示这两项 |
+| **只能用 Let's Encrypt** | ZeroSSL 不提供 IP 证书，因此 `default` 菜单不显示该项 |
 | **必须是公网 IP** | 私有地址（10.x / 172.16-31.x / 192.168.x / 127.x / 169.254.x）以及运营商级 NAT 的 100.64-127.x，**任何公信 CA 都不会签发** |
 | **80 端口要公网可达** | HTTP-01 验证 |
 
@@ -1747,8 +1757,9 @@ acme.sh DNS 插件名。
 | 支持泛域名 | 否 | 是 | 是 |
 | 要求 80 端口公网可达 | 是 | 否 | 否 |
 | 要求 DNS API 凭据 | 否 | 是（手工 TXT 模式除外） | 是（手工 TXT 模式除外） |
-| 可选 CA | Let's Encrypt / BuyPass / ZeroSSL | Let's Encrypt / ZeroSSL | Let's Encrypt / ZeroSSL |
+| 可选 CA | Let's Encrypt / ZeroSSL | Let's Encrypt / ZeroSSL | Let's Encrypt / ZeroSSL |
 | 自动续期 | 是 | 是（手工 TXT 模式不可自动续期） | 是（同左） |
+| 签发与续期后重载 Nginx | 是 | 是 | 否 |
 | 证书目录 | `/usr/local/nginx/conf/ssl/<域名>/` | 同左 | 同左 |
 
 **共同点**：都用 acme.sh，都默认 EC-256 密钥，签发后都会把证书安装到
@@ -1809,6 +1820,8 @@ NS1_Key（API Key）: <粘贴 API Key>
 不检查站点、不生成也不修改任何 Nginx 配置，只把证书签下来放到
 `/usr/local/nginx/conf/ssl/`。适合证书要给别的服务用（邮件、反向代理、
 另一台机器）或者站点还没建好的情况。泛域名目录名中的 `*.` 会写成 `_wildcard.`。
+签发和续期都不重载 Nginx；续期由 acme.sh 的 cron 处理，新证书会自动覆盖到同一路径。
+若之后把这张证书引用进某个站点或其它服务，重载动作需自行安排。
 
 **服务商参数**
 
@@ -1819,7 +1832,7 @@ NS1_Key（API Key）: <粘贴 API Key>
 | 服务商 | 参数 | 需要的凭据 |
 |---|---|---|
 | 阿里云 | `ali` | `Ali_Key`、`Ali_Secret` |
-| Cloudflare | `cf` | `CF_Key`+`CF_Email`，或 `CF_Token`+`CF_Account_ID` |
+| Cloudflare | `cf` | `CF_Key`+`CF_Email`，或 `CF_Token`（`CF_Account_ID`、`CF_Zone_ID` 可留空） |
 | DNSPod | `dp` | `DP_Id`、`DP_Key` |
 | HE.net | `he` | `HE_Username`、`HE_Password` |
 | GoDaddy | `gd` | `GD_Key`、`GD_Secret` |
@@ -1827,7 +1840,10 @@ NS1_Key（API Key）: <粘贴 API Key>
 | NS1 | `nsone` | `NS1_Key` |
 
 一个服务商有两套凭据时（如 Cloudflare 的 Key/Email 与 Token/Account_ID），
-会先让你选用哪一套。凭据由 acme.sh 保存在 `/usr/local/acme.sh/account.conf`，
+会先让你选用哪一套。Cloudflare 选 Token 那一套时，只要 API 令牌具备
+区域→区域→读取 和 区域→DNS→编辑 权限，`CF_Account_ID` 与 `CF_Zone_ID`
+均可直接回车留空，acme.sh 会按域名自行查找 zone。
+凭据由 acme.sh 保存在 `/usr/local/acme.sh/account.conf`，
 续期时自动复用，再次执行命令时直接回车即可沿用已保存的值。
 
 **不带服务商参数**（`lnmp dnsssl` / `lnmp onlyssl`）进入手工 TXT 模式：

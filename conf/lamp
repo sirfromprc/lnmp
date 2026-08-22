@@ -1138,8 +1138,6 @@ Add_VHost()
             elif [ "${ssl_choice}" == "2" ]; then
                 echo "  =>Let's Encrypt"
             elif [ "${ssl_choice}" == "3" ]; then
-                echo "  =>BuyPass"
-            elif [ "${ssl_choice}" == "4" ]; then
                 echo "  =>ZeroSSL"
             fi
         else
@@ -2712,8 +2710,12 @@ Check_Acme_EMail()
 {
     if [ ! -s /usr/local/acme.sh/account.conf ] || ! cat /usr/local/acme.sh/account.conf | grep -Eq "^ACCOUNT_EMAIL="; then
         while :;do
-            Echo_Yellow "请输入证书账户邮箱: "
+            Echo_Yellow "请输入证书账户邮箱（可留空）: "
             Read_Input email_address "邮箱地址"
+            if [ -z "${email_address}" ]; then
+                echo "未填写账户邮箱，acme.sh 按无邮箱账户注册。"
+                break
+            fi
             if [[ "${email_address}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$ ]]; then
                 echo "邮箱地址 ${email_address} 格式有效。"
                 break
@@ -2722,6 +2724,64 @@ Check_Acme_EMail()
             fi
         done
     fi
+}
+
+# ZeroSSL 的 ACME 端点与账户配置。acme.sh 按 CA 目录单独保存 CA_EMAIL，
+# 与 Let's Encrypt 的账户邮箱互不影响。
+Acme_ZeroSSL_CA_Conf="/usr/local/acme.sh/ca/acme.zerossl.com/v2/DV90/ca.conf"
+Acme_ZeroSSL_Nonce_URL="https://acme.zerossl.com/v2/DV90/newNonce"
+
+# ZeroSSL 必须用邮箱换取 EAB 凭据，与 Let's Encrypt 的可选邮箱不同，单独确认一次。
+# 结果写入 ACCOUNT_EMAIL，acme.sh 取值时该变量优先于 account.conf。
+Check_ZeroSSL_EMail()
+{
+    local saved val
+
+    saved=$(sed -n "s/^CA_EMAIL='\(.*\)'$/\1/p" "${Acme_ZeroSSL_CA_Conf}" 2>/dev/null | tail -n 1)
+    while :;do
+        if [ -n "${saved}" ]; then
+            Echo_Yellow "请输入 ZeroSSL 账户邮箱 [已保存 ${saved}，回车沿用]: "
+        else
+            Echo_Yellow "请输入 ZeroSSL 账户邮箱: "
+        fi
+        Read_Input val "ZeroSSL 账户邮箱"
+        [ -z "${val}" ] && val="${saved}"
+        if [ -z "${val}" ]; then
+            Echo_Red "ZeroSSL 需要邮箱换取 EAB 凭据，不能为空。"
+            continue
+        fi
+        if [[ "${val}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$ ]]; then
+            export ACCOUNT_EMAIL="${val}"
+            email_address="${val}"
+            return 0
+        fi
+        Echo_Red "邮箱地址 ${val} 格式无效，请重新输入。"
+    done
+}
+
+# newNonce 端点故障时 acme.sh 会重试 20 轮（约 5 分钟）才失败，且只提示
+# Could not get nonce，先探测一次给出可判断的结果。curl 缺失时跳过检查。
+Check_ZeroSSL_Endpoint()
+{
+    local code
+
+    command -v curl >/dev/null 2>&1 || return 0
+    echo "正在检查 ZeroSSL 服务可用性..."
+    code=$(curl -s -o /dev/null -I -w '%{http_code}' --max-time 5 "${Acme_ZeroSSL_Nonce_URL}" 2>/dev/null)
+    case "${code}" in
+    200|204)
+        return 0
+        ;;
+    000|"")
+        Echo_Red "ZeroSSL 的 ${Acme_ZeroSSL_Nonce_URL} 5 秒内无响应。"
+        ;;
+    *)
+        Echo_Red "ZeroSSL 的 ${Acme_ZeroSSL_Nonce_URL} 返回 HTTP ${code}。"
+        ;;
+    esac
+    Echo_Yellow "继续签发会在 acme.sh 重试约 5 分钟后失败。"
+    echo
+    return 1
 }
 
 Return_301_Menu()
@@ -2742,7 +2802,15 @@ Add_DNS_SSL_Select_Menu()
         Echo_Yellow "请选择 [1-2]："
         read dns_ssl_choice
         if [[ "${dns_ssl_choice}" =~ ^(1|2)$ ]]; then
-            Check_Acme_EMail
+            if [ "${dns_ssl_choice}" = "2" ] && ! Check_ZeroSSL_Endpoint; then
+                Read_YN use_le "是否改用 Let's Encrypt 签发 [Y/n]（默认 y）: " y "改用 Let's Encrypt"
+                [ "${use_le}" = "y" ] && dns_ssl_choice=1
+            fi
+            if [ "${dns_ssl_choice}" = "2" ]; then
+                Check_ZeroSSL_EMail
+            else
+                Check_Acme_EMail
+            fi
             break
         else
             Echo_Red "请输入 1 或 2。"
@@ -2812,7 +2880,7 @@ Acme_Saved_Conf_Value()
 # 变量名和说明来自插件元数据，新增服务商无需改本脚本。
 Prompt_DNS_API_Credentials()
 {
-    local provider="${1:-}" plugin opts group g name req desc saved val
+    local provider="${1:-}" plugin opts group g name req desc hint saved val
 
     [ -z "${provider}" ] && return 0
     plugin="${Acme_DNSAPI_Dir}/dns_${provider}.sh"
@@ -2841,12 +2909,18 @@ Prompt_DNS_API_Credentials()
     echo "请输入 ${provider} 的 API 凭据，acme.sh 会保存供续期复用。"
     while IFS=$'\t' read -r g name req desc <&3; do
         [ "${g}" = "${group}" ] || continue
+        hint="可留空"
+        # acme.sh 元数据把 CF_Account_ID 标为必填，实际只用于缩小 zone 查询范围，可留空。
+        if [ "${provider}" = "cf" ] && [ "${name}" = "CF_Account_ID" ]; then
+            req="optional"
+            hint="CF_Token 有区域权限可留空"
+        fi
         saved=$(Acme_Saved_Conf_Value "${name}")
         while :;do
             if [ -n "${saved}" ]; then
                 Echo_Yellow "${name}（${desc}）[已保存，回车沿用]: "
             elif [ "${req}" = "optional" ]; then
-                Echo_Yellow "${name}（${desc}，可留空）: "
+                Echo_Yellow "${name}（${desc}，${hint}）: "
             else
                 Echo_Yellow "${name}（${desc}）: "
             fi
@@ -3112,14 +3186,13 @@ Add_SSL_Menu()
     echo "1: 使用自有 SSL 证书和私钥"
     echo "2: 使用 Let's Encrypt 签发 SSL 证书（HTTP 验证）"
     if [ "${domain}" != "default" ]; then
-        echo "3: 使用 BuyPass 签发 SSL 证书（HTTP 验证）"
-        echo "4: 使用 ZeroSSL 签发 SSL 证书（HTTP 验证）"
+        echo "3: 使用 ZeroSSL 签发 SSL 证书（HTTP 验证）"
     fi
     while :;do
         if [ "${domain}" = "default" ]; then
             Echo_Yellow "请选择 [1-2]："
         else
-            Echo_Yellow "请选择 [1-4]："
+            Echo_Yellow "请选择 [1-3]："
         fi
         Read_Input ssl_choice "证书来源选项"
         if [ "${ssl_choice}" == "1" ]; then
@@ -3154,14 +3227,22 @@ Add_SSL_Menu()
         elif [ "${ssl_choice}" == "2" ]; then
             Check_Acme_EMail
             break
-        elif [[ "${domain}" != "default" && "${ssl_choice}" =~ ^(3|4)$ ]]; then
-            Check_Acme_EMail
+        elif [[ "${domain}" != "default" && "${ssl_choice}" == "3" ]]; then
+            if ! Check_ZeroSSL_Endpoint; then
+                Read_YN use_le "是否改用 Let's Encrypt 签发 [Y/n]（默认 y）: " y "改用 Let's Encrypt"
+                [ "${use_le}" = "y" ] && ssl_choice=2
+            fi
+            if [ "${ssl_choice}" = "3" ]; then
+                Check_ZeroSSL_EMail
+            else
+                Check_Acme_EMail
+            fi
             break
         else
             if [ "${domain}" = "default" ]; then
                 Echo_Red "default 站点只支持自有证书或 Let's Encrypt IP 证书，请输入 1 或 2！"
             else
-                Echo_Red "请输入 1、2、3 或 4。"
+                Echo_Red "请输入 1、2 或 3。"
             fi
         fi
     done
@@ -3244,11 +3325,13 @@ Acme_Sh_SHA256='e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee091fd32
 Install_Check_Acme.sh()
 {
     local tmpdir tarball srcdir actual
+    local -a email_opt=()
 
     if [ -s /usr/local/acme.sh/acme.sh ]; then
         echo "/usr/local/acme.sh/acme.sh [已存在]"
-        if ! grep -Eq "^ACCOUNT_EMAIL=" /usr/local/acme.sh/account.conf 2>/dev/null; then
-            /usr/local/acme.sh/acme.sh --register-account -m ${email_address} || return 1
+        if [ -n "${email_address}" ] \
+            && ! grep -Eq "^ACCOUNT_EMAIL=" /usr/local/acme.sh/account.conf 2>/dev/null; then
+            /usr/local/acme.sh/acme.sh --register-account -m "${email_address}" || return 1
         fi
         . "/usr/local/acme.sh/acme.sh.env"
         return 0
@@ -3294,8 +3377,9 @@ Install_Check_Acme.sh()
         return 1
     fi
 
+    [ -n "${email_address}" ] && email_opt=( -m "${email_address}" )
     ( cd "${srcdir}" && ./acme.sh --install ${acme_sh_sudo} --log \
-        --home /usr/local/acme.sh --certhome /usr/local/apache/conf/ssl -m ${email_address} )
+        --home /usr/local/acme.sh --certhome /usr/local/apache/conf/ssl "${email_opt[@]}" )
     if [ $? -ne 0 ] || [ ! -s /usr/local/acme.sh/acme.sh ]; then
         Echo_Red "acme.sh 安装失败。"
         rm -rf "${tmpdir}"
@@ -3596,7 +3680,7 @@ Add_SSL()
 
     if [ "${ssl_choice}" == "1" ]; then
         Create_SSL_Config || return 1
-    elif echo "${ssl_choice}" | grep -Eqi "^[2-4]$"; then
+    elif echo "${ssl_choice}" | grep -Eqi "^[23]$"; then
         letsdomain=""
         cert_profile_opt=""
         if [ "${moredomain}" != "" ]; then
@@ -3626,9 +3710,6 @@ Add_SSL()
             echo "正在使用 Let's Encrypt 签发 SSL 证书..."
             /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server letsencrypt --issue ${letsdomain} -w ${vhostdir} ${cert_profile_opt} --reloadcmd "/etc/init.d/httpd graceful"
         elif [ "${ssl_choice}" == "3" ]; then
-            echo "正在使用 BuyPass 签发 SSL 证书..."
-            /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server buypass --issue ${letsdomain} -w ${vhostdir} --days 170 --reloadcmd "/etc/init.d/httpd graceful"
-        elif [ "${ssl_choice}" == "4" ]; then
             echo "正在使用 ZeroSSL 签发 SSL 证书..."
             /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server zerossl --issue ${letsdomain} -w ${vhostdir} --reloadcmd "/etc/init.d/httpd graceful"
         fi
@@ -3807,7 +3888,8 @@ Add_Dns_SSL_Only()
 
     echo "正在使用 ${ca_server} 签发 SSL 证书..."
     if [ "${provider}" != "" ]; then
-        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue "${letsdomain[@]}" --dns ${dns_provider} --reloadcmd "/etc/init.d/httpd graceful"
+        # onlyssl 不写站点配置，签发与续期都不重载 Web 服务。
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue "${letsdomain[@]}" --dns ${dns_provider}
         lets_status=$?
     else
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue "${letsdomain[@]}" --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
