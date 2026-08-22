@@ -1792,32 +1792,68 @@ HTTP 验证要求该域名由现有网站直接服务，输入站点没有声明
 CA 校验 `_acme-challenge.<域名>` 的 TXT 记录，本命令通过服务商 API 自动加删该记录。
 80 端口不通、站点还没上线、需要泛域名证书时用这条。
 
-站点定位按**根域名**：输入 `test.example.com` 或 `*.example.com`，会匹配到同根域的
-现有网站 `example.com`，不需要为泛域名单独建一个带 `*` 的虚拟主机。若同根域下有多个
-站点，会列出来要求输入准确域名；若一个都没有，会提示先 `lnmp vhost add` 建站，或者
-改用 `lnmp onlyssl`。
+**普通域名**按根域名定位站点：输入 `test.example.com` 会匹配到同根域的现有网站
+`example.com`。若同根域下有多个站点，会列出来要求输入准确域名；若一个都没有，会提示
+先 `lnmp vhost add` 建站，或者改用 `lnmp onlyssl`。
 
-交互顺序：域名 → 更多域名 → CA 选择 → 是否 301 跳转 → API 凭据。
+**泛域名**不定位单个站点，按覆盖关系处理所有被覆盖的站点。`*.example.com` 只覆盖
+**恰好一级**的子域名：
+
+| 站点 | `*.example.com` 是否覆盖 |
+|---|---|
+| `www.example.com`、`a.example.com` | 是 |
+| `example.com`（根域名） | 否，需单独签入 |
+| `b.a.example.com`（二级子域） | 否 |
+| `a.example.com.us`（其它根域） | 否 |
+
+判定不依赖公共后缀表，`*.example.com.uk`、`*.example.gov.uk` 同样只覆盖一级子域。
+泛域名不能建站，`lnmp vhost add` 会拒绝 `*.example.com` 这样的域名。
+
+交互顺序：域名 → 被覆盖站点确认 → 根域名是否签入 → 更多域名 → CA 选择 →
+是否 301 跳转 → API 凭据。签发成功后逐个站点写 HTTPS 配置，已有 443 配置的站点跳过。
 
 ```
 # lnmp dnsssl nsone
-DNS 验证，请输入域名（示例：www.example.com）: test.example.com
-test.example.com 与现有网站 example.com 同属根域 example.com，按该网站申请证书。
-您的域名：example.com
-站点现有域名：www.example.com
-请输入更多域名（支持泛域名，示例：*.example.com sub.example.com，留空跳过）: *.example.com
-附加域名：www.example.com *.example.com
+DNS 验证，请输入域名（示例：www.example.com）: *.example.com
+泛域名 *.example.com 覆盖的网站：a.example.com www.example.com had.example.com
+本次写入 HTTPS 配置的网站：a.example.com www.example.com
+已有 HTTPS 配置、本次跳过的网站：had.example.com
+检测到根域名网站 example.com，是否一并签入本证书 [y/N]（默认 n）: n
+根域名 example.com 不参与本次证书。
+证书域名：*.example.com
 1: 使用 Let's Encrypt 签发 SSL 证书（DNS 验证）
 2: 使用 ZeroSSL 签发 SSL 证书（DNS 验证）
 请选择 [1-2]：1
-是否将 HTTP 301 跳转到 HTTPS [y/N]（默认 n）: y
+是否将 HTTP 301 跳转到 HTTPS [y/N]（默认 n）: n
 请输入 nsone 的 API 凭据，acme.sh 会保存供续期复用。
 NS1_Key（API Key）: <粘贴 API Key>
-证书域名：example.com *.example.com
+正在使用 letsencrypt 签发 SSL 证书...
+网站 a.example.com 的 HTTPS 配置已写入。
+网站 had.example.com 已有 HTTPS 配置，跳过。
+网站 www.example.com 的 HTTPS 配置已写入。
+已配置 2 个网站，跳过 1 个。
 ```
 
-泛域名会覆盖同级子域名，`*.example.com` 与 `www.example.com` 同时出现时只申请前者，
-少一次 TXT 验证；主域名 `example.com` 不在泛域名覆盖范围内，始终保留。
+根域名选 `y` 时证书域名为 `*.example.com example.com`，根域名站点也一并写配置。
+CA 不接受泛域名与被它覆盖的子域名同时出现在一张证书里，这类冗余会在提交前自动去掉。
+
+**已有泛域名证书时**：再执行 `lnmp dnsssl <服务商>` 输入同一个泛域名，会先报出这张
+证书的签发时间与到期时间，并给出三条路——把现有证书写进尚未配置 HTTPS 的网站（不重新
+签发）、换具体子域名单独申请、重新签发覆盖。新建子域名站点后要让它用上已有的泛域名
+证书，走第一条即可。
+
+```
+DNS 验证，请输入域名（示例：www.example.com）: *.example.com
+已存在证书 *.example.com（签发于 2026-08-22T09:00:00Z，Oct 21 12:26:28 2026 GMT 到期）。
+1: 把该证书写入尚未配置 HTTPS 的网站，不重新签发
+2: 换一个具体子域名单独申请证书
+3: 重新签发 *.example.com，覆盖现有证书
+请选择 [1-3]：1
+```
+
+在 `更多域名` 里填泛域名时，若系统里已经有覆盖它的证书会被拒绝并指向上面的复用入口；
+没有则允许，证书会同时包含根域名和泛域名。`lnmp onlyssl` 检测到已有证书时会问是否
+重新签发，默认保留现有证书。
 
 `更多域名` 只接受该站点根域下的域名，或站点配置里已有的域名。输入其它根域的域名会先
 列出来要求确认——它们既要求 DNS 服务商能管理对应解析，又会被写进这个站点的 HTTPS

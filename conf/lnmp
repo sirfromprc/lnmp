@@ -1391,6 +1391,7 @@ Add_VHost()
         Echo_Yellow "请输入域名(示例: www.example.com): "
         Read_Input domain "域名"
         Check_Domain_Name "${domain}" || continue
+        Reject_Wildcard_Site "${domain}" || continue
         if [ "${domain}" = "default" ]; then
             # default 是内置兜底站点，仅在配置缺失时补建。
             Add_VHost_Default || return 1
@@ -1410,7 +1411,8 @@ Add_VHost()
         Echo_Yellow "请输入更多域名(示例: example.com sub.example.com，直接回车跳过): "
         Read_Input moredomain "更多域名"
         [ -z "${moredomain}" ] && break
-        Check_More_Domains "${moredomain}" && break
+        Check_More_Domains "${moredomain}" || continue
+        Reject_Wildcard_Site "${moredomain}" && break
     done
     echo "域名列表：${domain} ${moredomain}"
 
@@ -2294,6 +2296,27 @@ Check_Domain_Name()
     return 0
 }
 
+# 泛域名不能作为站点名，站点必须是具体域名。
+Reject_Wildcard_Site()
+{
+    local d
+
+    set -f
+    for d in $1; do
+        case "${d}" in
+        \*.*)
+            set +f
+            Echo_Red "不能用泛域名建立网站：${d}"
+            Echo_Yellow "请先用具体子域名建站，再执行 lnmp dnsssl <服务商> 输入 ${d} 申请泛域名证书。"
+            echo
+            return 1
+            ;;
+        esac
+    done
+    set +f
+    return 0
+}
+
 # 附加域名按空格分隔，任一名称无效时拒绝整组输入。
 Check_More_Domains()
 {
@@ -3056,7 +3079,8 @@ Add_SSL_Info_Menu()
         Echo_Yellow "请输入更多域名（示例：example.com sub.example.com，留空跳过）: "
         Read_Input moredomain "更多域名"
         [ -z "${moredomain}" ] && break
-        Check_More_Domains "${moredomain}" && break
+        Check_More_Domains "${moredomain}" || continue
+        Reject_Wildcards_For_HTTP "${moredomain}" && break
     done
     if [ "${moredomain}" != "" ]; then
         echo "附加域名：${moredomain}"
@@ -3138,6 +3162,27 @@ Add_SSL_Info_Menu()
     fi
 }
 
+# HTTP 验证不能签发泛域名，用户当场输入泛域名时拒绝整组输入。
+Reject_Wildcards_For_HTTP()
+{
+    local d
+
+    set -f
+    for d in $1; do
+        case "${d}" in
+        \*.*)
+            set +f
+            Echo_Red "HTTP 验证不能签发泛域名证书：${d}"
+            Echo_Yellow "泛域名只接受 DNS 验证，请改用 lnmp dnsssl {ali|cf|dp|he|gd|aws}。"
+            echo
+            return 1
+            ;;
+        esac
+    done
+    set +f
+    return 0
+}
+
 # lnmp ssl add 从现有虚拟主机读取站点参数，仅询问证书相关选项。
 Add_SSL_Only_Info_Menu()
 {
@@ -3199,7 +3244,7 @@ Load_Vhost_Params()
         echo
         return 1
     fi
-    if grep -Eq '^[[:space:]]*listen[[:space:]][^;]*443[^;]*ssl' "${vhost_conf}"; then
+    if Vhost_Has_HTTPS "${vhost_conf}"; then
         Echo_Red "网站 ${domain} 已存在 HTTPS/443 配置，不能重复添加证书。"
         Echo_Yellow "如需更换证书，请先检查并处理现有 SSL 配置。"
         echo
@@ -3499,6 +3544,27 @@ EOF
 }
 
 # 取可注册根域，用于判断输入域名与现有站点是否同属一个域。
+# 二级公共后缀清单，用于把 a.example.co.uk 的根域判成 example.co.uk。
+# 清单不可能穷尽，仅影响同根域提示与跨根域确认，不参与泛域名覆盖判定。
+Public_Suffix_L2="com.cn net.cn org.cn gov.cn edu.cn ac.cn \
+co.uk org.uk me.uk ltd.uk plc.uk net.uk ac.uk com.uk gov.uk sch.uk nhs.uk \
+co.jp ne.jp or.jp ac.jp go.jp \
+com.au net.au org.au gov.au edu.au \
+com.hk org.hk idv.hk net.hk gov.hk edu.hk \
+com.tw org.tw idv.tw net.tw gov.tw edu.tw \
+com.br net.br org.br gov.br edu.br \
+com.mx org.mx gov.mx edu.mx \
+co.kr ne.kr or.kr \
+co.in net.in org.in gov.in edu.in ac.in \
+co.nz net.nz org.nz govt.nz ac.nz \
+co.za net.za org.za gov.za ac.za \
+com.sg net.sg org.sg gov.sg edu.sg \
+com.my net.my org.my gov.my edu.my \
+com.tr net.tr org.tr gov.tr edu.tr \
+com.ua net.ua org.ua gov.ua \
+com.ar net.ar org.ar gov.ar edu.ar \
+com.us gov.us edu.us"
+
 Get_Domain_Base()
 {
     local d="${1#\*.}" n l2
@@ -3509,7 +3575,7 @@ Get_Domain_Base()
         return 0
     fi
     l2=$(printf '%s' "${d}" | awk -F. '{ print $(NF-1)"."$NF }')
-    case " com.cn net.cn org.cn gov.cn edu.cn ac.cn co.uk org.uk me.uk ltd.uk plc.uk net.uk ac.uk co.jp ne.jp or.jp com.au net.au org.au com.hk org.hk idv.hk com.tw org.tw idv.tw com.br com.mx co.kr co.in co.nz co.za com.sg com.my com.tr com.ua com.ar " in
+    case " ${Public_Suffix_L2} " in
     *" ${l2} "*)
         if [ "${n}" -le 3 ]; then
             printf '%s' "${d}"
@@ -3563,6 +3629,7 @@ Find_Site_For_SSL()
 }
 
 # 生成证书域名列表：去重，并去掉已被泛域名覆盖的同级子域名。
+# CA 拒绝同一请求内出现与泛域名重复的子域名，主域名被覆盖时改用该泛域名打头。
 Filter_Cert_Domains()
 {
     printf '%s %s\n' "$1" "$2" | awk '
@@ -3570,9 +3637,17 @@ Filter_Cert_Domains()
             n=0
             for (i=1; i<=NF; i++) if (!seen[$i]++) list[++n]=$i
             for (i=1; i<=n; i++) if (substr(list[i], 1, 2) == "*.") wild[substr(list[i], 3)]=1
+            main=list[1]
+            mainwild=""
+            if (substr(main, 1, 2) != "*.") {
+                p=index(main, ".")
+                if (p > 0 && (substr(main, p+1) in wild)) mainwild="*." substr(main, p+1)
+            }
+            # 输出第一个域名决定 acme.sh 证书目录，替换后仍是有效的证书主域名。
+            if (mainwild != "") out=mainwild
             for (i=1; i<=n; i++) {
                 d=list[i]
-                # 主域名始终保留，acme.sh 按第一个 -d 决定证书目录。
+                if (mainwild != "" && (d == main || d == mainwild)) continue
                 if (i > 1 && substr(d, 1, 2) != "*.") {
                     p=index(d, ".")
                     if (p > 0 && (substr(d, p+1) in wild)) continue
@@ -3582,6 +3657,162 @@ Filter_Cert_Domains()
             print out
         }
     '
+}
+
+# 泛域名只覆盖恰好一级的子域名：a.test.com 收，test.com 与 b.a.test.com 不收。
+# 判定不依赖公共后缀清单，*.test.com.uk 与 *.test.gov.uk 同样成立。
+Domain_Covered_By_Wildcard()
+{
+    local name="$1" base="${2#\*.}"
+
+    case "$2" in
+    \*.*) ;;
+    *) return 1 ;;
+    esac
+    # 站点名自身是泛域名时不参与覆盖判定。
+    case "${name}" in
+    \*.*|'') return 1 ;;
+    esac
+    [ "${name}" != "${base}" ] || return 1
+    [ "${name#*.}" = "${base}" ]
+}
+
+# CA 不签发公共后缀上的泛域名，签发前先拦下来，避免走完交互才报错。
+Check_Wildcard_Base()
+{
+    local base="${1#\*.}" n
+
+    n=$(printf '%s' "${base}" | awk -F. '{ print NF }')
+    if [ "${n}" -lt 2 ]; then
+        Echo_Red "${1} 缺少注册域名部分，CA 不签发这样的证书。"
+        echo
+        return 1
+    fi
+    case " ${Public_Suffix_L2} " in
+    *" ${base} "*)
+        Echo_Red "${base} 是公共后缀，CA 不签发 ${1} 这样的证书。"
+        Echo_Yellow "请使用自己注册的域名，例如 *.example.${base}。"
+        echo
+        return 1
+        ;;
+    esac
+    return 0
+}
+
+# 枚举被泛域名覆盖的现有站点，结果写入 Wildcard_Site_List。
+Find_Sites_Covered_By_Wildcard()
+{
+    local wildcard="$1" f name
+
+    Wildcard_Site_List=""
+    [ -d "${Vhost_Conf_Dir}" ] || return 1
+
+    for f in "${Vhost_Conf_Dir}"/*.conf; do
+        [ -s "${f}" ] || continue
+        name=$(basename "${f}" .conf)
+        [ "${name}" = "default" ] && continue
+        Domain_Covered_By_Wildcard "${name}" "${wildcard}" || continue
+        Wildcard_Site_List="${Wildcard_Site_List:+${Wildcard_Site_List} }${name}"
+    done
+
+    [ -n "${Wildcard_Site_List}" ]
+}
+
+# 站点已有 HTTPS/443 配置时返回 0。
+Vhost_Has_HTTPS()
+{
+    grep -Eq '^[[:space:]]*listen[[:space:]][^;]*443[^;]*ssl' "$1"
+}
+
+# acme.sh 证书台账目录，与 Install_Check_Acme.sh 传入的 --certhome 一致。
+Acme_Cert_Home="/usr/local/nginx/conf/ssl"
+
+# 查找已签发且未过期、包含指定泛域名的证书，命中时写入 Wildcard_Cert_* 系列变量。
+# 台账取自 acme.sh --list，泛域名可能只出现在 SAN 中，两列都要比对。
+Find_Wildcard_Cert()
+{
+    local wildcard="$1" main san created dir cert
+
+    Wildcard_Cert_Main=""
+    Wildcard_Cert_Dir=""
+    Wildcard_Cert_Created=""
+    Wildcard_Cert_Expire=""
+    [ -s /usr/local/acme.sh/acme.sh ] || return 1
+    command -v openssl >/dev/null 2>&1 || return 1
+
+    while IFS='|' read -r main _ san _ _ created _; do
+        [ -n "${main}" ] && [ "${main}" != "Main_Domain" ] || continue
+        case " ${main} $(printf '%s' "${san}" | tr ',' ' ') " in
+        *" ${wildcard} "*) ;;
+        *) continue ;;
+        esac
+        dir="${Acme_Cert_Home}/${main/#\*./_wildcard.}"
+        cert="${dir}/fullchain.cer"
+        [ -s "${cert}" ] || continue
+        openssl x509 -noout -checkend 0 -in "${cert}" >/dev/null 2>&1 || continue
+        Wildcard_Cert_Main="${main}"
+        Wildcard_Cert_Dir="${dir}"
+        Wildcard_Cert_Created="${created}"
+        Wildcard_Cert_Expire=$(openssl x509 -noout -enddate -in "${cert}" 2>/dev/null | sed 's/^notAfter=//')
+        return 0
+    done <<EOF
+$(/usr/local/acme.sh/acme.sh ${acme_sh_sudo} --list --listraw 2>/dev/null)
+EOF
+    return 1
+}
+
+# 指向已有证书目录中的证书与私钥，供复用已签发证书时写站点配置。
+Use_Existing_Cert()
+{
+    local dir="$1" name
+
+    name=$(basename "${dir}")
+    ssl_certificate="${dir}/fullchain.cer"
+    ssl_certificate_key="${dir}/${name}.key"
+    Check_Config_File_Path "${ssl_certificate}" "SSL 证书文件" || return 1
+    Check_Config_File_Path "${ssl_certificate_key}" "SSL 私钥文件" || return 1
+    [ -s "${ssl_certificate}" ] && [ -s "${ssl_certificate_key}" ] || {
+        Echo_Red "证书目录 ${dir} 缺少证书或私钥文件。"
+        echo
+        return 1
+    }
+    return 0
+}
+
+# 把已就位的证书写进多个站点配置。单个站点失败只跳过该站，不回滚其它站点。
+Install_Cert_To_Sites()
+{
+    local sites="$1" site saved_domain="${domain}" conf ok=0 skip=0
+
+    for site in ${sites}; do
+        conf="${Vhost_Conf_Dir}/${site}.conf"
+        if [ ! -s "${conf}" ]; then
+            Echo_Red "网站 ${site} 的配置不存在，跳过。"
+            skip=$((skip + 1))
+            continue
+        fi
+        if Vhost_Has_HTTPS "${conf}"; then
+            echo "网站 ${site} 已有 HTTPS 配置，跳过。"
+            skip=$((skip + 1))
+            continue
+        fi
+        domain="${site}"
+        if ! Load_Vhost_Params; then
+            skip=$((skip + 1))
+            continue
+        fi
+        if Create_SSL_Config; then
+            ok=$((ok + 1))
+            Echo_Green "网站 ${site} 的 HTTPS 配置已写入。"
+        else
+            Echo_Red "网站 ${site} 的 HTTPS 配置写入失败，已跳过。"
+            skip=$((skip + 1))
+        fi
+    done
+    domain="${saved_domain}"
+
+    echo "已配置 ${ok} 个网站，跳过 ${skip} 个。"
+    [ "${ok}" -gt 0 ]
 }
 
 # onlyssl 不写站点配置，跨根域是合法用法，只提示服务商需同时管理这些解析。
@@ -3630,12 +3861,97 @@ Confirm_Extra_Domains()
     return 1
 }
 
+# 按是否已有 HTTPS 分组展示被泛域名覆盖的站点。
+Report_Wildcard_Sites()
+{
+    local site conf pending="" configured=""
+
+    for site in ${Wildcard_Site_List}; do
+        conf="${Vhost_Conf_Dir}/${site}.conf"
+        if Vhost_Has_HTTPS "${conf}"; then
+            configured="${configured:+${configured} }${site}"
+        else
+            pending="${pending:+${pending} }${site}"
+        fi
+    done
+    [ -n "${pending}" ] && echo "本次写入 HTTPS 配置的网站：${pending}"
+    [ -n "${configured}" ] && echo "已有 HTTPS 配置、本次跳过的网站：${configured}"
+    [ -n "${pending}" ] || Echo_Yellow "被覆盖的网站都已配置 HTTPS，本次只签发证书。"
+    [ -n "${pending}" ] || echo
+    return 0
+}
+
+# 根域名不在泛域名覆盖范围内，存在同名站点时单独确认是否一并签入。
+Confirm_Wildcard_Root_Domain()
+{
+    local base="${1#\*.}" ans
+
+    [ -s "${Vhost_Conf_Dir}/${base}.conf" ] || return 0
+    Read_YN ans "检测到根域名网站 ${base}，是否一并签入本证书 [y/N]（默认 n）: " n "根域名签入开关"
+    if [ "${ans}" = "y" ]; then
+        moredomain="${moredomain:+${moredomain} }${base}"
+        Wildcard_Site_List="${Wildcard_Site_List:+${Wildcard_Site_List} }${base}"
+        echo "根域名 ${base} 已加入证书域名。"
+    else
+        echo "根域名 ${base} 不参与本次证书。"
+    fi
+    return 0
+}
+
+# 已存在覆盖该泛域名的证书时的处理方式，结果写入 Wildcard_Choice。
+Wildcard_Cert_Exists_Menu()
+{
+    local wildcard="$1"
+
+    echo "已存在证书 ${Wildcard_Cert_Main}（签发于 ${Wildcard_Cert_Created}，${Wildcard_Cert_Expire} 到期）。"
+    echo "1: 把该证书写入尚未配置 HTTPS 的网站，不重新签发"
+    echo "2: 换一个具体子域名单独申请证书"
+    echo "3: 重新签发 ${wildcard}，覆盖现有证书"
+    while :;do
+        Echo_Yellow "请选择 [1-3]："
+        Read_Input Wildcard_Choice "处理方式"
+        case "${Wildcard_Choice}" in
+        1|2|3) return 0 ;;
+        *) Echo_Red "请输入 1、2 或 3。" ;;
+        esac
+    done
+}
+
+# 更多域名里的泛域名已有可用证书时拒绝重复申请，并指出复用入口。
+Check_Extra_Wildcards()
+{
+    local d
+
+    set -f
+    for d in $1; do
+        case "${d}" in
+        \*.*) ;;
+        *) continue ;;
+        esac
+        if ! Check_Wildcard_Base "${d}"; then
+            set +f
+            return 1
+        fi
+        if Find_Wildcard_Cert "${d}"; then
+            set +f
+            Echo_Red "已存在证书 ${Wildcard_Cert_Main}（签发于 ${Wildcard_Cert_Created}，${Wildcard_Cert_Expire} 到期），不需要重复申请。"
+            Echo_Yellow "要把它写入现有网站，请执行 lnmp dnsssl <服务商> 并输入 ${d}，选择第 1 项。"
+            echo
+            return 1
+        fi
+    done
+    set +f
+    return 0
+}
+
 # dnsssl 只给已存在的站点签发证书，域名必须命中现有虚拟主机。
 Add_DNS_SSL_Site_Info_Menu()
 {
     local input extradomain site_base
 
     domain=""
+    Wildcard_Mode="n"
+    Wildcard_Site_List=""
     while :;do
         Echo_Yellow "DNS 验证，请输入域名（示例：www.example.com）: "
         Read_Input input "域名"
@@ -3646,6 +3962,43 @@ Add_DNS_SSL_Site_Info_Menu()
             echo
             return 1
         fi
+        # 泛域名不定位单个站点，按覆盖关系处理全部被覆盖的站点。
+        case "${input}" in
+        \*.*)
+            Check_Wildcard_Base "${input}" || continue
+            if ! Find_Sites_Covered_By_Wildcard "${input}"; then
+                Echo_Red "没有找到 ${input} 覆盖的网站。"
+                Echo_Yellow "泛域名只覆盖恰好一级的子域名，请先执行 lnmp vhost add 建立网站。"
+                echo
+                Echo_Yellow "只要证书不写入网站配置，请用 lnmp onlyssl {ali|cf|dp|he|gd|aws}。"
+                echo
+                return 1
+            fi
+            Wildcard_Mode="y"
+            domain="${input}"
+            moredomain=""
+            echo "泛域名 ${input} 覆盖的网站：${Wildcard_Site_List}"
+            Report_Wildcard_Sites
+            if Find_Wildcard_Cert "${input}"; then
+                Wildcard_Cert_Exists_Menu "${input}"
+                case "${Wildcard_Choice}" in
+                1)
+                    Use_Existing_Cert "${Wildcard_Cert_Dir}" || return 1
+                    Return_301_Menu
+                    Install_Cert_To_Sites "${Wildcard_Site_List}" || return 1
+                    return 2
+                    ;;
+                2)
+                    Wildcard_Mode="n"
+                    domain=""
+                    continue
+                    ;;
+                esac
+            fi
+            Confirm_Wildcard_Root_Domain "${input}"
+            break
+            ;;
+        esac
         if Find_Site_For_SSL "${input}"; then
             domain="${Site_Match_Name}"
             break
@@ -3670,18 +4023,14 @@ Add_DNS_SSL_Site_Info_Menu()
         echo
         return 1
     done
+    if [ "${Wildcard_Mode}" = "y" ]; then
+        echo "证书域名：${domain}${moredomain:+ ${moredomain}}"
+        return 0
+    fi
     echo "您的域名：${domain}"
 
     Load_Vhost_Params || return 1
     [ -n "${moredomain}" ] && echo "站点现有域名：${moredomain}"
-
-    # 泛域名无需单独建站，按根域命中站点后直接并入证书域名。
-    case "${input}" in
-    \*.*)
-        moredomain="${moredomain:+${moredomain} }${input}"
-        echo "泛域名 ${input} 已加入证书域名。"
-        ;;
-    esac
 
     site_base=$(Get_Domain_Base "${domain}")
     while :;do
@@ -3689,6 +4038,7 @@ Add_DNS_SSL_Site_Info_Menu()
         Read_Input extradomain "更多域名"
         [ -z "${extradomain}" ] && break
         Check_More_Domains "${extradomain}" || continue
+        Check_Extra_Wildcards "${extradomain}" || continue
         Confirm_Extra_Domains "${site_base}" "${domain} ${moredomain}" "${extradomain}" && break
     done
     if [ -n "${extradomain}" ]; then
@@ -3715,6 +4065,21 @@ Add_DNS_SSL_Only_Info_Menu()
             echo
             return 1
         fi
+        # 泛域名先拦公共后缀，再核对是否已有可用证书，避免重复签发。
+        case "${domain}" in
+        \*.*)
+            Check_Wildcard_Base "${domain}" || continue
+            if Find_Wildcard_Cert "${domain}"; then
+                echo "已存在证书 ${Wildcard_Cert_Main}（签发于 ${Wildcard_Cert_Created}，${Wildcard_Cert_Expire} 到期）。"
+                echo "证书目录：${Wildcard_Cert_Dir}"
+                Read_YN reissue_cert "是否重新签发并覆盖现有证书 [y/N]（默认 n）: " n "重新签发开关"
+                if [ "${reissue_cert}" != "y" ]; then
+                    echo "保留现有证书，本次不签发。"
+                    return 2
+                fi
+            fi
+            ;;
+        esac
         echo "您的域名：${domain}"
         break
     done
@@ -3723,7 +4088,8 @@ Add_DNS_SSL_Only_Info_Menu()
         Echo_Yellow "请输入更多域名（支持泛域名，示例：*.example.com sub.example.com，留空跳过）: "
         Read_Input moredomain "更多域名"
         [ -z "${moredomain}" ] && break
-        Check_More_Domains "${moredomain}" && break
+        Check_More_Domains "${moredomain}" || continue
+        Check_Extra_Wildcards "${moredomain}" && break
     done
     if [ "${moredomain}" != "" ]; then
         echo "附加域名：${moredomain}"
@@ -4320,13 +4686,22 @@ Add_SSL()
     elif echo "${ssl_choice}" | grep -Eqi "^[23]$"; then
         letsdomain=""
         cert_profile_opt=""
+        letsdomain="-d ${domain}"
         if [ "${moredomain}" != "" ]; then
-            letsdomain="-d ${domain}"
+            # 泛域名带 *，拆分期间关闭路径展开。
+            set -f
             for i in ${moredomain};do
+                # HTTP-01 不能签发泛域名，站点配置里已有的泛域名不带入本次证书。
+                case "${i}" in
+                \*.*)
+                    Echo_Yellow "HTTP 验证不能签发泛域名，${i} 不加入本次证书。"
+                    echo
+                    continue
+                    ;;
+                esac
                 letsdomain=${letsdomain}" -d ${i}"
             done
-        else
-            letsdomain="-d ${domain}"
+            set +f
         fi
         # default 没有域名，证书申请目标改为公网 IPv4。
         if [ "${domain}" = "default" ]; then
@@ -4398,7 +4773,11 @@ Add_Dns_SSL()
         Echo_Red "DNS 手工验证模式无法自动续期，证书到期前必须手动续期。"
     fi
 
-    Add_DNS_SSL_Site_Info_Menu || exit 1
+    Add_DNS_SSL_Site_Info_Menu
+    info_rc=$?
+    # 返回 2 表示已复用现有证书写完配置，本次不需要签发。
+    [ "${info_rc}" = "2" ] && return 0
+    [ "${info_rc}" = "0" ] || exit 1
     Add_DNS_SSL_Select_Menu
     Return_301_Menu
 
@@ -4410,14 +4789,15 @@ Add_Dns_SSL()
     fi
     Prompt_DNS_API_Credentials "${provider}" || exit 1
 
-    # 泛域名不能直接做目录名，避免路径被通配符展开。
-    cert_dir_name="${domain/#\*./_wildcard.}"
-    cert_dir="/usr/local/nginx/conf/ssl/${cert_dir_name}"
-    Backup_Cert_Dir "${cert_dir}" || return 1
-    Note_Acme_Workdir "/usr/local/nginx/conf/ssl" "${domain}"
-
     # 泛域名已覆盖同级子域名，重复申请只会多一次 TXT 验证。
     cert_domains=$(Filter_Cert_Domains "${domain}" "${moredomain}")
+    # acme.sh 按第一个 -d 建证书目录，主域名被泛域名取代时随之改变。
+    cert_main="${cert_domains%% *}"
+    # 泛域名不能直接做目录名，避免路径被通配符展开。
+    cert_dir_name="${cert_main/#\*./_wildcard.}"
+    cert_dir="/usr/local/nginx/conf/ssl/${cert_dir_name}"
+    Backup_Cert_Dir "${cert_dir}" || return 1
+    Note_Acme_Workdir "/usr/local/nginx/conf/ssl" "${cert_main}"
     # 泛域名带 *，拆分和传参期间关闭路径展开。
     letsdomain=()
     set -f
@@ -4449,7 +4829,7 @@ Add_Dns_SSL()
     # acme.sh 默认签发 ECC 证书，须显式安装到站点证书目录。
     if [ "${lets_status}" = 0 ]; then
         mkdir -p "${cert_dir}" || { Restore_Cert_Dir; return 1; }
-        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --install-cert -d "${domain}" --ecc \
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --install-cert -d "${cert_main}" --ecc \
             --key-file "${cert_dir}/${cert_dir_name}.key" \
             --fullchain-file "${cert_dir}/fullchain.cer" \
             --reloadcmd "/etc/init.d/nginx reload"
@@ -4465,11 +4845,16 @@ Add_Dns_SSL()
 
     ssl_certificate="${cert_dir}/fullchain.cer"
     ssl_certificate_key="${cert_dir}/${cert_dir_name}.key"
-    Create_SSL_Config || { Restore_Cert_Dir; return 1; }
+    if [ "${Wildcard_Mode}" = "y" ]; then
+        # 证书已签发成功，个别站点写配置失败不回滚证书目录。
+        Install_Cert_To_Sites "${Wildcard_Site_List}"
+    else
+        Create_SSL_Config || { Restore_Cert_Dir; return 1; }
+    fi
     Discard_Cert_Backup
     Print_Banner \
         "SSL 证书信息" \
-        "域名：${domain} ${moredomain}" \
+        "域名：${cert_domains}" \
         "证书：${cert_dir}/fullchain.cer" \
         "私钥：${cert_dir}/${cert_dir_name}.key"
     Echo_Green "SSL 证书签发成功。"
@@ -4490,7 +4875,11 @@ Add_Dns_SSL_Only()
         Echo_Red "DNS 手工验证模式无法自动续期，证书到期前必须手动续期。"
     fi
 
-    Add_DNS_SSL_Only_Info_Menu || exit 1
+    Add_DNS_SSL_Only_Info_Menu
+    info_rc=$?
+    # 返回 2 表示已有可用证书且用户选择不重签。
+    [ "${info_rc}" = "2" ] && return 0
+    [ "${info_rc}" = "0" ] || exit 1
 
     Install_Check_Acme.sh || exit 1
 
@@ -4500,14 +4889,15 @@ Add_Dns_SSL_Only()
     fi
     Prompt_DNS_API_Credentials "${provider}" || exit 1
 
-    # 泛域名不能直接做目录名，避免路径被通配符展开。
-    cert_dir_name="${domain/#\*./_wildcard.}"
-    cert_dir="/usr/local/nginx/conf/ssl/${cert_dir_name}"
-    Backup_Cert_Dir "${cert_dir}" || return 1
-    Note_Acme_Workdir "/usr/local/nginx/conf/ssl" "${domain}"
-
     # 泛域名已覆盖同级子域名，重复申请只会多一次 TXT 验证。
     cert_domains=$(Filter_Cert_Domains "${domain}" "${moredomain}")
+    # acme.sh 按第一个 -d 建证书目录，主域名被泛域名取代时随之改变。
+    cert_main="${cert_domains%% *}"
+    # 泛域名不能直接做目录名，避免路径被通配符展开。
+    cert_dir_name="${cert_main/#\*./_wildcard.}"
+    cert_dir="/usr/local/nginx/conf/ssl/${cert_dir_name}"
+    Backup_Cert_Dir "${cert_dir}" || return 1
+    Note_Acme_Workdir "/usr/local/nginx/conf/ssl" "${cert_main}"
     # 泛域名带 *，拆分和传参期间关闭路径展开。
     letsdomain=()
     set -f
@@ -4540,7 +4930,7 @@ Add_Dns_SSL_Only()
     # acme.sh 默认签发 ECC 证书，须显式安装到站点证书目录。
     if [ "${lets_status}" = 0 ]; then
         mkdir -p "${cert_dir}" || { Restore_Cert_Dir; return 1; }
-        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --install-cert -d "${domain}" --ecc \
+        /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --install-cert -d "${cert_main}" --ecc \
             --key-file "${cert_dir}/${cert_dir_name}.key" \
             --fullchain-file "${cert_dir}/fullchain.cer"
         lets_status=$?
@@ -4556,7 +4946,7 @@ Add_Dns_SSL_Only()
     Discard_Cert_Backup
     Print_Banner \
         "SSL 证书信息" \
-        "域名：${domain} ${moredomain}" \
+        "域名：${cert_domains}" \
         "证书：${cert_dir}/fullchain.cer" \
         "私钥：${cert_dir}/${cert_dir_name}.key" \
         "证书未写入任何站点配置，需要时自行引用。"
