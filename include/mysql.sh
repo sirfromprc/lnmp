@@ -175,18 +175,25 @@ MySQL_Deprecated_Opt()
 
 Check_MySQL_Data_Dir()
 {
-    local datetime backup_dir
+    local datetime backup_dir started_at kept
     if [ -d "${MySQL_Data_Dir}" ]; then
         # 已有数据目录非空说明机器上存在实际数据库，重装会让它与运行中的服务分离。
         # 默认拒绝，必须显式确认后才搬走；任何情况下都不删除数据。
         if [ -n "$(ls -A -- "${MySQL_Data_Dir}" 2>/dev/null)" ] &&
            [ "${LNMP_Move_Existing_DB_Data:-}" != "yes" ]; then
-            Echo_Red "数据目录 ${MySQL_Data_Dir} 已存在且非空，里面可能是正在使用的数据库。"
-            Echo_Red "本次安装会把它整体搬到 /root 下再新建空实例，不会删除数据，"
-            Echo_Red "但运行中的服务会与数据分离，已中止。"
+            # 进度标记记到 db 阶段，说明该目录是上次未完成安装留下的，而非在用数据库。
+            if [ "$(Install_Progress_Get stage 2>/dev/null)" = "db" ] &&
+               started_at=$(Install_Progress_Get started 2>/dev/null); then
+                Echo_Red "数据目录 ${MySQL_Data_Dir} 非空，来自 ${started_at} 开始的那次未完成安装。"
+                Echo_Red "该目录不会被删除，但需要确认后才能搬走并新建空实例，已中止。"
+            else
+                Echo_Red "数据目录 ${MySQL_Data_Dir} 已存在且非空，里面可能是正在使用的数据库。"
+                Echo_Red "本次安装会把它整体搬到 /root 下再新建空实例，不会删除数据，"
+                Echo_Red "但运行中的服务会与数据分离，已中止。"
+            fi
             Echo_Yellow "确认要重装并搬走现有数据时，显式声明后重试："
             echo
-            echo "  LNMP_Move_Existing_DB_Data=yes bash install.sh db"
+            echo "  LNMP_Move_Existing_DB_Data=yes bash install.sh ${Stack:-db}"
             Echo_Yellow "只想保留现有数据库时不要重装，直接使用现有实例即可。"
             return 1
         fi
@@ -201,6 +208,11 @@ Check_MySQL_Data_Dir()
             return 1
         fi
         Echo_Green "原 MySQL 数据目录已完整移动到 ${backup_dir}。"
+        # 反复中断重装会不断累积备份目录，这里只提示，不自动删除任何数据。
+        kept=$(ls -d /root/mysql-data-dir-backup* 2>/dev/null | wc -l)
+        if [ "${kept}" -gt 1 ]; then
+            Echo_Yellow "/root 下已有 ${kept} 份 mysql-data-dir-backup* 目录，确认无用后请自行删除。"
+        fi
     else
         mkdir -p -- "${MySQL_Data_Dir}" || return 1
     fi

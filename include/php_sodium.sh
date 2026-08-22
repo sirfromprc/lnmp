@@ -27,7 +27,7 @@ Install_PHP_Sodium()
         fi
         yum -y install libsodium-devel
     elif [ "$PM" = "apt" ]; then
-        apt-get install -y libsodium-dev
+        Apt_Get install -y libsodium-dev
     fi
 
     # 当前 PHP 8.x 统一从源码树的 ext/sodium 编译扩展。

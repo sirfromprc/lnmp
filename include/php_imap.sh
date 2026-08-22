@@ -36,7 +36,7 @@ Install_PHP_Imap()
         fi
         [[ -s /usr/lib64/libc-client.so ]] && ln -sf /usr/lib64/libc-client.so /usr/lib/libc-client.so
     elif [ "$PM" = "apt" ]; then
-        apt-get install -y libc-client-dev libkrb5-dev
+        Apt_Get install -y libc-client-dev libkrb5-dev
     fi
 
     Download_PHP_Src

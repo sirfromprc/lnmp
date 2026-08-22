@@ -374,6 +374,20 @@ Check_Stat_R()
     local -a find_args
     local hits count line ex spec fix_list
 
+    # 期望账号或组不存在时 find -user/-group 会整体失败，静默返回 0 会把
+    # 无法核对当成正常，这里先解析再遍历。
+    if [ "${want_owner}" != "-" ] && ! id -u "${want_owner}" >/dev/null 2>&1; then
+        printf -v Detail '期望属主 %s 不存在，无法核对' "${want_owner}"
+        Fix=""
+        return 1
+    fi
+    if [ "${want_group}" != "-" ] && command -v getent >/dev/null 2>&1 &&
+        ! getent group "${want_group}" >/dev/null 2>&1; then
+        printf -v Detail '期望属组 %s 不存在，无法核对' "${want_group}"
+        Fix=""
+        return 1
+    fi
+
     find_args=("${path}")
     while IFS= read -r ex; do
         [ -n "${ex}" ] || continue

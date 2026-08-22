@@ -89,7 +89,7 @@ Install_OpenResty_Pkg()
         fi
         Echo_Green "仓库中存在 ${codename} 的包，继续。"
 
-        apt-get -y install --no-install-recommends wget gnupg ca-certificates lsb-release >/dev/null 2>&1
+        Apt_Get -y install --no-install-recommends wget gnupg ca-certificates lsb-release >/dev/null 2>&1
 
         # 通过 signed-by 将公钥限定到 OpenResty 软件源，避免扩大系统信任范围。
         # 公钥下载使用权限受限的随机临时目录，防止固定临时路径被链接替换。
@@ -123,8 +123,8 @@ Install_OpenResty_Pkg()
                 ;;
         esac
 
-        apt-get update -y
-        if ! apt-get -y install --no-install-recommends openresty; then
+        Apt_Get update -y
+        if ! Apt_Get -y install --no-install-recommends openresty; then
             Echo_Red "安装 openresty 包失败。"
             Echo_Red "排查：apt-get install openresty 看具体报错；"
             Echo_Red "或改用源码编译方式。"
@@ -336,7 +336,7 @@ Uninstall_OpenResty()
     systemctl disable openresty 2>/dev/null
 
     if [ "${PM}" = "apt" ] && dpkg -l openresty 2>/dev/null | grep -q '^ii'; then
-        apt-get -y remove --purge openresty 2>/dev/null
+        Apt_Get -y remove --purge openresty 2>/dev/null
         rm -f /etc/apt/sources.list.d/openresty.list /usr/share/keyrings/openresty.gpg
     elif [ "${PM}" = "yum" ] && rpm -q openresty >/dev/null 2>&1; then
         ${PM} remove -y openresty 2>/dev/null

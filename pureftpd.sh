@@ -44,10 +44,10 @@ Install_Pureftpd()
         for packages in make gcc gcc-c++ gcc-g77 openssl openssl-devel bzip2;
         do yum -y install $packages; done
     elif [ "$PM" = "apt" ]; then
-        apt-get update -y
-        [[ $? -ne 0 ]] && apt-get update --allow-releaseinfo-change -y
+        Apt_Get update -y
+        [[ $? -ne 0 ]] && Apt_Get update --allow-releaseinfo-change -y
         for packages in build-essential gcc g++ make openssl libssl-dev bzip2;
-        do apt-get --no-install-recommends install -y $packages; done
+        do Apt_Get --no-install-recommends install -y $packages; done
     fi
     Echo_Blue "正在下载文件..."
     cd ${cur_dir}/src

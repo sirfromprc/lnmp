@@ -50,9 +50,23 @@ fi
 
 if [[ "${Stack}" = "lnmp" || "${Stack}" = "lnmpa" || "${Stack}" = "lamp" ]]; then
     if [ -f /bin/lnmp ]; then
-        Echo_Red "检测到 LNMP 已安装。"
-        echo -e "如需重新安装，请先备份数据，\n然后执行 ./uninstall.sh 卸载现有环境。"
-        exit 1
+        # 进度标记存在说明上次安装没走到成功收尾，据此区分已装好的环境与中断残留。
+        if started_at=$(Install_Progress_Get started); then
+            Echo_Yellow "检测到 ${started_at} 开始的安装没有完成，但 /bin/lnmp 已生成。"
+            if [ "${LNMP_Resume_Broken_Install:-}" != "yes" ]; then
+                Echo_Red "继续安装会覆盖已编译的组件，已中止。"
+                Echo_Yellow "确认要在现有环境上重装时，显式声明后重试："
+                echo
+                echo "  LNMP_Resume_Broken_Install=yes bash install.sh ${Stack}"
+                Echo_Yellow "想从干净环境开始时，先执行 ./uninstall.sh。"
+                exit 1
+            fi
+            Echo_Yellow "LNMP_Resume_Broken_Install=yes，继续在现有环境上重装。"
+        else
+            Echo_Red "检测到 LNMP 已安装。"
+            echo -e "如需重新安装，请先备份数据，\n然后执行 ./uninstall.sh 卸载现有环境。"
+            exit 1
+        fi
     fi
 fi
 
@@ -107,6 +121,8 @@ Init_Install()
     if [ "${DB_Kind}" != "none" ]; then
         # 数据库安装失败时立即中止，避免继续配置依赖数据库的组件。
         Dispatch "${DB_Install}" || return 1
+        # 此后中断，数据目录已非空，重跑时据此区分残留与在用数据库。
+        Install_Progress_Mark db
     fi
     TempMycnf_Clean
     Clean_DB_Src_Dir
@@ -182,21 +198,28 @@ Install_Rc=0
 case "${Stack}" in
     lnmp)
         Dispaly_Selection
-        LNMP_Stack 2>&1 | tee /root/lnmp-install.log
+        Install_Log_Begin /root/lnmp-install.log
+        Install_Progress_Begin
+        LNMP_Stack 2>&1 | tee -a /root/lnmp-install.log
         Install_Rc=${PIPESTATUS[0]}
         ;;
     lnmpa)
         Dispaly_Selection
-        LNMPA_Stack 2>&1 | tee /root/lnmp-install.log
+        Install_Log_Begin /root/lnmp-install.log
+        Install_Progress_Begin
+        LNMPA_Stack 2>&1 | tee -a /root/lnmp-install.log
         Install_Rc=${PIPESTATUS[0]}
         ;;
     lamp)
         Dispaly_Selection
-        LAMP_Stack 2>&1 | tee /root/lnmp-install.log
+        Install_Log_Begin /root/lnmp-install.log
+        Install_Progress_Begin
+        LAMP_Stack 2>&1 | tee -a /root/lnmp-install.log
         Install_Rc=${PIPESTATUS[0]}
         ;;
     nginx)
-        Install_Only_Nginx 2>&1 | tee /root/nginx-install.log
+        Install_Log_Begin /root/nginx-install.log
+        Install_Only_Nginx 2>&1 | tee -a /root/nginx-install.log
         Install_Rc=${PIPESTATUS[0]}
         ;;
     db)
@@ -208,7 +231,8 @@ case "${Stack}" in
         Install_Rc=$?
         ;;
     phpmyadmin)
-        Install_Only_phpMyAdmin "${2:-}" 2>&1 | tee /root/phpmyadmin-install.log
+        Install_Log_Begin /root/phpmyadmin-install.log
+        Install_Only_phpMyAdmin "${2:-}" 2>&1 | tee -a /root/phpmyadmin-install.log
         Install_Rc=${PIPESTATUS[0]}
         ;;
     *)
@@ -223,6 +247,13 @@ esac
 # 成功后同步管理命令到 /usr/bin，并将执行权限设置为 755。
 if [ "${Install_Rc}" -eq 0 ] && [ -s /bin/lnmp ]; then
     Sync_LNMP_Command_Alias || Install_Rc=1
+fi
+
+# 完整安装成功结束才清除进度标记；失败时保留，供下次运行识别中断阶段。
+if [ "${Install_Rc}" -eq 0 ]; then
+    case "${Stack}" in
+        lnmp|lnmpa|lamp) Install_Progress_Done ;;
+    esac
 fi
 
 exit ${Install_Rc}

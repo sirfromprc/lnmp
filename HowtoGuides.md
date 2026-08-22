@@ -78,6 +78,62 @@ ss -lntup
 4 核 6G 的机器上，从零完整安装约 **9 分钟**（MySQL 走二进制不编译，VPS 网络、CPU限制情况不同，时间会有所差异，可达20-30分钟）。
 如果选择源码编译 MySQL，再加 30-60 分钟，且有可能失败。
 
+编译期间 ssh 掉线会使安装中断在半途，用 screen 或 tmux 保持会话：
+
+```bash
+# 安装 screen（tmux 同理：apt-get install -y tmux）
+apt-get install -y screen
+
+# 在独立会话中执行安装
+screen -S lnmp
+bash install.sh lnmp
+
+# 掉线后重新登录服务器，接回原会话
+screen -r lnmp
+```
+
+tmux 的等价命令为 `tmux new -s lnmp` 与 `tmux attach -t lnmp`。
+
+`install.sh lnmp|lnmpa|lamp` 在最终确认页会检测该情况：`SSH_CONNECTION` 非空且
+`STY`、`TMUX` 均为空时输出上述建议，独立入口（`nginx`、`db` 等）不作此提示。
+
+安装已经中断时，重跑的影响取决于中断阶段。完整安装期间会在
+`/root/.lnmp-install-progress` 记录进度，安装成功结束后自动删除，
+重跑据此区分「上次没装完的残留」与「机器上正在用的环境」：
+
+- 依赖安装、下载、编译基础库阶段中断：直接重跑同一命令即可，已装的包会跳过，
+  残缺的下载文件因 SHA256 不匹配被删除后重新下载。
+- 数据库安装完成之后中断：`/usr/local/mysql/var` 已非空，重跑会指出该目录来自哪次
+  未完成的安装并中止。确认要搬走后显式声明重试，旧目录整体移动到
+  `/root/mysql-data-dir-backup<时间戳>`，不会被删除：
+
+  ```bash
+  LNMP_Move_Existing_DB_Data=yes bash install.sh lnmp
+  ```
+
+  该目录累计超过一份时会提示自行清理，脚本不会自动删除任何一份。
+- 已生成 `/bin/lnmp` 之后中断：重跑会指出上次安装未完成，确认要在现有环境上继续时
+  显式声明重试；想从干净环境开始则先执行 `./uninstall.sh`：
+
+  ```bash
+  LNMP_Resume_Broken_Install=yes bash install.sh lnmp
+  ```
+
+进度标记不存在时（例如安装早已正常完成），上述两处均维持原有的拒绝行为：
+数据目录按「可能是正在使用的数据库」处理，`/bin/lnmp` 按「已安装」处理。
+
+安装日志追加写入 `/root/lnmp-install.log`，每次运行前插入一行
+`===== <时间> <栈名> pid=<进程号> =====` 分隔，重跑不会覆盖上次内容；
+超过 10MB 时滚动为 `/root/lnmp-install.log.1`，只保留一份历史。
+
+依赖安装期间若系统自动更新占用了 dpkg 锁，apt 会等待至多 `APT_LOCK_TIMEOUT`
+（默认 300）秒而不是直接失败；仍未取得锁而失败的包会在本轮结束后重试一次。
+需要更长的等待时间时在命令前指定：
+
+```bash
+APT_LOCK_TIMEOUT=900 bash install.sh lnmp
+```
+
 ### 1.3 获取代码
 
 从项目 Release 页面下载固定版本，并使用同一 Release 公布的 SHA-256 核对文件。
@@ -119,6 +175,7 @@ bash install.sh lnmp
 是否启用 InnoDB → PHP 版本 → Nginx/OpenResty → 内存分配器。选完会打印一份完整摘要（版本、
 编译参数、即将放行/阻断的端口），要求输入 `y` 确认后才真正开始装依赖、
 编译。最终确认前可用 Ctrl+C 退出并重新选择，此时尚未开始系统变更。
+该确认页在 ssh 直连且未使用 screen/tmux 时会提示先建立可保持的会话，详见 [1.2](#12-编译耗时参考)。
 
 安装 LAMP/LNMPA 时还会询问 Apache `ServerAdmin`，这里只接受合法邮箱；空白、斜杠、
 分号和配置片段会在写 Apache 配置前被拒绝。ACME 邮箱支持最长 63 位顶级域，三种栈规则一致。

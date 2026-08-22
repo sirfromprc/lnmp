@@ -297,10 +297,75 @@ Apache_Selection()
     echo "将安装 ${Apache_Info[$((ApacheSelect-1))]}。"
 }
 
+# 完整安装的进度标记，用于区分「用户在用的数据库」和「上次没装完留下的残留」。
+# 仅由 install.sh 的 lnmp/lnmpa/lamp 入口维护，安装成功后删除。
+Install_Progress_File="${Install_Progress_File:-/root/.lnmp-install-progress}"
+
+Install_Progress_Begin()
+{
+    if ! printf 'stack=%s\nstarted=%s\npid=%s\n' \
+         "${Stack:-lnmp}" "$(date '+%F %T')" "$$" > "${Install_Progress_File}"; then
+        Echo_Yellow "无法写入安装进度标记 ${Install_Progress_File}，中断后的重跑提示会不准确。"
+        return 1
+    fi
+    chmod 600 "${Install_Progress_File}" 2>/dev/null
+    return 0
+}
+
+# Install_Progress_Mark <阶段名>：记录已完成的阶段，取值由调用方约定。
+Install_Progress_Mark()
+{
+    [ -s "${Install_Progress_File}" ] || return 0
+    printf 'stage=%s\n' "$1" >> "${Install_Progress_File}" || return 1
+    return 0
+}
+
+Install_Progress_Done()
+{
+    rm -f "${Install_Progress_File}"
+}
+
+# Install_Progress_Get <键>：输出最后一次写入的值；无标记或无该键时输出空并返回 1。
+Install_Progress_Get()
+{
+    local value
+    [ -s "${Install_Progress_File}" ] || return 1
+    value=$(awk -F= -v k="$1" '$1 == k {v = $2} END {print v}' "${Install_Progress_File}")
+    [ -n "${value}" ] || return 1
+    printf '%s' "${value}"
+}
+
+# Install_Log_Begin <日志文件>：写入本次运行的分隔行，供追加写入的日志区分批次。
+# 超过 10MB 时先滚动为 .1，避免反复重装把日志撑大；只保留一份历史。
+Install_Log_Begin()
+{
+    local log="$1" size
+
+    size=$(stat -c %s "${log}" 2>/dev/null || echo 0)
+    if [ "${size}" -gt $((10 * 1024 * 1024)) ] && ! mv -f "${log}" "${log}.1"; then
+        Echo_Yellow "日志滚动失败，继续追加写入 ${log}。"
+    fi
+    if ! printf '\n===== %s  %s  pid=%s =====\n' \
+         "$(date '+%F %T')" "${Stack:-lnmp}" "$$" >> "${log}"; then
+        Echo_Yellow "无法写入 ${log}，本次安装日志可能不完整。"
+        return 1
+    fi
+    return 0
+}
+
 # 在限定时间内等待包管理器锁释放。
 # 不终止包管理器进程，也不删除活动锁文件，避免破坏 dpkg/rpm 数据库。
 # Kill_PM 保留为兼容别名。
 PM_Lock_Wait_Sec=300
+
+# apt 1.9 起支持 DPkg::Lock::Timeout，锁被占用时自行等待而非立即失败；
+# 更早版本忽略未知配置项，行为与不带该选项一致。所有 apt-get 调用统一经此包装。
+APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-300}"
+
+Apt_Get()
+{
+    apt-get -o DPkg::Lock::Timeout="${APT_LOCK_TIMEOUT}" "$@"
+}
 
 PM_Lock_Busy()
 {
@@ -369,6 +434,12 @@ Press_Install()
         Echo_Yellow "=========================================================================="
         Echo_Yellow "您即将安装/编译以下模块，请确认！" 
         Print_APP_Ver
+        # 编译耗时较长，ssh 直连时掉线会使安装中断在半途。
+        if [ -z "${STY:-}" ] && [ -z "${TMUX:-}" ] && [ -n "${SSH_CONNECTION:-}" ]; then
+            Echo_Yellow "当前为 ssh 直连会话，编译期间掉线会中断安装。"
+            Echo_Yellow "建议先执行 screen -S lnmp（或 tmux new -s lnmp）再运行本脚本，"
+            Echo_Yellow "掉线后用 screen -r lnmp（或 tmux attach -t lnmp）接回。"
+        fi
         Confirm_Start_Install || exit 1
         ;;
     *)
@@ -482,8 +553,8 @@ Install_LSB()
     if [ "$PM" = "yum" ]; then
         yum -y install redhat-lsb
     elif [ "$PM" = "apt" ]; then
-        apt-get update
-        apt-get --no-install-recommends install -y lsb-release
+        Apt_Get update
+        Apt_Get --no-install-recommends install -y lsb-release
     fi
 }
 
@@ -1655,9 +1726,9 @@ Check_Openssl()
         if [ "${PM}" = "yum" ]; then
             yum install -y openssl
         elif [ "${PM}" = "apt" ]; then
-            apt-get update -y
-            [[ $? -ne 0 ]] && apt-get update --allow-releaseinfo-change -y
-            apt-get install -y openssl
+            Apt_Get update -y
+            [[ $? -ne 0 ]] && Apt_Get update --allow-releaseinfo-change -y
+            Apt_Get install -y openssl
         fi
     fi
     openssl version

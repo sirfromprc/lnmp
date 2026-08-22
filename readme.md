@@ -93,12 +93,24 @@ bash install.sh lnmp
 ```
 
 安装程序会询问数据库、PHP、Nginx/OpenResty、内存分配器等选项，并在系统变更前显示摘要。
+编译耗时较长，确认页在 ssh 直连且未使用 screen/tmux 时会提示先建立可保持的会话。
 其它栈的入口是：
 
 ```bash
 bash install.sh lnmpa
 bash install.sh lamp
 ```
+
+安装日志追加写入 `/root/lnmp-install.log`，重跑不会覆盖上次内容。
+安装中断后重跑相关的开关：
+
+| 变量 | 作用 |
+|---|---|
+| `APT_LOCK_TIMEOUT` | apt 等待 dpkg 锁的秒数，默认 300 |
+| `LNMP_Move_Existing_DB_Data=yes` | 允许把已存在的非空数据目录整体搬到 `/root` 后新建空实例 |
+| `LNMP_Resume_Broken_Install=yes` | 上次安装未完成但 `/bin/lnmp` 已生成时，允许在现有环境上继续重装 |
+
+后两项默认关闭，不显式声明时安装一律中止，不会移动或删除任何数据。
 
 ### 2.4 非交互安装
 
@@ -269,7 +281,7 @@ FTP 账号操作依赖已安装的 Pure-FTPd。Telegram 通知需要真实 Bot T
 3. 不要使用空变量拼接递归 `chown`、`chmod`、`rm` 或 `find`。站点权限操作必须先将路径
    规范化，并确认它位于预期的网站根目录下。
 4. 不要用 `chmod -R 777` 解决网站写入问题。它会扩大被入侵后的写入范围，也可能破坏服务配置。
-5. 修改 Nginx 配置后先执行 `/usr/local/nginx/sbin/nginx -t`，通过后再 reload。
+5. 修改 Nginx 配置后先执行 `nginx -t`，通过后再`lnmp nginx reload`。
 6. 不要用 `nft flush ruleset`、停用防火墙或递归改整个 `/usr/local` 权限来排障。
 7. 数据库导入、恢复、删除和升级都有数据影响；先执行独立备份并验证可恢复。
 8. phpMyAdmin 的随机路径不是访问控制。公网使用时还应限制来源并使用 HTTPS。

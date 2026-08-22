@@ -57,9 +57,9 @@ Deb_SyncTime()
     fi
     for pkg in ntpsec-ntpdate ntpdate; do
         # 先模拟安装，避免在无候选包的发行版上执行必然失败的安装。
-        apt-get install -s -y "${pkg}" >/dev/null 2>&1 || continue
+        Apt_Get install -s -y "${pkg}" >/dev/null 2>&1 || continue
         Echo_Blue "[+] 正在安装 ${pkg}..."
-        apt-get install -y "${pkg}" || continue
+        Apt_Get install -y "${pkg}" || continue
         command -v ntpdate >/dev/null 2>&1 || continue
         Run_Ntpdate
         return 0
@@ -71,8 +71,8 @@ Deb_SyncTime()
 Deb_InstallNTP()
 {
     if [ "${CheckMirror}" != "n" ]; then
-        apt-get update -y
-        [[ $? -ne 0 ]] && apt-get update --allow-releaseinfo-change -y
+        Apt_Get update -y
+        [[ $? -ne 0 ]] && Apt_Get update --allow-releaseinfo-change -y
         Deb_SyncTime
     fi
     date
@@ -118,14 +118,14 @@ Deb_Purge_Installed()
         return 0
     fi
     echo "卸载已安装的旧包：${installed}"
-    apt-get purge -y ${installed}
+    Apt_Get purge -y ${installed}
 }
 
 Deb_RemoveAMP()
 {
     Echo_Blue "[-] 正在使用 apt-get 删除旧软件包..."
-    apt-get update -y
-    [[ $? -ne 0 ]] && apt-get update --allow-releaseinfo-change -y
+    Apt_Get update -y
+    [[ $? -ne 0 ]] && Apt_Get update --allow-releaseinfo-change -y
 
     # 清理受支持发行版中仍可能存在的旧组件包。
     pkill -x apache2 >/dev/null 2>&1
@@ -139,7 +139,7 @@ Deb_RemoveAMP()
         [ -d /etc/mysql ] && echo "注意：/etc/mysql 仍存在，安装数据库时会自动改名备份。"
     fi
 
-    apt-get autoremove -y && apt-get clean
+    Apt_Get autoremove -y && Apt_Get clean
 }
 
 # 默认保留 SELinux 状态，并为安装目录设置必要的安全上下文。
@@ -725,7 +725,7 @@ Deb_Ncurses5_Compat()
 {
     local so path
 
-    apt-get --no-install-recommends install -y libncurses5 libtinfo5 2>/dev/null
+    Apt_Get --no-install-recommends install -y libncurses5 libtinfo5 2>/dev/null
 
     for so in libtinfo libncurses; do
         ldconfig -p 2>/dev/null | grep -q "${so}\.so\.5" && continue
@@ -761,15 +761,15 @@ Deb_Pkg_Alternative()
 
 Deb_Dependent()
 {
-    local pkg alt failed="" skipped=""
+    local pkg alt retry failed="" skipped=""
 
     Echo_Blue "[+] 正在使用 apt-get 安装依赖软件包..."
-    apt-get update -y
-    [[ $? -ne 0 ]] && apt-get update --allow-releaseinfo-change -y
-    apt-get autoremove -y
-    apt-get -fy install
+    Apt_Get update -y
+    [[ $? -ne 0 ]] && Apt_Get update --allow-releaseinfo-change -y
+    Apt_Get autoremove -y
+    Apt_Get -fy install
     export DEBIAN_FRONTEND=noninteractive
-    apt-get --no-install-recommends install -y build-essential gcc g++ make
+    Apt_Get --no-install-recommends install -y build-essential gcc g++ make
 
     for pkg in debian-keyring debian-archive-keyring build-essential gcc g++ make cmake autoconf automake re2c wget cron bzip2 libzip-dev libc6-dev bison file flex m4 gawk less cpp binutils diffutils unzip tar libbz2-dev libncurses-dev libncurses5-dev libtool libevent-dev openssl libssl-dev libsasl2-dev libltdl-dev zlib1g-dev libglib2.0-dev libjpeg-dev libpng-dev libkrb5-dev curl libcurl4-gnutls-dev libcurl4-openssl-dev libpcre2-dev libpcre3-dev libpq-dev gettext libxml2-dev libcap-dev ca-certificates psmisc patch git libc-ares-dev libicu-dev e2fsprogs libxslt1-dev xz-utils libexpat1-dev libaio-dev libtirpc-dev libsqlite3-dev libonig-dev lsof pkg-config libtinfo-dev libnuma-dev libwebp-dev gnutls-dev libbrotli-dev iproute2 gzip nftables gnupg gpgv coreutils; do
         if ! Deb_Pkg_Available "${pkg}"; then
@@ -781,13 +781,25 @@ Deb_Dependent()
                 continue
             fi
         fi
-        apt-get --no-install-recommends install -y "${pkg}" || failed="${failed} ${pkg}"
+        Apt_Get --no-install-recommends install -y "${pkg}" || failed="${failed} ${pkg}"
     done
 
     if [ -n "${skipped}" ]; then
         Echo_Yellow "软件源无下列包，已跳过：${skipped# }"
         echo
     fi
+
+    # 首轮失败多为中途被其他 apt 进程抢占锁，重装一轮再判定。
+    # Apt_Get 已带锁等待超时，此处不再自行等待，仅给一次重试机会。
+    if [ -n "${failed}" ]; then
+        Echo_Yellow "下列依赖包首次安装失败，重试一次：${failed# }"
+        retry="${failed# }"
+        failed=""
+        for pkg in ${retry}; do
+            Apt_Get --no-install-recommends install -y "${pkg}" || failed="${failed} ${pkg}"
+        done
+    fi
+
     if [ -n "${failed}" ]; then
         Echo_Red "下列依赖包安装失败：${failed# }"
         return 1
@@ -798,7 +810,7 @@ Deb_Dependent()
     # PHP imap 扩展依赖已从 Debian 13 移除的 uw-imap libc-client；单独安装
     # 该依赖，以便缺失时明确提示扩展无法编译。
     if [ "${Enable_PHP_Imap}" = 'y' ]; then
-        apt-get --no-install-recommends install -y libc-client-dev libc-client2007e-dev 2>/dev/null
+        Apt_Get --no-install-recommends install -y libc-client-dev libc-client2007e-dev 2>/dev/null
         if ! ls /usr/include/c-client >/dev/null 2>&1 && ! ls /usr/include/imap >/dev/null 2>&1; then
             Echo_Yellow "未能安装 libc-client（uw-imap）开发包 —— Debian 13 已移除该库。"
             Echo_Yellow "PHP imap 扩展将无法编译。若不需要它，请设 Enable_PHP_Imap='n'。"

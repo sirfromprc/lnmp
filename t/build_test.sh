@@ -52,8 +52,8 @@ deps()
 {
     step "安装编译依赖"
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq --no-install-recommends \
+    apt-get -o DPkg::Lock::Timeout=300 update -qq
+    apt-get -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends \
         build-essential ca-certificates wget curl perl \
         libpcre2-dev zlib1g-dev libssl-dev libxml2-dev \
         libbrotli-dev pkg-config >/dev/null || die "依赖安装失败"
@@ -251,7 +251,7 @@ build_php()
     step "PHP ${ver} 编译验证（profile.sh 的默认分支）"
 
     export DEBIAN_FRONTEND=noninteractive
-    apt-get install -y -qq --no-install-recommends \
+    apt-get -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends \
         libcurl4-openssl-dev libjpeg-dev libpng-dev libwebp-dev libfreetype6-dev \
         libonig-dev libsqlite3-dev libzip-dev libxslt1-dev bison re2c >/dev/null
 

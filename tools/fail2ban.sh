@@ -30,9 +30,9 @@ if [ "${PM}" = "yum" ]; then
     do yum install $packages -y; done
     service rsyslog restart
 elif [ "${PM}" = "apt" ]; then
-    apt-get update
+    Apt_Get update
     for packages in python3 python3-setuptools nftables rsyslog;
-    do apt-get install -y $packages; done
+    do Apt_Get install -y $packages; done
     if command -v systemctl >/dev/null 2>&1; then
         systemctl restart rsyslog
     else

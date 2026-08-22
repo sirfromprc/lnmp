@@ -22,7 +22,7 @@ Install_PHP_Ldap()
             ln -sf /usr/lib64/liblber* /usr/lib/
         fi
     elif [ "$PM" = "apt" ]; then
-        apt-get install -y libldap2-dev libsasl2-dev
+        Apt_Get install -y libldap2-dev libsasl2-dev
         if [ -s /usr/lib/x86_64-linux-gnu/libldap.so ]; then
             ln -sf /usr/lib/x86_64-linux-gnu/libldap.so /usr/lib/
             ln -sf /usr/lib/x86_64-linux-gnu/liblber.so /usr/lib/

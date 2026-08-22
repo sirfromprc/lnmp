@@ -24,7 +24,7 @@ Install_PHPMemcached()
         Get_Dist_Version
     elif [ "$PM" = "apt" ]; then
         export DEBIAN_FRONTEND=noninteractive
-        apt-get install libsasl2-2 sasl2-bin libsasl2-2 libsasl2-dev libsasl2-modules -y
+        Apt_Get install libsasl2-2 sasl2-bin libsasl2-2 libsasl2-dev libsasl2-modules -y
     fi
     Download_Files https://launchpad.net/libmemcached/1.0/${Libmemcached_Ver#libmemcached-}/+download/${Libmemcached_Ver}.tar.gz ${Libmemcached_Ver}.tar.gz
     Require_File "${Libmemcached_Ver}.tar.gz" "libmemcached"
@@ -55,7 +55,7 @@ Install_Memcached_Deps()
     Get_Dist_Name
     if [ "${PM}" = "apt" ]; then
         export DEBIAN_FRONTEND=noninteractive
-        apt-get install -y libevent-dev >/dev/null 2>&1
+        Apt_Get install -y libevent-dev >/dev/null 2>&1
     elif [ "${PM}" = "yum" ]; then
         yum install -y libevent-devel >/dev/null 2>&1
     fi

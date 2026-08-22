@@ -34,9 +34,9 @@ if [ "${PM}" = "yum" ]; then
     fi
     service rsyslog restart
 elif [ "${PM}" = "apt" ]; then
-    apt-get update
+    Apt_Get update
     for packages in python rsyslog python-ipaddr;
-    do apt-get install $packages -y; done
+    do Apt_Get install $packages -y; done
     /etc/init.d/rsyslog restart
 fi
 

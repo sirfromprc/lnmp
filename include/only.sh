@@ -12,13 +12,13 @@ Nginx_Dependent()
         fi
     elif [ "$PM" = "apt" ]; then
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update -y
-        [[ $? -ne 0 ]] && apt-get update --allow-releaseinfo-change -y
+        Apt_Get update -y
+        [[ $? -ne 0 ]] && Apt_Get update --allow-releaseinfo-change -y
         # 仅清理实际已安装的旧 Apache 软件包。
         Deb_Purge_Installed apache2 apache2-bin apache2-data apache2-utils apache2-doc \
                             libapache2-mod-php
         for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make autoconf automake wget cron openssl libssl-dev zlib1g zlib1g-dev bzip2 xz-utils gzip libbrotli-dev gnupg gpgv;
-        do apt-get --no-install-recommends install -y $packages; done
+        do Apt_Get --no-install-recommends install -y $packages; done
     fi
 }
 
@@ -114,12 +114,12 @@ DB_Dependent()
         fi
     elif [ "$PM" = "apt" ]; then
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update -y
-        [[ $? -ne 0 ]] && apt-get update --allow-releaseinfo-change -y
+        Apt_Get update -y
+        [[ $? -ne 0 ]] && Apt_Get update --allow-releaseinfo-change -y
         Deb_Purge_Installed mysql-server mysql-client mysql-common \
                             mariadb-server mariadb-client mariadb-common libmariadbd-dev
         for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make cmake autoconf automake wget openssl libssl-dev zlib1g zlib1g-dev libncurses5 libncurses5-dev bison libaio-dev libtirpc-dev libsasl2-dev pkg-config libpcre2-dev libxml2-dev libtinfo-dev libnuma-dev gnutls-dev xz-utils gzip;
-        do apt-get --no-install-recommends install -y $packages; done
+        do Apt_Get --no-install-recommends install -y $packages; done
         # 数据库通用二进制客户端需要 ncurses 5 兼容运行库。
         Deb_Ncurses5_Compat
     fi

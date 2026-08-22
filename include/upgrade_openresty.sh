@@ -59,9 +59,9 @@ Upgrade_OpenResty()
 Upgrade_OpenResty_Pkg()
 {
     if [ "${PM}" = "apt" ]; then
-        apt-get update -y
+        Apt_Get update -y
 
-        if ! DEBIAN_FRONTEND=noninteractive apt-get -y \
+        if ! DEBIAN_FRONTEND=noninteractive Apt_Get -y \
              -o Dpkg::Options::="--force-confold" \
              install --only-upgrade openresty; then
             Echo_Red "apt 升级 openresty 失败。"

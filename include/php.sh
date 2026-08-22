@@ -74,7 +74,7 @@ PHP_with_Ldap()
                 ln -sf /usr/lib64/liblber* /usr/lib/
             fi
         elif [ "$PM" = "apt" ]; then
-            apt-get install -y libldap2-dev libsasl2-dev
+            Apt_Get install -y libldap2-dev libsasl2-dev
             if [ -s /usr/lib/x86_64-linux-gnu/libldap.so ]; then
                 ln -sf /usr/lib/x86_64-linux-gnu/libldap.so /usr/lib/
                 ln -sf /usr/lib/x86_64-linux-gnu/liblber.so /usr/lib/
@@ -108,7 +108,7 @@ PHP_with_Sodium()
             fi
             yum -y install libsodium-devel
         elif [ "$PM" = "apt" ]; then
-            apt-get install -y libsodium-dev
+            Apt_Get install -y libsodium-dev
         fi
         with_sodium='--with-sodium'
     fi
@@ -138,7 +138,7 @@ PHP_with_Imap()
             fi
             [[ -s /usr/lib64/libc-client.so ]] && ln -sf /usr/lib64/libc-client.so /usr/lib/libc-client.so
         elif [ "$PM" = "apt" ]; then
-            apt-get install -y libc-client-dev libkrb5-dev
+            Apt_Get install -y libc-client-dev libkrb5-dev
         fi
         with_imap='--with-imap --with-imap-ssl --with-kerberos'
     fi
