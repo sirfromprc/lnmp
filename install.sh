@@ -187,11 +187,15 @@ LAMP_Stack()
 }
 
 
-# 安装依赖或修改防火墙的入口需要安装前确认；不涉及端口和防火墙的
-# phpMyAdmin 管理子命令及 mphp 不执行该确认。
+# 整栈入口涉及 lnmp.conf 的全部选项，安装前统一确认一次；单组件入口的
+# 配置项在各自的安装摘要里列出，这里只做 SSH 端口检查。
+# 不涉及端口和防火墙的 phpMyAdmin 管理子命令及 mphp 不执行该确认。
 case "${Stack}" in
-    lnmp|lnmpa|lamp|nginx|db)
+    lnmp|lnmpa|lamp)
         Confirm_LNMPConf_Reviewed
+        Check_SSH_Port_Policy || exit 1
+        ;;
+    nginx|db)
         Check_SSH_Port_Policy || exit 1
         ;;
 esac

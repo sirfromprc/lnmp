@@ -268,6 +268,145 @@ LNMP_Reuse_Answers=no  bash install.sh lnmp   # 不询问，重新选择
 LNMP_Move_Existing_DB_Data=yes bash install.sh db
 ```
 
+### 2.1.2 补装、升级、单独安装
+
+整栈之外的安装动作分三个脚本：`install.sh` 的单组件子命令、`addons.sh` 的 PHP 扩展、
+`upgrade.sh` 的组件升级。全部在代码目录下执行，都要 root。
+
+| 命令 | 作用 | 前置条件 |
+|---|---|---|
+| `bash install.sh nginx` | 只装 Nginx，不装数据库和 PHP | 无；已装 Nginx 时为重新编译 |
+| `bash install.sh db` | 只装 MySQL/MariaDB | 本机没有本包安装的数据库 |
+| `bash install.sh mphp` | 追加一个并行 PHP 版本到 `/usr/local/php8.x` | 已是完整 LNMP |
+| `bash install.sh phpmyadmin` | 为现有环境补装 phpMyAdmin | 主栈已装，PHP ≥ 7.2.5 且有 mysqli |
+| `bash install.sh phpmyadmin {enable\|disable\|status}` | 开关或查看 phpMyAdmin 的 Web 入口 | phpMyAdmin 已装 |
+| `bash addons.sh install <组件>` | PHP 扩展、Redis 服务端、ImageMagick | 对应 PHP 已装 |
+| `bash pureftpd.sh` | 安装 Pure-FTPd | 无 |
+| `bash upgrade.sh <目标>` | 升级单个组件 | 对应组件已装 |
+
+单组件入口不做整栈入口的残留检测（[2.1.1 安装中断或重新安装](#211-安装中断或重新安装)），也不打印整栈摘要。
+`nginx` 和 `db` 会改防火墙，因此仍执行 SSH 端口检查，随后打印本入口自己的摘要并要求输入
+`y` 确认，摘要里只列该入口真正读取的 `lnmp.conf` 项：
+
+```
+==========================================================================
+单独安装模式：只安装 Nginx，不安装数据库和 PHP。
+即将安装：nginx-1.30.4
+OpenSSL：openssl-3.5.7（随 Nginx 一起编译）
+附加模块（lnmp.conf 开关）：Lua, Brotli, Cache Purge
+默认网站目录：/home/wwwroot/default
+完整性校验：y
+防火墙将放行：80、443；SSH 端口：22
+本入口不读取 DB_Port、MySQL_Data_Dir、Enable_PhpMyAdmin 等选项。
+==========================================================================
+
+确认以上信息，开始安装请输入 y，其它输入一律取消：
+```
+
+`mphp` 和 `phpmyadmin` 不改端口，不做这两步确认。所有入口的确认都可以用 `LNMP_Auto=y`
+跳过；标准输入不是终端且没有该变量时一律以非 0 退出，不会带着默认值继续。
+
+#### 只装 Nginx
+
+```bash
+bash install.sh nginx
+LNMP_Auto=y bash install.sh nginx </dev/null      # 非交互
+```
+
+用于静态站、反向代理、负载均衡这类不需要 PHP 和数据库的机器。执行内容：
+
+- 卸载发行版包管理器装的 Apache 系列包（Debian 系为 `apache2`、`apache2-bin`、
+  `apache2-data`、`apache2-utils`、`apache2-doc`、`libapache2-mod-php`，只处理确实装了的），
+  再装编译依赖。
+- 编译安装 PCRE 与 Nginx，版本取自 `include/version.sh`，没有版本菜单。
+- 写默认站点 `index.html` 与 `favicon.ico` 到 `Default_Website_Dir`，放行 80、443，
+  安装 `/bin/lnmp` 管理命令，设为开机自启并启动。
+
+模块开关取 `lnmp.conf`：`Enable_Nginx_Lua`、`Enable_Ngx_Brotli`、`Enable_Ngx_CachePurge`、
+`Enable_Ngx_FancyIndex`、`Nginx_Modules_Options`。Nginx 模块是编译期决定的，装完只能重新
+编译才能增删，自定义模块见 [8.2.7 安装本项目未提供的 Nginx 模块](#827-安装本项目未提供的-nginx-模块)。
+
+在已装 Nginx 的机器上重复执行该入口就是重新编译并覆盖二进制：
+
+- 能识别出现有栈（LNMP/LNMPA/LAMP）时，`/usr/local/nginx/conf/nginx.conf` 会被随包模板覆盖，
+  手工改过全局配置的先备份。
+- 识别不出栈（例如只装过 Nginx 的机器）且已有 `nginx.conf` 时保留原文件。
+- 两种情况下 `vhost` 配置、证书和网站目录都不受影响。
+
+该入口固定装官方 Nginx。OpenResty 没有独立安装入口，只能在整栈安装时选择
+（[2.3 用 OpenResty 替代 nginx](#23-用-openresty-替代-nginx可选)），已装 OpenResty 的机器用 `bash upgrade.sh openresty` 升级。
+
+**在只装了 Nginx 的机器上建站**：`lnmp vhost add` 的 PHP 支持和创建数据库两步都要选 `n`
+（[4.4 建不带 PHP 的站点](#44-建不带-php-的站点)）。选 `y` 会写出引用 php-fpm 套接字的配置，访问返回 502。
+
+**这类机器补不了 PHP**：本项目没有单独的 PHP 安装入口。`install.sh mphp` 要求本机已是
+完整 LNMP（同时存在 `/usr/local/php/sbin/php-fpm`、`/usr/local/php/etc/php-fpm.conf`、
+`/etc/init.d/php-fpm`、`/usr/local/nginx/sbin/nginx`），只装了 Nginx 时会以
+「多版本 PHP 仅支持 LNMP 架构」退出。需要 PHP 就执行 `bash install.sh lnmp`，
+安装前的残留检测会列出现有 Nginx，确认后清理再装整套。
+
+#### 只装数据库
+
+```bash
+bash install.sh db
+read -r -s -p '数据库 root 密码: ' DB_Root_Password; echo; export DB_Root_Password
+LNMP_Auto=y DBSelect=5 Bin=y InstallInnodb=y bash install.sh db </dev/null
+unset DB_Root_Password
+```
+
+交互式会依次问数据库版本、是否用官方通用二进制、root 密码（不回显，留空随机生成）、
+是否启用 InnoDB，然后打印摘要等待确认。密码只在安装结束时打印到终端，不写进
+`/root/install_database.log`。
+
+边界：
+
+- 检测到 `/usr/local/<数据库目录>` 与 `/etc/my.cnf` 同时存在即中止，不会覆盖现有实例。
+  要换数据库先自行停止并备份，或走整套重装。
+- 会移除包管理器装的 mysql/mariadb 相关包。
+- 数据目录非空时按 2.1.1 末尾的规则处理，显式 `LNMP_Move_Existing_DB_Data=yes` 才搬走旧目录。
+- 只对 `DB_Port` 与 `DB_X_Port` 写阻断公网访问的规则，防火墙写失败时整个安装返回非 0。
+
+#### 补装 phpMyAdmin
+
+`Enable_PhpMyAdmin` 只控制整包安装，默认 `n`。主栈装好后补装：
+
+```bash
+bash install.sh phpmyadmin
+```
+
+前置检查不通过就中止：主栈未装、`/usr/local/php/bin/php` 缺失、PHP 低于 7.2.5、
+没启用 mysqli 扩展、没有 `www` 用户。已经装过或已有启用配置时拒绝覆盖，
+升级走 `bash upgrade.sh phpmyadmin`。
+
+程序装在 `/usr/local/phpmyadmin`（不在网站根目录下），访问路径随机生成，形如
+`49763abb_phpmyadmin`，安装结束时打印，之后用 `lnmp status` 可以再查。
+临时不用时 `lnmp phpmyadmin disable` 关闭 Web 入口，`lnmp phpmyadmin enable` 恢复，
+`lnmp phpmyadmin status` 查看当前访问状态；关闭会保留程序、配置和随机路径。安全加固见 [10.1 本项目提供的主机基线](#101-本项目提供的主机基线)。
+
+#### 追加 PHP 版本
+
+```bash
+bash install.sh mphp
+```
+
+选一个版本并行装到 `/usr/local/php8.x`，主 PHP 不动。装好后 `lnmp vhost add` 会多一步
+选择本站使用哪个 PHP 版本。多版本 PHP 的配置目录、扩展安装和命令边界见
+[2.5.3 安装后的配置位置](#253-安装后的配置位置)、
+[8.2.6 安装本项目未提供的 PHP 扩展](#826-安装本项目未提供的-php-扩展)。
+
+#### 扩展与升级
+
+```bash
+bash addons.sh install {memcached|opcache|redis|apcu|imagemagick|exif|fileinfo|ldap|bz2|sodium|imap|swoole}
+bash addons.sh uninstall <同上>
+bash upgrade.sh {nginx|openresty|mysql|mariadb|m2m|php|phpa|phpmyadmin|mphp}
+```
+
+`addons.sh` 装的都是 PHP 扩展或需要 PHP 的服务，缺少 PHP 时会直接中止。
+`upgrade.sh` 的 `m2m` 是 MySQL 转 MariaDB，`phpa` 是 Apache 模式的 PHP，`mphp` 是多版本 PHP；
+数据库升级没有自动回滚，`upgrade.sh php` 会清空 `/usr/local/php/conf.d/`，升级后扩展要重装。
+这些入口的完整说明见 [8.1.18 不属于 lnmp 命令的入口](#8118-不属于-lnmp-命令的入口)。
+
 ### 2.2 非交互安装（站群自动部署）
 
 常用标量选择可以用环境变量传入；OpenResty 数组选项仍需编辑 `lnmp.conf`：
@@ -301,17 +440,8 @@ unset DB_Root_Password
 | `Enable_Composer` | `y`/`n` | 默认 `y`；不需要 Composer 时设 `n`，不会下载或执行安装器 |
 | `DB_Root_Password` | 字符串 | 留空则随机生成 |
 
-> **`Enable_PhpMyAdmin` 只控制整包安装，默认仍为 `n`。** 主栈装好后如需补装，
-> 显式执行 `bash install.sh phpmyadmin`；重复执行不会覆盖现有安装，升级使用
-> `bash upgrade.sh phpmyadmin`。
->
-> 临时不用时执行 `lnmp phpmyadmin disable` 关闭 Web 入口；需要时执行
-> `lnmp phpmyadmin enable` 恢复。关闭操作保留程序、配置和随机路径，
-> `lnmp phpmyadmin status` 可查看当前访问状态。
->
-> 开启后，程序装在 `/usr/local/phpmyadmin`（不在网站根目录下），
-> 访问路径随机生成，形如 `49763abb_phpmyadmin`。地址在安装结束时打印，
-> 之后用 `lnmp status` 可以再查。安全加固见 10.1。
+> **`Enable_PhpMyAdmin` 只控制整包安装，默认仍为 `n`。** 主栈装好后的补装、开关和
+> 访问路径见 [2.1.2 补装、升级、单独安装](#212-补装升级单独安装)。
 
 ### 2.3 用 OpenResty 替代 nginx（可选）
 
@@ -664,8 +794,9 @@ PHP 禁用分支和 phpMyAdmin 边界，再做最小修改。
 `addons.sh` 菜单虽然仍列出 ionCube，但当前版本没有接入可用安装流程；不要把菜单名当成
 功能已经实现。Apache/LNMPA/LAMP 保留代码路径，但没有 Debian 13 主线同等级的真机覆盖。
 
-`addons.sh`、`pureftpd.sh`、`upgrade.sh` 和 `install.sh` 的“按任意键开始”只在真实终端
-生效。标准输入被重定向时必须显式 `LNMP_Auto=y`，否则脚本在下载和编译之前就以非 0 退出：
+`addons.sh`、`pureftpd.sh`、`upgrade.sh` 的“按任意键开始”和 `install.sh` 各入口的
+确认（整栈与单组件摘要都是输入 `y`）只在真实终端生效。标准输入被重定向时必须显式
+`LNMP_Auto=y`，否则脚本在下载和编译之前就以非 0 退出：
 
 ```bash
 LNMP_Auto=y bash addons.sh install redis </dev/null
@@ -1398,6 +1529,8 @@ OPcache 已由 `Enable_PHP_Default_Opcache=y` 默认安装，配置在
 
 ### 6.3 PHP-FPM 进程模型
 
+配置文件`/usr/local/php/etc/php-fpm.conf`，本项目安装时会自动配置，可自行修改。
+
 项目先生成 `pm=dynamic`、`pm.max_children=10`，随后按机器总内存自动改为：
 
 | 总内存 | 项目生成的 `max_children` | 同时生成的 `start/min/max_spare` |
@@ -1408,7 +1541,7 @@ OPcache 已由 `Enable_PHP_Default_Opcache=y` 默认安装，配置在
 | `>4GB, <=8GB` | 60 | 30 / 30 / 60 |
 | `>8GB` | 80 | 40 / 40 / 80 |
 
-这是**程序实际行为，不是本指南的推荐值**。它只看总内存，没有扣除数据库、Redis、
+这是**本项目程序自动行为，但不是本指南的推荐值**。它只看总内存，没有扣除数据库、Redis、
 OPcache、内核页缓存和备份任务；特别是 `start_servers=30/40` 会在低流量 VPS 常驻很多
 空闲 worker。混部 WordPress 应按 6.6 的起点下调。
 
@@ -2195,8 +2328,8 @@ lnmp database list   # 列出所有库
 lnmp database edit   # 改库用户密码
 lnmp database del    # 删除库
 
-lnmp database export <库名> <文件.sql.gz>
-lnmp database import <库名> <文件.sql.gz>
+lnmp database export <库名> <文件.sql.gz>   # 导出数据库，文件名需含路径
+lnmp database import <库名> <文件.sql.gz>   # 导入数据库，文件名需含路径
 ```
 
 六个动作**都会先要求输入数据库 root 密码**，凭据写入 `~/.my.cnf`，命令结束即删除。
@@ -2862,7 +2995,7 @@ MariaDB 11.8 会在直接调用旧程序名时打印弃用提示。新版安装�
 ### 8.5 备份
 
 备份数据库及网站程序，自动导出数据并生成校验清单，确保备份完整可靠。
-配置了异地之后会自动上传：
+配置了异地之后自动上传：
 
 ```bash
 lnmp backup init                     # 扫描已有站点、挑选后生成配置，并装好 systemd timer
@@ -2924,7 +3057,9 @@ lnmp backup test                     # 试恢复验证：导入临时库校验�
 以下命令不是只读检查：
 
 ```bash
-lnmp backup list                       # 先看有哪些批次
+lnmp backup list                       # 先看有哪些批次，也会显示备份服务器批次
+lnmp backup restore db <库名> [批次]    # 恢复数据库
+lnmp backup restore web <域名> [批次]   # 恢复网站
 lnmp backup restore db  wpdemo         # 不给批次就用最新的一批
 lnmp backup restore web wp.example.com 20260810-033000
 ```
@@ -3046,13 +3181,13 @@ sshd -t && systemctl reload ssh
 ssh-keygen -t ed25519 -N '' -f /root/.ssh/lnmp_backup
 ```
 
-**第二步，把公钥装到备份机。** 先创建公钥文件
+**第二步，把公钥装到备份机。** 先创建公钥文件路径
 
 ```bash
 mkdir -p /home/backupuser/.ssh/
 ```
 
-把 `/root/.ssh/lnmp_backup.pub` 的内容加到备份机的
+用 `nano` 或其他方式把 `/root/.ssh/lnmp_backup.pub` 的内容加到备份机的
 `/home/backupuser/.ssh/authorized_keys`，并在前面加上限制前缀：
 
 ```
@@ -3085,7 +3220,7 @@ ssh-keygen -lf /root/.ssh/lnmp_backup_known_hosts
 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
 
-两边的指纹逐字比对，对上了才算可信。对不上说明中间有人，别继续。然后生产机上执行：
+两边的指纹逐字比对，对上了才算可信。对不上说明有中间人篡改，别继续。然后生产机上执行：
 
 ```bash
 chmod 600 /root/.ssh/lnmp_backup /root/.ssh/lnmp_backup_known_hosts

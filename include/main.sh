@@ -657,6 +657,15 @@ Press_Install()
         Print_APP_Ver
         Confirm_Start_Install || exit 1
         ;;
+    # 单组件入口只展示该组件的版本、生效配置和系统变更，确认语义与整栈一致。
+    nginx)
+        Print_Nginx_Only_Summary
+        Confirm_Start_Install || exit 1
+        ;;
+    db)
+        Print_DB_Only_Summary
+        Confirm_Start_Install || exit 1
+        ;;
     *)
         Press_Start || exit 1
         ;;
@@ -1345,6 +1354,29 @@ Confirm_LNMPConf_Reviewed()
     esac
 }
 
+# Get_Nginx_Modules_Summary <变量名>：把 lnmp.conf 中 Nginx 附加模块开关的最终取值
+# 汇总到指定变量，整栈摘要与单独安装摘要共用同一份取值。
+Get_Nginx_Modules_Summary()
+{
+    local __summary_var=$1 summary=''
+
+    [ "${Enable_Nginx_Lua}" = "y" ] && summary='Lua'
+    if [ "${Enable_Ngx_Brotli}" = "y" ]; then
+        summary="${summary}${summary:+, }Brotli"
+    fi
+    if [ "${Enable_Ngx_CachePurge}" = "y" ]; then
+        summary="${summary}${summary:+, }Cache Purge"
+    fi
+    if [ "${Enable_Ngx_FancyIndex}" = "y" ]; then
+        summary="${summary}${summary:+, }FancyIndex"
+    fi
+    [ -n "${Nginx_Modules_Options}" ] && \
+        printf -v summary '%s%s自定义选项：%s' "${summary}" \
+            "${summary:+；}" "${Nginx_Modules_Options}"
+    [ -n "${summary}" ] || printf -v summary '无'
+    printf -v "${__summary_var}" '%s' "${summary}"
+}
+
 Print_APP_Ver()
 {
     local nginx_modules='' php_modules='' ssh_ports
@@ -1395,20 +1427,7 @@ Print_APP_Ver()
             printf -v nginx_modules '%s；自定义源码模块：%s 个' \
                 "${nginx_modules}" "${#OpenResty_Custom_Modules[@]}"
     else
-        [ "${Enable_Nginx_Lua}" = "y" ] && nginx_modules='Lua'
-        if [ "${Enable_Ngx_Brotli}" = "y" ]; then
-            nginx_modules="${nginx_modules}${nginx_modules:+, }Brotli"
-        fi
-        if [ "${Enable_Ngx_CachePurge}" = "y" ]; then
-            nginx_modules="${nginx_modules}${nginx_modules:+, }Cache Purge"
-        fi
-        if [ "${Enable_Ngx_FancyIndex}" = "y" ]; then
-            nginx_modules="${nginx_modules}${nginx_modules:+, }FancyIndex"
-        fi
-        [ -n "${Nginx_Modules_Options}" ] && \
-            printf -v nginx_modules '%s%s自定义选项：%s' "${nginx_modules}" \
-                "${nginx_modules:+；}" "${Nginx_Modules_Options}"
-        [ -n "${nginx_modules}" ] || printf -v nginx_modules '无'
+        Get_Nginx_Modules_Summary nginx_modules
     fi
 
     [ "${Enable_PHP_Fileinfo}" = "y" ] && php_modules='fileinfo'
@@ -1444,6 +1463,67 @@ Print_APP_Ver()
     if [ "${DB_Kind}" != "none" ]; then
         echo "数据库端口（防火墙将阻止公网访问）：${DB_Port} / ${DB_X_Port}"
     fi
+}
+
+# 单独安装 Nginx 的确认摘要：只列本入口实际读取的 lnmp.conf 项和将发生的系统变更。
+Print_Nginx_Only_Summary()
+{
+    local nginx_modules='' ssh_ports
+
+    Echo_Yellow "=========================================================================="
+    Echo_Yellow "单独安装模式：只安装 Nginx，不安装数据库和 PHP。"
+    echo "即将安装：${Nginx_Ver}"
+    if [ "${Enable_Nginx_Openssl}" = "y" ]; then
+        echo "OpenSSL：${Openssl_New_Ver}（随 Nginx 一起编译）"
+    else
+        echo "OpenSSL：使用系统自带版本"
+    fi
+    Get_Nginx_Modules_Summary nginx_modules
+    echo "附加模块（lnmp.conf 开关）：${nginx_modules}"
+    echo "默认网站目录：${Default_Website_Dir}"
+    echo "完整性校验：${Enable_Download_Checksum}"
+    ssh_ports=$(Get_Actual_SSH_Port | paste -sd ' ' -)
+    echo "防火墙将放行：80、443；SSH 端口：${ssh_ports:-未探测到，不处理}"
+    if [ -s /usr/local/nginx/sbin/nginx ]; then
+        Echo_Yellow "本机已有 /usr/local/nginx/sbin/nginx，本次会重新编译并覆盖该二进制。"
+        Check_Stack
+        if [ "${Get_Stack}" = "unknow" ] && [ -s /usr/local/nginx/conf/nginx.conf ]; then
+            Echo_Yellow "识别不出已装的栈，现有 /usr/local/nginx/conf/nginx.conf 会保留。"
+        else
+            Echo_Yellow "现有安装识别为 ${Get_Stack}，/usr/local/nginx/conf/nginx.conf 会被随包模板覆盖。"
+        fi
+        Echo_Yellow "vhost 配置、证书和网站目录不在本次改动范围内。"
+    fi
+    echo "本入口不读取 DB_Port、MySQL_Data_Dir、Enable_PhpMyAdmin 等选项。"
+    Echo_Yellow "=========================================================================="
+}
+
+# 单独安装数据库的确认摘要，调用点在版本选择之后，此处版本和目录均已确定。
+Print_DB_Only_Summary()
+{
+    local ssh_ports
+
+    Echo_Yellow "=========================================================================="
+    Echo_Yellow "单独安装模式：只安装数据库，不安装 Web 服务器和 PHP。"
+    echo "即将安装：${DB_Ver}"
+    if [ "${Bin}" = "y" ]; then
+        echo "安装方式：官方通用二进制"
+    else
+        echo "安装方式：源码编译"
+    fi
+    echo "数据目录：${DB_Data_Dir}"
+    echo "启用 InnoDB：${InstallInnodb}"
+    echo "完整性校验：${Enable_Download_Checksum}"
+    echo "数据库端口（防火墙将阻止公网访问）：${DB_Port} / ${DB_X_Port}"
+    ssh_ports=$(Get_Actual_SSH_Port | paste -sd ' ' -)
+    echo "防火墙将放行的 SSH 端口：${ssh_ports:-未探测到，不处理}"
+    if [ "${DB_Root_Password_Random}" = "y" ]; then
+        echo "数据库 root 口令：随机生成，安装结束只打印在终端，不写入日志。"
+    else
+        echo "数据库 root 口令：使用已输入的口令，不回显也不写入日志。"
+    fi
+    echo "本入口不读取 Default_Website_Dir、Enable_PhpMyAdmin 等选项。"
+    Echo_Yellow "=========================================================================="
 }
 
 Print_Sys_Info()
