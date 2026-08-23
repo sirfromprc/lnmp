@@ -1154,6 +1154,18 @@ Get_Actual_DB_Socket()
     printf '%s' "${sock:-/run/mysqld/mysqld.sock}"
 }
 
+# 探测本机对外 IPv4，取默认路由的源地址；取不到不输出并返回 1。
+# 不查询外部服务，避免安装收尾阶段因网络阻塞。
+Get_Server_IP()
+{
+    local addr
+
+    addr=$(ip -4 route get 1.1.1.1 2>/dev/null |
+        awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
+    [ -n "${addr}" ] || return 1
+    printf '%s' "${addr}"
+}
+
 # 探测系统当前实际监听的 SSH 端口。sshd_config 尚未重载或 ExecStart 使用
 # -o Port= 覆盖时，配置文件值可能与真实监听端口不同。
 # 优先看真实监听的 socket（ss/netstat 能看到内核当前的状态），

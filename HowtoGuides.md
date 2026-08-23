@@ -381,7 +381,8 @@ bash install.sh phpmyadmin
 程序装在 `/usr/local/phpmyadmin`（不在网站根目录下），访问路径随机生成，形如
 `49763abb_phpmyadmin`，安装结束时打印，之后用 `lnmp status` 可以再查。
 临时不用时 `lnmp phpmyadmin disable` 关闭 Web 入口，`lnmp phpmyadmin enable` 恢复，
-`lnmp phpmyadmin status` 查看当前访问状态；关闭会保留程序、配置和随机路径。安全加固见 [10.1 本项目提供的主机基线](#101-本项目提供的主机基线)。
+`lnmp phpmyadmin status` 查看当前访问状态并打印含真实 IP 的完整地址；
+关闭会保留程序、配置和随机路径。安全加固见 [10.1 本项目提供的主机基线](#101-本项目提供的主机基线)。
 
 #### 追加 PHP 版本
 
@@ -2517,6 +2518,20 @@ lnmp phpmyadmin enable     # 重新开放访问
 Apache 两侧都要成功才算成功。
 
 随机访问路径由 `lnmp status` 显示。长期不用时保持 `disable`。
+
+`status` 会打印可直接复制的完整地址，例如：
+
+```
+phpMyAdmin 访问已启用：http://1.2.3.4/0bf5a37a_phpmyadmin/
+建议改用 HTTPS：执行 lnmp ssl add，域名填 default，可为该公网 IP 申请证书。
+```
+
+IP 取自本机默认路由的源地址，不查询外部服务。因此网卡上是私网地址、公网入口为弹性 IP 的
+机器（常见于公有云）会显示内网地址并附带说明，此时把地址换成自己的公网 IP 即可。
+
+default 站点配好证书后，同一条命令给出的就是 `https://` 地址，不再追加上面那行建议。
+default 没有域名，只能申请 IP 证书，流程和限制见
+[7.2 没有域名，仅使用 IP 的 default 站点](#72-没有域名仅使用-ip-的-default-站点)。
 
 [↑ 命令目录](#cmd-index) · [返回顶部](#top)
 

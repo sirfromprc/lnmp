@@ -1009,6 +1009,11 @@ Install_Only_phpMyAdmin()
     Clean_PhpMyAdmin_Config_Backups
 
     Echo_Green "phpMyAdmin ${pma_ver} 安装完成。"
-    Echo_Green "访问地址：http://<服务器IP>/${access_url}/"
+    # 访问地址由 lnmp-phpmyadmin 统一输出，它已在上一步安装到位。
+    if [ -x /bin/lnmp-phpmyadmin ]; then
+        /bin/lnmp-phpmyadmin "${Stack}" status
+    else
+        Echo_Green "访问地址：http://<服务器IP>/${access_url}/"
+    fi
     return 0
 }

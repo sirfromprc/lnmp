@@ -102,7 +102,14 @@ Upgrade_phpMyAdmin()
 
     Echo_Green "======== phpMyAdmin 升级完成 ======"
     Echo_Green "原目录保留在 ${pma_bak}，确认无误后可自行删除。"
-    [ -s "${pma_live}/.access_url" ] && \
-        Echo_Green "访问路径不变：http://<服务器IP>/$(cat ${pma_live}/.access_url)/"
+    # 访问路径不变，地址由 lnmp-phpmyadmin 输出；升级入口未设置 Stack，先探测。
+    if [ -s "${pma_live}/.access_url" ]; then
+        if [ -x /bin/lnmp-phpmyadmin ] && Detect_PhpMyAdmin_Stack >/dev/null 2>&1; then
+            Echo_Green "访问路径不变："
+            /bin/lnmp-phpmyadmin "${Stack}" status
+        else
+            Echo_Green "访问路径不变：http://<服务器IP>/$(cat "${pma_live}/.access_url")/"
+        fi
+    fi
     return 0
 }

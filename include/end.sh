@@ -441,13 +441,15 @@ Print_Sucess_Info()
         "运行 lnmp {start|stop|reload|restart|kill|status} 管理服务" \
         "仅使用上游官方源码，并强制校验完整性"
     # 安装摘要统一使用横幅格式，便于查看访问地址和常用管理入口。
-    local summary_lines=() line=''
+    local summary_lines=() line='' server_ip
+    # 刚装完的 default 站点只有 80 端口，两条地址统一用 http。
+    server_ip=$(Get_Server_IP) || printf -v server_ip '<服务器IP>'
     if [ "${Enable_PhpMyAdmin}" = "y" ]; then
-        summary_lines+=("phpMyAdmin：http://IP/$(cat ${PhpMyAdmin_Url_File} 2>/dev/null)/")
+        summary_lines+=("phpMyAdmin：http://${server_ip}/$(cat ${PhpMyAdmin_Url_File} 2>/dev/null)/")
         printf -v line '上面这个路径是随机生成的，请自行记录；忘记可执行 lnmp status 查看。'
         summary_lines+=("${line}")
     fi
-    [ "${Enable_PHPInfo_Page}" = "y" ] && summary_lines+=("phpinfo：http://IP/phpinfo.php")
+    [ "${Enable_PHPInfo_Page}" = "y" ] && summary_lines+=("phpinfo：http://${server_ip}/phpinfo.php")
     printf -v line '添加虚拟主机：lnmp vhost add'
     summary_lines+=("${line}")
     printf -v line '默认网站目录：%s' "${Default_Website_Dir}"

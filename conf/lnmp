@@ -355,12 +355,15 @@ lnmp_status()
     Svc_If_Installed PHP-FPM "${PHP_SERVICE}" status
     Svc_If_Installed Database "${DB_SERVICE}" status
 
-    # 显示安装时随机生成的 phpMyAdmin 访问路径。
-    if [ -s /usr/local/phpmyadmin/.access_url ] &&
-       [ -s /usr/local/nginx/conf/phpmyadmin.enable.conf ]; then
-        echo "phpMyAdmin: http://<服务器IP>/$(cat /usr/local/phpmyadmin/.access_url)/"
-    elif [ -s /usr/local/phpmyadmin/.access_url ]; then
-        echo "phpMyAdmin：访问已禁用（程序和配置仍保留）"
+    # 访问地址含随机路径，与启用状态一同由 lnmp-phpmyadmin 输出。
+    if [ -s /usr/local/phpmyadmin/.access_url ]; then
+        if [ -x /bin/lnmp-phpmyadmin ]; then
+            /bin/lnmp-phpmyadmin lnmp status
+        else
+            echo "phpMyAdmin 访问路径：/$(cat /usr/local/phpmyadmin/.access_url)/"
+            Echo_Red "找不到 /bin/lnmp-phpmyadmin，无法判断启用状态和访问地址。"
+            Echo_Red "补装：cp tools/lnmp-phpmyadmin.sh /bin/lnmp-phpmyadmin && chmod +x /bin/lnmp-phpmyadmin"
+        fi
     fi
 }
 # ---------------------------------------------------------------------------
@@ -5170,6 +5173,11 @@ case "${arg1}" in
         exit $?
         ;;
     phpmyadmin)
+        if [ ! -x /bin/lnmp-phpmyadmin ]; then
+            Echo_Red "找不到 /bin/lnmp-phpmyadmin，安装不完整。"
+            Echo_Red "补装：cp tools/lnmp-phpmyadmin.sh /bin/lnmp-phpmyadmin && chmod +x /bin/lnmp-phpmyadmin"
+            exit 1
+        fi
         /bin/lnmp-phpmyadmin lnmp "${arg2}"
         exit $?
         ;;
