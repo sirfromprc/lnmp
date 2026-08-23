@@ -281,12 +281,13 @@ LNMP_Move_Existing_DB_Data=yes bash install.sh db
 | `bash install.sh phpmyadmin` | 为现有环境补装 phpMyAdmin | 主栈已装，PHP ≥ 7.2.5 且有 mysqli |
 | `bash install.sh phpmyadmin {enable\|disable\|status}` | 开关或查看 phpMyAdmin 的 Web 入口 | phpMyAdmin 已装 |
 | `bash addons.sh install <组件>` | PHP 扩展、Redis 服务端、ImageMagick | 对应 PHP 已装 |
-| `bash pureftpd.sh` | 安装 Pure-FTPd | 无 |
+| `bash pureftpd.sh` | 安装 Pure-FTPd | 无；安装前打印端口摘要并要求输入 `y` |
 | `bash upgrade.sh <目标>` | 升级单个组件 | 对应组件已装 |
 
 单组件入口不做整栈入口的残留检测（[2.1.1 安装中断或重新安装](#211-安装中断或重新安装)），也不打印整栈摘要。
 `nginx` 和 `db` 会改防火墙，因此仍执行 SSH 端口检查，随后打印本入口自己的摘要并要求输入
-`y` 确认，摘要里只列该入口真正读取的 `lnmp.conf` 项：
+`y` 确认，摘要里只列该入口真正读取的 `lnmp.conf` 项（`bash pureftpd.sh` 同样如此，
+摘要内容见 [8.2.5 Pure-FTPd 自定义](#825-pure-ftpd-自定义)）：
 
 ```
 ==========================================================================
@@ -788,14 +789,17 @@ PHP 禁用分支和 phpMyAdmin 边界，再做最小修改。
 | 数据库/PHP/Apache 菜单与版本 | `include/profile.sh` | 编号、版本语义、安装函数和架构能力在这里统一映射，不能只改菜单文字 |
 | 静态 SHA256 清单 | `src/checksums.sha256` | 只覆盖走静态 SHA256 的组件；PGP/仓库 GPG/上游动态校验各走自己的路径 |
 | PHP/缓存扩展 | `bash addons.sh install {memcached\|opcache\|redis\|apcu\|imagemagick\|exif\|fileinfo\|ldap\|bz2\|sodium\|imap\|swoole}` | 按实际依赖安装；主安装已默认提供 OPcache、igbinary、phpredis、imagick |
-| Pure-FTPd 服务 | `bash pureftpd.sh` | 端口来自 `lnmp.conf`；不需要传统 FTP 时不要增加该公网服务 |
+| Pure-FTPd 服务 | `bash pureftpd.sh` | 端口来自 `lnmp.conf`，安装前会列出并要求确认；不需要传统 FTP 时不要增加该公网服务 |
 | 组件升级 | `bash upgrade.sh {nginx\|openresty\|mysql\|mariadb\|m2m\|php\|phpa\|phpmyadmin\|mphp}` | 先备份和测试；数据库升级没有自动回滚 |
 | 管理功能 | `lnmp vhost/database/ftp/ssl/dnsssl/onlyssl/backup/tgnotice/phpmyadmin` | 优先走命令生成配置，保留校验、权限与回滚逻辑 |
 
 `addons.sh` 菜单虽然仍列出 ionCube，但当前版本没有接入可用安装流程；不要把菜单名当成
 功能已经实现。Apache/LNMPA/LAMP 保留代码路径，但没有 Debian 13 主线同等级的真机覆盖。
 
-`addons.sh`、`pureftpd.sh`、`upgrade.sh` 的“按任意键开始”和 `install.sh` 各入口的
+`addons.sh install redis` 与 `addons.sh install memcached` 在按键确认前先列出端口、
+监听地址、防火墙动作和自测页开关，端口取自 `lnmp.conf`，要改就先取消再重跑。
+
+`addons.sh`、`upgrade.sh` 的“按任意键开始”、`pureftpd.sh` 与 `install.sh` 各入口的
 确认（整栈与单组件摘要都是输入 `y`）只在真实终端生效。标准输入被重定向时必须显式
 `LNMP_Auto=y`，否则脚本在下载和编译之前就以非 0 退出：
 
@@ -2787,6 +2791,11 @@ ss -lntp | grep redis-server        # 确认监听地址仍是回环
 ps -o user,cmd -C redis-server      # 确认不以 root 运行
 ```
 
+重跑 `addons.sh install redis` 会把 `redis.conf` 的 `port`、`/etc/init.d/redis` 的
+`REDISPORT` 和防火墙规则一起对齐成 `lnmp.conf` 的 `Redis_Port`：端口不同时先停服务
+再改配置，随后由安装流程重新启动，`redis.conf` 里的其它配置项不受影响。手工改端口
+后要长期生效，就同步改 `lnmp.conf`。
+
 #### 8.2.4 Memcached 自定义
 
 Memcached 没有独立配置文件，参数写在 `/etc/init.d/memcached` 顶部，unit 通过该脚本
@@ -2812,6 +2821,10 @@ echo -e 'stats settings\r' | nc 127.0.0.1 11211 | grep -E 'maxbytes|maxconns'
 `lnmp health` 的 Memcached 探针同样从 `/etc/init.d/memcached` 读取 `IP` 和 `PORT`，
 改端口后无须另行配置；但和 Redis 一样，nftables 里阻断的是原端口号。
 
+重跑 `addons.sh install memcached` 会把 `PORT` 对齐成 `lnmp.conf` 的
+`Memcached_Port`，同时把阻断规则迁到新端口并重启服务；`CACHESIZE`、`MAXCONN`、
+`OPTIONS` 等改过的参数保留不动。手工改端口后要长期生效，就同步改 `lnmp.conf`。
+
 Memcached 协议不提供鉴权和租户隔离，不要对公网开放；互不信任的站点应拆分实例和
 系统账号。演示页开关 `Enable_Memcached_Test_Page` 生产环境保持 `n`。
 
@@ -2823,7 +2836,20 @@ Memcached 协议不提供鉴权和租户隔离，不要对公网开放；互不�
 （见 [8.1.9 ftp 账号](#819-ftp-账号)）。
 
 新安装模板固定 `TLS 2`（拒绝明文登录，客户端须选显式 FTPS），该项不在 `lnmp.conf` 中，
-运行期值以配置文件为准。端口和被动模式范围来自安装时的 `lnmp.conf`，改动后：
+运行期值以配置文件为准。
+
+端口和被动模式范围来自安装时的 `lnmp.conf`。`bash pureftpd.sh` 在编译前会打印这些值
+并要求输入 `y` 确认，要改端口就先取消，改 `lnmp.conf` 后重跑，或用环境变量临时覆盖：
+
+```bash
+Pureftpd_Port=2121 Pureftpd_Passive_Min=40000 Pureftpd_Passive_Max=40100 bash pureftpd.sh
+```
+
+已装过时该摘要还会指出现有配置的端口与本次将写入的值是否不同 —— 重跑会把
+`pure-ftpd.conf` 恢复成模板加 `lnmp.conf` 的值，之前手工调过的端口会被改回。
+
+装完再改端口，需要同时改 `/usr/local/pureftpd/etc/pure-ftpd.conf` 和防火墙放行规则，
+改动后：
 
 ```bash
 lnmp pureftpd restart
@@ -3940,7 +3966,7 @@ lnmp perm uninit; echo "rc=$?"
 | Apache（LAMP/LNMPA） | 只把末尾 `.php` 交给 mod_php；根目录默认拒绝；站点使用 `SymLinksIfOwnerMatch` | 已在 Debian 13 两种栈实测；其它发行版部署前仍需复验模块与目录边界 |
 | Pure-FTPd | 新安装默认 `TLS 2`，拒绝明文登录 | 客户端选择显式 FTPS；既有部署需直接核对运行配置，不会被源码更新自动改写 |
 | phpinfo / phpMyAdmin / 演示页 | **默认全部不部署** | 需在 `lnmp.conf` 显式开启 |
-| default 站点的 PHP 边界 | 只放行 `phpinfo.php` / `redis.php` / `memcached.php` 三个固定文件名与 phpMyAdmin 入口，其余 `.php` 一律拒绝 | 放行的三个文件仅在对应开关打开时才会写入，未写入时访问返回 404；往 default 根目录手工放同名文件同样会被执行，该站点是系统默认创建，其他需求 php 的请自建新站点 |
+| default 站点的 PHP 边界 | 只放行 `phpinfo.php` / `redis.php` / `memcached.php` 三个固定文件名与 phpMyAdmin 入口，其余 `.php` 一律拒绝 | 放行的三个文件仅在对应开关打开时才会写入，未写入时访问返回 404；80 与 443 的规则一致，为 default 配 HTTPS 后行为不变；往 default 根目录手工放同名文件同样会被执行，该站点是系统默认创建，其他需求 php 的请自建新站点 |
 | phpMyAdmin（已开启时） | 装在网站根目录之外（`/usr/local/phpmyadmin`）；访问路径随机生成 | 挡的是批量扫描与源码直接下载，**不等于**做了访问控制；对外服务仍建议加来源白名单 |
 | 下载完整性 | **默认要求一种已配置的完整性机制**，按组件不同分别是：静态 SHA256 清单（`src/checksums.sha256`）、上游发布的 SHA256、**PGP 签名**（nginx / OpenResty 源码）、**包仓库 GPG 签名**（OpenResty apt/yum） | 不是"全部 SHA256"；且 `Enable_Download_Checksum` **可以被关掉**，关掉就没有这层保护 |
 

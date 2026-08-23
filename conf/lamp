@@ -3916,6 +3916,10 @@ Create_SSL_Config()
     <FilesMatch "\.php$">
         Require all denied
     </FilesMatch>
+    # 与 80 端口的 default 站点一致：仅放行按开关部署的演示页。
+    <FilesMatch "^(phpinfo|redis|memcached)\.php$">
+        Require all granted
+    </FilesMatch>
     DirectoryIndex index.html'
     fi
 

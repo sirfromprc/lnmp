@@ -666,6 +666,10 @@ Press_Install()
         Print_DB_Only_Summary
         Confirm_Start_Install || exit 1
         ;;
+    pureftpd)
+        Print_Pureftpd_Only_Summary
+        Confirm_Start_Install || exit 1
+        ;;
     *)
         Press_Start || exit 1
         ;;
@@ -1535,6 +1539,45 @@ Print_DB_Only_Summary()
         echo "数据库 root 口令：使用已输入的口令，不回显也不写入日志。"
     fi
     echo "本入口不读取 Default_Website_Dir、Enable_PhpMyAdmin 等选项。"
+    Echo_Yellow "=========================================================================="
+}
+
+# 单独安装 Pure-FTPd 的确认摘要：端口在安装时一并写入服务配置和防火墙，
+# 装完再改需要同时改两处，因此在动系统前先列出生效值。
+Print_Pureftpd_Only_Summary()
+{
+    local ssh_ports cur_conf=/usr/local/pureftpd/etc/pure-ftpd.conf
+    local cur_port='' cur_passive=''
+
+    Echo_Yellow "=========================================================================="
+    Echo_Yellow "单独安装模式：只安装 Pure-FTPd，不改动 Nginx、数据库和 PHP。"
+    echo "即将安装：${Pureftpd_Ver}"
+    echo "控制端口（写入 pure-ftpd.conf 的 Bind，防火墙将放行）：${Pureftpd_Port}"
+    echo "数据端口（防火墙将放行）：${Pureftpd_Data_Port}"
+    echo "被动端口范围（写入 PassivePortRange，防火墙将放行）：${Pureftpd_Passive_Min}-${Pureftpd_Passive_Max}"
+    echo "完整性校验：${Enable_Download_Checksum}"
+    ssh_ports=$(Get_Actual_SSH_Port | paste -sd ' ' -)
+    echo "防火墙将放行的 SSH 端口：${ssh_ports:-未探测到，不处理}"
+    Echo_Yellow "以上端口取自 lnmp.conf，要改请先取消本次安装："
+    Echo_Yellow "  改 lnmp.conf 的 Pureftpd_Port / Pureftpd_Passive_Min / Pureftpd_Passive_Max 后重跑，"
+    Echo_Yellow "  或用环境变量临时覆盖："
+    Echo_Yellow "  Pureftpd_Port=2121 Pureftpd_Passive_Min=40000 Pureftpd_Passive_Max=40100 ./pureftpd.sh"
+    Echo_Yellow "安装后再改端口，需要同时修改 /usr/local/pureftpd/etc/pure-ftpd.conf、"
+    Echo_Yellow "调整防火墙放行规则并重启 pureftpd 服务。"
+    if [ -s /usr/local/pureftpd/sbin/pure-ftpd ]; then
+        Echo_Yellow "本机已有 /usr/local/pureftpd/sbin/pure-ftpd，本次会重新编译并覆盖该二进制，"
+        Echo_Yellow "/usr/local/pureftpd/etc/pure-ftpd.conf 会被随包模板覆盖（已有 FTP 用户数据保留）。"
+        # 现有配置端口与本次将写入的值不同时单独点出，避免重跑把已调好的端口改回默认。
+        if [ -s "${cur_conf}" ]; then
+            cur_port=$(awk '$1 == "Bind" {sub(/^.*,/, "", $2); print $2; exit}' "${cur_conf}")
+            cur_passive=$(awk '$1 == "PassivePortRange" {print $2 "-" $3; exit}' "${cur_conf}")
+            if [ "${cur_port}" != "${Pureftpd_Port}" ] \
+               || [ "${cur_passive}" != "${Pureftpd_Passive_Min}-${Pureftpd_Passive_Max}" ]; then
+                Echo_Yellow "当前生效端口为控制 ${cur_port:-未知}、被动 ${cur_passive:-未知}，与上面将写入的值不同。"
+            fi
+        fi
+    fi
+    echo "本入口不读取 Default_Website_Dir、DB_Port 等选项。"
     Echo_Yellow "=========================================================================="
 }
 

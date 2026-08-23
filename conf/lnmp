@@ -4373,6 +4373,14 @@ Create_SSL_Config()
         ssl_index='index index.html index.htm index.php default.html default.htm default.php;'
         ssl_php_block='include phpmyadmin.*.conf;
 
+    # 与 80 端口的 default 站点一致：仅放行按开关部署的演示页。
+    location ~ ^/(phpinfo|redis|memcached)\.php$ {
+        try_files $uri =404;
+        fastcgi_pass  unix:/run/php-fpm/php-cgi.sock;
+        fastcgi_index index.php;
+        include fastcgi.conf;
+    }
+
     location ~ [^/]\.php(/|$) {
         return 404;
     }'

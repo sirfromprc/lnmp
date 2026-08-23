@@ -151,6 +151,56 @@ Start_Redis_Service()
     Wait_Redis_Ready "${port}"
 }
 
+# redis.conf、init 脚本和防火墙规则必须落在同一端口。重复安装时 redis.conf
+# 不重写，端口只在 init 脚本和防火墙上更新，因此这里按 lnmp.conf 对齐 redis.conf：
+# 端口变化时先按旧端口停服务（停止入口用的是改写前的端口），再改配置并迁移阻断规则。
+Sync_Redis_Conf_Port()
+{
+    # 配置路径可传入，便于定向测试；安装流程使用默认值。
+    local conf="${1:-/usr/local/redis/etc/redis.conf}" old_port=''
+
+    if [ ! -s "${conf}" ]; then
+        Echo_Yellow "未找到 ${conf}，跳过端口对齐，服务仍按现有配置启动。"
+        return 0
+    fi
+
+    # 取首个 port 指令；此处不用 awk 的 exit，避免与 addons 的静态检查冲突。
+    old_port=$(grep -E '^port[[:space:]]+' "${conf}" | head -1 | awk '{ print $2 }')
+    if [ "${old_port}" = "${Redis_Port}" ]; then
+        # 端口一致，仅补齐阻断规则（上次安装可能未写入成功）。
+        Firewall_Block tcp "${Redis_Port}"
+        Firewall_Save
+        return 0
+    fi
+
+    echo "redis.conf 当前端口为 ${old_port:-未设置}，按 lnmp.conf 改为 ${Redis_Port}。"
+    if Redis_Service_Active; then
+        echo "改端口前先停止现有 Redis 服务..."
+        if ! StartOrStop stop redis; then
+            [ -n "${old_port}" ] && [ -x /usr/local/redis/bin/redis-cli ] && \
+                /usr/local/redis/bin/redis-cli -p "${old_port}" shutdown 2>/dev/null
+        fi
+        if Redis_Service_Active; then
+            Echo_Red "无法停止现有 Redis 服务，未改动 redis.conf 和防火墙规则。"
+            Echo_Red "请手工停止后重试：lnmp redis stop"
+            return 1
+        fi
+    fi
+
+    if [ -z "${old_port}" ]; then
+        printf '\n# LNMP: 监听端口取自 lnmp.conf。\nport %s\n' "${Redis_Port}" >> "${conf}" || return 1
+    else
+        sed -i "s/^port .*/port ${Redis_Port}/" "${conf}" || return 1
+    fi
+    Check_Conf_Applied "${conf}" "^port[[:space:]]+${Redis_Port}\$" "Redis 端口 ${Redis_Port}" || return 1
+
+    # 旧端口的阻断规则不再对应本服务，撤掉后按新端口重新阻断。
+    [ -n "${old_port}" ] && Firewall_Unblock tcp "${old_port}"
+    Firewall_Block tcp "${Redis_Port}"
+    Firewall_Save
+    return 0
+}
+
 # 重装时先把现有 phpredis 备份到临时目录，新扩展落地前不破坏可用环境。
 # 只接管本包创建的 021-redis.ini，其它 *redis.ini 保留并提示。
 Backup_Existing_PHPRedis()
@@ -194,10 +244,32 @@ Clear_PHPRedis_Backup()
     return 0
 }
 
+# 端口在安装时写入服务配置、init 脚本和防火墙规则，装完再改要同时动多处，
+# 因此在动系统前先列出生效值。
+Print_Redis_Install_Summary()
+{
+    Echo_Yellow "=========================================================================="
+    echo "服务端：${Redis_Stable_Ver}；PHP 扩展：${PHPRedis_Ver}"
+    echo "监听端口（写入 redis.conf 与 /etc/init.d/redis）：${Redis_Port}"
+    echo "监听地址：127.0.0.1，防火墙同时阻断该端口的公网访问"
+    echo "自测页（Enable_Redis_Test_Page）：${Enable_Redis_Test_Page}"
+    if [ -s /usr/local/redis/bin/redis-server ]; then
+        Echo_Yellow "本机已有 /usr/local/redis/bin/redis-server，本次不重装服务端，"
+        Echo_Yellow "但 redis.conf、/etc/init.d/redis 和防火墙规则都会对齐到上面的端口；"
+        Echo_Yellow "端口与现值不同时会先停止服务再改配置，随后由本流程重新启动。"
+    fi
+    Echo_Yellow "端口取自 lnmp.conf，要改请先取消，改 lnmp.conf 后重跑，或用环境变量覆盖："
+    Echo_Yellow "  Redis_Port=6380 bash addons.sh install redis"
+    Echo_Yellow "安装后再改端口，需要同时改 /usr/local/redis/etc/redis.conf 和 /etc/init.d/redis，"
+    Echo_Yellow "调整防火墙规则并重启服务。"
+    Echo_Yellow "=========================================================================="
+}
+
 Install_Redis()
 {
     echo "====== 正在安装 Redis ======"
     echo "正在安装稳定版 ${Redis_Stable_Ver}..."
+    Print_Redis_Install_Summary
     Press_Start || return 1
 
     Addons_Get_PHP_Ext_Dir
@@ -309,6 +381,12 @@ Install_Redis()
     cat >${PHP_Path}/conf.d/021-redis.ini<<EOF
 extension = "redis.so"
 EOF
+
+    # init 脚本与防火墙按 lnmp.conf 写端口，redis.conf 必须先对齐到同一值。
+    if ! Sync_Redis_Conf_Port; then
+        Restore_Existing_PHPRedis
+        return 1
+    fi
 
     \cp ${cur_dir}/init.d/init.d.redis /etc/init.d/redis
     sed -i "s/^REDISPORT=.*/REDISPORT=${Redis_Port}/" /etc/init.d/redis

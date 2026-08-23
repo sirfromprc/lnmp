@@ -71,6 +71,51 @@ Memcached_Abort()
     return 0
 }
 
+# 端口在安装时写入 init 脚本和防火墙规则，装完再改要同时动两处，
+# 因此在动系统前先列出生效值。
+Print_Memcached_Install_Summary()
+{
+    Echo_Yellow "=========================================================================="
+    echo "服务端：${Memcached_Ver}"
+    echo "监听端口（写入 /etc/init.d/memcached 的 PORT）：${Memcached_Port}"
+    echo "监听地址：127.0.0.1，防火墙同时阻断该端口的 TCP 与 UDP 公网访问"
+    echo "自测页（Enable_Memcached_Test_Page）：${Enable_Memcached_Test_Page}"
+    if [ -s /usr/local/memcached/bin/memcached ]; then
+        Echo_Yellow "本机已有 /usr/local/memcached/bin/memcached，本次不重装服务端，"
+        Echo_Yellow "但 /etc/init.d/memcached 的 PORT 和防火墙规则会对齐到上面的端口，"
+        Echo_Yellow "脚本里的 CACHESIZE、MAXCONN 等其它参数保留不动。"
+    fi
+    Echo_Yellow "端口取自 lnmp.conf，要改请先取消，改 lnmp.conf 后重跑，或用环境变量覆盖："
+    Echo_Yellow "  Memcached_Port=11212 bash addons.sh install memcached"
+    Echo_Yellow "安装后再改端口，需要改 /etc/init.d/memcached，调整防火墙规则并重启服务。"
+    Echo_Yellow "=========================================================================="
+}
+
+# PORT 是 Memcached 的唯一端口来源，unit 通过 init 脚本启动。重复安装时不重写该
+# 脚本，而防火墙按 lnmp.conf 写规则，因此这里只对齐 PORT 一行，保留 CACHESIZE、
+# MAXCONN 等使用者改过的参数，并迁移阻断规则。改动结果由 Memcached_Port_Changed 传出。
+Sync_Memcached_Init_Port()
+{
+    # 脚本路径可传入，便于定向测试；安装流程使用默认值。
+    local init="${1:-/etc/init.d/memcached}" old_port=''
+
+    Memcached_Port_Changed='n'
+    [ -s "${init}" ] || return 0
+
+    old_port=$(grep -E '^PORT=' "${init}" | head -1 | cut -d= -f2 | tr -d '"')
+    [ "${old_port}" = "${Memcached_Port}" ] && return 0
+
+    echo "/etc/init.d/memcached 当前端口为 ${old_port:-未设置}，按 lnmp.conf 改为 ${Memcached_Port}。"
+    sed -i "s/^PORT=.*/PORT=${Memcached_Port}/" "${init}" || return 1
+    Check_Conf_Applied "${init}" "^PORT=${Memcached_Port}\$" "Memcached 端口 ${Memcached_Port}" || return 1
+    if [ -n "${old_port}" ]; then
+        Firewall_Unblock tcp "${old_port}"
+        Firewall_Unblock udp "${old_port}"
+    fi
+    Memcached_Port_Changed='y'
+    return 0
+}
+
 Install_Memcached()
 {
     ver="1"
@@ -92,6 +137,7 @@ Install_Memcached()
     fi
 
     echo "====== 正在安装 Memcached ======"
+    Print_Memcached_Install_Summary
     Press_Start || return 1
 
     rm -f ${PHP_Path}/conf.d/005-memcached.ini
@@ -144,6 +190,12 @@ EOF
         fi
     fi
 
+    # 防火墙按 lnmp.conf 写规则，init 脚本的 PORT 必须先对齐到同一值。
+    if ! Sync_Memcached_Init_Port; then
+        Memcached_Abort "Memcached init 脚本端口对齐失败。"
+        return 1
+    fi
+
     if [ ! -d /var/lock/subsys ]; then
       mkdir -p /var/lock/subsys
     fi
@@ -178,8 +230,13 @@ EOF
     Firewall_Save
 
     echo "正在启动 Memcached..."
-    # 按系统能力选择 systemd 或 SysV 启动服务。
-    StartOrStop start memcached
+    # 按系统能力选择 systemd 或 SysV 启动服务；端口刚改写时必须重启，
+    # start 对已在运行的实例不生效。
+    if [ "${Memcached_Port_Changed}" = 'y' ]; then
+        StartOrStop restart memcached
+    else
+        StartOrStop start memcached
+    fi
 
     # 分别检查服务端和 PHP 扩展，便于定位未完成的安装部分。
     local svc_ok=0 ext_ok=0

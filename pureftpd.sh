@@ -8,6 +8,8 @@ if [ $(id -u) != "0" ]; then
 fi
 cur_dir=$(pwd)
 action=$1
+# 供 Press_Install 选择本入口的确认摘要。
+Stack='pureftpd'
 
 # 不带参数即安装；未识别的参数不能落入安装分支。
 case "${action}" in

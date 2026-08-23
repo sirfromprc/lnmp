@@ -4043,6 +4043,12 @@ Create_SSL_Config()
         ssl_index='index index.html index.htm index.php default.html default.htm default.php;'
         ssl_php_block='include phpmyadmin.*.conf;
 
+    # 与 80 端口的 default 站点一致：仅放行按开关部署的演示页，由 Apache 执行。
+    location ~ ^/(phpinfo|redis|memcached)\.php$ {
+        proxy_pass http://127.0.0.1:88;
+        include proxy.conf;
+    }
+
     location ~ [^/]\.php(/|$) {
         return 404;
     }'
