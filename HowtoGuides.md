@@ -1046,6 +1046,8 @@ echo "校验通过"
 
 ### 5.2 铺文件
 
+将解压好的Wordpress源码放入`/home/wwwroot/wp.example.com` 里。浏览器端输入 `https://wp.example.com` 进行相关设置。也可以用脚本命令生成，详见下方。
+
 默认按 WordPress 常规权限铺文件，网页安装向导、插件与主题安装、后台自动更新
 都可用：
 
@@ -1083,6 +1085,8 @@ find "$SITE" -xdev -type f ! -name .user.ini -exec chown www:www {} + -exec chmo
 > 真要改它：`chattr -i .user.ini` → 改 → `chattr +i .user.ini`。
 
 ### 5.3 脚本生成 wp-config.php
+
+浏览器端安装的此步无需操作。
 
 权限未收紧可在浏览器端配置，或使用以下脚本：
 
@@ -2857,8 +2861,8 @@ MariaDB 11.8 会在直接调用旧程序名时打印弃用提示。新版安装�
 
 ### 8.5 备份
 
-推荐用内置的备份命令，它会自动导出数据库与网站程序、生成校验清单，
-配置了异地之后自动上传：
+备份数据库及网站程序，自动导出数据并生成校验清单，确保备份完整可靠。
+配置了异地之后会自动上传：
 
 ```bash
 lnmp backup init                     # 扫描已有站点、挑选后生成配置，并装好 systemd timer
@@ -2872,10 +2876,10 @@ lnmp backup status                   # 上次结果与下次计划
 lnmp backup test                     # 试恢复验证：导入临时库校验后删除
 ```
 
-`init` 会扫描 nginx / apache 的 vhost 配置，反查站点目录，并从
+`init` 会扫描 nginx / apache 的 vhost 配置，反查站点目录。对于WordPress网站会从
 `wp-config.php` 里读出 `DB_NAME`，生成形如
 `域名|网站目录|数据库名` 的条目写进 `/etc/lnmp/backup.conf`（权限 600）。
-新建站点后重跑一次 `init`，或手工往配置里加一行。
+新建站点后重跑一次 `init`或手工修改配置，非WordPress站点可以手工往配置里加一行。
 
 `init` 交互要点：
 
@@ -2883,6 +2887,10 @@ lnmp backup test                     # 试恢复验证：导入临时库校验�
   回车全选；`1 3` 或直接写域名只备份指定项；`-2` 或 `-default` 排除指定项
   （`default` 这类占位站点在这一步排掉即可）。EOF、连续三次乱输入、
   或排除到一个不剩，都会安全退回全选或重新询问。
+- **数据库凭据**：先静默尝试用 root 的 `unix_socket` 免密连接，连得通就直接写出
+  `/etc/lnmp/backup-mysql.cnf`（600，不含口令），全程不问密码；只有免密不可用
+  （例如 MySQL 的 `caching_sha2_password`）才索取 root 口令，口令校验失败会中止
+  且不写配置、不装定时任务。留空跳过时只能备份网站文件。
 - **备份目录**：会询问存放目录（默认 `/home/backup`），只接受绝对路径且不能是
   系统目录；磁盘不够时在这里改到大盘。
 - **参数提示**：结尾会醒目列出仍是默认值、需要按实际情况修改的项，尤其是默认关闭
@@ -2952,13 +2960,14 @@ tar czf /root/backup/wp-content-$(date +%F).tar.gz \
 
 [返回顶部](#top)
 
-> 上传、大小核对、目录改名与 systemd timer 安装已在受限 `internal-sftp`
-> 账号（chroot + `ForceCommand`）上实测通过。仍建议第一次配置时按 8.6.4
+>建议第一次配置时按 8.6.4
 > 的顺序逐步确认，不要直接依赖定时任务 —— 出错多半出在备份机侧的
 > 权限与主机指纹上，逐步走一遍能立刻定位。
 
 本地备份在 `lnmp backup init` 之后就已经自动执行了。异地上传默认关闭，
 需要一台**独立的备份服务器**，并在两侧各配一次。
+
+本示例中备份服务器保存的备份文件所在路径为 `/srv/sftp/backupuser/backup`,请根据实际情况更改。
 
 整体结构：
 
@@ -3001,8 +3010,6 @@ chmod 700 /srv/sftp/backupuser/backup
 
 #### 8.6.2 备份机：限制这个账号只能做 SFTP
 
-命令不熟练的请参阅下方手工配置。
-
 **先备份配置**，再编辑 `/etc/ssh/sshd_config`。在**文件末尾**追加（`Match` 块必须放在最后，
 它之后的配置都属于这个块）：
 
@@ -3039,7 +3046,13 @@ sshd -t && systemctl reload ssh
 ssh-keygen -t ed25519 -N '' -f /root/.ssh/lnmp_backup
 ```
 
-**第二步，把公钥装到备份机。** 把 `/root/.ssh/lnmp_backup.pub` 的内容加到备份机的
+**第二步，把公钥装到备份机。** 先创建公钥文件
+
+```bash
+mkdir -p /home/backupuser/.ssh/
+```
+
+把 `/root/.ssh/lnmp_backup.pub` 的内容加到备份机的
 `/home/backupuser/.ssh/authorized_keys`，并在前面加上限制前缀：
 
 ```
@@ -3072,7 +3085,7 @@ ssh-keygen -lf /root/.ssh/lnmp_backup_known_hosts
 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
 
-两边的指纹逐字比对，对上了才算可信。对不上说明中间有人，别继续。
+两边的指纹逐字比对，对上了才算可信。对不上说明中间有人，别继续。然后生产机上执行：
 
 ```bash
 chmod 600 /root/.ssh/lnmp_backup /root/.ssh/lnmp_backup_known_hosts
@@ -3096,7 +3109,7 @@ Remote_Known_Hosts="/root/.ssh/lnmp_backup_known_hosts"
 
 ```bash
 # 1. 先单独确认 SFTP 通道本身是通的
-sftp -i /root/.ssh/lnmp_backup      -o IdentitiesOnly=yes      -o StrictHostKeyChecking=yes      -o UserKnownHostsFile=/root/.ssh/lnmp_backup_known_hosts      backupuser@备份机地址
+sftp -i /root/.ssh/lnmp_backup -P 22 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/lnmp_backup_known_hosts backupuser@备份机地址
 # 进去之后执行 pwd 应显示 /，ls 能看到 backup 目录，然后 bye
 
 # 2. 完整跑一次备份（包含上传）
@@ -3129,7 +3142,7 @@ tail -f /var/log/lnmp/backup.log           # 备份任务日志
 | 登录就断开，日志报 `bad ownership or modes for chroot directory` | chroot 根不是 root 所有或被组/其他人可写 | `chown root:root` + `chmod 755` |
 | `远端缺少文件` 或 `远端文件大小不符` | 上传中断或备份机磁盘满 | 脚本已拒绝改名，正式目录没被污染。清理 `.incoming` 后重跑；先看备份机 `df -h` |
 | 远端改名失败 | 该账号在 chroot 内没有写权限 | 确认 `backup/` 子目录属主是 backupuser 且权限 700 |
-| `找不到数据库 option file` | 没在 `init` 时填数据库密码 | 重跑 `lnmp backup init`，或手工建 `/etc/lnmp/backup-mysql.cnf`（600） |
+| `找不到数据库 option file` | `init` 时免密不可用且跳过了口令，或该文件被删 | 重跑 `lnmp backup init`，或手工建 `/etc/lnmp/backup-mysql.cnf`（600） |
 | `另一个备份任务正在运行` | 上一次还没跑完，或异常退出留下了锁 | 用 `lnmp backup status` 看上次执行时间；确认没有在跑的任务后删除 `/var/lock/lnmp-backup.lock*` |
 | 备份成功但没有自动执行 | timer 没启用 | `systemctl enable --now lnmp-backup.timer` |
 

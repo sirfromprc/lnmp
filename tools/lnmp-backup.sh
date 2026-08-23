@@ -1409,14 +1409,50 @@ EOF
     return 0
 }
 
+# 生成数据库 option file 并校验连通性。密码为空表示只用 unix_socket 免密连接。
+# 返回：0 成功，1 写入失败，2 校验失败，3 找不到 mysql 客户端。
+Write_My_Cnf()
+{
+    local db_pass="$1" db_sock tmp mysql_bin pass_line=''
+
+    if ! mysql_bin=$(Find_Mysql_Client); then
+        return 3
+    fi
+    db_sock=$(Get_Actual_DB_Socket)
+    tmp=$(mktemp "${My_Cnf}.XXXXXXXX") || return 1
+    if [ -n "${db_pass}" ]; then
+        # option file 在引号内将反斜杠解析为转义符，写入前需加倍。
+        pass_line="password='${db_pass//\\/\\\\}'"
+    fi
+    # 免密时不写 password 行，避免配置里留下空行。
+    (
+        umask 077
+        {
+            printf '[mysqldump]\nuser=root\n'
+            [ -n "${pass_line}" ] && printf '%s\n' "${pass_line}"
+            printf 'socket=%s\n\n[client]\nuser=root\n' "${db_sock}"
+            [ -n "${pass_line}" ] && printf '%s\n' "${pass_line}"
+            printf 'socket=%s\n' "${db_sock}"
+        } > "${tmp}"
+    ) || { rm -f "${tmp}"; return 1; }
+    chmod 600 "${tmp}" || { rm -f "${tmp}"; return 1; }
+    if ! "${mysql_bin}" --defaults-file="${tmp}" -e "SELECT 1;" >/dev/null 2>&1; then
+        rm -f "${tmp}"
+        return 2
+    fi
+    mv -f "${tmp}" "${My_Cnf}" || { rm -f "${tmp}"; return 1; }
+    return 0
+}
+
 Cmd_Init()
 {
-    local sites site_lines ans hour db_pass db_sock mysql_bin my_cnf_tmp
+    local sites site_lines ans hour db_pass cnf_rc mysql_bin
     local backup_home="/home/backup"
 
-    Say "配置文件位于：${Conf_File}，可根据实际需求修改相关参数，例如备份计划、是否上传备份文件等。"
-    Say "如需开启上传功能，请先安装 pure-ftpd 并完成相关配置。"
-    Say "如需修改配置，请先按 Ctrl+C 退出当前程序，修改配置文件后重新运行即可。"
+    Say "init 会扫描已有站点，生成备份配置、备份目录与定时任务。"
+    Say "配置生成后位于：${Conf_File}，之后可按需修改备份计划等参数，改完直接生效。"
+    Say "异地上传默认关闭，需要时在配置文件中开启并填写远端主机与凭据。"
+    Say "使用 ftp/ftps 上传时，接收端需提供 FTP 服务（可用 pureftpd.sh 搭建），本机需有 curl。"
     Say ""
     printf '确认开始配置请输入 y，其它输入一律取消：'
     # 返回 0 只代表配置真正写入；取消与 EOF 都必须返回非 0。
@@ -1457,48 +1493,35 @@ Cmd_Init()
         site_lines='    #"example.com|/home/wwwroot/example.com|wpdb"'
     fi
 
-    # 数据库口令仅写入权限 0600 的 option file，不出现在命令行或备份配置中。
+    # 优先用 root 的 unix_socket 免密连接，连得通就不再询问口令。
+    # 口令仅在免密不可用时索取，写入权限 0600 的 option file，不出现在命令行或备份配置中。
     if [ ! -f "${My_Cnf}" ]; then
-        printf '输入数据库 root 密码（用于导出，留空则跳过，不回显）：'
-        if ! read -r -s db_pass; then
-            echo
-            Err "读取数据库 root 密码时遇到 EOF。"
-            return 1
-        fi
-        echo
-        if [ -n "${db_pass}" ]; then
-            # option file 在引号内将反斜杠解析为转义符，写入前需加倍。
-            db_pass="${db_pass//\\/\\\\}"
-            db_sock=$(Get_Actual_DB_Socket)
-            my_cnf_tmp=$(mktemp "${My_Cnf}.XXXXXXXX") || return 1
-            ( umask 077; cat > "${my_cnf_tmp}" <<EOF
-[mysqldump]
-user=root
-password='${db_pass}'
-socket=${db_sock}
-
-[client]
-user=root
-password='${db_pass}'
-socket=${db_sock}
-EOF
-            )
-            chmod 600 "${my_cnf_tmp}"
-            if ! mysql_bin=$(Find_Mysql_Client); then
-                rm -f "${my_cnf_tmp}"
-                Err "找不到 mysql 客户端，无法校验数据库凭据。"
-                return 1
-            fi
-            if ! "${mysql_bin}" --defaults-file="${my_cnf_tmp}" -e "SELECT 1;" >/dev/null 2>&1; then
-                rm -f "${my_cnf_tmp}"
-                Err "数据库凭据校验失败，未写入配置，也未启用定时任务。"
-                return 1
-            fi
-            mv -f "${my_cnf_tmp}" "${My_Cnf}" || { rm -f "${my_cnf_tmp}"; return 1; }
-            Ok "数据库凭据校验通过，已写入 ${My_Cnf}（600）。"
-        else
-            Warn "跳过数据库凭据，库备份会因此失败。稍后可重跑 init 补上。"
-        fi
+        Write_My_Cnf ""; cnf_rc=$?
+        case "${cnf_rc}" in
+            0) Ok "root 可通过 unix_socket 免密连接，凭据已写入 ${My_Cnf}（600）。" ;;
+            3) Warn "找不到 mysql 客户端，跳过数据库凭据，库备份会因此失败。" ;;
+            1) Err "写入 ${My_Cnf} 失败。"; return 1 ;;
+            *)
+                Say "socket 免密连接不可用，导出数据库需要 root 口令。"
+                printf '输入数据库 root 密码（留空则跳过，不回显）：'
+                if ! read -r -s db_pass; then
+                    echo
+                    Err "读取数据库 root 密码时遇到 EOF。"
+                    return 1
+                fi
+                echo
+                if [ -z "${db_pass}" ]; then
+                    Warn "跳过数据库凭据，库备份会因此失败。稍后可重跑 init 补上。"
+                else
+                    Write_My_Cnf "${db_pass}"; cnf_rc=$?
+                    case "${cnf_rc}" in
+                        0) Ok "数据库凭据校验通过，已写入 ${My_Cnf}（600）。" ;;
+                        2) Err "数据库凭据校验失败，未写入配置，也未启用定时任务。"; return 1 ;;
+                        *) Err "写入 ${My_Cnf} 失败。"; return 1 ;;
+                    esac
+                fi
+                ;;
+        esac
     else
         Check_Perm "${My_Cnf}" || return 1
         if ! mysql_bin=$(Find_Mysql_Client); then
@@ -1533,6 +1556,8 @@ Backup_Home="${backup_home}"
 
 # 留空则自动探测 /usr/local/{mysql,mariadb}/bin/mysqldump
 MySQL_Dump=""
+# 数据库凭据文件，由 init 生成（600）；socket 免密时其中不含密码。
+# 该文件缺失或不可读时，库备份、restore 与 test 都会失败。
 MySQL_Option_File="${My_Cnf}"
 
 Backup_Site=(
@@ -1550,7 +1575,7 @@ Web_Interval_Days=7
 Enable_Remote_Backup=0
 
 # 上传方式：sftp 使用 SSH 密钥，ftps 使用 TLS 和密码，ftp 为明文传输。
-# sftp 通常使用端口 22，ftp 和 ftps 通常使用端口 21。
+# sftp 通常使用端口 22，ftp 和 ftps 通常使用端口 21。根据备份服务器实际端口号修改。
 Remote_Protocol="sftp"
 
 Remote_Host=""
@@ -1558,16 +1583,17 @@ Remote_Port=22
 Remote_User=""
 Remote_Dir="backup"
 
-# 仅 ftp 和 ftps 使用。
-Remote_Password=""
-# FTPS 证书校验；自签证书应通过 Remote_Ftp_CA 指定 CA。
-Remote_Ftp_Verify=1
-Remote_Ftp_CA=""
-# 使用专用备份密钥，避免复用日常登录密钥。
+# 以下两项仅 sftp 使用。专用备份密钥，避免复用日常登录密钥。
 Remote_SSH_Key="/root/.ssh/lnmp_backup"
 # 预先固定并通过独立渠道核对主机指纹：
 #   ssh-keyscan -p 22 <主机> > /root/.ssh/lnmp_backup_known_hosts
 Remote_Known_Hosts="/root/.ssh/lnmp_backup_known_hosts"
+
+# 以下三项仅 ftp 和 ftps 使用。
+Remote_Password=""
+# FTPS 证书校验；自签证书应通过 Remote_Ftp_CA 指定 CA。
+Remote_Ftp_Verify=1
+Remote_Ftp_CA=""
 
 # ---- 可选加密 ----
 Enable_Encrypt=0
