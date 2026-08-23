@@ -1809,7 +1809,7 @@ CA 校验 `_acme-challenge.<域名>` 的 TXT 记录，本命令通过服务商 A
 判定不依赖公共后缀表，`*.example.com.uk`、`*.example.gov.uk` 同样只覆盖一级子域。
 泛域名不能建站，`lnmp vhost add` 会拒绝 `*.example.com` 这样的域名。
 
-交互顺序：域名 → 被覆盖站点确认 → 根域名是否签入 → 更多域名 → CA 选择 →
+交互顺序：域名 → 被覆盖站点确认 → 上级域名是否签入 → 更多域名 → CA 选择 →
 是否 301 跳转 → API 凭据。签发成功后逐个站点写 HTTPS 配置，已有 443 配置的站点跳过。
 
 ```
@@ -1818,8 +1818,8 @@ DNS 验证，请输入域名（示例：www.example.com）: *.example.com
 泛域名 *.example.com 覆盖的网站：a.example.com www.example.com had.example.com
 本次写入 HTTPS 配置的网站：a.example.com www.example.com
 已有 HTTPS 配置、本次跳过的网站：had.example.com
-检测到根域名网站 example.com，是否一并签入本证书 [y/N]（默认 n）: n
-根域名 example.com 不参与本次证书。
+检测到网站 example.com，泛域名不覆盖它本身，是否一并签入本证书 [y/N]（默认 n）: n
+example.com 不参与本次证书。
 证书域名：*.example.com
 1: 使用 Let's Encrypt 签发 SSL 证书（DNS 验证）
 2: 使用 ZeroSSL 签发 SSL 证书（DNS 验证）
@@ -1834,7 +1834,9 @@ NS1_Key（API Key）: <粘贴 API Key>
 已配置 2 个网站，跳过 1 个。
 ```
 
-根域名选 `y` 时证书域名为 `*.example.com example.com`，根域名站点也一并写配置。
+上级域名（去掉 `*.` 后的域名，`*.example.com` 对应 `example.com`）不在泛域名覆盖
+范围内，存在同名站点时单独确认；选 `y` 时证书域名为 `*.example.com example.com`，
+该站点也一并写配置。域名输入不区分大小写，`*.EXAMPLE.com` 与 `*.example.com` 等价。
 CA 不接受泛域名与被它覆盖的子域名同时出现在一张证书里，这类冗余会在提交前自动去掉。
 
 **已有泛域名证书时**：再执行 `lnmp dnsssl <服务商>` 输入同一个泛域名，会先报出这张
@@ -1851,9 +1853,27 @@ DNS 验证，请输入域名（示例：www.example.com）: *.example.com
 请选择 [1-3]：1
 ```
 
-在 `更多域名` 里填泛域名时，若系统里已经有覆盖它的证书会被拒绝并指向上面的复用入口；
-没有则允许，证书会同时包含根域名和泛域名。`lnmp onlyssl` 检测到已有证书时会问是否
-重新签发，默认保留现有证书。
+在 `更多域名` 里填泛域名时，若系统里已经有覆盖它的证书会被拒绝并指向上面的复用入口。
+若填的泛域名覆盖了本站域名（例如站点 `www.example.com` 填 `*.example.com`），CA 不接受
+两者共存，此时会当场说明并转入泛域名流程：
+
+```
+DNS 验证，请输入域名（示例：www.example.com）: www.example.com
+您的域名：www.example.com
+请输入更多域名（支持泛域名，示例：*.example.com sub.example.com，留空跳过）: *.example.com
+*.example.com 已覆盖网站域名 www.example.com，CA 不接受两者同时出现在一张证书里。
+泛域名 *.example.com 覆盖的网站：a.example.com www.example.com
+本次写入 HTTPS 配置的网站：a.example.com www.example.com
+1: 按 *.example.com 签发证书，并写入上面列出的网站
+2: 重新输入更多域名
+请选择 [1-2]：1
+```
+
+选 1 后与直接输入泛域名完全一致：上级域名单独确认，签发后写入所有被覆盖的网站；同时
+填写的跨根域域名（如 `other.org`）保留在证书里。填的泛域名不覆盖本站域名时（站点
+`example.com` 填 `*.example.com`）不触发转入，证书同时包含两者。
+
+`lnmp onlyssl` 检测到已有证书时会问是否重新签发，默认保留现有证书。
 
 `更多域名` 只接受该站点根域下的域名，或站点配置里已有的域名。输入其它根域的域名会先
 列出来要求确认——它们既要求 DNS 服务商能管理对应解析，又会被写进这个站点的 HTTPS
@@ -2259,7 +2279,7 @@ MySQL/MariaDB 不参与自动重启（其 SysV 脚本基于 `mysqld_safe`，已�
 
 ```bash
 lnmp health status              # 各服务当前探测结果与失败计数
-lnmp health check               # 立即执行一轮探测
+lnmp health check               # 立即执行一轮探测，终端下直接打印每个服务的结果
 lnmp health reset nginx         # 熔断后修好了，清计数解除熔断
 lnmp health reset               # 清除全部服务的计数与熔断标记
 lnmp health init                # 安装 lnmp-health.timer
@@ -2278,6 +2298,12 @@ tail -20 /var/log/lnmp/health.log
 直接用 bash 的 `/dev/tcp` 发 inline 命令，不调 `redis-cli`，端口从
 `/usr/local/redis/etc/redis.conf` 读取，改端口后无须另行配置。
 
+Web 探针同样走 `/dev/tcp`，不依赖 `curl`。Nginx 探的是主配置内置的
+`127.0.0.1:1008/nginx_status`，该 location 已关闭访问日志，每分钟一次的探测不会写进
+`/home/wwwlogs/default.log`；该端点被改动时回退到站点端口。Apache 没有等价端点，探测请求带
+固定 `User-Agent: lnmp-health`，LAMP 与 LNMPA 的默认站点配置按该标识跳过访问日志。
+LNMPA 中 Apache 只监听 `127.0.0.1:88`，探针取的就是这个端口，探的是 Apache 自身而非前端 Nginx。
+
 连续失败 3 次（约 3 分钟）才执行一次 `systemctl restart`；30 分钟内已重启 2 次仍
 未恢复则熔断，只告警不再重启。数据库达阈值只告警，不自动重启。`lnmp stop` 之后
 服务不会被健康检查重新拉起。
@@ -2286,25 +2312,22 @@ tail -20 /var/log/lnmp/health.log
 并告警一次；unit 处于 `failed` 时立即告警。这类情况**不会**自动重启，需要人工确认
 是维护中停机还是异常退出。已被 `systemctl disable` 的服务不告警。
 
-阈值需自定义在 `/etc/lnmp/health.conf` 文件修改，改完不需要重启 timer。
-
-也可以用脚本修改：
+`/etc/lnmp/health.conf` 由 `lnmp health init`（完整安装时自动执行）生成，内容是各项阈值的
+内置默认值，直接改其中的值即可，改完不需要重启 timer。该文件已存在时 `init` 不覆盖。
 
 ```bash
-cat > /etc/lnmp/health.conf <<'EOF'
-# 连续失败次数达到该值才动作
-Fail_Threshold=5
-# 熔断窗口与窗口内最多重启次数
-Restart_Window_Sec=3600
-Restart_Max=3
-# 单次探测超时秒数
-Probe_Timeout=8
-# 同一服务的告警间隔秒数
-Notify_Quiet_Sec=7200
-EOF
-chmod 600 /etc/lnmp/health.conf
-lnmp health check
+# 由 init 生成，按需修改
+Fail_Threshold=3          # 连续探测失败达到该次数才重启或告警
+Restart_Window_Sec=1800   # 熔断窗口秒数
+Restart_Max=2             # 窗口内最多重启同一服务的次数
+Probe_Timeout=5           # 单次探测超时秒数，须小于 30 秒
+Notify_Quiet_Sec=3600     # 同一服务的告警间隔秒数
+Summary_Interval_Sec=86400  # 全部正常时写入日志摘要的间隔秒数
 ```
+
+每项都必须是正整数。填了空值、`0`、负数或非数字时，该项回退到内置默认值并在运行时告警；
+`Probe_Timeout` 达到或超过 30 秒同样回退：Web 探针最多探两次（状态端点与回退的站点端口），
+两次之和要留在 timer 的 60 秒间隔内，否则上一轮探测会压到下一轮。
 
 [↑ 命令目录](#cmd-index) · [返回顶部](#top)
 

@@ -337,25 +337,32 @@ Kill_Process_Group()
 # 取服务对外提供站点的 TCP 端口，取不到时输出空串。
 #
 # 按进程名而非 MainPID 匹配：master 与 worker 共享监听套接字，ss 列出的持有者
-# 未必是主进程。只接受绑在通配地址上的端口：只绑 127.0.0.1 的监听通常是状态页
-# 一类的内部端口，用它探测得不出站点是否可用。同时监听多个端口时优先取 80。
+# 未必是主进程。优先取绑在通配地址上的端口，同时监听多个时优先 80。
+#
+# 只绑回环的端口仅对 Apache 采纳：LNMPA 中 Apache 正是只监听 127.0.0.1:88，由
+# Nginx 反代，不取该端口就会退到 80 去探 Nginx，探不出 Apache 的状态。Nginx 的
+# 回环监听则是 1008 状态端口一类的内部入口，用它探测得不出站点是否可用。
 Unit_Listen_Port()
 {
-    local svc="$1" name
+    local svc="$1" name loopback=0
 
     command -v ss >/dev/null 2>&1 || return 0
     case "${svc}" in
         nginx) name=nginx ;;
-        httpd) name=httpd ;;
+        httpd) name=httpd; loopback=1 ;;
         *)     return 0 ;;
     esac
-    ss -lntpH 2>/dev/null | awk -v n="${name}" '
+    ss -lntpH 2>/dev/null | awk -v n="${name}" -v lo="${loopback}" '
         $0 !~ "\"" n "\"" { next }
         {
             port = $4
             sub(/^.*:/, "", port)
             addr = substr($4, 1, length($4) - length(port) - 1)
-            if (addr != "0.0.0.0" && addr != "*" && addr != "[::]") next
+            if (addr != "0.0.0.0" && addr != "*" && addr != "[::]") {
+                if (lo == 1 && loopback_port == "" &&
+                    (addr == "127.0.0.1" || addr == "[::1]")) loopback_port = port
+                next
+            }
             # awk 的 exit 仍会执行 END，因此结果统一在 END 输出
             if (port == "80") { found = port; exit }
             if (fallback == "") fallback = port
@@ -363,28 +370,71 @@ Unit_Listen_Port()
         END {
             if (found != "") print found
             else if (fallback != "") print fallback
+            else if (loopback_port != "") print loopback_port
         }
     '
 }
 
-# HTTP 探针。连接失败、超时或 5xx 判为异常；2xx/3xx/4xx 均表示服务在响应。
+# Http_Status <端口> <路径>
+# 输出响应状态码，连接失败或超时返回 1。
+#
+# 用 bash 的 /dev/tcp 而不是 curl：curl 不存在时整个 Web 探针会直接跳过，
+# nginx 实际未被探测却记为正常；read -t 是内建超时，服务端接受连接后不响应
+# 时能可靠中断，不依赖 timeout 命令。
+Http_Status()
+{
+    local port="$1" path="$2" line code
+
+    exec 9<>"/dev/tcp/127.0.0.1/${port}" 2>/dev/null || return 1
+    printf 'GET %s HTTP/1.0\r\nHost: localhost\r\nUser-Agent: lnmp-health\r\nConnection: close\r\n\r\n' \
+        "${path}" >&9 2>/dev/null
+    line=""
+    read -r -t "${Probe_Timeout}" line <&9 2>/dev/null
+    exec 9<&- 2>/dev/null
+
+    line="${line//$'\r'/}"
+    code="${line#* }"
+    code="${code%% *}"
+    case "${code}" in
+        [1-5][0-9][0-9]) printf '%s' "${code}"; return 0 ;;
+    esac
+    return 1
+}
+
+# Web 探针。连接失败、超时或 5xx 判为异常；2xx/3xx/4xx 均表示服务在响应。
+#
+# Nginx 优先探主配置内置的 127.0.0.1:1008 状态端点：该 location 已关闭访问日志，
+# 每分钟一次的探测不会写进站点访问日志。端点不可用（配置被改动）时回退站点端口。
 Probe_Http()
 {
-    local svc="$1" port code rc
+    local svc="$1" port code fell_back='n'
 
-    command -v curl >/dev/null 2>&1 || return 0
+    if [ "${svc}" = "nginx" ]; then
+        code=$(Http_Status 1008 /nginx_status)
+        if [ -n "${code}" ]; then
+            case "${code}" in
+                5??) printf -v Probe_Detail '127.0.0.1:1008/nginx_status 返回 %s' "${code}"
+                     return 1 ;;
+            esac
+            return 0
+        fi
+        fell_back='y'
+    fi
 
     port=$(Unit_Listen_Port "${svc}")
     case "${port}" in
         ''|*[!0-9]*) port=80 ;;
     esac
 
-    code=$(curl -o /dev/null -s -m "${Probe_Timeout}" --connect-timeout "${Probe_Timeout}" \
-                -H 'Host: localhost' -w '%{http_code}' \
-                "http://127.0.0.1:${port}/" 2>/dev/null)
-    rc=$?
-    if [ ${rc} -ne 0 ] || [ -z "${code}" ] || [ "${code}" = "000" ]; then
-        printf -v Probe_Detail '连接 127.0.0.1:%s 失败或超时' "${port}"
+    code=$(Http_Status "${port}" /)
+    if [ -z "${code}" ]; then
+        # 两个端点都不通更能说明 worker 卡死或进程已停，只报站点端口会被当成端口配置问题。
+        if [ "${fell_back}" = 'y' ]; then
+            printf -v Probe_Detail '127.0.0.1:1008/nginx_status 与 127.0.0.1:%s 均连接失败或超时' \
+                "${port}"
+        else
+            printf -v Probe_Detail '连接 127.0.0.1:%s 失败或超时' "${port}"
+        fi
         return 1
     fi
     case "${code}" in
@@ -662,7 +712,7 @@ ${detail}"
 # 探测到故障不应让 timer 触发的 oneshot unit 进入 failed 状态。
 Cmd_Check()
 {
-    local svc fails paused ok_count=0 fail_count=0 down_count=0
+    local svc fails paused active rc tty='' ok_count=0 fail_count=0 down_count=0
 
     if ! Systemd_Available; then
         Log WARN "本机没有运行中的 systemd，健康检查不执行。"
@@ -670,10 +720,20 @@ Cmd_Check()
         return 1
     fi
 
+    # 终端下逐服务反馈结果，无需再执行 status；timer 调用时保持静默，
+    # 否则每分钟往 journal 写一份完整探测结果。
+    [ -t 1 ] && tty='y'
+
     for svc in $(Managed_Services); do
         if ! Should_Probe "${svc}"; then
             Report_Not_Running "${svc}"
-            [ -n "$(Read_State "Down_${svc}")" ] && down_count=$((down_count + 1))
+            active=$(systemctl is-active "${svc}.service" 2>/dev/null)
+            if [ -n "$(Read_State "Down_${svc}")" ]; then
+                down_count=$((down_count + 1))
+                [ -n "${tty}" ] && Warn "${svc}：unit 状态 ${active:-未知}，未运行，不自动重启"
+            else
+                [ -n "${tty}" ] && Say "${svc}：unit 状态 ${active:-未知}，本轮不探测"
+            fi
             continue
         fi
 
@@ -687,6 +747,13 @@ Cmd_Check()
             Clear_State "Down_${svc}"
             Write_State "Fail_${svc}" 0
             ok_count=$((ok_count + 1))
+            if [ -n "${tty}" ]; then
+                if [ -n "${paused}" ]; then
+                    Ok "${svc}：探测正常，已解除熔断"
+                else
+                    Ok "${svc}：探测正常"
+                fi
+            fi
             continue
         fi
         fail_count=$((fail_count + 1))
@@ -699,11 +766,28 @@ Cmd_Check()
         Write_State "Fail_${svc}" "${fails}"
         Log WARN "${svc} 探测失败（第 ${fails} 次）：${Probe_Detail}"
 
-        [ "${fails}" -ge "${Fail_Threshold}" ] || continue
+        if [ "${fails}" -lt "${Fail_Threshold}" ]; then
+            [ -n "${tty}" ] && Warn "${svc}：探测失败（第 ${fails} 次）：${Probe_Detail}"
+            continue
+        fi
+
         Handle_Failure "${svc}" "${Probe_Detail}"
+        rc=$?
+        [ -n "${tty}" ] || continue
+        if [ "$(Svc_Kind "${svc}")" = "db" ]; then
+            Warn "${svc}：连续失败 ${fails} 次，已告警；数据库不执行自动重启"
+        elif [ ${rc} -eq 0 ]; then
+            Warn "${svc}：连续失败 ${fails} 次，已重启，详见 ${Log_File}"
+        else
+            Err "${svc}：连续失败 ${fails} 次，未重启（已熔断或重启失败），详见 ${Log_File}"
+        fi
     done
 
     Log_Periodic_Summary "${ok_count}" "${fail_count}" "${down_count}"
+    if [ -n "${tty}" ]; then
+        Say ""
+        Say "检查完成：正常 ${ok_count}，探测失败 ${fail_count}，未运行 ${down_count}"
+    fi
     return 0
 }
 
@@ -801,6 +885,44 @@ EOF
     return 0
 }
 
+# 生成默认配置文件，供用户就地修改阈值。文件已存在时不覆盖，
+# 生成失败不影响定时任务安装，仅回落到内置默认值。
+Write_Default_Conf()
+{
+    local tmp rc
+
+    [ -e "${Conf_File}" ] && return 0
+
+    tmp=$(mktemp "${Conf_File}.XXXXXX" 2>/dev/null) || {
+        Warn "生成 ${Conf_File} 失败，继续使用内置默认阈值。"
+        return 0
+    }
+    cat > "${tmp}" <<EOF
+# lnmp health 阈值配置。改完立即生效，不需要重启 lnmp-health.timer。
+# 每项都必须是正整数，填写非法值时该项回退到内置默认值并告警。
+
+# 连续探测失败达到该次数才重启或告警
+Fail_Threshold=${Fail_Threshold}
+# 熔断窗口秒数，以及窗口内最多重启同一服务的次数
+Restart_Window_Sec=${Restart_Window_Sec}
+Restart_Max=${Restart_Max}
+# 单次探测超时秒数，须小于 30 秒
+Probe_Timeout=${Probe_Timeout}
+# 同一服务的告警间隔秒数
+Notify_Quiet_Sec=${Notify_Quiet_Sec}
+# 全部正常时写入日志摘要的间隔秒数
+Summary_Interval_Sec=${Summary_Interval_Sec}
+EOF
+    rc=$?
+    if [ ${rc} -ne 0 ] || ! chmod 600 "${tmp}" || ! mv -f "${tmp}" "${Conf_File}"; then
+        rm -f "${tmp}"
+        Warn "生成 ${Conf_File} 失败，继续使用内置默认阈值。"
+        return 0
+    fi
+    Ok "已生成默认配置 ${Conf_File}，可直接修改其中的阈值。"
+    return 0
+}
+
 Cmd_Init()
 {
     [ "$(id -u)" = "0" ] || { Err "init 需要 root 权限。"; return 1; }
@@ -814,6 +936,7 @@ Cmd_Init()
     fi
 
     mkdir -p "${Conf_Dir}" && chmod 700 "${Conf_Dir}" || { Err "无法创建 ${Conf_Dir}"; return 1; }
+    Write_Default_Conf
     Write_Systemd_Unit || return 1
     Say "探测服务：$(Managed_Services | tr '\n' ' ')"
     return 0
@@ -841,15 +964,51 @@ Usage()
     Say "用法：lnmp health <check|status|reset [服务]|init|uninit>"
 }
 
+# Sanitize_Conf <"名=默认值" 列表>
+# 配置文件交给用户修改，写成空值、负数或非数字会让后续算术展开和数值比较出错，
+# 因此逐项校验，非法项回退到内置默认值并指出是哪一项。
+Sanitize_Conf()
+{
+    local pair name def cur timeout_def=''
+
+    for pair in $1; do
+        name="${pair%%=*}"
+        def="${pair#*=}"
+        [ "${name}" = "Probe_Timeout" ] && timeout_def="${def}"
+        cur="${!name}"
+        case "${cur}" in
+            ''|0|*[!0-9]*)
+                Warn "${Conf_File} 中 ${name} 的值无效，回退为 ${def}。"
+                printf -v "${name}" '%s' "${def}"
+                ;;
+        esac
+    done
+
+    # Web 探针最多探两次（状态端点与回退的站点端口），两次之和须留在 timer 间隔内，
+    # 否则上一轮探测会压到下一轮。
+    if [ -n "${timeout_def}" ] && [ "${Probe_Timeout}" -ge 30 ]; then
+        Warn "${Conf_File} 中 Probe_Timeout 不得达到 30 秒，回退为 ${timeout_def}。"
+        Probe_Timeout="${timeout_def}"
+    fi
+    return 0
+}
+
 Main()
 {
-    local cmd="${1:-help}"
+    local cmd="${1:-help}" defaults
     shift 2>/dev/null || true
+
+    # 读配置前快照内置默认值，供非法项回退。
+    defaults="Fail_Threshold=${Fail_Threshold} Restart_Window_Sec=${Restart_Window_Sec}"
+    defaults="${defaults} Restart_Max=${Restart_Max} Probe_Timeout=${Probe_Timeout}"
+    defaults="${defaults} Notify_Quiet_Sec=${Notify_Quiet_Sec}"
+    defaults="${defaults} Summary_Interval_Sec=${Summary_Interval_Sec}"
 
     # 配置文件可覆盖阈值，缺失时用内置默认值。
     if [ -r "${Conf_File}" ]; then
         # shellcheck disable=SC1090
         . "${Conf_File}" || Warn "读取 ${Conf_File} 失败，使用默认阈值。"
+        Sanitize_Conf "${defaults}"
     fi
 
     case "${cmd}" in

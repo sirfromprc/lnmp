@@ -1390,6 +1390,7 @@ Add_VHost()
     while :;do
         Echo_Yellow "请输入域名(示例: www.example.com): "
         Read_Input domain "域名"
+        Lower_Domain_Input domain
         Check_Domain_Name "${domain}" || continue
         Reject_Wildcard_Site "${domain}" || continue
         if [ "${domain}" = "default" ]; then
@@ -1410,6 +1411,7 @@ Add_VHost()
     while :;do
         Echo_Yellow "请输入更多域名(示例: example.com sub.example.com，直接回车跳过): "
         Read_Input moredomain "更多域名"
+        Lower_Domain_Input moredomain
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" || continue
         Reject_Wildcard_Site "${moredomain}" && break
@@ -1659,6 +1661,7 @@ Del_VHost()
     while :;do
         Echo_Yellow "请输入要删除的域名: "
         Read_Input domain "域名"
+        Lower_Domain_Input domain
         # 域名会组成待删除的配置文件路径，因此必须先限制字符集。
         Check_Domain_Name "${domain}" || continue
         break
@@ -2265,6 +2268,14 @@ Press_Any_Key_Or_Line()
     stty "${__old}"
     echo
     return 0
+}
+
+# DNS 不区分大小写，域名统一转小写后再比对、写配置和申请证书。
+Lower_Domain_Input()
+{
+    local var="$1" value="${!1}"
+
+    printf -v "${var}" '%s' "${value,,}"
 }
 
 Check_Domain_Name()
@@ -3070,6 +3081,7 @@ Add_SSL_Info_Menu()
     while :;do
         Echo_Yellow "请输入域名（示例：www.example.com）: "
         Read_Input domain "域名"
+        Lower_Domain_Input domain
         Check_Domain_Name "${domain}" || continue
         echo "您的域名：${domain}"
         break
@@ -3078,6 +3090,7 @@ Add_SSL_Info_Menu()
     while :;do
         Echo_Yellow "请输入更多域名（示例：example.com sub.example.com，留空跳过）: "
         Read_Input moredomain "更多域名"
+        Lower_Domain_Input moredomain
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" || continue
         Reject_Wildcards_For_HTTP "${moredomain}" && break
@@ -3192,6 +3205,7 @@ Add_SSL_Only_Info_Menu()
     while :;do
         Echo_Yellow "HTTP 验证，请输入域名（示例：www.example.com）: "
         Read_Input input "域名"
+        Lower_Domain_Input input
         Check_Domain_Name "${input}" || continue
         # HTTP-01 不能签发泛域名，ACME 规定泛域名只接受 DNS-01。
         case "${input}" in
@@ -3881,19 +3895,19 @@ Report_Wildcard_Sites()
     return 0
 }
 
-# 根域名不在泛域名覆盖范围内，存在同名站点时单独确认是否一并签入。
-Confirm_Wildcard_Root_Domain()
+# 泛域名不覆盖去掉星号后的域名本身，存在同名站点时单独确认是否一并签入。
+Confirm_Wildcard_Base_Domain()
 {
     local base="${1#\*.}" ans
 
     [ -s "${Vhost_Conf_Dir}/${base}.conf" ] || return 0
-    Read_YN ans "检测到根域名网站 ${base}，是否一并签入本证书 [y/N]（默认 n）: " n "根域名签入开关"
+    Read_YN ans "检测到网站 ${base}，泛域名不覆盖它本身，是否一并签入本证书 [y/N]（默认 n）: " n "上级域名签入开关"
     if [ "${ans}" = "y" ]; then
         moredomain="${moredomain:+${moredomain} }${base}"
         Wildcard_Site_List="${Wildcard_Site_List:+${Wildcard_Site_List} }${base}"
-        echo "根域名 ${base} 已加入证书域名。"
+        echo "${base} 已加入证书域名。"
     else
-        echo "根域名 ${base} 不参与本次证书。"
+        echo "${base} 不参与本次证书。"
     fi
     return 0
 }
@@ -3944,6 +3958,57 @@ Check_Extra_Wildcards()
     return 0
 }
 
+# 更多域名里的泛域名覆盖了本站域名时，CA 不接受两者共存，转入泛域名流程。
+# 返回 0 已转入，1 无覆盖，2 需要重新输入。
+Switch_To_Wildcard_Menu()
+{
+    local extra="$1" d wildcard="" rest="" choice
+
+    set -f
+    for d in ${extra}; do
+        case "${d}" in
+        \*.*)
+            if [ -z "${wildcard}" ] && Domain_Covered_By_Wildcard "${domain}" "${d}"; then
+                wildcard="${d}"
+                continue
+            fi
+            ;;
+        esac
+        rest="${rest:+${rest} }${d}"
+    done
+    set +f
+    [ -n "${wildcard}" ] || return 1
+
+    Echo_Yellow "${wildcard} 已覆盖网站域名 ${domain}，CA 不接受两者同时出现在一张证书里。"
+    echo
+    if ! Find_Sites_Covered_By_Wildcard "${wildcard}"; then
+        Echo_Red "没有找到 ${wildcard} 覆盖的网站，请改填其它域名。"
+        echo
+        Wildcard_Site_List=""
+        return 2
+    fi
+    echo "泛域名 ${wildcard} 覆盖的网站：${Wildcard_Site_List}"
+    Report_Wildcard_Sites
+    echo "1: 按 ${wildcard} 签发证书，并写入上面列出的网站"
+    echo "2: 重新输入更多域名"
+    while :;do
+        Echo_Yellow "请选择 [1-2]："
+        Read_Input choice "处理方式"
+        case "${choice}" in
+        1) break ;;
+        2) Wildcard_Site_List=""; return 2 ;;
+        *) Echo_Red "请输入 1 或 2。" ;;
+        esac
+    done
+
+    Wildcard_Mode="y"
+    [ -n "${rest}" ] && moredomain="${moredomain:+${moredomain} }${rest}"
+    domain="${wildcard}"
+    Confirm_Wildcard_Base_Domain "${wildcard}"
+    echo "证书域名：$(Filter_Cert_Domains "${domain}" "${moredomain}")"
+    return 0
+}
+
 # dnsssl 只给已存在的站点签发证书，域名必须命中现有虚拟主机。
 Add_DNS_SSL_Site_Info_Menu()
 {
@@ -3955,6 +4020,7 @@ Add_DNS_SSL_Site_Info_Menu()
     while :;do
         Echo_Yellow "DNS 验证，请输入域名（示例：www.example.com）: "
         Read_Input input "域名"
+        Lower_Domain_Input input
         Check_Domain_Name "${input}" || continue
         if [ "${input}" = "default" ]; then
             Echo_Red "default 是 IP 站点，DNS 验证无法为 IP 地址签发证书。"
@@ -3995,7 +4061,7 @@ Add_DNS_SSL_Site_Info_Menu()
                     ;;
                 esac
             fi
-            Confirm_Wildcard_Root_Domain "${input}"
+            Confirm_Wildcard_Base_Domain "${input}"
             break
             ;;
         esac
@@ -4024,7 +4090,7 @@ Add_DNS_SSL_Site_Info_Menu()
         return 1
     done
     if [ "${Wildcard_Mode}" = "y" ]; then
-        echo "证书域名：${domain}${moredomain:+ ${moredomain}}"
+        echo "证书域名：$(Filter_Cert_Domains "${domain}" "${moredomain}")"
         return 0
     fi
     echo "您的域名：${domain}"
@@ -4036,9 +4102,15 @@ Add_DNS_SSL_Site_Info_Menu()
     while :;do
         Echo_Yellow "请输入更多域名（支持泛域名，示例：*.example.com sub.example.com，留空跳过）: "
         Read_Input extradomain "更多域名"
+        Lower_Domain_Input extradomain
         [ -z "${extradomain}" ] && break
         Check_More_Domains "${extradomain}" || continue
         Check_Extra_Wildcards "${extradomain}" || continue
+        Switch_To_Wildcard_Menu "${extradomain}"
+        case "$?" in
+        0) return 0 ;;
+        2) continue ;;
+        esac
         Confirm_Extra_Domains "${site_base}" "${domain} ${moredomain}" "${extradomain}" && break
     done
     if [ -n "${extradomain}" ]; then
@@ -4058,6 +4130,7 @@ Add_DNS_SSL_Only_Info_Menu()
     while :;do
         Echo_Yellow "DNS 验证，请输入域名（示例：www.example.com）: "
         Read_Input domain "域名"
+        Lower_Domain_Input domain
         Check_Domain_Name "${domain}" || continue
         if [ "${domain}" = "default" ]; then
             Echo_Red "default 是 IP 站点，DNS 验证无法为 IP 地址签发证书。"
@@ -4087,6 +4160,7 @@ Add_DNS_SSL_Only_Info_Menu()
     while :;do
         Echo_Yellow "请输入更多域名（支持泛域名，示例：*.example.com sub.example.com，留空跳过）: "
         Read_Input moredomain "更多域名"
+        Lower_Domain_Input moredomain
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" || continue
         Check_Extra_Wildcards "${moredomain}" && break
