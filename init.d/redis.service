@@ -14,7 +14,8 @@ OnFailure=lnmp-perm-diagnose@%n.service
 Type=simple
 User=redis
 Group=redis
-# 端口占用检查：Type=simple 下 systemd 不等 bind 结果，占用时在这里同步失败。
+# 启动前检查：Type=simple 下 systemd 不等 bind 和配置解析结果，端口占用与
+# 配置错误都在这里同步失败，systemctl start/restart 直接返回非零。
 ExecStartPre=+/bin/sh -c 'test -x /usr/local/redis/bin/redis-preflight || exit 0; exec /usr/local/redis/bin/redis-preflight /usr/local/redis/etc/redis.conf'
 # LNMP perm hooks
 ExecStartPre=+/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook pre redis'

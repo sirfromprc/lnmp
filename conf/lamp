@@ -1859,10 +1859,18 @@ Check_Config_Name()
     return 0
 }
 
+# 邮箱域名按标签校验：每个标签必须以字母或数字开头和结尾，连续点、首尾点
+# 以及以连字符开头或结尾的标签都会被拒绝。
+Check_EMail_Format()
+{
+    local value="$1"
+    [[ "${value}" =~ ^[A-Za-z0-9_%+-]+(\.[A-Za-z0-9_%+-]+)*@([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]
+}
+
 Check_Server_Admin_Email()
 {
     local value="$1"
-    if [[ ! "${value}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$ ]]; then
+    if ! Check_EMail_Format "${value}"; then
         Echo_Red "管理员邮箱格式无效：'${value}'"
         return 1
     fi
@@ -2805,7 +2813,7 @@ Check_Acme_EMail()
                 echo "未填写账户邮箱，acme.sh 按无邮箱账户注册。"
                 break
             fi
-            if [[ "${email_address}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$ ]]; then
+            if Check_EMail_Format "${email_address}"; then
                 echo "邮箱地址 ${email_address} 格式有效。"
                 break
             else
@@ -2839,7 +2847,7 @@ Check_ZeroSSL_EMail()
             Echo_Red "ZeroSSL 需要邮箱换取 EAB 凭据，不能为空。"
             continue
         fi
-        if [[ "${val}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$ ]]; then
+        if Check_EMail_Format "${val}"; then
             export ACCOUNT_EMAIL="${val}"
             email_address="${val}"
             return 0
@@ -3792,18 +3800,53 @@ Prepare_Default_Site_IP_Cert()
 Acme_Sh_Ver='3.1.4'
 Acme_Sh_SHA256='e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee091fd32'
 
+# acme.sh 的工作目录只由环境变量决定，与脚本自身路径无关。调用前必须加载
+# 安装时写下的 acme.sh.env，否则会按默认值在 ${HOME}/.acme.sh 另建一套账户目录。
+Load_Acme_Env()
+{
+    if [ ! -s /usr/local/acme.sh/acme.sh.env ]; then
+        Echo_Red "缺少 /usr/local/acme.sh/acme.sh.env，无法确定 acme.sh 工作目录。"
+        return 1
+    fi
+    . "/usr/local/acme.sh/acme.sh.env"
+    export LE_WORKING_DIR="/usr/local/acme.sh"
+    export LE_CONFIG_HOME="/usr/local/acme.sh"
+    return 0
+}
+
+# 返回前核对没有多出第二套 home，只删除本次运行新产生的目录；
+# 机器上原有的目录可能是用户自建实例，不做任何改动。
+Clean_Acme_Stray_Home()
+{
+    local pre="$1" home="${HOME:-/root}/.acme.sh"
+
+    [ "${pre}" = 'n' ] || return 0
+    [ -d "${home}" ] || return 0
+    Echo_Yellow "本次运行新建了 ${home}，与固定的 /usr/local/acme.sh 重复，正在删除。"
+    rm -rf "${home}"
+    if [ -d "${home}" ]; then
+        Echo_Red "删除 ${home} 失败，其中可能留有账户私钥，请手工处理。"
+        return 1
+    fi
+    return 0
+}
+
 Install_Check_Acme.sh()
 {
     local tmpdir tarball srcdir actual
+    local acme_home_pre='n'
     local -a email_opt=()
+
+    [ -d "${HOME:-/root}/.acme.sh" ] && acme_home_pre='y'
 
     if [ -s /usr/local/acme.sh/acme.sh ]; then
         echo "/usr/local/acme.sh/acme.sh [已存在]"
+        Load_Acme_Env || return 1
         if [ -n "${email_address}" ] \
             && ! grep -Eq "^ACCOUNT_EMAIL=" /usr/local/acme.sh/account.conf 2>/dev/null; then
             /usr/local/acme.sh/acme.sh --register-account -m "${email_address}" || return 1
         fi
-        . "/usr/local/acme.sh/acme.sh.env"
+        Clean_Acme_Stray_Home "${acme_home_pre}"
         return 0
     fi
 
@@ -3861,6 +3904,7 @@ Install_Check_Acme.sh()
     # 关闭 acme.sh 自动升级，避免未经固定版本校验的代码覆盖证书管理组件。
     # 安全更新通过 upgrade.sh 手动确认，完成后应重新核对来源和完整性。
 
+    Load_Acme_Env || return 1
     /usr/local/acme.sh/acme.sh --upgrade --auto-upgrade 0 >/dev/null 2>&1
     cat >/usr/local/acme.sh/upgrade.sh<<EOF
 #!/bin/bash
@@ -3898,7 +3942,8 @@ EOF
         update-rc.d cron defaults
     fi
 
-    . "/usr/local/acme.sh/acme.sh.env"
+    Clean_Acme_Stray_Home "${acme_home_pre}"
+    return 0
 }
 
 Create_SSL_Config()

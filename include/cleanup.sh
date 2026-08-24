@@ -324,12 +324,38 @@ Remove_Perm_Hooks()
     return 0
 }
 
+# 卸载同样要显式指定 home：acme.sh 只认环境变量，不加载 acme.sh.env 时会去
+# 操作默认目录，装在 /usr/local/acme.sh 的这套 cron 与账户都清不掉。
 Remove_Acme()
 {
-    [ -s /usr/local/acme.sh/acme.sh ] || return 0
-    /usr/local/acme.sh/acme.sh --uninstall
-    rm -rf /usr/local/acme.sh
-    if crontab -l 2>/dev/null | grep -q "/usr/local/acme.sh/upgrade.sh"; then
-        crontab -l 2>/dev/null | grep -v "/usr/local/acme.sh/upgrade.sh" | crontab -
+    local default_home="${HOME:-/root}/.acme.sh" rc=0
+
+    if [ -s /usr/local/acme.sh/acme.sh ]; then
+        if ! ( export LE_WORKING_DIR=/usr/local/acme.sh
+               export LE_CONFIG_HOME=/usr/local/acme.sh
+               /usr/local/acme.sh/acme.sh --uninstall ); then
+            Echo_Red "acme.sh --uninstall 返回失败，继续删除程序目录并清理定时任务。"
+        fi
+        rm -rf /usr/local/acme.sh
+        if [ -e /usr/local/acme.sh ]; then
+            Echo_Red "删除 /usr/local/acme.sh 失败。"
+            rc=1
+        fi
     fi
+
+    # --uninstall 已移除自身 cron，这里兜底清理仍指向该目录的任务。
+    if crontab -l 2>/dev/null | grep -qF "/usr/local/acme.sh"; then
+        if ! crontab -l 2>/dev/null | grep -vF "/usr/local/acme.sh" | crontab -; then
+            Echo_Red "清理 acme.sh 定时任务失败，请执行 crontab -e 手工删除。"
+            rc=1
+        fi
+    fi
+
+    # 旧版本未加载环境时会另建一套 home，其中含账户私钥；该目录也可能是用户
+    # 自建的实例，因此只提示不删除。
+    if [ -d "${default_home}" ]; then
+        Echo_Yellow "检测到另一套 acme.sh 工作目录：${default_home}"
+        Echo_Yellow "其中可能保留账户私钥与证书，确认不再使用后执行：rm -rf ${default_home}"
+    fi
+    return ${rc}
 }

@@ -1749,10 +1749,18 @@ Version_Compare()
     fi
 }
 
+# 邮箱域名按标签校验：每个标签必须以字母或数字开头和结尾，连续点、首尾点
+# 以及以连字符开头或结尾的标签都会被拒绝。
+Check_EMail_Format()
+{
+    local value="$1"
+    [[ "${value}" =~ ^[A-Za-z0-9_%+-]+(\.[A-Za-z0-9_%+-]+)*@([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]
+}
+
 Check_Server_Admin_Email()
 {
     local value="$1"
-    if [[ ! "${value}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$ ]]; then
+    if ! Check_EMail_Format "${value}"; then
         Echo_Red "管理员邮箱格式无效：'${value}'"
         return 1
     fi
@@ -1951,6 +1959,52 @@ StartOrStop()
     else
         /etc/init.d/${service} ${action}
     fi
+}
+
+# 覆盖 nginx 二进制后必须重启：对已运行的服务执行 start 不做任何事，而
+# make install 只是把旧二进制改名为 nginx.old，master 仍在运行旧 inode。
+# 重启后按 /proc/<主进程 PID>/exe 核对，确认运行的就是当前安装的二进制。
+Restart_And_Verify_Nginx()
+{
+    # 测试注入点，默认取实际安装路径。
+    local bin="${LNMP_NGINX_BIN:-/usr/local/nginx/sbin/nginx}"
+    local pidfile="${LNMP_NGINX_PIDFILE:-/usr/local/nginx/logs/nginx.pid}"
+    local action='start' pid='' running='' i=0
+
+    if [ ! -x "${bin}" ]; then
+        Echo_Red "Nginx 二进制不存在或不可执行：${bin}"
+        return 1
+    fi
+    # 配置有误时先失败，不要让服务停在无法启动的状态。
+    if ! "${bin}" -t; then
+        Echo_Red "Nginx 配置检查未通过，未重启服务，运行中的仍是替换前的二进制。"
+        Echo_Red "排查：${bin} -t"
+        return 1
+    fi
+    pgrep -x nginx >/dev/null 2>&1 && action='restart'
+    if ! StartOrStop "${action}" nginx; then
+        Echo_Red "Nginx ${action} 失败。"
+        return 1
+    fi
+
+    while [ ${i} -lt 15 ]; do
+        pid=$(head -n 1 "${pidfile}" 2>/dev/null | tr -dc '0-9')
+        [ -n "${pid}" ] && [ -e "/proc/${pid}/exe" ] && break
+        pid=''
+        sleep 1
+        i=$((i + 1))
+    done
+    if [ -z "${pid}" ]; then
+        Echo_Red "Nginx 启动后未取到主进程 PID：${pidfile}"
+        return 1
+    fi
+    if [ ! "/proc/${pid}/exe" -ef "${bin}" ]; then
+        running=$(readlink "/proc/${pid}/exe" 2>/dev/null)
+        Echo_Red "Nginx 主进程 ${pid} 运行的不是当前安装的二进制：${running:-未知}"
+        Echo_Red "请确认没有其它入口托管 nginx，再手工重启服务并复查。"
+        return 1
+    fi
+    return 0
 }
 
 # Ensure_Runtime_Directory <目录> <用户> <组>

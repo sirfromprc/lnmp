@@ -51,7 +51,11 @@ Install_Only_Nginx()
     Clean_Src_Dir "${Nginx_Ver}"
 
     Clean_Src_Dir "${Openssl_New_Ver}"
-    StartOrStop start nginx
+    # 重复执行本入口时 nginx 通常在运行，必须重启并核对运行中的二进制。
+    if ! Restart_And_Verify_Nginx; then
+        Echo_Red "Nginx 未以本次编译的二进制运行，独立安装未完成。"
+        return 1
+    fi
     Add_Firewall_Rules
     \cp ${cur_dir}/conf/index.html ${Default_Website_Dir}/index.html
     # 默认站点自带 favicon，避免浏览器请求在 error_log 中反复记录 404

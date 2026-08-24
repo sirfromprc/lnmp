@@ -2791,6 +2791,12 @@ bash uninstall.sh         # 卸载整套环境
 Nginx 模块是编译期决定的，增删模块需要重新编译，见
 [8.2.7 安装本项目未提供的 Nginx 模块](#827-安装本项目未提供的-nginx-模块)。
 
+`uninstall.sh` 先停服并确认没有残留进程，栈内服务仍在运行时中止，且不删除任何文件。
+删除阶段逐项复核结果：服务、单元、程序目录、定时任务或防火墙产物有残留时逐条列出并
+返回非零，全部清除才打印「卸载完成」。addons 组件的程序目录与网站数据是设计保留项。
+旧版本可能在 `/root/.acme.sh` 留下第二套 ACME 账户目录，该目录也可能是自建实例，
+卸载只提示路径，不自动删除。
+
 **运维辅助脚本**
 
 ```bash
@@ -2815,8 +2821,10 @@ lnmp-sqlguard report <目标库名> <文件.sql 或 .sql.gz>    只列出问题�
 lnmp-tgnotice ...                                        与 lnmp tgnotice 等价
 ```
 
-`/usr/local/redis/bin/redis-preflight` 是 `redis.service` 的启动前端口占用检查，
-由 unit 自己调用，一般不手工执行。
+`/usr/local/redis/bin/redis-preflight` 是 `redis.service` 的启动前检查，覆盖端口占用
+和配置可用性两项，由 unit 自己调用，一般不手工执行。配置校验会用同一份 `redis.conf`
+在临时目录里试跑一次（只监听临时 unix socket，不加载也不写入真实数据），因此
+`systemctl start/restart redis` 在配置有错时直接返回非零，而不是先返回 0 再转为 failed。
 
 [↑ 命令目录](#cmd-index) · [返回顶部](#top)
 
