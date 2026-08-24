@@ -1558,12 +1558,10 @@ Print_Pureftpd_Only_Summary()
     echo "完整性校验：${Enable_Download_Checksum}"
     ssh_ports=$(Get_Actual_SSH_Port | paste -sd ' ' -)
     echo "防火墙将放行的 SSH 端口：${ssh_ports:-未探测到，不处理}"
-    Echo_Yellow "以上端口取自 lnmp.conf，要改请先取消本次安装："
-    Echo_Yellow "  改 lnmp.conf 的 Pureftpd_Port / Pureftpd_Passive_Min / Pureftpd_Passive_Max 后重跑，"
-    Echo_Yellow "  或用环境变量临时覆盖："
+    Echo_Yellow "改端口：改 lnmp.conf 的 Pureftpd_Port / Pureftpd_Passive_Min / Pureftpd_Passive_Max"
+    Echo_Yellow "后重跑，或用环境变量临时覆盖："
     Echo_Yellow "  Pureftpd_Port=2121 Pureftpd_Passive_Min=40000 Pureftpd_Passive_Max=40100 ./pureftpd.sh"
-    Echo_Yellow "安装后再改端口，需要同时修改 /usr/local/pureftpd/etc/pure-ftpd.conf、"
-    Echo_Yellow "调整防火墙放行规则并重启 pureftpd 服务。"
+    Echo_Yellow "装后改端口：改 pure-ftpd.conf 并重启服务，再执行 lnmp fw sync"
     if [ -s /usr/local/pureftpd/sbin/pure-ftpd ]; then
         Echo_Yellow "本机已有 /usr/local/pureftpd/sbin/pure-ftpd，本次会重新编译并覆盖该二进制，"
         Echo_Yellow "/usr/local/pureftpd/etc/pure-ftpd.conf 会被随包模板覆盖（已有 FTP 用户数据保留）。"

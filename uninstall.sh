@@ -118,6 +118,7 @@ Uninstall_LNMP()
     rm -f /bin/lnmp-perm
     rm -f /bin/lnmp-health
     rm -f /bin/lnmp-sqlguard
+    rm -f /bin/lnmp-fw
     rm -f /bin/lnmp-cutlogs
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
@@ -162,6 +163,7 @@ Uninstall_LNMPA()
     rm -f /bin/lnmp-perm
     rm -f /bin/lnmp-health
     rm -f /bin/lnmp-sqlguard
+    rm -f /bin/lnmp-fw
     rm -f /bin/lnmp-cutlogs
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
@@ -204,6 +206,7 @@ Uninstall_LAMP()
     rm -f /bin/lnmp-perm
     rm -f /bin/lnmp-health
     rm -f /bin/lnmp-sqlguard
+    rm -f /bin/lnmp-fw
     rm -f /bin/lnmp-cutlogs
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
@@ -285,6 +288,7 @@ ${MySQL_Dir}
 /bin/lnmp-perm
 /bin/lnmp-health
 /bin/lnmp-sqlguard
+/bin/lnmp-fw
 /etc/profile.d/lnmp-tgnotice.sh
 /usr/local/phpmyadmin 与 /var/lib/phpmyadmin
 /usr/local/acme.sh 及其中的证书
@@ -295,7 +299,7 @@ lnmp-perm 的 systemd timer/service 与 /etc/cron.d/lnmp-perm
 lnmp-health 的 systemd timer/service 与 /etc/lnmp/health-state
 php-fpm@.service 模板单元
 lnmp app 托管的应用 unit、/etc/lnmp/apps 与其专属账号（应用目录保留）
-/etc/lnmp（数据库口令文件删除，其余配置移到 /root）
+/etc/lnmp（数据库口令文件删除，fw.conf、source-dir 等其余配置移到 /root）
 inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
         Sleep_Sec 3
@@ -323,6 +327,7 @@ ${MySQL_Dir}
 /bin/lnmp-perm
 /bin/lnmp-health
 /bin/lnmp-sqlguard
+/bin/lnmp-fw
 /etc/profile.d/lnmp-tgnotice.sh
 /usr/local/phpmyadmin 与 /var/lib/phpmyadmin
 /usr/local/acme.sh 及其中的证书
@@ -333,7 +338,7 @@ lnmp-perm 的 systemd timer/service 与 /etc/cron.d/lnmp-perm
 lnmp-health 的 systemd timer/service 与 /etc/lnmp/health-state
 php-fpm@.service 模板单元
 lnmp app 托管的应用 unit、/etc/lnmp/apps 与其专属账号（应用目录保留）
-/etc/lnmp（数据库口令文件删除，其余配置移到 /root）
+/etc/lnmp（数据库口令文件删除，fw.conf、source-dir 等其余配置移到 /root）
 inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
         Sleep_Sec 3
@@ -359,6 +364,7 @@ ${MySQL_Dir}
 /bin/lnmp-perm
 /bin/lnmp-health
 /bin/lnmp-sqlguard
+/bin/lnmp-fw
 /etc/profile.d/lnmp-tgnotice.sh
 /usr/local/phpmyadmin 与 /var/lib/phpmyadmin
 /usr/local/acme.sh 及其中的证书
@@ -369,7 +375,7 @@ lnmp-perm 的 systemd timer/service 与 /etc/cron.d/lnmp-perm
 lnmp-health 的 systemd timer/service 与 /etc/lnmp/health-state
 php-fpm@.service 模板单元
 lnmp app 托管的应用 unit、/etc/lnmp/apps 与其专属账号（应用目录保留）
-/etc/lnmp（数据库口令文件删除，其余配置移到 /root）
+/etc/lnmp（数据库口令文件删除，fw.conf、source-dir 等其余配置移到 /root）
 inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
         Sleep_Sec 3

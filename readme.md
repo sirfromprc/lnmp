@@ -283,7 +283,29 @@ lnmp perm init
 - 有意调整某条权限后，可用 `lnmp perm ignore <条目ID>` 单独忽略，使用
   `lnmp perm unignore <条目ID>` 恢复检查。
 
-### 3.8 FTP 与通知
+### 3.8 防火墙对齐
+
+```bash
+lnmp fw status
+lnmp fw sync
+lnmp fw allow tcp 8080
+```
+
+服务端口有三份副本：`lnmp.conf`（重装时的真值）、服务自己的配置（运行时的真值）和
+`inet lnmp` 表。手工改过 `redis.conf`、`/etc/init.d/memcached` 或 `my.cnf` 的端口后，
+防火墙阻断的仍是旧端口，新端口对公网敞开。
+
+- `fw status` 只读对比三者，任一项不一致返回 1，可直接用于巡检。
+- `fw sync` 以服务当前配置为准重建规则并持久化，同时把 `lnmp.conf` 的端口变量回写成
+  同一个值，下次重装不会倒退回旧端口。它不修改任何服务配置文件。
+- `fw allow` / `fw block` / `fw unblock` 维护 `/etc/lnmp/fw.conf` 中的自定义条目。这些
+  条目在重建时排在标准规则之前，因此可以覆盖标准阻断，`fw status` 会对此单独警告。
+- `lnmp.conf` 的位置取自安装时记录的 `/etc/lnmp/source-dir`。源码目录被删或搬走时
+  `fw sync` 只对齐防火墙并提示，不算失败。
+- 检测到 firewalld 在运行时改用 `firewall-cmd --permanent` 维护端口放行。云主机安全组
+  不在管辖范围内，需要另行放行。
+
+### 3.9 FTP 与通知
 
 ```bash
 lnmp ftp add

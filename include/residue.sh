@@ -17,7 +17,7 @@ Residue_Dirs='/usr/local/mysql /usr/local/mariadb /usr/local/nginx /usr/local/op
 
 # 本包安装的管理命令，/bin 与 /usr/bin 未合并的系统上两处都要清理。
 Residue_Commands='lnmp lnmp-backup lnmp-tgnotice lnmp-phpmyadmin lnmp-perm
-lnmp-health lnmp-sqlguard lnmp-cutlogs'
+lnmp-health lnmp-sqlguard lnmp-cutlogs lnmp-fw'
 
 Residue_Init_Scripts='mysql mariadb nginx httpd php-fpm'
 

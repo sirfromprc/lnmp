@@ -71,8 +71,7 @@ Memcached_Abort()
     return 0
 }
 
-# 端口在安装时写入 init 脚本和防火墙规则，装完再改要同时动两处，
-# 因此在动系统前先列出生效值。
+# 端口在安装时写入 init 脚本和防火墙规则，因此在动系统前先列出生效值。
 Print_Memcached_Install_Summary()
 {
     Echo_Yellow "=========================================================================="
@@ -81,13 +80,11 @@ Print_Memcached_Install_Summary()
     echo "监听地址：127.0.0.1，防火墙同时阻断该端口的 TCP 与 UDP 公网访问"
     echo "自测页（Enable_Memcached_Test_Page）：${Enable_Memcached_Test_Page}"
     if [ -s /usr/local/memcached/bin/memcached ]; then
-        Echo_Yellow "本机已有 /usr/local/memcached/bin/memcached，本次不重装服务端，"
-        Echo_Yellow "但 /etc/init.d/memcached 的 PORT 和防火墙规则会对齐到上面的端口，"
-        Echo_Yellow "脚本里的 CACHESIZE、MAXCONN 等其它参数保留不动。"
+        Echo_Yellow "已装过 Memcached，本次重新编译安装：先停服务，/etc/init.d/memcached 备份为"
+        Echo_Yellow "memcached.bak.<时间戳> 后按模板重建，CACHESIZE、MAXCONN 等会回到默认值。"
     fi
-    Echo_Yellow "端口取自 lnmp.conf，要改请先取消，改 lnmp.conf 后重跑，或用环境变量覆盖："
-    Echo_Yellow "  Memcached_Port=11212 bash addons.sh install memcached"
-    Echo_Yellow "安装后再改端口，需要改 /etc/init.d/memcached，调整防火墙规则并重启服务。"
+    Echo_Yellow "改端口：改 lnmp.conf 后重跑，或 Memcached_Port=11212 bash addons.sh install memcached"
+    Echo_Yellow "装后改端口：改 /etc/init.d/memcached 并重启服务，再执行 lnmp fw sync"
     Echo_Yellow "=========================================================================="
 }
 
@@ -113,6 +110,51 @@ Sync_Memcached_Init_Port()
         Firewall_Unblock udp "${old_port}"
     fi
     Memcached_Port_Changed='y'
+    return 0
+}
+
+# 服务是否由本机管理入口托管；systemd 可用时以 unit 状态为准。
+Memcached_Service_Active()
+{
+    if Use_Systemd_Unit memcached; then
+        systemctl is-active --quiet memcached.service
+    else
+        [ -x /etc/init.d/memcached ] && /etc/init.d/memcached status >/dev/null 2>&1
+    fi
+}
+
+# 重装前的准备：init 脚本按模板重建会覆盖现有参数，因此先停服务再备份，
+# 并撤销旧端口的阻断规则。停不掉服务就不动任何文件。
+Prepare_Memcached_Rebuild()
+{
+    local init='/etc/init.d/memcached' old_port='' backup
+
+    [ -s "${init}" ] && old_port=$(grep -E '^PORT=' "${init}" | head -1 | cut -d= -f2 | tr -d '"')
+
+    if Memcached_Service_Active; then
+        echo "重新编译前先停止现有 Memcached 服务..."
+        StartOrStop stop memcached
+        if Memcached_Service_Active; then
+            Echo_Red "无法停止现有 Memcached 服务，未改动任何文件。"
+            Echo_Red "请手工停止后重试：lnmp memcached stop"
+            return 1
+        fi
+    fi
+
+    if [ -s "${init}" ]; then
+        backup="${init}.bak.$(date +%Y%m%d%H%M%S)"
+        if ! \cp -p "${init}" "${backup}"; then
+            Echo_Red "备份 ${init} 失败，未改动任何文件。"
+            return 1
+        fi
+        echo "现有 init 脚本已备份为 ${backup}，本次按模板重建。"
+    fi
+
+    # 旧端口的阻断规则不再对应本服务，重建后按新端口重新阻断。
+    if [ -n "${old_port}" ] && [ "${old_port}" != "${Memcached_Port}" ]; then
+        Firewall_Unblock tcp "${old_port}"
+        Firewall_Unblock udp "${old_port}"
+    fi
     return 0
 }
 
@@ -152,42 +194,44 @@ EOF
 
     echo "正在安装 Memcached..."
     cd ${cur_dir}/src
-    if [ -s /usr/local/memcached/bin/memcached ]; then
-        echo "Memcached 已存在。"
-    else
-        Download_Files https://memcached.org/files/${Memcached_Ver}.tar.gz ${Memcached_Ver}.tar.gz
-        Require_File "${Memcached_Ver}.tar.gz" "memcached"
-        Install_Memcached_Deps || { Memcached_Abort "缺少 libevent 开发包，无法编译 memcached。"; return 1; }
-        Tar_Cd ${Memcached_Ver}.tar.gz ${Memcached_Ver}
-        # configure 失败时不能继续往下部署服务，否则失败点被推迟到启动阶段。
-        if ! ./configure --prefix=/usr/local/memcached; then
-            cd ../
-            Memcached_Abort "memcached 的 configure 失败，请按上面的输出补齐依赖后重试。"
-            return 1
-        fi
-        if ! Make_Install; then
-            cd ../
-            Memcached_Abort "memcached 编译或安装失败。"
-            return 1
-        fi
+    # 重装一律重新编译：误删过二进制、init 脚本或依赖文件时，只重写配置起不来。
+    # 源码包与依赖先取齐再停服务，避免服务停下后卡在下载或依赖安装失败。
+    Download_Files https://memcached.org/files/${Memcached_Ver}.tar.gz ${Memcached_Ver}.tar.gz
+    Require_File "${Memcached_Ver}.tar.gz" "memcached"
+    Install_Memcached_Deps || { Memcached_Abort "缺少 libevent 开发包，无法编译 memcached。"; return 1; }
+    if ! Prepare_Memcached_Rebuild; then
+        Memcached_Abort "重装前的停服务或备份失败。"
+        return 1
+    fi
+    Tar_Cd ${Memcached_Ver}.tar.gz ${Memcached_Ver}
+    # configure 失败时不能继续往下部署服务，否则失败点被推迟到启动阶段。
+    if ! ./configure --prefix=/usr/local/memcached; then
         cd ../
-        rm -rf ${cur_dir}/src/${Memcached_Ver}
+        Memcached_Abort "memcached 的 configure 失败，请按上面的输出补齐依赖后重试。"
+        return 1
+    fi
+    if ! Make_Install; then
+        cd ../
+        Memcached_Abort "memcached 编译或安装失败。"
+        return 1
+    fi
+    cd ../
+    rm -rf ${cur_dir}/src/${Memcached_Ver}
 
-        ln -sf /usr/local/memcached/bin/memcached /usr/bin/memcached
+    ln -sf /usr/local/memcached/bin/memcached /usr/bin/memcached
 
-        \cp ${cur_dir}/init.d/init.d.memcached /etc/init.d/memcached
-        # 服务监听端口与 lnmp.conf 及防火墙规则保持一致。
-        sed -i "s/^PORT=.*/PORT=${Memcached_Port}/" /etc/init.d/memcached
-        if ! Check_Conf_Applied /etc/init.d/memcached "^PORT=${Memcached_Port}\$"             "Memcached 端口 ${Memcached_Port}"; then
-            Memcached_Abort "Memcached init 脚本端口未写入。"
-            return 1
-        fi
-        chmod +x /etc/init.d/memcached
+    \cp ${cur_dir}/init.d/init.d.memcached /etc/init.d/memcached
+    # 服务监听端口与 lnmp.conf 及防火墙规则保持一致。
+    sed -i "s/^PORT=.*/PORT=${Memcached_Port}/" /etc/init.d/memcached
+    if ! Check_Conf_Applied /etc/init.d/memcached "^PORT=${Memcached_Port}\$"             "Memcached 端口 ${Memcached_Port}"; then
+        Memcached_Abort "Memcached init 脚本端口未写入。"
+        return 1
+    fi
+    chmod +x /etc/init.d/memcached
 
-        if ! id -u memcached >/dev/null 2>&1; then
-            useradd -r -M -s /sbin/nologin memcached 2>/dev/null || \
-                useradd -r -M -s /usr/sbin/nologin memcached 2>/dev/null
-        fi
+    if ! id -u memcached >/dev/null 2>&1; then
+        useradd -r -M -s /sbin/nologin memcached 2>/dev/null || \
+            useradd -r -M -s /usr/sbin/nologin memcached 2>/dev/null
     fi
 
     # 防火墙按 lnmp.conf 写规则，init 脚本的 PORT 必须先对齐到同一值。
@@ -230,13 +274,8 @@ EOF
     Firewall_Save
 
     echo "正在启动 Memcached..."
-    # 按系统能力选择 systemd 或 SysV 启动服务；端口刚改写时必须重启，
-    # start 对已在运行的实例不生效。
-    if [ "${Memcached_Port_Changed}" = 'y' ]; then
-        StartOrStop restart memcached
-    else
-        StartOrStop start memcached
-    fi
+    # 二进制与 init 脚本每次安装都会重写，必须 restart；start 对已在运行的实例不生效。
+    StartOrStop restart memcached
 
     # 分别检查服务端和 PHP 扩展，便于定位未完成的安装部分。
     local svc_ok=0 ext_ok=0

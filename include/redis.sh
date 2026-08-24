@@ -244,8 +244,7 @@ Clear_PHPRedis_Backup()
     return 0
 }
 
-# 端口在安装时写入服务配置、init 脚本和防火墙规则，装完再改要同时动多处，
-# 因此在动系统前先列出生效值。
+# 端口在安装时写入服务配置、init 脚本和防火墙规则，因此在动系统前先列出生效值。
 Print_Redis_Install_Summary()
 {
     Echo_Yellow "=========================================================================="
@@ -254,15 +253,49 @@ Print_Redis_Install_Summary()
     echo "监听地址：127.0.0.1，防火墙同时阻断该端口的公网访问"
     echo "自测页（Enable_Redis_Test_Page）：${Enable_Redis_Test_Page}"
     if [ -s /usr/local/redis/bin/redis-server ]; then
-        Echo_Yellow "本机已有 /usr/local/redis/bin/redis-server，本次不重装服务端，"
-        Echo_Yellow "但 redis.conf、/etc/init.d/redis 和防火墙规则都会对齐到上面的端口；"
-        Echo_Yellow "端口与现值不同时会先停止服务再改配置，随后由本流程重新启动。"
+        Echo_Yellow "已装过 Redis，本次重新编译安装：先停服务，redis.conf 备份为"
+        Echo_Yellow "redis.conf.bak.<时间戳> 后按模板重建，maxmemory 等改过的项会回到默认值。"
     fi
-    Echo_Yellow "端口取自 lnmp.conf，要改请先取消，改 lnmp.conf 后重跑，或用环境变量覆盖："
-    Echo_Yellow "  Redis_Port=6380 bash addons.sh install redis"
-    Echo_Yellow "安装后再改端口，需要同时改 /usr/local/redis/etc/redis.conf 和 /etc/init.d/redis，"
-    Echo_Yellow "调整防火墙规则并重启服务。"
+    Echo_Yellow "改端口：改 lnmp.conf 后重跑，或 Redis_Port=6380 bash addons.sh install redis"
+    Echo_Yellow "装后改端口：改 redis.conf 并重启服务，再执行 lnmp fw sync"
     Echo_Yellow "=========================================================================="
+}
+
+# 重装前的准备：配置按模板重建会覆盖现有 redis.conf，因此先停服务再备份，
+# 并撤销旧端口的阻断规则。停不掉服务就不动任何文件。
+Prepare_Redis_Rebuild()
+{
+    local conf='/usr/local/redis/etc/redis.conf' old_port='' backup
+
+    [ -s "${conf}" ] && old_port=$(grep -E '^port[[:space:]]+' "${conf}" | head -1 | awk '{ print $2 }')
+
+    if Redis_Service_Active; then
+        echo "重新编译前先停止现有 Redis 服务..."
+        if ! StartOrStop stop redis; then
+            [ -n "${old_port}" ] && [ -x /usr/local/redis/bin/redis-cli ] && \
+                /usr/local/redis/bin/redis-cli -p "${old_port}" shutdown 2>/dev/null
+        fi
+        if Redis_Service_Active; then
+            Echo_Red "无法停止现有 Redis 服务，未改动任何文件。"
+            Echo_Red "请手工停止后重试：lnmp redis stop"
+            return 1
+        fi
+    fi
+
+    if [ -s "${conf}" ]; then
+        backup="${conf}.bak.$(date +%Y%m%d%H%M%S)"
+        if ! \cp -p "${conf}" "${backup}"; then
+            Echo_Red "备份 ${conf} 失败，未改动任何文件。"
+            return 1
+        fi
+        echo "现有配置已备份为 ${backup}，本次按模板重建。"
+    fi
+
+    # 旧端口的阻断规则不再对应本服务，重建后按新端口重新阻断。
+    if [ -n "${old_port}" ] && [ "${old_port}" != "${Redis_Port}" ]; then
+        Firewall_Unblock tcp "${old_port}"
+    fi
+    return 0
 }
 
 Install_Redis()
@@ -296,72 +329,72 @@ Install_Redis()
     done
     [ -s "${zend_ext}" ] && rm -f "${zend_ext}"
 
-    if [ -s /usr/local/redis/bin/redis-server ]; then
-        echo "Redis 服务端已存在。"
-        ln -sf /usr/local/redis/bin/redis-cli /usr/bin/redis-cli
-    else
-
-        Download_Files https://download.redis.io/releases/${Redis_Stable_Ver}.tar.gz ${Redis_Stable_Ver}.tar.gz
-        Require_File "${Redis_Stable_Ver}.tar.gz" "Redis server"
-        Tar_Cd ${Redis_Stable_Ver}.tar.gz ${Redis_Stable_Ver}
-
-        Get_OS_Bit
-        if [ "${Is_ARM}" = "y" ]; then
-            sed -i 's/FINAL_LIBS=-lm/FINAL_LIBS=-lm -latomic/' src/Makefile
-        fi
-        if [[ "${Is_64bit}" = "y" || "${Is_ARM}" = "y" ]]; then
-            make PREFIX=/usr/local/redis install
-        else
-            make CFLAGS="-march=i686" PREFIX=/usr/local/redis install
-        fi
-        ln -sf /usr/local/redis/bin/redis-cli /usr/bin/redis-cli
-        mkdir -p /usr/local/redis/etc/
-        \cp redis.conf  /usr/local/redis/etc/
-
-        # Redis 8.x 模板默认加载 Bloom、Search、JSON 和 TimeSeries 模块，但
-        # make install 不安装对应 .so。默认关闭这些行，避免服务因模块缺失中止；
-        # 需要附加功能时应先单独构建模块再启用。
-        if grep -q '^loadmodule ' /usr/local/redis/etc/redis.conf; then
-            echo "注释掉 Redis 8.x 默认配置里的 loadmodule（对应模块未随 make install 安装）"
-            sed -i 's|^loadmodule |# loadmodule |g' /usr/local/redis/etc/redis.conf
-        fi
-
-        # systemd unit 为 Type=simple，配置保持前台模式；SysV 入口在命令行显式加
-        # --daemonize yes，两个入口都不依赖这里的取值。
-        sed -i 's/^daemonize yes/daemonize no/' /usr/local/redis/etc/redis.conf
-        grep -Eq '^daemonize[[:space:]]+no$' /usr/local/redis/etc/redis.conf || \
-            Echo_Yellow "redis.conf 未写入 daemonize no，服务仍由两个入口的命令行参数决定运行模式。"
-        # 服务、init 脚本和防火墙统一使用 lnmp.conf 中的端口。
-        sed -i "s/^port .*/port ${Redis_Port}/" /usr/local/redis/etc/redis.conf
-        Check_Conf_Applied /usr/local/redis/etc/redis.conf             "^port[[:space:]]+${Redis_Port}\$" "Redis 端口 ${Redis_Port}" || return 1
-
-        if ! id -u redis >/dev/null 2>&1; then
-            useradd -r -M -s /sbin/nologin redis 2>/dev/null || \
-                useradd -r -M -s /usr/sbin/nologin redis 2>/dev/null
-        fi
-
-        # 使用固定数据目录，避免守护进程从不同工作目录启动时改变 dump.rdb 位置。
-        mkdir -p /usr/local/redis/var
-        sed -i 's|^dir \./|dir /usr/local/redis/var|' /usr/local/redis/etc/redis.conf
-
-        sed -i 's|^logfile ""|logfile /usr/local/redis/var/redis.log|' /usr/local/redis/etc/redis.conf
-
-        # 数据、日志和 pid 目录归 Redis 账号，配置保持 root 所有且只读，
-        # 防止服务进程修改持久化路径等安全设置。
-        chown -R redis:redis /usr/local/redis/var
-        chmod 750 /usr/local/redis/var
-        chown root:redis /usr/local/redis/etc/redis.conf
-        chmod 640 /usr/local/redis/etc/redis.conf
-        Set_Redis_Loopback_Bind /usr/local/redis/etc/redis.conf || return 1
-        # pidfile 放入 Redis 可写目录，满足降权运行要求。
-        sed -i 's#^pidfile .*#pidfile /usr/local/redis/var/redis.pid#g' /usr/local/redis/etc/redis.conf
-        cd ../
-        rm -rf ${cur_dir}/src/${Redis_Stable_Ver}
-
-        # Redis 默认无认证，阻止公网访问可避免未授权读写缓存。
-        Firewall_Block tcp "${Redis_Port}"
-        Firewall_Save
+    # 重装一律重新编译：误删过二进制、init 脚本或依赖文件时，只重写配置起不来。
+    # 服务端源码包同样先取齐再动系统，避免服务停下后卡在下载失败。
+    Download_Files https://download.redis.io/releases/${Redis_Stable_Ver}.tar.gz ${Redis_Stable_Ver}.tar.gz
+    Require_File "${Redis_Stable_Ver}.tar.gz" "Redis server"
+    if ! Prepare_Redis_Rebuild; then
+        Restore_Existing_PHPRedis
+        return 1
     fi
+    Tar_Cd ${Redis_Stable_Ver}.tar.gz ${Redis_Stable_Ver}
+
+    Get_OS_Bit
+    if [ "${Is_ARM}" = "y" ]; then
+        sed -i 's/FINAL_LIBS=-lm/FINAL_LIBS=-lm -latomic/' src/Makefile
+    fi
+    if [[ "${Is_64bit}" = "y" || "${Is_ARM}" = "y" ]]; then
+        make PREFIX=/usr/local/redis install
+    else
+        make CFLAGS="-march=i686" PREFIX=/usr/local/redis install
+    fi
+    ln -sf /usr/local/redis/bin/redis-cli /usr/bin/redis-cli
+    mkdir -p /usr/local/redis/etc/
+    \cp redis.conf  /usr/local/redis/etc/
+
+    # Redis 8.x 模板默认加载 Bloom、Search、JSON 和 TimeSeries 模块，但
+    # make install 不安装对应 .so。默认关闭这些行，避免服务因模块缺失中止；
+    # 需要附加功能时应先单独构建模块再启用。
+    if grep -q '^loadmodule ' /usr/local/redis/etc/redis.conf; then
+        echo "注释掉 Redis 8.x 默认配置里的 loadmodule（对应模块未随 make install 安装）"
+        sed -i 's|^loadmodule |# loadmodule |g' /usr/local/redis/etc/redis.conf
+    fi
+
+    # systemd unit 为 Type=simple，配置保持前台模式；SysV 入口在命令行显式加
+    # --daemonize yes，两个入口都不依赖这里的取值。
+    sed -i 's/^daemonize yes/daemonize no/' /usr/local/redis/etc/redis.conf
+    grep -Eq '^daemonize[[:space:]]+no$' /usr/local/redis/etc/redis.conf || \
+        Echo_Yellow "redis.conf 未写入 daemonize no，服务仍由两个入口的命令行参数决定运行模式。"
+    # 服务、init 脚本和防火墙统一使用 lnmp.conf 中的端口。
+    sed -i "s/^port .*/port ${Redis_Port}/" /usr/local/redis/etc/redis.conf
+    Check_Conf_Applied /usr/local/redis/etc/redis.conf             "^port[[:space:]]+${Redis_Port}\$" "Redis 端口 ${Redis_Port}" || return 1
+
+    if ! id -u redis >/dev/null 2>&1; then
+        useradd -r -M -s /sbin/nologin redis 2>/dev/null || \
+            useradd -r -M -s /usr/sbin/nologin redis 2>/dev/null
+    fi
+
+    # 使用固定数据目录，避免守护进程从不同工作目录启动时改变 dump.rdb 位置。
+    mkdir -p /usr/local/redis/var
+    sed -i 's|^dir \./|dir /usr/local/redis/var|' /usr/local/redis/etc/redis.conf
+
+    sed -i 's|^logfile ""|logfile /usr/local/redis/var/redis.log|' /usr/local/redis/etc/redis.conf
+
+    # 数据、日志和 pid 目录归 Redis 账号，配置保持 root 所有且只读，
+    # 防止服务进程修改持久化路径等安全设置。
+    chown -R redis:redis /usr/local/redis/var
+    chmod 750 /usr/local/redis/var
+    chown root:redis /usr/local/redis/etc/redis.conf
+    chmod 640 /usr/local/redis/etc/redis.conf
+    Set_Redis_Loopback_Bind /usr/local/redis/etc/redis.conf || return 1
+    # pidfile 放入 Redis 可写目录，满足降权运行要求。
+    sed -i 's#^pidfile .*#pidfile /usr/local/redis/var/redis.pid#g' /usr/local/redis/etc/redis.conf
+    cd ../
+    rm -rf ${cur_dir}/src/${Redis_Stable_Ver}
+
+    # Redis 默认无认证，阻止公网访问可避免未授权读写缓存。
+    Firewall_Block tcp "${Redis_Port}"
+    Firewall_Save
 
     Tar_Cd ${PHPRedis_Ver}.tgz ${PHPRedis_Ver}
     ${PHP_Path}/bin/phpize

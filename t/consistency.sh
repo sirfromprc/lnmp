@@ -315,7 +315,7 @@ check_v11()
         || missing="${missing} memcached-unit-未部署"
     grep -q '^[[:space:]]*/etc/init.d/memcached start' include/memcached.sh \
         && missing="${missing} memcached-仍直调SysV"
-    grep -q 'StartOrStop start memcached' include/memcached.sh \
+    grep -qE 'StartOrStop (start|restart) memcached' include/memcached.sh \
         || missing="${missing} memcached-未走StartOrStop"
     grep -q 'StartOrStop start pureftpd' pureftpd.sh \
         || missing="${missing} pureftpd-未走StartOrStop"
@@ -528,6 +528,51 @@ check_v16()
     fi
 }
 
+# ---------------------------------------------------------------------------
+# V17 lnmp fw 与安装期防火墙实现必须指向同一张表
+#
+# tools/lnmp-fw.sh 自带 nft 操作，不 source include/firewall.sh（管理命令是独立
+# 单文件，运行期也不保证源码目录还在）。两处的表名、链名、规则文件和单元名一旦
+# 分叉，安装期与运行期就各写各的表，用户看到的规则永远对不上。
+# 另外三份管理命令必须都能进入 lnmp fw，回写的端口变量必须在 lnmp.conf 里存在。
+check_v17()
+{
+    local missing='' v f
+
+    for v in FW_TABLE FW_CHAIN FW_UNIT_NAME; do
+        local a b
+        a=$(grep -E "^${v}=" include/firewall.sh | head -1 | cut -d= -f2-)
+        b=$(grep -E "^${v}=" tools/lnmp-fw.sh | head -1 | cut -d= -f2-)
+        [ -n "${a}" ] && [ "${a}" = "${b}" ] || missing="${missing} ${v}不一致"
+    done
+    # lnmp-fw 的规则文件路径带测试注入默认值，只比对默认值本身
+    grep -q "FW_INCLUDE_FILE:-/etc/nftables.d/lnmp.nft" tools/lnmp-fw.sh 2>/dev/null \
+        || grep -q "LNMP_FW_NFT_FILE:-/etc/nftables.d/lnmp.nft" tools/lnmp-fw.sh \
+        || missing="${missing} FW_INCLUDE_FILE不一致"
+
+    for f in conf/lnmp conf/lnmpa conf/lamp; do
+        grep -q '^Function_Fw()' "${f}" || missing="${missing} ${f}缺Function_Fw"
+        grep -q '^    fw|firewall)' "${f}" || missing="${missing} ${f}缺fw分支"
+    done
+
+    grep -q 'tools/lnmp-fw.sh:/bin/lnmp-fw' include/end.sh \
+        || missing="${missing} end.sh未安装lnmp-fw"
+    grep -q '/etc/lnmp/source-dir' include/end.sh \
+        || missing="${missing} end.sh未记录源码目录"
+
+    # 回写目标改名后 sed 会静默失配，端口只在防火墙上生效、重装时倒退
+    for v in $(grep -oE 'echo "[A-Za-z_]+_Port(_Min|_Max)? ' tools/lnmp-fw.sh \
+               | sed -E 's/echo "//; s/ $//' | sort -u); do
+        grep -q "^${v}=" lnmp.conf || missing="${missing} lnmp.conf缺${v}"
+    done
+
+    if [ -z "${missing}" ]; then
+        ok V17 "lnmp fw 与安装期防火墙实现一致，三份管理命令均已接入"
+    else
+        bad V17 "lnmp fw 接入存在缺口：${missing}"
+    fi
+}
+
 echo "=== 跨文件一致性检查 ==="
 check_v1
 check_v2
@@ -545,6 +590,7 @@ check_v13
 check_v14
 check_v15
 check_v16
+check_v17
 
 echo
 echo "通过 ${pass} 项，失败 ${fail} 项。"

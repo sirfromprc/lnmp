@@ -778,6 +778,19 @@ Function_Health()
     "${bin}" "$@"
 }
 
+Function_Fw()
+{
+    # 防火墙对齐由三种运行模式共用，避免规则表出现分歧。
+    local bin="/bin/lnmp-fw"
+    if [ ! -x "${bin}" ]; then
+        Echo_Red "找不到 ${bin}，安装不完整。"
+        Echo_Red "可从源码目录补装："
+        Echo_Red "  cp tools/lnmp-fw.sh /bin/lnmp-fw && chmod +x /bin/lnmp-fw"
+        return 1
+    fi
+    "${bin}" "$@"
+}
+
 Function_Backup()
 {
     # 三种运行模式共用 /bin/lnmp-backup，避免备份行为不一致。
@@ -4692,6 +4705,12 @@ case "${arg1}" in
         Function_Health "$@"
         exit $?
         ;;
+    fw|firewall)
+        # fw 子命令参数数量不同，移除命令名后完整转交。
+        shift
+        Function_Fw "$@"
+        exit $?
+        ;;
     tgnotice|notice)
         shift
         if [ ! -x /bin/lnmp-tgnotice ]; then
@@ -4745,6 +4764,8 @@ case "${arg1}" in
         echo "用法：lnmp perm {check|run|status|init|uninit}"
         echo "用法：lnmp perm check [服务名] | lnmp perm {ignore|unignore} <条目ID>"
         echo "用法：lnmp health {check|status|reset|init|uninit}"
+        echo "用法：lnmp fw {status|sync|allow|block|unblock|reload|purge}"
+        echo "用法：lnmp fw {allow|block|unblock} {tcp|udp} <端口|起-止>"
         echo "用法：lnmp phpmyadmin {enable|disable|status}"
         echo "用法：lnmp ssl add"
         echo "用法：lnmp {dnsssl|dns} {ali|cf|dp|he|gd|aws}"

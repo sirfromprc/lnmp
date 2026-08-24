@@ -56,7 +56,7 @@ echo "同步 ${Stack} 管理命令（源码目录：${cur_dir}）..."
 Install_LNMP_Command "${Stack}" || exit 1
 
 Rc=0
-for f in /bin/lnmp /bin/lnmp-backup /bin/lnmp-tgnotice /bin/lnmp-phpmyadmin /bin/lnmp-perm /bin/lnmp-health /bin/lnmp-sqlguard; do
+for f in /bin/lnmp /bin/lnmp-backup /bin/lnmp-tgnotice /bin/lnmp-phpmyadmin /bin/lnmp-perm /bin/lnmp-health /bin/lnmp-sqlguard /bin/lnmp-fw; do
     if [ ! -x "${f}" ]; then
         Echo_Red "同步失败：${f} 缺失或不可执行。"
         Rc=1

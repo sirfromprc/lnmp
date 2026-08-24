@@ -407,7 +407,7 @@ bash upgrade.sh {nginx|openresty|mysql|mariadb|m2m|php|phpa|phpmyadmin|mphp}
 `addons.sh` 装的都是 PHP 扩展或需要 PHP 的服务，缺少 PHP 时会直接中止。
 `upgrade.sh` 的 `m2m` 是 MySQL 转 MariaDB，`phpa` 是 Apache 模式的 PHP，`mphp` 是多版本 PHP；
 数据库升级没有自动回滚，`upgrade.sh php` 会清空 `/usr/local/php/conf.d/`，升级后扩展要重装。
-这些入口的完整说明见 [8.1.18 不属于 lnmp 命令的入口](#8118-不属于-lnmp-命令的入口)。
+这些入口的完整说明见 [8.1.19 不属于 lnmp 命令的入口](#8119-不属于-lnmp-命令的入口)。
 
 ### 2.2 非交互安装（站群自动部署）
 
@@ -797,7 +797,9 @@ PHP 禁用分支和 phpMyAdmin 边界，再做最小修改。
 功能已经实现。Apache/LNMPA/LAMP 保留代码路径，但没有 Debian 13 主线同等级的真机覆盖。
 
 `addons.sh install redis` 与 `addons.sh install memcached` 在按键确认前先列出端口、
-监听地址、防火墙动作和自测页开关，端口取自 `lnmp.conf`，要改就先取消再重跑。
+监听地址、防火墙动作和自测页开关，端口取自 `lnmp.conf`，要改就先取消再重跑。已装过时
+两者都是重新编译安装：现有配置备份后按模板重建，改过的参数会回到默认值。只想让防火墙
+跟上当前端口，用 `lnmp fw sync`（见 [8.1.17 fw 防火墙对齐](#8117-fw-防火墙对齐)）。
 
 `addons.sh`、`upgrade.sh` 的“按任意键开始”、`pureftpd.sh` 与 `install.sh` 各入口的
 确认（整栈与单组件摘要都是输入 `y`）只在真实终端生效。标准输入被重定向时必须显式
@@ -2097,8 +2099,8 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo -e \
 | 服务控制 | [8.1.3 整体服务控制](#813-整体服务控制) · [8.1.4 kill 强制终止](#814-kill-强制终止) · [8.1.5 单组件控制](#815-单组件控制) |
 | 站点与应用 | [8.1.6 vhost 站点管理](#816-vhost-站点管理) · [8.1.7 app 应用托管](#817-app-应用托管) |
 | 数据与账号 | [8.1.8 database 数据库](#818-database-数据库) · [8.1.9 ftp 账号](#819-ftp-账号) · [8.1.10 backup 备份](#8110-backup-备份) |
-| 运维与安全 | [8.1.11 崩溃自动拉起](#8111-崩溃自动拉起) · [8.1.12 health 健康检查](#8112-health-健康检查) · [8.1.13 perm 权限基线](#8113-perm-权限基线) · [8.1.14 phpmyadmin 入口开关](#8114-phpmyadmin-入口开关) · [8.1.15 tgnotice 通知](#8115-tgnotice-通知) · [8.1.16 ssl 证书签发](#8116-ssl-证书签发) |
-| 参考 | [8.1.17 返回码与非交互边界](#8117-返回码与非交互边界) · [8.1.18 不属于 lnmp 命令的入口](#8118-不属于-lnmp-命令的入口) |
+| 运维与安全 | [8.1.11 崩溃自动拉起](#8111-崩溃自动拉起) · [8.1.12 health 健康检查](#8112-health-健康检查) · [8.1.13 perm 权限基线](#8113-perm-权限基线) · [8.1.14 phpmyadmin 入口开关](#8114-phpmyadmin-入口开关) · [8.1.15 tgnotice 通知](#8115-tgnotice-通知) · [8.1.16 ssl 证书签发](#8116-ssl-证书签发) · [8.1.17 fw 防火墙对齐](#8117-fw-防火墙对齐) |
+| 参考 | [8.1.18 返回码与非交互边界](#8118-返回码与非交互边界) · [8.1.19 不属于 lnmp 命令的入口](#8119-不属于-lnmp-命令的入口) |
 
 #### 8.1.1 命令入口与三种模式
 
@@ -2161,7 +2163,7 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo -e \
 - `lnmp backup restore web <域名> [批次]` — 从备份恢复网站文件
 - `lnmp backup test` — 试恢复验证，导入临时库校验后删除
 
-**运维与安全** — 详见 [8.1.11](#8111-崩溃自动拉起) 至 [8.1.16](#8116-ssl-证书签发)
+**运维与安全** — 详见 [8.1.11](#8111-崩溃自动拉起) 至 [8.1.17](#8117-fw-防火墙对齐)
 
 - `lnmp health check|status` — 立即探测一轮 / 查看各服务探测结果与失败计数
 - `lnmp health reset [服务]` — 清除失败计数与熔断标记
@@ -2177,6 +2179,10 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo -e \
 - `lnmp ssl add` — HTTP 验证签发证书并写入站点配置（交互）
 - `lnmp dnsssl <provider>` — DNS 验证签发并写入站点配置（交互）
 - `lnmp onlyssl <provider>` — DNS 验证只签发，不写入任何站点配置（交互）
+- `lnmp fw status` — 对比服务配置、nftables 规则与 `lnmp.conf`，不一致返回 1
+- `lnmp fw sync` — 按服务当前配置重建规则并回写 `lnmp.conf` 的端口
+- `lnmp fw allow|block|unblock {tcp|udp} <端口>` — 维护 `/etc/lnmp/fw.conf` 的自定义条目
+- `lnmp fw reload|purge` — 重新加载已持久化的规则 / 清除本包写入的全部防火墙内容
 
 单组件命令的 `<动作>` 为 `start|stop|restart|reload|status`。不带参数或参数无法识别时，
 命令打印全部用法并返回 1。
@@ -2574,7 +2580,91 @@ lnmp onlyssl <provider>       # DNS 验证，只签发证书，不写入任何�
 
 [↑ 命令目录](#cmd-index) · [返回顶部](#top)
 
-#### 8.1.17 返回码与非交互边界
+#### 8.1.17 fw 防火墙对齐
+
+```text
+lnmp fw status                      # 对比服务配置、nftables 规则与 lnmp.conf，不改动任何内容
+lnmp fw sync                        # 按服务当前配置重建规则并持久化，同时回写 lnmp.conf
+lnmp fw allow   tcp 8080            # 放行端口
+lnmp fw block   udp 6380            # 阻断端口
+lnmp fw unblock tcp 8080            # 移除上面两条写下的条目
+lnmp fw reload                      # 重新加载已持久化的规则，不重算端口
+lnmp fw purge                       # 清除本包写入的规则表、规则文件与 systemd 单元
+```
+
+全部子命令需要 root。规则写在独立的 `inet lnmp` 表里，不动系统其它防火墙规则。
+
+**为什么需要这条命令。** 端口有三份副本：
+
+| 位置 | 角色 |
+|---|---|
+| `lnmp.conf` 的 `Redis_Port` 等 | 重装时的真值，`addons.sh`、`pureftpd.sh`、`install.sh` 按它重建配置 |
+| 服务自己的配置（`redis.conf`、`/etc/init.d/memcached`、`my.cnf`、`pure-ftpd.conf`） | 运行时的真值，手工改端口改的是这里 |
+| `inet lnmp` 表与 `/etc/nftables.d/lnmp.nft` | 派生结果 |
+
+手工改完端口重启服务后，nftables 里阻断的还是旧端口：旧端口白挡，**新端口对公网敞开**，
+不会有任何报错。`lnmp fw sync` 以服务配置为准重建规则，并把 `lnmp.conf` 的端口变量一并
+回写，三处收敛，下次重装不会倒退回旧端口。
+
+完整流程：
+
+```bash
+vi /usr/local/redis/etc/redis.conf   # port 6379 -> 6380
+systemctl restart redis
+lnmp fw sync
+```
+
+`sync` 会打印每一条回写，并把原 `lnmp.conf` 备份为 `lnmp.conf.bak.<时间戳>`：
+
+```text
+防火墙规则已按当前服务配置重建，并保存到 /etc/nftables.d/lnmp.nft。
+lnmp.conf: Redis_Port 6379 -> 6380
+已备份原文件：/root/lnmp/lnmp.conf.bak.20260823175724
+```
+
+**先看再改。** `status` 只读，全部对齐返回 0，有任何一项不一致返回 1，可直接用在
+巡检脚本里：
+
+```text
+  服务         配置端口       防火墙         lnmp.conf    判定
+  mysql        3306/tcp       drop 3306      3306         一致
+  redis        6380/tcp       -              6379         缺失：该端口未阻断
+以下阻断规则已不对应任何服务当前端口： tcp/6379
+执行 lnmp fw sync 清理。
+```
+
+**自定义放行。** `allow` / `block` / `unblock` 把条目写进 `/etc/lnmp/fw.conf` 后立即重建
+规则，`sync` 与重启都不会丢：
+
+```text
+# 由 lnmp fw allow/block/unblock 维护，手工编辑同样有效。
+# 格式：allow|block  tcp|udp  端口或 起-止
+# sync 重建规则时，这些条目排在标准规则之前，显式意图优先。
+allow tcp 8080
+allow tcp 20000-30000
+```
+
+条目排在标准规则之前，因此 `allow tcp 6380` 会覆盖 Redis 的标准阻断，使该端口对外可达。
+这是给内网机器留的口子，`status` 每次都会单独警告。非法行按行号报出并跳过，不静默丢弃。
+
+**回写 `lnmp.conf` 的范围与前提。** 只改 `DB_Port`、`DB_X_Port`、`Redis_Port`、
+`Memcached_Port`、`Pureftpd_Port`、`Pureftpd_Passive_Min`、`Pureftpd_Passive_Max` 七个变量，
+且只改 `VAR="${VAR:-数字}"` 这一行的默认值，环境变量覆盖能力和注释都保留。
+`Pureftpd_Data_Port` 在 `pure-ftpd.conf` 里没有对应项，不参与回写。
+
+`lnmp.conf` 的位置由安装时记录的 `/etc/lnmp/source-dir` 决定。源码目录被删或搬走时，
+`sync` 照常对齐防火墙，只跳过回写并提示一句，退出码仍是 0；此时重装前要自己核对
+`lnmp.conf` 的端口。也可以用 `--conf <路径>` 显式指定。
+
+**边界。** `lnmp fw` 只读服务配置、只写 nftables 和 `lnmp.conf`，**不会修改任何服务配置
+文件**；也管不到云主机安全组，那要另行放行。检测到 firewalld 在运行时改用
+`firewall-cmd --permanent` 维护端口放行，`purge` 只提示不自动撤销 firewalld 的配置。
+SSH 端口是唯一例外：以实际监听为准（`ss` → `netstat` → `sshd_config`），
+放行错端口会把自己关在门外。
+
+[↑ 命令目录](#cmd-index) · [返回顶部](#top)
+
+#### 8.1.18 返回码与非交互边界
 
 可直接用于脚本判断（返回码真实反映结果）：
 
@@ -2599,7 +2689,7 @@ lnmp onlyssl <provider>       # DNS 验证，只签发证书，不写入任何�
 
 [↑ 命令目录](#cmd-index) · [返回顶部](#top)
 
-#### 8.1.18 不属于 lnmp 命令的入口
+#### 8.1.19 不属于 lnmp 命令的入口
 
 下列功能不通过 `lnmp` 调用，需在保存本项目源码的目录内执行。
 
@@ -2752,9 +2842,10 @@ lnmp pureftpd restart                 # Pure-FTPd 有 lnmp 子命令
 2. **数据和日志路径不能移出 `/usr/local/redis/var`。** unit 设了
    `ProtectSystem=full` 与 `ReadWritePaths=/usr/local/redis/var`，写别处会被内核拒绝。
    确需换盘时改 unit 的 `ReadWritePaths`，改完 `systemctl daemon-reload`。
-3. **改 `port` 之后要同步防火墙规则。** `lnmp health` 的 Redis 探针会自动从
-   `redis.conf` 读取新端口，无须另行配置；但 nftables 里阻断的是安装时那个端口号，
-   新端口需要自己补一条阻断规则。
+3. **改 `port` 之后执行 `lnmp fw sync`。** `lnmp health` 的 Redis 探针会自动从
+   `redis.conf` 读取新端口，无须另行配置；但 nftables 里阻断的仍是旧端口号，
+   新端口对公网敞开。`systemctl restart redis` 之后执行 `lnmp fw sync`，
+   规则和 `lnmp.conf` 的 `Redis_Port` 会一起对齐到新端口。
 
 常用的自定义项：
 
@@ -2791,10 +2882,13 @@ ss -lntp | grep redis-server        # 确认监听地址仍是回环
 ps -o user,cmd -C redis-server      # 确认不以 root 运行
 ```
 
-重跑 `addons.sh install redis` 会把 `redis.conf` 的 `port`、`/etc/init.d/redis` 的
-`REDISPORT` 和防火墙规则一起对齐成 `lnmp.conf` 的 `Redis_Port`：端口不同时先停服务
-再改配置，随后由安装流程重新启动，`redis.conf` 里的其它配置项不受影响。手工改端口
-后要长期生效，就同步改 `lnmp.conf`。
+重跑 `addons.sh install redis` 是**重新编译安装**：先停服务，把现有 `redis.conf`
+备份为 `redis.conf.bak.<时间戳>`，再按源码包模板重建配置并写入 `lnmp.conf` 的
+`Redis_Port`，`/etc/init.d/redis` 的 `REDISPORT` 和防火墙规则一并对齐。
+`maxmemory`、`save` 等改过的项会回到默认值，需要时从备份取回。
+
+误删过二进制或 init 脚本时用这条命令重装。只想让防火墙跟上当前端口，用
+`lnmp fw sync`，不要重跑 `addons.sh`——两个入口职责不重叠。
 
 #### 8.2.4 Memcached 自定义
 
@@ -2819,11 +2913,14 @@ echo -e 'stats settings\r' | nc 127.0.0.1 11211 | grep -E 'maxbytes|maxconns'
 ```
 
 `lnmp health` 的 Memcached 探针同样从 `/etc/init.d/memcached` 读取 `IP` 和 `PORT`，
-改端口后无须另行配置；但和 Redis 一样，nftables 里阻断的是原端口号。
+改端口后无须另行配置；但和 Redis 一样，nftables 里阻断的仍是旧端口号，
+改完重启服务后要执行 `lnmp fw sync`。
 
-重跑 `addons.sh install memcached` 会把 `PORT` 对齐成 `lnmp.conf` 的
-`Memcached_Port`，同时把阻断规则迁到新端口并重启服务；`CACHESIZE`、`MAXCONN`、
-`OPTIONS` 等改过的参数保留不动。手工改端口后要长期生效，就同步改 `lnmp.conf`。
+重跑 `addons.sh install memcached` 是**重新编译安装**：先停服务，把现有
+`/etc/init.d/memcached` 备份为 `memcached.bak.<时间戳>`，再按随包模板重建并写入
+`lnmp.conf` 的 `Memcached_Port`，阻断规则同步迁移，最后 `restart` 服务。
+`CACHESIZE`、`MAXCONN`、`OPTIONS` 等改过的参数会回到默认值，需要时从备份取回。
+只想让防火墙跟上当前端口，用 `lnmp fw sync`。
 
 Memcached 协议不提供鉴权和租户隔离，不要对公网开放；互不信任的站点应拆分实例和
 系统账号。演示页开关 `Enable_Memcached_Test_Page` 生产环境保持 `n`。
@@ -2848,17 +2945,18 @@ Pureftpd_Port=2121 Pureftpd_Passive_Min=40000 Pureftpd_Passive_Max=40100 bash pu
 已装过时该摘要还会指出现有配置的端口与本次将写入的值是否不同 —— 重跑会把
 `pure-ftpd.conf` 恢复成模板加 `lnmp.conf` 的值，之前手工调过的端口会被改回。
 
-装完再改端口，需要同时改 `/usr/local/pureftpd/etc/pure-ftpd.conf` 和防火墙放行规则，
-改动后：
+装完再改端口，改 `/usr/local/pureftpd/etc/pure-ftpd.conf` 后：
 
 ```bash
 lnmp pureftpd restart
+lnmp fw sync                        # 放行规则与 lnmp.conf 一并对齐
 ss -lntp | grep pure-ftpd
 lnmp perm check pureftpd
 ```
 
-改被动端口范围时防火墙要同步放行对应区间，否则列目录会卡住。不需要传统 FTP 时不要
-安装该服务；仅传文件建议改用 SFTP。
+改被动端口范围同样由 `lnmp fw sync` 放行对应区间，漏放行时列目录会卡住。云主机的
+安全组要另行放行，`lnmp fw` 管不到。不需要传统 FTP 时不要安装该服务；仅传文件建议
+改用 SFTP。
 
 #### 8.2.6 安装本项目未提供的 PHP 扩展
 

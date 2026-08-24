@@ -98,6 +98,7 @@ Install_LNMP_Command()
         "${cur_dir}/tools/lnmp-perm.sh:/bin/lnmp-perm" \
         "${cur_dir}/tools/lnmp-health.sh:/bin/lnmp-health" \
         "${cur_dir}/tools/lnmp-sqlguard.sh:/bin/lnmp-sqlguard" \
+        "${cur_dir}/tools/lnmp-fw.sh:/bin/lnmp-fw" \
         "${cur_dir}/tools/cut_nginx_logs.sh:/bin/lnmp-cutlogs"
     do
         target=${source#*:}
@@ -115,6 +116,23 @@ Install_LNMP_Command()
     Install_Tgnotice_Profile || return 1
     Install_Perm_Diagnose_Unit || return 1
     Install_App_Unit_Tpl || return 1
+    Record_Source_Dir
+    return 0
+}
+
+# lnmp fw 需要回写 lnmp.conf 的端口变量，但运行期无从得知源码目录，
+# 因此在这里记录一次。写失败不影响安装，lnmp fw 会退化为只对齐防火墙。
+Record_Source_Dir()
+{
+    local dst='/etc/lnmp/source-dir' tmp
+
+    mkdir -p /etc/lnmp 2>/dev/null || return 0
+    tmp=$(mktemp "${dst}.XXXXXXXX") || return 0
+    if ! printf '%s\n' "${cur_dir}" > "${tmp}" || ! chmod 600 "${tmp}" \
+       || ! mv -f "${tmp}" "${dst}"; then
+        rm -f "${tmp}"
+        Echo_Yellow "记录源码目录到 ${dst} 失败，lnmp fw 将只对齐防火墙，不回写 lnmp.conf。"
+    fi
     return 0
 }
 
