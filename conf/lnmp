@@ -1548,6 +1548,11 @@ Add_VHost()
         touch /home/wwwlogs/${al_name}.log
     fi
     echo "正在设置虚拟主机目录权限..."
+    # 复用旧站点目录时其中可能有 immutable 的 .user.ini，递归授权会对该文件报
+    # Operation not permitted；开启 PHP 时随后要重写它，先在此解除锁定。
+    if [ "${enable_site_php}" != "n" ] && [ -f "${vhostdir}/.user.ini" ]; then
+        chattr -i "${vhostdir}/.user.ini" 2>/dev/null
+    fi
     chmod -R 755 "${vhostdir}"
     chown -R www:www "${vhostdir}"
 

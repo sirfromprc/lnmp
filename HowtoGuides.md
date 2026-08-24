@@ -280,7 +280,7 @@ LNMP_Move_Existing_DB_Data=yes bash install.sh db
 | `bash install.sh mphp` | 追加一个并行 PHP 版本到 `/usr/local/php8.x` | 已是完整 LNMP |
 | `bash install.sh phpmyadmin` | 为现有环境补装 phpMyAdmin | 主栈已装，PHP ≥ 7.2.5 且有 mysqli |
 | `bash install.sh phpmyadmin {enable\|disable\|status}` | 开关或查看 phpMyAdmin 的 Web 入口 | phpMyAdmin 已装 |
-| `bash addons.sh install <组件>` | PHP 扩展、Redis 服务端、ImageMagick | 对应 PHP 已装 |
+| `bash addons.sh install `<br>`{memcached\|opcache\|redis\|imagemagick\|exif\|fileinfo\|...}`| PHP 扩展、Redis 服务端、ImageMagick | 对应 PHP 已装 |
 | `bash pureftpd.sh` | 安装 Pure-FTPd | 无；安装前打印端口摘要并要求输入 `y` |
 | `bash upgrade.sh <目标>` | 升级单个组件 | 对应组件已装 |
 
@@ -956,9 +956,29 @@ lnmp vhost add
 第 5 步之前会先列出已内置的伪静态规则名（`wordpress`、`typecho`、`discuzx` 等），
 第 9 步只在第 8 步选了 `y` 时出现；第 12–14 步只在第 11 步选了 `y` 时出现。
 
-上表是 LNMP（Nginx）的问答顺序。**LNMPA 与 LAMP 不问伪静态规则**，改问管理员邮箱：
-这两套栈的伪静态由 Apache 的 `.htaccess` 处理（站点配置为 `AllowOverride All`，
-`mod_rewrite` 已加载），详见 5.5。
+上表是 LNMP（Nginx）的问答顺序。三套栈的问答项并不相同，逐项对照如下
+（`—` 表示该栈没有这一问）：
+
+| LNMP | LNMPA | LAMP |
+|---|---|---|
+| 域名 | 域名 | 域名 |
+| 更多域名 | 更多域名 | 更多域名 |
+| 网站目录 | 网站目录 | 网站目录 |
+| 伪静态开关 [→ 规则名] | — | — |
+| PHP 开关 | PHP 开关 | PHP 开关 |
+| PHP Pathinfo | — | — |
+| 访问日志 [→ 日志文件名] | 访问日志 [→ 日志文件名] | 访问日志 [→ 日志文件名] |
+| IPv6 | IPv6 | — |
+| — | 管理员邮箱 | 管理员邮箱 |
+| 建库 [→ root 口令 → 库名 → 库口令] | 同左 | 同左 |
+| FTP 账号（装了 pure-ftpd 才问） | 同左 | 同左 |
+| SSL | SSL | SSL |
+| 按任意键开始创建 | 同左 | 同左 |
+
+**LNMPA 与 LAMP 不问伪静态规则**，改问管理员邮箱：这两套栈的伪静态由 Apache 的
+`.htaccess` 处理（站点配置为 `AllowOverride All`，`mod_rewrite` 已加载），详见 5.5。
+**LAMP 不问 IPv6**，站点由 Apache 直接监听。按 LNMP 的序列去驱动另两套栈会整体错位
+（邮箱答到伪静态位、口令答到邮箱位），建站失败且没有明确报错。
 
 **第 6 步选 `n` 时**（纯静态站点，或 Node、Go 等自带后端的站点）：不再问 Pathinfo，
 装了多个 PHP 版本时也不再问选哪个版本；站点配置里不写任何 PHP 执行入口，
@@ -1027,6 +1047,19 @@ printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
 > 注意：**第 6 步的 PHP 开关不占喂入序列的一行**。非交互执行时不读标准输入，
 > 只读取环境变量 `VHOST_PHP`：未设置时开启 PHP，
 > 上面这条命令不用改。要建不带 PHP 的站点见 4.4。
+
+**LNMPA 与 LAMP 的序列**（按 4.1 的三栏对照表，PHP 开关同样不占一行）：
+
+```bash
+# LNMPA：域名 → 更多域名(空) → 目录(空) → 访问日志 n → IPv6 n → 邮箱(空)
+#        → 建库 y → root 口令 → 库名 → 库用户密码 → SSL n → 任意键
+printf 'wp.example.com\n\n\nn\nn\n\ny\n数据库root密码\nwpdemo\n库用户密码\nn\n\n' \
+  | lnmp vhost add
+
+# LAMP：比 LNMPA 少 IPv6 一行
+printf 'wp.example.com\n\n\nn\n\ny\n数据库root密码\nwpdemo\n库用户密码\nn\n\n' \
+  | lnmp vhost add
+```
 
 ### 4.3 验证站点
 
@@ -1343,6 +1376,11 @@ unset WP_ADMIN_PW
 ```
 
 </details>
+
+> **在旧站点目录上重装 WordPress 时**：先删除 `wp-content/object-cache.php` 和
+> `wp-content/advanced-cache.php`。这两个 drop-in 由 Redis 缓存等插件写入，
+> 数据库表已清空时它们仍会让 `wp-admin/install.php?step=2` 返回
+> `Already Installed`。用 `lnmp vhost del` 删站会整目录删除，不受影响。
 
 ### 5.5 验证伪静态
 

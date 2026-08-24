@@ -57,23 +57,53 @@ Stop_And_Backup_DB()
 
 
 # ---------------------------------------------------------------------------
+# addons 安装的 Redis 与 Memcached 不在各栈 kill/stop 的覆盖范围内，
+# 卸载时需显式停止并取消开机自启，否则进程与自启项会留到下一次安装。
+Stop_Addons_Services()
+{
+    local svc
+    for svc in redis memcached; do
+        [ -x "/etc/init.d/${svc}" ] || [ -s "/etc/systemd/system/${svc}.service" ] || continue
+        echo "正在停止 addons 组件 ${svc}..."
+        [ -x "/etc/init.d/${svc}" ] && "/etc/init.d/${svc}" stop 2>/dev/null
+        Remove_StartUp "${svc}"
+    done
+    return 0
+}
+
+# 卸载栈不删除 addons 的程序目录，需明确告知清理方式，
+# 避免下次安装静默复用旧实例。
+Notice_Addons_Residue()
+{
+    local left=''
+    [ -d /usr/local/redis ] && left="${left} redis"
+    [ -d /usr/local/memcached ] && left="${left} memcached"
+    [ -n "${left}" ] || return 0
+    Echo_Yellow "以下 addons 组件已停止并取消开机自启，程序目录仍保留：${left# }"
+    Echo_Yellow "需要彻底删除请在源码目录执行：./addons.sh uninstall <组件名>"
+    Echo_Yellow "保留期间防火墙规则已随本次卸载清空，重新安装栈后请执行 lnmp-fw sync 或重装该组件。"
+    return 0
+}
+
 Stop_Stack_Services()
 {
     if command -v lnmp >/dev/null 2>&1; then
         lnmp kill
         lnmp stop
+        Stop_Addons_Services
         return 0
     fi
 
     Echo_Yellow "/bin/lnmp 不存在（通常是上次安装未完成），改用 init 脚本逐个停止。"
     local svc
-    for svc in nginx php-fpm mysql mariadb httpd pureftpd redis; do
+    for svc in nginx php-fpm mysql mariadb httpd pureftpd; do
         [ -x "/etc/init.d/${svc}" ] && "/etc/init.d/${svc}" stop 2>/dev/null
     done
     # init 脚本缺失时按进程名停止服务。
     for svc in nginx php-fpm mysqld httpd; do
         pkill -x "${svc}" 2>/dev/null
     done
+    Stop_Addons_Services
     return 0
 }
 
@@ -123,6 +153,7 @@ Uninstall_LNMP()
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
+    Notice_Addons_Residue
     echo "LNMP 卸载完成。"
 }
 
@@ -168,6 +199,7 @@ Uninstall_LNMPA()
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
+    Notice_Addons_Residue
     echo "LNMPA 卸载完成。"
 }
 
@@ -211,6 +243,7 @@ Uninstall_LAMP()
     rm -f /etc/profile.d/lnmp-tgnotice.sh
     Remove_Lnmp_Conf_Dir
     Firewall_Purge
+    Notice_Addons_Residue
     echo "LAMP 卸载完成。"
 }
 

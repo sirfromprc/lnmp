@@ -25,8 +25,42 @@ Add_Iptables_Rules()
     # MySQL X Protocol 可通过 33060 执行数据库操作，且不受 my.cnf 中
     # bind-address 的约束，因此需要单独限制外部访问；MariaDB 不使用此端口。
     Firewall_Block tcp "${DB_X_Port}"
+    Block_Addons_Ports
 
     Firewall_Save
+}
+
+# addons 安装的 Redis 与 Memcached 不属于栈安装流程，重建防火墙时按实际配置
+# 补回阻断规则，否则重装栈会静默丢弃这两个端口的规则。
+Block_Addons_Ports()
+{
+    # 测试注入点与 lnmp-fw 保持同名，默认取实际系统路径。
+    local conf="${LNMP_FW_REDIS_CONF:-/usr/local/redis/etc/redis.conf}"
+    local init="${LNMP_FW_MEMCACHED_INIT:-/etc/init.d/memcached}"
+    local redis_dir="${LNMP_FW_REDIS_DIR:-/usr/local/redis}"
+    local memcached_dir="${LNMP_FW_MEMCACHED_DIR:-/usr/local/memcached}"
+    local port
+
+    if [ -d "${redis_dir}" ] || [ -s "${conf}" ]; then
+        port=''
+        [ -s "${conf}" ] && port=$(awk '$1 == "port" { print $2; exit }' "${conf}" 2>/dev/null)
+        [ -n "${port}" ] || port="${Redis_Port:-}"
+        # port 0 表示只监听 unixsocket，没有 TCP 端口需要阻断。
+        if [ -n "${port}" ] && [ "${port}" != "0" ]; then
+            Firewall_Block tcp "${port}"
+        fi
+    fi
+
+    if [ -s "${init}" ] || [ -d "${memcached_dir}" ]; then
+        port=''
+        [ -s "${init}" ] && port=$(awk -F= '$1 == "PORT" { gsub(/"/, "", $2); print $2; exit }' "${init}" 2>/dev/null)
+        [ -n "${port}" ] || port="${Memcached_Port:-}"
+        if [ -n "${port}" ]; then
+            Firewall_Block tcp "${port}"
+            Firewall_Block udp "${port}"
+        fi
+    fi
+    return 0
 }
 
 # 同步两个常用命令路径并固定权限，兼容 merged-/usr 与传统目录布局。

@@ -6,11 +6,16 @@
 # lnmp health 已覆盖同类场景，并带连续失败阈值与熔断。
 #
 # 配合 crontab 定时检查站点，返回 502 时重启 PHP-FPM 以恢复请求处理。
+# 目标地址必须由使用者给出：改写下面的 CheckURL，或用环境变量传入。
 
-CheckURL="http://www.xxx.com"
+CheckURL="${CheckURL:-}"
 
-STATUS_CODE=`curl -o /dev/null -m 10 --connect-timeout 10 -s -w %{http_code} $CheckURL`
-#echo "$CheckURL Status Code:\t$STATUS_CODE"
-if [ "$STATUS_CODE" = "502" ]; then
+if [ -z "${CheckURL}" ]; then
+    echo "未设置 CheckURL，本脚本不执行。请改用 lnmp health status。" >&2
+    exit 1
+fi
+
+STATUS_CODE=$(curl -o /dev/null -m 10 --connect-timeout 10 -s -w '%{http_code}' "${CheckURL}")
+if [ "${STATUS_CODE}" = "502" ]; then
     /etc/init.d/php-fpm restart
 fi

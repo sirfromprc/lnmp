@@ -112,8 +112,7 @@ expect_empty C12 "无 cmake 自主下载 boost" \
     'DOWNLOAD_BOOST' -g '*.sh'
 
 # C13 与 C9 使用相同的检查范围。
-# 明文 HTTP 下载可被中间人替换成任意内容；本包所有下载源都支持 HTTPS，
-# tools/check502.sh 中的 CheckURL 是站点地址示例，不属于下载调用。
+# 明文 HTTP 下载可被中间人替换成任意内容；本包所有下载源都支持 HTTPS。
 expect_empty C13 "无明文 HTTP 下载" \
     '(wget|curl|Download_Files)([^|;]*[[:space:]])http://'
 
