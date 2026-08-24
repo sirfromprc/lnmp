@@ -319,7 +319,7 @@ Install_PHP_8x()
     Pear_Pecl_Set
     Install_Composer
 
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
 if [ "${Stack}" = "lnmp" ]; then
     # PHP-FPM socket 限定为 www 用户组访问，防止其他本地账号提交 FastCGI 请求。
@@ -397,7 +397,7 @@ Creat_PHP_Tools()
 {
     local pma_stage pma_secret access_url pma_vardir_was_absent='n'
 
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
     \cp ${cur_dir}/conf/index.html ${Default_Website_Dir}/index.html
     # 默认站点自带 favicon，避免浏览器请求在 error_log 中反复记录 404

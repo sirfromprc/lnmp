@@ -157,7 +157,7 @@ Upgrade_OpenResty_Source()
         return 1
     fi
 
-    cd "${cur_dir}/src/"
+    cd "${cur_dir}/src/" || return 1
     rm -rf "${cur_dir}/src/openresty-${ver}"
 
     # 重写新版本动态模块的加载清单，并在配置检查前确保引用文件存在。

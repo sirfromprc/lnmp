@@ -3,7 +3,7 @@
 Install_PHPMemcache()
 {
     echo "正在安装 PHP memcache 扩展..."
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     # PHP 8.x 使用 PHP8Memcache_Ver 指定的 PECL 官方版本。
     Download_Files https://pecl.php.net/get/${PHP8Memcache_Ver}.tgz ${PHP8Memcache_Ver}.tgz
     Require_File "${PHP8Memcache_Ver}.tgz" "pecl memcache"
@@ -17,7 +17,7 @@ Install_PHPMemcache()
 Install_PHPMemcached()
 {
     echo "正在安装 PHP memcached 扩展..."
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     Get_Dist_Name
     if [ "$PM" = "yum" ]; then
         yum install cyrus-sasl-devel -y
@@ -37,7 +37,7 @@ Install_PHPMemcached()
     Make_Install || return 1
     cd ../
 
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     [[ -d "${PHP8Memcached_Ver}" ]] && rm -rf "${PHP8Memcached_Ver}"
     Download_Files https://pecl.php.net/get/${PHP8Memcached_Ver}.tgz ${PHP8Memcached_Ver}.tgz
     Require_File "${PHP8Memcached_Ver}.tgz" "pecl memcached"
@@ -193,7 +193,7 @@ extension = ${PHP_ZTS}
 EOF
 
     echo "正在安装 Memcached..."
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     # 重装一律重新编译：误删过二进制、init 脚本或依赖文件时，只重写配置起不来。
     # 源码包与依赖先取齐再停服务，避免服务停下后卡在下载或依赖安装失败。
     Download_Files https://memcached.org/files/${Memcached_Ver}.tar.gz ${Memcached_Ver}.tar.gz
@@ -216,7 +216,7 @@ EOF
         return 1
     fi
     cd ../
-    rm -rf ${cur_dir}/src/${Memcached_Ver}
+    Clean_Src_Dir "${Memcached_Ver}"
 
     ln -sf /usr/local/memcached/bin/memcached /usr/bin/memcached
 

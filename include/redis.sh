@@ -308,7 +308,7 @@ Install_Redis()
     Addons_Get_PHP_Ext_Dir
     zend_ext="${zend_ext_dir}redis.so"
 
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     # 扩展包与服务端同属一次安装，先把 phpredis 取齐再动系统，
     # 避免服务端装完后扩展下载失败，留下未启用的服务和防火墙规则。
     if [ -s ${PHPRedis_Ver} ]; then
@@ -390,7 +390,7 @@ Install_Redis()
     # pidfile 放入 Redis 可写目录，满足降权运行要求。
     sed -i 's#^pidfile .*#pidfile /usr/local/redis/var/redis.pid#g' /usr/local/redis/etc/redis.conf
     cd ../
-    rm -rf ${cur_dir}/src/${Redis_Stable_Ver}
+    Clean_Src_Dir "${Redis_Stable_Ver}"
 
     # Redis 默认无认证，阻止公网访问可避免未授权读写缓存。
     Firewall_Block tcp "${Redis_Port}"

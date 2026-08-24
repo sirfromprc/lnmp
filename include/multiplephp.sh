@@ -47,7 +47,7 @@ Install_Multiplephp()
 Install_MPHP8x()
 {
 
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     Download_Files https://www.php.net/distributions/${Php_Ver}.tar.bz2 ${Php_Ver}.tar.bz2
     Require_File "${Php_Ver}.tar.bz2" "PHP ${PHP_Branch}"
     Install_Libzip
@@ -67,7 +67,7 @@ Install_MPHP8x()
     echo "正在修改 php.ini..."
     PHP_Ini_Tune "${MPHP_Path}/etc/php.ini" || exit 1
 
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
     echo "正在创建新的 php-fpm 配置文件..."
     cat >${MPHP_Path}/etc/php-fpm.conf<<EOF
@@ -117,7 +117,7 @@ EOF
 
     lnmp start
 
-    rm -rf ${cur_dir}/src/${Php_Ver}
+    Clean_Src_Dir "${Php_Ver}"
 
     if [ -s ${MPHP_Path}/sbin/php-fpm ] && [ -s ${MPHP_Path}/etc/php.ini ] && [ -s ${MPHP_Path}/bin/php ]; then
         echo "==========================================="

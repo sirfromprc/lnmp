@@ -24,7 +24,7 @@ Build_Pecl_Ext()
     local ext_dir
 
     Echo_Blue "[+] 正在安装 PHP 扩展 ${pkg}... "
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
     Download_Files https://pecl.php.net/get/${pkg}.tgz ${pkg}.tgz
     if [ ! -s "${cur_dir}/src/${pkg}.tgz" ]; then
@@ -35,15 +35,15 @@ Build_Pecl_Ext()
     fi
     Require_File "${pkg}.tgz" "pecl ${pkg}"
 
-    rm -rf ${cur_dir}/src/${pkg}
+    Clean_Src_Dir "${pkg}"
     Tar_Cd ${pkg}.tgz ${pkg}
 
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config "$@"
     make && make install
 
-    cd ${cur_dir}/src
-    rm -rf ${cur_dir}/src/${pkg}
+    cd "${cur_dir}/src" || return 1
+    Clean_Src_Dir "${pkg}"
 
     ext_dir=$(PHP_Ext_Dir)
     if [ -s "${ext_dir}/${so}" ]; then

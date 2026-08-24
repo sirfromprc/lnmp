@@ -817,7 +817,8 @@ Filter_Sites()
 # ---------------------------------------------------------------------------
 Run_Db()
 {
-    local batch="$1" dir="${Backup_Home}/db/${batch}" entry db out failed=0 n=0
+    local batch="$1" entry db out failed=0 n=0
+    local dir="${Backup_Home}/db/${batch}"
     Find_Mysqldump || { Log ERROR "找不到 mysqldump，请在配置里设置 MySQL_Dump。"; return 1; }
     [ -f "${MySQL_Option_File}" ] || { Log ERROR "缺少数据库 option file：${MySQL_Option_File}"; return 1; }
     Check_Perm "${MySQL_Option_File}" || return 1
@@ -851,7 +852,8 @@ Run_Db()
 
 Run_Web()
 {
-    local batch="$1" dir="${Backup_Home}/www/${batch}" entry domain path out failed=0 n=0 rc
+    local batch="$1" entry domain path out failed=0 n=0 rc
+    local dir="${Backup_Home}/www/${batch}"
     mkdir -p "${dir}" || return 1
     chmod 700 "${dir}"
     for entry in "${Backup_Site[@]}"; do

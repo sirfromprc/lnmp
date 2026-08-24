@@ -41,18 +41,14 @@ jobs:
           )
           exit $fail
 
+      # 检查范围与排除规则由 t/shellcheck.sh 统一维护，此处只负责装上 shellcheck。
+      # 该脚本在未安装 shellcheck 时会跳过并返回 0，CI 里必须先装，否则等于不检查。
       - name: ShellCheck
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
-          # SC1090/SC1091: 动态 source，本项目大量使用，无法静态解析
-          # SC2086: 未加引号的展开由专项检查处理
-          # SC2181: $? 判断风格
-          # tests/ 只在本地开发使用，不随发布包分发，不纳入检查。
-          shellcheck -S error -e SC1090,SC1091,SC2086,SC2181 \
-            install.sh uninstall.sh upgrade.sh addons.sh pureftpd.sh \
-            include/*.sh t/*.sh tools/*.sh \
-            conf/lnmp conf/lnmpa conf/lamp || exit 1
+          shellcheck --version
+          bash t/shellcheck.sh
 
       - name: 不变式检查（t/lint.sh）
         run: bash t/lint.sh

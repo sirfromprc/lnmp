@@ -64,7 +64,8 @@ Backup_DB_Data()
 Remove_Lnmp_Conf_Dir()
 {
     local dir='/etc/lnmp'
-    local dst="/root/lnmp_conf_backup_$(date +"%Y%m%d%H%M%S")"
+    local dst
+    dst="/root/lnmp_conf_backup_$(date +"%Y%m%d%H%M%S")"
 
     [ -d "${dir}" ] || return 0
 
@@ -89,14 +90,19 @@ Remove_Lnmp_Conf_Dir()
     return 0
 }
 
+# DB_Name 为空时 rm -rf /usr/local/${DB_Name} 会删掉整个 /usr/local，
+# 因此空值与 None 一并提前返回。
 Remove_DB_Files()
 {
+    [ -n "${DB_Name}" ] || return 0
     [ "${DB_Name}" = "None" ] && return 0
     Remove_DB_Command_Links
     Remove_DB_Dev_Links
-    rm -rf /usr/local/${DB_Name}
+    # 空值已在函数开头拦截。
+    # shellcheck disable=SC2115
+    rm -rf "/usr/local/${DB_Name}"
     rm -f /etc/my.cnf
-    rm -f /etc/init.d/${DB_Name}
+    rm -f "/etc/init.d/${DB_Name}"
     Remove_Libaio_Compat_Link
 }
 

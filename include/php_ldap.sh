@@ -2,7 +2,7 @@
 
 Install_PHP_Ldap()
 {
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     echo "====== 正在安装 PHP LDAP 扩展 ======"
     Press_Start || return 1
 
@@ -35,7 +35,7 @@ Install_PHP_Ldap()
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config --with-ldap --with-ldap-sasl
     make && make install
-    cd -
+    cd - || return 1
     rm -rf php-${Cur_PHP_Version}
 
     cat >${PHP_Path}/conf.d/009-ldap.ini<<EOF

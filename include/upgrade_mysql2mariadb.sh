@@ -119,7 +119,7 @@ Upgrade_MySQL2MariaDB()
     Press_Start || exit 1
 
     echo "============================ 检查文件 ============================"
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     if [ "${Bin}" = "y" ]; then
         MariaDB_FileName="mariadb-${mariadb_version}-linux-systemd-${DB_ARCH}"
     else

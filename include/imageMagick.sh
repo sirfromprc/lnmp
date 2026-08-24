@@ -19,7 +19,7 @@ Build_ImageMagick_Lib()
     fi
     ldconfig
 
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     if [ -s /usr/local/imagemagick/bin/convert ]; then
         echo "ImageMagick 已存在。"
     else
@@ -31,7 +31,7 @@ Build_ImageMagick_Lib()
         ./configure --prefix=/usr/local/imagemagick
         Make_Install || return 1
         cd ../
-        rm -rf ${cur_dir}/src/${ImageMagick_Ver}
+        Clean_Src_Dir "${ImageMagick_Ver}"
     fi
 }
 
@@ -50,7 +50,7 @@ Install_ImageMagic()
     # ImageMagick 库构建失败时停止，避免 imagick 配置阶段产生次生错误。
     Build_ImageMagick_Lib || return 1
 
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     Download_Files https://pecl.php.net/get/${Imagick_Ver}.tgz ${Imagick_Ver}.tgz
     Require_File "${Imagick_Ver}.tgz" "pecl imagick"
     Tar_Cd ${Imagick_Ver}.tgz ${Imagick_Ver}

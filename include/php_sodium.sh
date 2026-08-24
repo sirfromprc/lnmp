@@ -2,7 +2,7 @@
 
 Install_PHP_Sodium()
 {
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     echo "====== 正在安装 PHP Sodium 扩展 ======"
     Press_Start || return 1
 
@@ -37,7 +37,7 @@ Install_PHP_Sodium()
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config
     make && make install
-    cd -
+    cd - || return 1
     rm -rf php-${Cur_PHP_Version}
 
     echo 'extension = "sodium.so"' > ${PHP_Path}/conf.d/009-sodium.ini

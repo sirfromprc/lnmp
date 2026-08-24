@@ -2,7 +2,7 @@
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 
 # Check if user is root
-if [ $(id -u) != "0" ]; then
+if [ "$(id -u)" != "0" ]; then
     echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
 fi
@@ -154,7 +154,7 @@ LNMP_Stack()
     LNMP_PHP_Opt
     Install_WebServer || return 1
     Creat_PHP_Tools || return 1
-    Add_Iptables_Rules
+    Add_Firewall_Rules
     Add_LNMP_Startup || return 1
     Check_LNMP_Install
 }
@@ -168,7 +168,7 @@ LNMPA_Stack()
     Install_PHP
     Install_WebServer || return 1
     Creat_PHP_Tools || return 1
-    Add_Iptables_Rules
+    Add_Firewall_Rules
     Add_LNMPA_Startup || return 1
     Check_LNMPA_Install
 }
@@ -181,7 +181,7 @@ LAMP_Stack()
     Dispatch "${Apache_Install}"
     Install_PHP
     Creat_PHP_Tools || return 1
-    Add_Iptables_Rules
+    Add_Firewall_Rules
     Add_LAMP_Startup || return 1
     Check_LAMP_Install
 }

@@ -17,7 +17,7 @@ MySQL_Sec_Setting()
     fi
 
     if [ -d "/etc/mysql" ]; then
-        mv /etc/mysql /etc/mysql.backup.$(date +%Y%m%d)
+        mv /etc/mysql "/etc/mysql.backup.$(date +%Y%m%d)"
     fi
 
     if command -v systemctl >/dev/null 2>&1; then
@@ -230,7 +230,7 @@ Install_MySQL_80()
         Install_Boost
         # Boost 准备完成后返回 MySQL 源码目录继续构建。
         cd "${cur_dir}/src/${Mysql_Ver}" || exit 1
-        mkdir build && cd build
+        mkdir build && cd build || return 1
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
         Make_Install || exit 1
     fi
@@ -347,7 +347,7 @@ Install_MySQL_84()
         Install_Boost
         # Boost 准备完成后返回 MySQL 源码目录继续构建。
         cd "${cur_dir}/src/${Mysql_Ver}" || exit 1
-        mkdir build && cd build
+        mkdir build && cd build || return 1
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
         Make_Install || exit 1
     fi

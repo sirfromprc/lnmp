@@ -2,7 +2,7 @@
 
 Install_PHP_Imap()
 {
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     echo "====== 正在安装 PHP IMAP 扩展 ======"
     Press_Start || return 1
 
@@ -45,7 +45,7 @@ Install_PHP_Imap()
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config --with-imap --with-imap-ssl --with-kerberos
     make && make install
-    cd -
+    cd - || return 1
     rm -rf php-${Cur_PHP_Version}
 
     cat >${PHP_Path}/conf.d/009-imap.ini<<EOF

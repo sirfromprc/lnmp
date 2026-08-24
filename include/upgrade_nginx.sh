@@ -34,7 +34,7 @@ Upgrade_Nginx()
     Press_Start || exit 1
 
     echo "============================ 检查文件 ============================"
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
     if ! Download_Verified nginx "${Nginx_Version}" \
          "https://nginx.org/download/nginx-${Nginx_Version}.tar.gz" \

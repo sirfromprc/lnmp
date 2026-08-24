@@ -253,7 +253,7 @@ DB_Download_Files()
     DB_Bin_Tarball=''
     [ "${DB_Kind}" = "none" ] && return 0
 
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
     case "${DB_Kind}" in
     mysql)

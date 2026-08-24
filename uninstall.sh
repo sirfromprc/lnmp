@@ -2,7 +2,7 @@
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 
 # Check if user is root
-if [ $(id -u) != "0" ]; then
+if [ "$(id -u)" != "0" ]; then
     echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
 fi
@@ -61,11 +61,14 @@ Stop_And_Backup_DB()
 # 卸载时需显式停止并取消开机自启，否则进程与自启项会留到下一次安装。
 Stop_Addons_Services()
 {
+    # 测试注入点，默认取实际系统路径；停服会真的执行，定向测试必须指到临时目录。
+    local initd="${LNMP_UNINST_INITD_DIR:-/etc/init.d}"
+    local unit_dir="${LNMP_UNINST_SYSTEMD_DIR:-/etc/systemd/system}"
     local svc
     for svc in redis memcached; do
-        [ -x "/etc/init.d/${svc}" ] || [ -s "/etc/systemd/system/${svc}.service" ] || continue
+        [ -x "${initd}/${svc}" ] || [ -s "${unit_dir}/${svc}.service" ] || continue
         echo "正在停止 addons 组件 ${svc}..."
-        [ -x "/etc/init.d/${svc}" ] && "/etc/init.d/${svc}" stop 2>/dev/null
+        [ -x "${initd}/${svc}" ] && "${initd}/${svc}" stop 2>/dev/null
         Remove_StartUp "${svc}"
     done
     return 0
@@ -75,9 +78,13 @@ Stop_Addons_Services()
 # 避免下次安装静默复用旧实例。
 Notice_Addons_Residue()
 {
+    # 程序目录的注入点与 include/firewall.sh 的 Block_Addons_Ports 同名，
+    # 一致性由 t/consistency.sh 的 V18 检查。
+    local redis_dir="${LNMP_FW_REDIS_DIR:-/usr/local/redis}"
+    local memcached_dir="${LNMP_FW_MEMCACHED_DIR:-/usr/local/memcached}"
     local left=''
-    [ -d /usr/local/redis ] && left="${left} redis"
-    [ -d /usr/local/memcached ] && left="${left} memcached"
+    [ -d "${redis_dir}" ] && left="${left} redis"
+    [ -d "${memcached_dir}" ] && left="${left} memcached"
     [ -n "${left}" ] || return 0
     Echo_Yellow "以下 addons 组件已停止并取消开机自启，程序目录仍保留：${left# }"
     Echo_Yellow "需要彻底删除请在源码目录执行：./addons.sh uninstall <组件名>"

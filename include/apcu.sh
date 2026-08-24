@@ -12,7 +12,7 @@ Install_Apcu()
         rm -f "${zend_ext}"
     fi
 
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
     # 支持的 PHP 8.x 使用 PHPNewApcu_Ver，并从 PECL 官方源下载。
     Download_Files https://pecl.php.net/get/${PHPNewApcu_Ver}.tgz ${PHPNewApcu_Ver}.tgz
@@ -27,7 +27,7 @@ Install_Apcu()
     cd ..
 
     # apcu_bc 仅适用于 PHP 7，PHP 8 无需安装。
-    rm -rf ${cur_dir}/src/${PHPNewApcu_Ver}
+    Clean_Src_Dir "${PHPNewApcu_Ver}"
 
     cat >${PHP_Path}/conf.d/009-apcu.ini<<EOF
 [apcu]

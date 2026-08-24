@@ -203,6 +203,22 @@ expect_empty C16 "并行编译任务数统一由 Build_Jobs 决定" 'make[^|;#]*
     fi
 }
 
+# T2 shellcheck
+#
+# lint.sh 的自定义规则只覆盖本项目的收敛不变式，抓不到引号缺失、word splitting、
+# cd 失败后继续执行这类通用 shell 缺陷，交给 shellcheck。规则裁剪与排除原因见
+# t/shellcheck.sh。未安装 shellcheck 时该脚本跳过并返回 0。
+[ -z "${only}" ] || [ "${only}" = "T2" ] && {
+    out=$(bash t/shellcheck.sh 2>&1)
+    if [ $? -eq 0 ]; then
+        printf 'ok   %-4s %s\n' T2 "shellcheck 通过"
+    else
+        printf 'FAIL %-4s %s\n' T2 "shellcheck 有告警"
+        echo "${out}" | sed 's/^/       /'
+        fail=1
+    fi
+}
+
 echo
 if [ ${fail} -eq 0 ]; then
     echo "全部通过"

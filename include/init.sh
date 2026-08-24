@@ -352,7 +352,7 @@ Ubuntu_Modify_Source()
         Ubuntu_Deadline plucky
     fi
     if [ "${CodeName}" != "" ]; then
-        \cp /etc/apt/sources.list /etc/apt/sources.list.$(date +"%Y%m%d")
+        \cp /etc/apt/sources.list "/etc/apt/sources.list.$(date +"%Y%m%d")"
         cat > /etc/apt/sources.list<<EOF
 deb ${OldReleasesURL} ${CodeName} main restricted universe multiverse
 deb ${OldReleasesURL} ${CodeName}-security main restricted universe multiverse
@@ -822,7 +822,7 @@ Deb_Dependent()
 Check_Download()
 {
     Echo_Blue "[+] 正在下载文件..."
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
     # 组件下载统一使用上游官方源。
     Download_Files https://ftp.gnu.org/gnu/libiconv/${Libiconv_Ver}.tar.gz ${Libiconv_Ver}.tar.gz
@@ -960,8 +960,8 @@ Install_Libiconv()
     ./configure --enable-static
     Make_Install || exit 1
     Ensure_Libiconv_Ldpath || exit 1
-    cd ${cur_dir}/src/
-    rm -rf ${cur_dir}/src/${Libiconv_Ver}
+    cd "${cur_dir}/src/" || return 1
+    Clean_Src_Dir "${Libiconv_Ver}"
 }
 
 # PHP 8 使用内置的 mhash 兼容 API，不依赖外部 libmhash 或 mcrypt。
@@ -988,15 +988,15 @@ Install_Freetype()
 EOF
     ldconfig
     ln -sfn /usr/local/freetype/include/freetype2/* /usr/include/
-    cd ${cur_dir}/src/
-    rm -rf ${cur_dir}/src/${Freetype_New_Ver}
+    cd "${cur_dir}/src/" || return 1
+    Clean_Src_Dir "${Freetype_New_Ver}"
 }
 
 Install_Curl()
 {
     if [[ ! -s /usr/local/curl/bin/curl || ! -s /usr/local/curl/lib/libcurl.so || ! -s /usr/local/curl/include/curl/curl.h ]]; then
         Echo_Blue "[+] 正在安装 ${Curl_Ver}"
-        cd ${cur_dir}/src
+        cd "${cur_dir}/src" || return 1
         Download_Files https://curl.se/download/${Curl_Ver}.tar.bz2 ${Curl_Ver}.tar.bz2
         Require_File "${Curl_Ver}.tar.bz2" "curl"
         Tar_Cd ${Curl_Ver}.tar.bz2 ${Curl_Ver}
@@ -1006,8 +1006,8 @@ Install_Curl()
             ./configure --prefix=/usr/local/curl --enable-ares --without-nss --with-zlib --with-ssl
         fi
         Make_Install || exit 1
-        cd ${cur_dir}/src/
-        rm -rf ${cur_dir}/src/${Curl_Ver}
+        cd "${cur_dir}/src/" || return 1
+        Clean_Src_Dir "${Curl_Ver}"
         ldconfig
     fi
     Remove_Error_Libcurl
@@ -1017,7 +1017,7 @@ Install_Pcre()
 {
     if ! command -v pcre-config >/dev/null 2>&1 || pcre-config --version | grep -vEqi '^8.'; then
         Echo_Blue "[+] 正在安装 ${Pcre_Ver}"
-        cd ${cur_dir}/src
+        cd "${cur_dir}/src" || return 1
         Download_Files https://downloads.sourceforge.net/pcre/${Pcre_Ver}.tar.bz2 ${Pcre_Ver}.tar.bz2
         Require_File "${Pcre_Ver}.tar.bz2" "PCRE"
         Tar_Cd ${Pcre_Ver}.tar.bz2
@@ -1028,13 +1028,13 @@ Install_Pcre()
 Install_Jemalloc()
 {
     Echo_Blue "[+] 正在安装 ${Jemalloc_Ver}"
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     Tar_Cd ${Jemalloc_Ver}.tar.bz2 ${Jemalloc_Ver}
     ./configure
     Make_Install || exit 1
     ldconfig
-    cd ${cur_dir}/src/
-    rm -rf ${cur_dir}/src/${Jemalloc_Ver}
+    cd "${cur_dir}/src/" || return 1
+    Clean_Src_Dir "${Jemalloc_Ver}"
     ln -sf /usr/local/lib/libjemalloc* /usr/lib/
 }
 
@@ -1046,7 +1046,7 @@ Install_TCMalloc()
         CFLAGS=-fPIC ./configure
         make CFLAGS=-fPIC
         make CFLAGS=-fPIC install
-        rm -rf ${cur_dir}/src/${Libunwind_Ver}
+        Clean_Src_Dir "${Libunwind_Ver}"
     fi
     Tar_Cd ${TCMalloc_Ver}.tar.gz ${TCMalloc_Ver}
     if [ "${Is_64bit}" = "y" ]; then
@@ -1056,8 +1056,8 @@ Install_TCMalloc()
     fi
     Make_Install || exit 1
     ldconfig
-    cd ${cur_dir}/src/
-    rm -rf ${cur_dir}/src/${TCMalloc_Ver}
+    cd "${cur_dir}/src/" || return 1
+    Clean_Src_Dir "${TCMalloc_Ver}"
     ln -sf /usr/local/lib/libtcmalloc* /usr/lib/
 }
 
@@ -1092,7 +1092,7 @@ Download_Boost()
             Echo_Red "预期能在 cmake/boost.cmake 中找到 SET(BOOST_PACKAGE_NAME ...)。"
             exit 1
         fi
-        cd ${cur_dir}/src/
+        cd "${cur_dir}/src/" || return 1
         boost_dot=$(echo "${Get_Boost_Ver}" | tr '_' '.')
         # 不同 MySQL 点版本可能要求不同的 Boost。通过上游 JSON 中的 SHA256
         # 校验动态解析的版本，并同时验证本地缓存，避免使用未核验的源码包。
@@ -1139,7 +1139,7 @@ Install_Openssl_New()
     else
         if [ ! -s /usr/local/openssl3/bin/openssl ] || /usr/local/openssl3/bin/openssl version | grep -v 'OpenSSL 3'; then
             Echo_Blue "[+] 正在安装 ${Openssl_New_Ver}"
-            cd ${cur_dir}/src
+            cd "${cur_dir}/src" || return 1
             Download_Files https://github.com/openssl/openssl/releases/download/${Openssl_New_Ver}/${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}.tar.gz
             [ $? -ne 0 ] && Download_Files https://www.openssl.org/source/${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}.tar.gz
             Require_File "${Openssl_New_Ver}.tar.gz" "OpenSSL 3"
@@ -1155,8 +1155,8 @@ Install_Openssl_New()
             ./config -fPIC --prefix=/usr/local/openssl3 --openssldir=/usr/local/openssl3
             make depend
             Make_Install || exit 1
-            cd ${cur_dir}/src/
-            rm -rf ${cur_dir}/src/${Openssl_New_Ver}
+            cd "${cur_dir}/src/" || return 1
+            Clean_Src_Dir "${Openssl_New_Ver}"
         fi
         ldconfig
         apache_with_ssl='--with-ssl=/usr/local/openssl3'
@@ -1167,15 +1167,15 @@ Install_Nghttp2()
 {
     if [[ ! -s /usr/local/nghttp2/lib/libnghttp2.so || ! -s /usr/local/nghttp2/include/nghttp2/nghttp2.h ]]; then
         Echo_Blue "[+] 正在安装 ${Nghttp2_Ver}"
-        cd ${cur_dir}/src
+        cd "${cur_dir}/src" || return 1
         Download_Files https://github.com/nghttp2/nghttp2/releases/download/v${Nghttp2_Ver#nghttp2-}/${Nghttp2_Ver}.tar.xz ${Nghttp2_Ver}.tar.xz
         Require_File "${Nghttp2_Ver}.tar.xz" "nghttp2"
         [[ -d "${Nghttp2_Ver}" ]] && rm -rf ${Nghttp2_Ver}
         Tar_Cd ${Nghttp2_Ver}.tar.xz ${Nghttp2_Ver}
         ./configure --prefix=/usr/local/nghttp2
         Make_Install || exit 1
-        cd ${cur_dir}/src/
-        rm -rf ${cur_dir}/src/${Nghttp2_Ver}
+        cd "${cur_dir}/src/" || return 1
+        Clean_Src_Dir "${Nghttp2_Ver}"
     fi
 }
 
@@ -1184,14 +1184,14 @@ Install_Libzip()
     if echo "${CentOS_Version}" | grep -Eqi "^7"  || echo "${RHEL_Version}" | grep -Eqi "^7"  || echo "${Aliyun_Version}" | grep -Eqi "^2" || echo "${Alibaba_Version}" | grep -Eqi "^2" || echo "${Oracle_Version}" | grep -Eqi "^7" || echo "${Anolis_Version}" | grep -Eqi "^7"; then
         if [ ! -s /usr/local/lib/libzip.so ]; then
             Echo_Blue "[+] 正在安装 ${Libzip_Ver}"
-            cd ${cur_dir}/src
+            cd "${cur_dir}/src" || return 1
             Download_Files https://libzip.org/download/${Libzip_Ver}.tar.xz ${Libzip_Ver}.tar.xz
             Require_File "${Libzip_Ver}.tar.xz" "libzip"
             Tar_Cd ${Libzip_Ver}.tar.xz ${Libzip_Ver}
             ./configure
             Make_Install || exit 1
-            cd ${cur_dir}/src/
-            rm -rf ${cur_dir}/src/${Libzip_Ver}
+            cd "${cur_dir}/src/" || return 1
+            Clean_Src_Dir "${Libzip_Ver}"
         fi
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
         ldconfig
@@ -1207,21 +1207,21 @@ CentOS_Lib_Opt()
 
     ulimit -v unlimited
 
-    if [ `grep -L "/lib"    '/etc/ld.so.conf'` ]; then
+    if [ -n "$(grep -L "/lib" '/etc/ld.so.conf')" ]; then
         echo "/lib" >> /etc/ld.so.conf
     fi
 
-    if [ `grep -L '/usr/lib'    '/etc/ld.so.conf'` ]; then
+    if [ -n "$(grep -L '/usr/lib' '/etc/ld.so.conf')" ]; then
         echo "/usr/lib" >> /etc/ld.so.conf
         #echo "/usr/lib/openssl/engines" >> /etc/ld.so.conf
     fi
 
-    if [ -d "/usr/lib64" ] && [ `grep -L '/usr/lib64'    '/etc/ld.so.conf'` ]; then
+    if [ -d "/usr/lib64" ] && [ -n "$(grep -L '/usr/lib64' '/etc/ld.so.conf')" ]; then
         echo "/usr/lib64" >> /etc/ld.so.conf
         #echo "/usr/lib64/openssl/engines" >> /etc/ld.so.conf
     fi
 
-    if [ `grep -L '/usr/local/lib'    '/etc/ld.so.conf'` ]; then
+    if [ -n "$(grep -L '/usr/local/lib' '/etc/ld.so.conf')" ]; then
         echo "/usr/local/lib" >> /etc/ld.so.conf
     fi
 
@@ -1279,19 +1279,19 @@ Deb_Lib_Opt()
 
     ulimit -v unlimited
 
-    if [ `grep -L "/lib"    '/etc/ld.so.conf'` ]; then
+    if [ -n "$(grep -L "/lib" '/etc/ld.so.conf')" ]; then
         echo "/lib" >> /etc/ld.so.conf
     fi
 
-    if [ `grep -L '/usr/lib'    '/etc/ld.so.conf'` ]; then
+    if [ -n "$(grep -L '/usr/lib' '/etc/ld.so.conf')" ]; then
         echo "/usr/lib" >> /etc/ld.so.conf
     fi
 
-    if [ -d "/usr/lib64" ] && [ `grep -L '/usr/lib64'    '/etc/ld.so.conf'` ]; then
+    if [ -d "/usr/lib64" ] && [ -n "$(grep -L '/usr/lib64' '/etc/ld.so.conf')" ]; then
         echo "/usr/lib64" >> /etc/ld.so.conf
     fi
 
-    if [ `grep -L '/usr/local/lib'    '/etc/ld.so.conf'` ]; then
+    if [ -n "$(grep -L '/usr/local/lib' '/etc/ld.so.conf')" ]; then
         echo "/usr/local/lib" >> /etc/ld.so.conf
     fi
 
@@ -1363,14 +1363,14 @@ Add_Swap()
     Swap_Total=$(awk '/SwapTotal/ {printf( "%d\n", $2 / 1024 )}' /proc/meminfo)
     if [[ "${Enable_Swap}" = "y" && "${Swap_Total}" -le 512 && ! -s /var/swapfile ]]; then
         echo "正在创建 Swap 文件..."
-        [ $(cat /proc/sys/vm/swappiness) -eq 0 ] && sysctl vm.swappiness=10
+        [ "$(cat /proc/sys/vm/swappiness)" -eq 0 ] && sysctl vm.swappiness=10
         dd if=/dev/zero of=/var/swapfile bs=1M count=${DD_Count}
         chmod 0600 /var/swapfile
         echo "正在启用 Swap..."
         /sbin/mkswap /var/swapfile
         /sbin/swapon /var/swapfile
         if [ $? -eq 0 ]; then
-            [ `grep -L '/var/swapfile'    '/etc/fstab'` ] && echo "/var/swapfile swap swap defaults 0 0" >>/etc/fstab
+            [ -n "$(grep -L '/var/swapfile' '/etc/fstab')" ] && echo "/var/swapfile swap swap defaults 0 0" >>/etc/fstab
             /sbin/swapon -s
         else
             rm -f /var/swapfile

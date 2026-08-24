@@ -22,7 +22,7 @@ Install_Nginx_Lua()
 {
     if [ "${Enable_Nginx_Lua}" = 'y' ]; then
         echo "正在为 Nginx 安装 Lua 支持..."
-        cd ${cur_dir}/src
+        cd "${cur_dir}/src" || return 1
         # Lua 组件从各项目的上游 GitHub 仓库获取。
         Download_Files https://github.com/openresty/luajit2/archive/refs/tags/v${Luajit_Ver#luajit2-}.tar.gz ${Luajit_Ver}.tar.gz
         Download_Files https://github.com/openresty/lua-nginx-module/archive/refs/tags/v${LuaNginxModule#lua-nginx-module-}.tar.gz ${LuaNginxModule}.tar.gz
@@ -49,8 +49,8 @@ Install_Nginx_Lua()
             Echo_Red "LuaJIT 安装失败。"
             exit 1
         fi
-        cd ${cur_dir}/src
-        rm -rf ${cur_dir}/src/${Luajit_Ver}
+        cd "${cur_dir}/src" || return 1
+        Clean_Src_Dir "${Luajit_Ver}"
         cat > /etc/ld.so.conf.d/luajit.conf<<EOF
 /usr/local/luajit/lib
 EOF
@@ -70,10 +70,10 @@ EOF
         # 纯 Lua 库安装失败时立即停止，避免 Nginx 启动后才暴露缺失文件。
         Tar_Cd ${LuaRestyCore}.tar.gz ${LuaRestyCore}
         make install PREFIX=/usr/local/nginx || { Echo_Red "安装 ${LuaRestyCore} 失败"; exit 1; }
-        cd -
+        cd - || exit 1
         Tar_Cd ${LuaRestyLrucache}.tar.gz ${LuaRestyLrucache}
         make install PREFIX=/usr/local/nginx || { Echo_Red "安装 ${LuaRestyLrucache} 失败"; exit 1; }
-        cd -
+        cd - || exit 1
 
         Install_Lua_Cjson
         Install_Lua_Resty_Libs
@@ -122,7 +122,7 @@ EOF
         else
             if [ "${Nginx_With_Pcre}" = "" ]; then
                 Nginx_Module_Lua="--with-ld-opt=-Wl,-rpath,/usr/local/luajit/lib --add-module=${cur_dir}/src/${LuaNginxModule} --add-module=${cur_dir}/src/${NgxDevelKit} --with-pcre=${cur_dir}/src/${Pcre_Ver} --with-pcre-jit"
-                cd ${cur_dir}/src
+                cd "${cur_dir}/src" || return 1
                 Download_Files https://downloads.sourceforge.net/pcre/${Pcre_Ver}.tar.bz2 ${Pcre_Ver}.tar.bz2
                 Require_File "${Pcre_Ver}.tar.bz2" "PCRE"
                 Tar_Cd ${Pcre_Ver}.tar.bz2
@@ -139,7 +139,7 @@ EOF
 # OpenResty 维护的分支与 LuaJIT 及 lua-resty 组件保持兼容。
 Install_Lua_Cjson()
 {
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     Download_Files https://github.com/openresty/lua-cjson/archive/refs/tags/${LuaCjson#lua-cjson-}.tar.gz ${LuaCjson}.tar.gz
     Require_File "${LuaCjson}.tar.gz" "lua-cjson"
     Tar_Cd ${LuaCjson}.tar.gz ${LuaCjson}
@@ -155,15 +155,15 @@ Install_Lua_Cjson()
         Echo_Red "lua-cjson 编译失败：未生成 cjson.so"
         Echo_Red "依赖 lua-cjson 的 Lua 代码会在运行时报 module 'cjson' not found。"
     fi
-    cd ${cur_dir}/src
-    rm -rf ${cur_dir}/src/${LuaCjson}
+    cd "${cur_dir}/src" || return 1
+    Clean_Src_Dir "${LuaCjson}"
 }
 
 # 安装纯 Lua 的 lua-resty 库。单个库不参与 Nginx 编译，下载失败时提示并继续。
 Install_Lua_Resty_Libs()
 {
     local lib repo
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
     for lib in "${LuaRestyLock}" "${LuaRestyString}" "${LuaRestyRedis}" \
                "${LuaRestyMysql}" "${LuaRestyUpload}" "${LuaRestyWebsocket}" \
@@ -178,8 +178,8 @@ Install_Lua_Resty_Libs()
         fi
         Tar_Cd ${lib}.tar.gz ${lib}
         make install PREFIX=/usr/local/nginx
-        cd ${cur_dir}/src
-        rm -rf ${cur_dir}/src/${lib}
+        cd "${cur_dir}/src" || return 1
+        Clean_Src_Dir "${lib}"
     done
 }
 
@@ -189,10 +189,10 @@ Install_Ngx_Brotli()
 {
     if [ "${Enable_Ngx_Brotli}" = 'y' ]; then
         Echo_Blue "[+] 正在安装 ngx_brotli... "
-        cd ${cur_dir}/src
+        cd "${cur_dir}/src" || return 1
         Download_Files https://github.com/google/ngx_brotli/archive/${NgxBrotli_Commit}.tar.gz ${NgxBrotli_Ver}.tar.gz
         Require_File "${NgxBrotli_Ver}.tar.gz" "ngx_brotli"
-        rm -rf ${cur_dir}/src/${NgxBrotli_Ver}
+        Clean_Src_Dir "${NgxBrotli_Ver}"
         tar zxf ${NgxBrotli_Ver}.tar.gz
 
         # ngx_brotli 只从 deps/brotli 固定结构查找依赖。映射系统头文件和库
@@ -245,10 +245,10 @@ Install_Ngx_CachePurge()
 {
     if [ "${Enable_Ngx_CachePurge}" = 'y' ]; then
         Echo_Blue "[+] 正在安装 ${NgxCachePurge_Ver}... "
-        cd ${cur_dir}/src
+        cd "${cur_dir}/src" || return 1
         Download_Files https://github.com/FRiCKLE/ngx_cache_purge/archive/${NgxCachePurge_Ver#ngx_cache_purge-}.tar.gz ${NgxCachePurge_Ver}.tar.gz
         Require_File "${NgxCachePurge_Ver}.tar.gz" "ngx_cache_purge"
-        rm -rf ${cur_dir}/src/${NgxCachePurge_Ver}
+        Clean_Src_Dir "${NgxCachePurge_Ver}"
         tar zxf ${NgxCachePurge_Ver}.tar.gz
         Ngx_CachePurge="--add-module=${cur_dir}/src/${NgxCachePurge_Ver}"
     fi
@@ -258,7 +258,7 @@ Install_Ngx_FancyIndex()
 {
     if [ "${Enable_Ngx_FancyIndex}" = 'y' ]; then
         echo "正在为 Nginx 安装 FancyIndex 模块..."
-        cd ${cur_dir}/src
+        cd "${cur_dir}/src" || return 1
         Download_Files https://github.com/aperezdc/ngx-fancyindex/releases/download/v${NgxFancyIndex_Ver#ngx-fancyindex-}/${NgxFancyIndex_Ver}.tar.xz ${NgxFancyIndex_Ver}.tar.xz
         Require_File "${NgxFancyIndex_Ver}.tar.xz" "ngx-fancyindex"
 
@@ -360,7 +360,7 @@ Install_Nginx()
     groupadd www
     useradd -s /sbin/nologin -g www www
 
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     Install_Nginx_Openssl
     Install_Nginx_Lua
     # 依赖缺失时模块不参与编译，Ngx_Brotli 置空使后续配置写入保持一致。
@@ -389,7 +389,7 @@ Install_Nginx()
 
     ln -sf /usr/local/nginx/sbin/nginx /usr/bin/nginx
 
-    cd ${cur_dir}
+    cd "${cur_dir}" || return 1
     # 单独安装 Nginx 时 Stack 是子命令名而不是栈名，必须按机器上已装的栈选模板，
     # 否则会用 LNMP 模板覆盖 LNMPA 的配置，并且不再提供反代包含文件。
     nginx_conf_stack="${Stack}"

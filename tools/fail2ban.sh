@@ -2,7 +2,7 @@
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 
 # 安装软件并写入系统配置需要 root 权限。
-if [ $(id -u) != "0" ]; then
+if [ "$(id -u)" != "0" ]; then
     echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
 fi
@@ -41,10 +41,10 @@ elif [ "${PM}" = "apt" ]; then
 fi
 
 echo "正在下载 fail2ban..."
-cd "${cur_dir}/src"
+cd "${cur_dir}/src" || exit 1
 Download_Files https://github.com/fail2ban/fail2ban/archive/refs/tags/1.1.0.tar.gz fail2ban-1.1.0.tar.gz
 Require_File "fail2ban-1.1.0.tar.gz" "fail2ban"
-tar zxf fail2ban-1.1.0.tar.gz && cd fail2ban-1.1.0
+tar zxf fail2ban-1.1.0.tar.gz && cd fail2ban-1.1.0 || exit 1
 echo "正在安装 fail2ban..."
 python3 setup.py install
 

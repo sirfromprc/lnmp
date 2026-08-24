@@ -17,7 +17,7 @@ Install_Apache_24()
         Install_Nghttp2
     fi
     Tar_Cd ${Apache_Ver}.tar.bz2 ${Apache_Ver}
-    cd srclib
+    cd srclib || return 1
     # APR 和 APR-util 经下载校验后复制到 httpd 的 srclib 目录参与编译。
 
     local apache_srclib="${PWD}"
@@ -40,8 +40,8 @@ Install_Apache_24()
         ./configure --prefix=/usr/local/apache --enable-mods-shared=most --enable-headers --enable-mime-magic --enable-proxy --enable-so --enable-rewrite --enable-ssl --with-ssl --enable-deflate --with-pcre --with-included-apr --with-apr-util --enable-mpms-shared=all --enable-remoteip
     fi
     Make_Install || exit 1
-    cd ${cur_dir}/src
-    rm -rf ${cur_dir}/src/${Apache_Ver}
+    cd "${cur_dir}/src" || return 1
+    Clean_Src_Dir "${Apache_Ver}"
 
     mv /usr/local/apache/conf/httpd.conf /usr/local/apache/conf/httpd.conf.bak
     if [ "${Stack}" = "lamp" ]; then

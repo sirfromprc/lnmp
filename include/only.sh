@@ -31,16 +31,16 @@ Install_Only_Nginx()
         "仅使用上游官方源码，并强制校验完整性"
     Press_Install
     Echo_Blue "安装依赖软件包..."
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     Get_Dist_Version
     Modify_Source
     Check_Host_Repo_Trust
     Nginx_Dependent
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     Download_Files https://downloads.sourceforge.net/pcre/${Pcre_Ver}.tar.bz2 ${Pcre_Ver}.tar.bz2
     Require_File "${Pcre_Ver}.tar.bz2" "PCRE"
     Install_Pcre
-    if [ `grep -L '/usr/local/lib'    '/etc/ld.so.conf'` ]; then
+    if [ -n "$(grep -L '/usr/local/lib' '/etc/ld.so.conf')" ]; then
         echo "/usr/local/lib" >> /etc/ld.so.conf
     fi
     ldconfig
@@ -48,11 +48,11 @@ Install_Only_Nginx()
     Require_File "${Nginx_Ver}.tar.gz" "nginx"
     Install_Nginx
     StartUp nginx
-    rm -rf ${cur_dir}/src/${Nginx_Ver}
+    Clean_Src_Dir "${Nginx_Ver}"
 
-    [[ -d "${cur_dir}/src/${Openssl_New_Ver}" ]] && rm -rf ${cur_dir}/src/${Openssl_New_Ver}
+    Clean_Src_Dir "${Openssl_New_Ver}"
     StartOrStop start nginx
-    Add_Iptables_Rules
+    Add_Firewall_Rules
     \cp ${cur_dir}/conf/index.html ${Default_Website_Dir}/index.html
     # 默认站点自带 favicon，避免浏览器请求在 error_log 中反复记录 404
     \cp ${cur_dir}/conf/favicon.ico ${Default_Website_Dir}/favicon.ico ||
@@ -146,7 +146,7 @@ Install_Database()
     fi
 
     # 独立安装数据库也必须限制 DB_Port 和 DB_X_Port；防火墙失败时安装返回非零。
-    Add_Iptables_Rules || return 1
+    Add_Firewall_Rules || return 1
 
     Clean_DB_Src_Dir
     Check_DB_Files

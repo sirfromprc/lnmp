@@ -2,7 +2,7 @@
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 
 # 修改站点限制配置并重启服务需要 root 权限。
-if [ $(id -u) != "0" ]; then
+if [ "$(id -u)" != "0" ]; then
     echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
 fi

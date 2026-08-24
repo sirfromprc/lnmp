@@ -17,7 +17,7 @@
 
 ```text
 bash -n
-ShellCheck
+t/shellcheck.sh
 t/lint.sh
 t/consistency.sh
 t/test_profile.sh
@@ -27,6 +27,10 @@ t/test_upstream.sh
 ```
 
 CI 同时检查单个脚本，以及版本号、配置映射和下载清单之间的一致性。
+
+ShellCheck 的检查范围与排除规则只写在 `t/shellcheck.sh` 一处，工作流不再自带一份
+参数；`t/lint.sh` 的 T2 调用的是同一个脚本。本机未装 shellcheck 时该脚本跳过并
+返回 0，CI 里先装再调用。
 
 ## 上游版本检查
 

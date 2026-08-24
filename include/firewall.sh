@@ -402,6 +402,43 @@ Check_SSH_Port_Policy()
 
 # 卸载时清除本包写入的全部防火墙内容：规则表、持久化文件、systemd 单元，
 # 以及历史版本追加到主配置的 include 行。firewalld 后端只提示，不改其配置。
+# addons 安装的 Redis 与 Memcached 不属于栈安装流程，重建防火墙时按实际配置
+# 补回阻断规则，否则重装栈会静默丢弃这两个端口的规则。
+#
+# tools/lnmp-fw.sh 是独立单文件命令，运行期不保证源码目录还在，无法 source
+# 本文件，因此 Resolve_Ports/Port_Redis/Port_Memcached 另有一份等价实现。
+# 两份的配置路径与解析表达式由 t/consistency.sh 的 V18 检查一致性。
+Block_Addons_Ports()
+{
+    # 测试注入点与 lnmp-fw 保持同名，默认取实际系统路径。
+    local conf="${LNMP_FW_REDIS_CONF:-/usr/local/redis/etc/redis.conf}"
+    local init="${LNMP_FW_MEMCACHED_INIT:-/etc/init.d/memcached}"
+    local redis_dir="${LNMP_FW_REDIS_DIR:-/usr/local/redis}"
+    local memcached_dir="${LNMP_FW_MEMCACHED_DIR:-/usr/local/memcached}"
+    local port
+
+    if [ -d "${redis_dir}" ] || [ -s "${conf}" ]; then
+        port=''
+        [ -s "${conf}" ] && port=$(awk '$1 == "port" { print $2; exit }' "${conf}" 2>/dev/null)
+        [ -n "${port}" ] || port="${Redis_Port:-}"
+        # port 0 表示只监听 unixsocket，没有 TCP 端口需要阻断。
+        if [ -n "${port}" ] && [ "${port}" != "0" ]; then
+            Firewall_Block tcp "${port}"
+        fi
+    fi
+
+    if [ -s "${init}" ] || [ -d "${memcached_dir}" ]; then
+        port=''
+        [ -s "${init}" ] && port=$(awk -F= '$1 == "PORT" { gsub(/"/, "", $2); print $2; exit }' "${init}" 2>/dev/null)
+        [ -n "${port}" ] || port="${Memcached_Port:-}"
+        if [ -n "${port}" ]; then
+            Firewall_Block tcp "${port}"
+            Firewall_Block udp "${port}"
+        fi
+    fi
+    return 0
+}
+
 Firewall_Purge()
 {
     local main_conf rc=0

@@ -40,7 +40,7 @@ Start_Upgrade_PHP()
     fi
 
     Press_Start || exit 1
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
     if ! Download_Verified php "${php_version}" \
          "https://www.php.net/distributions/php-${php_version}.tar.bz2" \
@@ -340,7 +340,7 @@ Upgrade_PHP_8x()
     Pear_Pecl_Set
     Install_Composer
 
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
 if [ "${Stack}" = "lnmp" ]; then
     echo "正在创建新的 php-fpm 配置文件..."

@@ -44,6 +44,7 @@ Apache_Dir="${LNMP_FW_APACHE_DIR:-/usr/local/apache}"
 Mysql_Dir="${LNMP_FW_MYSQL_DIR:-/usr/local/mysql}"
 Mariadb_Dir="${LNMP_FW_MARIADB_DIR:-/usr/local/mariadb}"
 Redis_Dir="${LNMP_FW_REDIS_DIR:-/usr/local/redis}"
+Memcached_Dir="${LNMP_FW_MEMCACHED_DIR:-/usr/local/memcached}"
 Pureftpd_Dir="${LNMP_FW_PUREFTPD_DIR:-/usr/local/pureftpd}"
 
 # lnmp.conf 路径由 --conf 或 source-dir 决定，解析结果存这里。
@@ -316,7 +317,7 @@ Resolve_Ports()
         Has_Redis='y'
         P_Redis=$(Port_Redis) || P_Redis=''
     fi
-    if [ -s "${Memcached_Init}" ]; then
+    if [ -s "${Memcached_Init}" ] || [ -d "${Memcached_Dir}" ]; then
         Has_Memcached='y'
         P_Memcached=$(Port_Memcached)
     fi

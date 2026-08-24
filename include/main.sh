@@ -17,6 +17,17 @@ PhpMyAdmin_Url_File="${PhpMyAdmin_Dir}/.access_url"
 # 源码编译数据库的磁盘下限，与安装前集中预检（include/precheck.sh）共用。
 DB_Source_Build_Min_Disk_MB=15360
 
+# 删除解压后的源码目录。版本变量为空时 ${cur_dir}/src/${变量} 退化为
+# ${cur_dir}/src，rm -rf 会清空整个源码目录，因此空值一律跳过。
+# 参数：$1 源码目录名（src 下的相对名）。
+Clean_Src_Dir()
+{
+    [ -n "$1" ] || return 0
+    [ -n "${cur_dir}" ] || return 0
+    rm -rf "${cur_dir}/src/$1"
+    return 0
+}
+
 # 源码编译 MySQL 需要较多内存、磁盘和时间。低于最低资源要求时停止并建议
 # 使用官方通用二进制；低于推荐内存时要求交互确认，非交互执行仅提示风险。
 Check_DB_Source_Build()

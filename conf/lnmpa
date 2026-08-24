@@ -2,7 +2,7 @@
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 
 # 管理系统服务和配置需要 root 权限。
-if [ $(id -u) != "0" ]; then
+if [ "$(id -u)" != "0" ]; then
     echo "错误：必须使用 root 用户运行此命令。"
     exit 1
 else
@@ -615,7 +615,7 @@ Del_App()
     # 账号可能仍拥有应用目录，交由用户决定是否删除。
     if id -u "${user}" >/dev/null 2>&1; then
         Echo_Yellow "是否删除运行账号 ${user}？(y/N) "
-        if read -r answer && [ "${answer}" = "y" -o "${answer}" = "Y" ]; then
+        if read -r answer && { [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; }; then
             userdel "${user}" >/dev/null 2>&1 \
                 && echo "已删除账号 ${user}。" \
                 || Echo_Yellow "删除账号 ${user} 失败，请手工处理。"
@@ -1272,12 +1272,22 @@ Add_VHost()
     Echo_Green "================================================"
 }
 
+# 列出 vhost 目录下的配置名。目录为空时 glob 不展开，用 -e 跳过字面量。
+List_VHost_Dir()
+{
+    local f
+    for f in "$1"/*.conf; do
+        [ -e "${f}" ] || continue
+        basename "${f}" .conf
+    done
+}
+
 List_VHost()
 {
     echo "Nginx 虚拟主机列表："
-    ls /usr/local/nginx/conf/vhost/ | grep ".conf$" | sed 's/.conf//g'
+    List_VHost_Dir /usr/local/nginx/conf/vhost
     echo "Apache 虚拟主机列表："
-    ls /usr/local/apache/conf/vhost/ | grep ".conf$" | sed 's/.conf//g'
+    List_VHost_Dir /usr/local/apache/conf/vhost
 }
 
 Del_VHost()
@@ -1834,6 +1844,8 @@ Read_Input()
 {
     local __var="$1" __what="$2"
     [ -n "${__what}" ] || printf -v __what '输入'
+    # 变量名由调用方给出，此处是有意的间接读取。
+    # shellcheck disable=SC2229
     if ! read -r "${__var}"; then
         echo
         Echo_Red "读取${__what}时遇到 EOF —— 标准输入已经没有内容了。"
@@ -1848,6 +1860,7 @@ Read_Secret()
 {
     local __var="$1" __what="$2"
     [ -n "${__what}" ] || printf -v __what '密码'
+    # shellcheck disable=SC2229
     if ! read -r -s "${__var}"; then
         echo
         Echo_Red "读取${__what}时遇到 EOF —— 标准输入已经没有内容了。"

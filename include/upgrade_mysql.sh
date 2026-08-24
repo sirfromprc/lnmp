@@ -41,7 +41,7 @@ Upgrade_MySQL80()
         Echo_Blue "正在使用源码升级 MySQL ${mysql_version}..."
         Tar_Cd ${mysql_src} mysql-${mysql_version}
         Install_Boost
-        mkdir build && cd build
+        mkdir build && cd build || return 1
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
         if ! Make_Install; then
             # 编译失败时列出旧程序、服务脚本和备份的人工恢复步骤。
@@ -157,7 +157,7 @@ Upgrade_MySQL84()
         Echo_Blue "正在使用源码升级 MySQL ${mysql_version}..."
         Tar_Cd ${mysql_src} mysql-${mysql_version}
         Install_Boost
-        mkdir build && cd build
+        mkdir build && cd build || return 1
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
         if ! Make_Install; then
             # 编译失败时列出旧程序、服务脚本和备份的人工恢复步骤。
@@ -419,7 +419,7 @@ Upgrade_MySQL()
     Press_Start || exit 1
 
     echo "============================ 检查文件 ============================"
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
     if [[ "${Bin}" = "y" && "${mysql_short_version}" = "8.0" ]]; then
         mysql8_glibc_ver="2.28"

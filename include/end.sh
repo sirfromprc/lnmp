@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-Add_Iptables_Rules()
+Add_Firewall_Rules()
 {
     local port
 
@@ -28,39 +28,6 @@ Add_Iptables_Rules()
     Block_Addons_Ports
 
     Firewall_Save
-}
-
-# addons 安装的 Redis 与 Memcached 不属于栈安装流程，重建防火墙时按实际配置
-# 补回阻断规则，否则重装栈会静默丢弃这两个端口的规则。
-Block_Addons_Ports()
-{
-    # 测试注入点与 lnmp-fw 保持同名，默认取实际系统路径。
-    local conf="${LNMP_FW_REDIS_CONF:-/usr/local/redis/etc/redis.conf}"
-    local init="${LNMP_FW_MEMCACHED_INIT:-/etc/init.d/memcached}"
-    local redis_dir="${LNMP_FW_REDIS_DIR:-/usr/local/redis}"
-    local memcached_dir="${LNMP_FW_MEMCACHED_DIR:-/usr/local/memcached}"
-    local port
-
-    if [ -d "${redis_dir}" ] || [ -s "${conf}" ]; then
-        port=''
-        [ -s "${conf}" ] && port=$(awk '$1 == "port" { print $2; exit }' "${conf}" 2>/dev/null)
-        [ -n "${port}" ] || port="${Redis_Port:-}"
-        # port 0 表示只监听 unixsocket，没有 TCP 端口需要阻断。
-        if [ -n "${port}" ] && [ "${port}" != "0" ]; then
-            Firewall_Block tcp "${port}"
-        fi
-    fi
-
-    if [ -s "${init}" ] || [ -d "${memcached_dir}" ]; then
-        port=''
-        [ -s "${init}" ] && port=$(awk -F= '$1 == "PORT" { gsub(/"/, "", $2); print $2; exit }' "${init}" 2>/dev/null)
-        [ -n "${port}" ] || port="${Memcached_Port:-}"
-        if [ -n "${port}" ]; then
-            Firewall_Block tcp "${port}"
-            Firewall_Block udp "${port}"
-        fi
-    fi
-    return 0
 }
 
 # 同步两个常用命令路径并固定权限，兼容 merged-/usr 与传统目录布局。
@@ -423,12 +390,12 @@ Clean_DB_Src_Dir()
 {
     echo "正在清理数据库源码目录..."
     [ "${DB_Kind}" = "none" ] && return 0
-    [ -n "${DB_Ver}" ] && rm -rf ${cur_dir}/src/${DB_Ver}
+    [ -n "${DB_Ver}" ] && rm -rf "${cur_dir}/src/${DB_Ver}"
 
     # Boost 清理范围由安装时解析的 Get_Boost_Ver 确定；非空检查可防止
     # 变量缺失时误删整个 src 目录。
     if [ "${DB_Needs_Boost}" = "y" ]; then
-        [ -n "${Get_Boost_Ver}" ] && [ -d "${cur_dir}/src/boost_${Get_Boost_Ver}" ] && rm -rf ${cur_dir}/src/boost_${Get_Boost_Ver}
+        [ -n "${Get_Boost_Ver}" ] && [ -d "${cur_dir}/src/boost_${Get_Boost_Ver}" ] && rm -rf "${cur_dir}/src/boost_${Get_Boost_Ver}"
     fi
     return 0
 }
@@ -436,26 +403,30 @@ Clean_DB_Src_Dir()
 Clean_PHP_Src_Dir()
 {
     echo "正在清理 PHP 源码目录..."
-    rm -rf ${cur_dir}/src/${Php_Ver}
+    [ -n "${Php_Ver}" ] && rm -rf "${cur_dir}/src/${Php_Ver}"
+    return 0
 }
 
 Clean_Web_Src_Dir()
 {
     echo "正在清理 Web 服务器源码目录..."
     if [ "${Stack}" = "lnmp" ]; then
-        rm -rf ${cur_dir}/src/${Nginx_Ver}*
+        [ -n "${Nginx_Ver}" ] && rm -rf "${cur_dir}/src/${Nginx_Ver}"*
     elif [ "${Stack}" = "lnmpa" ]; then
-        rm -rf ${cur_dir}/src/${Nginx_Ver}*
-        rm -rf ${cur_dir}/src/${Apache_Ver}
+        [ -n "${Nginx_Ver}" ] && rm -rf "${cur_dir}/src/${Nginx_Ver}"*
+        [ -n "${Apache_Ver}" ] && rm -rf "${cur_dir}/src/${Apache_Ver}"
     elif [ "${Stack}" = "lamp" ]; then
-        rm -rf ${cur_dir}/src/${Apache_Ver}
+        [ -n "${Apache_Ver}" ] && rm -rf "${cur_dir}/src/${Apache_Ver}"
     fi
 
-    [[ -d "${cur_dir}/src/${Openssl_New_Ver}" ]] && rm -rf ${cur_dir}/src/${Openssl_New_Ver}
-    [[ -d "${cur_dir}/src/${Pcre_Ver}" ]] && rm -rf ${cur_dir}/src/${Pcre_Ver}
-    [[ -d "${cur_dir}/src/${LuaNginxModule}" ]] && rm -rf ${cur_dir}/src/${LuaNginxModule}
-    [[ -d "${cur_dir}/src/${NgxDevelKit}" ]] && rm -rf ${cur_dir}/src/${NgxDevelKit}
-    [[ -d "${cur_dir}/src/${NgxFancyIndex_Ver}" ]] && rm -rf ${cur_dir}/src/${NgxFancyIndex_Ver}
+    # 版本变量为空时路径退化为 ${cur_dir}/src，-d 判断反而成立，
+    # 因此每项都先判非空。
+    local item
+    for item in "${Openssl_New_Ver}" "${Pcre_Ver}" "${LuaNginxModule}" \
+        "${NgxDevelKit}" "${NgxFancyIndex_Ver}"; do
+        [ -n "${item}" ] && [ -d "${cur_dir}/src/${item}" ] && rm -rf "${cur_dir}/src/${item}"
+    done
+    return 0
 }
 
 

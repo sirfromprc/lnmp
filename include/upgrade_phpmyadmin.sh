@@ -15,7 +15,7 @@ Upgrade_phpMyAdmin()
     Press_Start || exit 1
 
     echo "============================ 检查文件 ============================"
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
     if ! Download_Verified phpmyadmin "${phpMyAdmin_Version}" \
          "https://files.phpmyadmin.net/phpMyAdmin/${phpMyAdmin_Version}/phpMyAdmin-${phpMyAdmin_Version}-all-languages.tar.xz" \

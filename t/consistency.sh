@@ -573,6 +573,70 @@ check_v17()
     fi
 }
 
+# V18 addons 端口探测两份实现必须对齐
+#
+# include/firewall.sh 的 Block_Addons_Ports 与 tools/lnmp-fw.sh 的 Resolve_Ports
+# 读同一批配置文件、用同一套解析表达式。lnmp-fw 是独立单文件命令，运行期不保证
+# 源码目录还在，无法 source firewall.sh，只能各存一份。一旦分叉，安装期阻断的
+# 端口和 lnmp fw sync 重建出来的端口就不是同一个，且不会有任何报错。
+check_v18()
+{
+    local missing='' v
+
+    # 配置路径与测试注入点必须同名同默认值
+    for v in LNMP_FW_REDIS_CONF:/usr/local/redis/etc/redis.conf \
+             LNMP_FW_REDIS_DIR:/usr/local/redis \
+             LNMP_FW_MEMCACHED_INIT:/etc/init.d/memcached \
+             LNMP_FW_MEMCACHED_DIR:/usr/local/memcached; do
+        local name="${v%%:*}" path="${v#*:}"
+        grep -q "\${${name}:-${path}}" include/firewall.sh \
+            || missing="${missing} firewall.sh缺${name}"
+        grep -q "\${${name}:-${path}}" tools/lnmp-fw.sh \
+            || missing="${missing} lnmp-fw.sh缺${name}"
+    done
+
+    # 端口解析表达式必须一致
+    local redis_awk='$1 == "port" { print $2; exit }'
+    local memcached_awk='$1 == "PORT" { gsub(/"/, "", $2); print $2; exit }'
+    grep -qF "${redis_awk}" include/firewall.sh && grep -qF "${redis_awk}" tools/lnmp-fw.sh \
+        || missing="${missing} redis端口解析不一致"
+    grep -qF "${memcached_awk}" include/firewall.sh && grep -qF "${memcached_awk}" tools/lnmp-fw.sh \
+        || missing="${missing} memcached端口解析不一致"
+
+    # 安装判定必须都同时看程序目录与配置文件
+    grep -q 'Redis_Dir}" \] || \[ -s "${Redis_Conf}"' tools/lnmp-fw.sh \
+        || missing="${missing} lnmp-fw未按目录判定redis"
+    grep -q 'Memcached_Init}" \] || \[ -d "${Memcached_Dir}"' tools/lnmp-fw.sh \
+        || missing="${missing} lnmp-fw未按目录判定memcached"
+
+    # uninstall.sh 的 Notice_Addons_Residue 判定的是同两个程序目录，必须同名同默认值，
+    # 否则测试注入到临时目录后仍会读真实路径，判定结果随机器状态漂移。
+    grep -q '${LNMP_FW_REDIS_DIR:-/usr/local/redis}' uninstall.sh \
+        || missing="${missing} uninstall.sh未复用LNMP_FW_REDIS_DIR"
+    grep -q '${LNMP_FW_MEMCACHED_DIR:-/usr/local/memcached}' uninstall.sh \
+        || missing="${missing} uninstall.sh未复用LNMP_FW_MEMCACHED_DIR"
+
+    # Stop_Addons_Services 会真的执行 init 脚本，路径必须可注入
+    grep -q '${LNMP_UNINST_INITD_DIR:-/etc/init.d}' uninstall.sh \
+        || missing="${missing} Stop_Addons_Services的init.d路径不可注入"
+    grep -q '${LNMP_UNINST_SYSTEMD_DIR:-/etc/systemd/system}' uninstall.sh \
+        || missing="${missing} Stop_Addons_Services的systemd路径不可注入"
+
+    # Block_Addons_Ports 只应有一份定义，且在 firewall.sh
+    local n
+    n=$(grep -rl '^Block_Addons_Ports()' --include='*.sh' . 2>/dev/null \
+        | grep -v '^\./src/' | wc -l)
+    [ "${n}" = 1 ] || missing="${missing} Block_Addons_Ports定义了${n}份"
+    grep -q '^Block_Addons_Ports()' include/firewall.sh \
+        || missing="${missing} Block_Addons_Ports不在firewall.sh"
+
+    if [ -z "${missing}" ]; then
+        ok V18 "addons 端口与目录探测各实现一致，卸载路径可注入"
+    else
+        bad V18 "addons 探测已分叉或路径不可注入：${missing}"
+    fi
+}
+
 echo "=== 跨文件一致性检查 ==="
 check_v1
 check_v2
@@ -591,6 +655,7 @@ check_v14
 check_v15
 check_v16
 check_v17
+check_v18
 
 echo
 echo "通过 ${pass} 项，失败 ${fail} 项。"

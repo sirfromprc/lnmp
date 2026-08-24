@@ -2,7 +2,7 @@
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 
 # 安装软件并写入系统配置需要 root 权限。
-if [ $(id -u) != "0" ]; then
+if [ "$(id -u)" != "0" ]; then
     echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
 fi
@@ -41,7 +41,7 @@ elif [ "${PM}" = "apt" ]; then
 fi
 
 echo "正在下载 DenyHosts..."
-cd "${cur_dir}/src"
+cd "${cur_dir}/src" || exit 1
 Download_Files https://github.com/denyhosts/denyhosts/archive/refs/tags/v3.1.tar.gz denyhosts-3.1.tar.gz
 Require_File "denyhosts-3.1.tar.gz" "DenyHosts"
 Tar_Cd denyhosts-3.1.tar.gz denyhosts-3.1

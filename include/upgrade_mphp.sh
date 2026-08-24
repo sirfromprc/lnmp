@@ -83,7 +83,7 @@ Upgrade_Multiplephp()
     Echo_Blue "即将把 PHP ${Cur_MPHP_Version} 升级到 ${php_version}。"
 
     Press_Start || exit 1
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     # 从 php.net 官方下载并验证源码包。
     if ! Download_Verified php "${php_version}" \
          "https://www.php.net/distributions/php-${php_version}.tar.bz2" \
@@ -105,7 +105,7 @@ Upgrade_Multiplephp()
 # 多版本 PHP 8.x 的统一升级流程。
 Upgrade_MPHP8x()
 {
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
     Install_Libzip
     Echo_Blue "[+] 正在升级 PHP ${php_version}"
     Tar_Cd php-${php_version}.tar.bz2 php-${php_version}
@@ -188,7 +188,7 @@ Upgrade_MPHP8x()
     echo "正在修改 php.ini..."
     PHP_Ini_Tune "${Cur_MPHP_Path}/etc/php.ini" || exit 1
 
-    cd ${cur_dir}/src
+    cd "${cur_dir}/src" || return 1
 
     echo "正在创建新的 php-fpm 配置文件..."
     cat >${Cur_MPHP_Path}/etc/php-fpm.conf<<EOF

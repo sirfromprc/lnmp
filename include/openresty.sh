@@ -216,7 +216,7 @@ Install_OpenResty_Source()
     OR_Modules_Capture_Built || { Echo_Red "无法记录本次动态模块产物。"; return 1; }
     make install || { Echo_Red "OpenResty 安装失败。"; return 1; }
 
-    cd ${cur_dir}/src/
+    cd "${cur_dir}/src/" || return 1
     rm -rf "${cur_dir}/src/${OpenResty_Ver}"
 
     if [ ! -s /usr/local/openresty/nginx/sbin/nginx ]; then
