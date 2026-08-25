@@ -105,7 +105,9 @@ tmux 的等价命令为 `tmux new -s lnmp` 与 `tmux attach -t lnmp`。
 超过 10MB 时滚动为 `/root/lnmp-install.log.1`，只保留一份历史。
 
 依赖安装期间若系统自动更新占用了 dpkg 锁，apt 会等待至多 `APT_LOCK_TIMEOUT`
-（默认 300）秒而不是直接失败；仍未取得锁而失败的包会在本轮结束后重试一次。
+（默认 300）秒而不是直接失败；仍未取得锁而失败的包会在本轮结束后重试一次，
+重试前先等锁释放，最多再等 300 秒。撞锁时的完整处理见
+[9.12](#912-安装时卡在-waiting-for-cache-lock)。
 需要更长的等待时间时在命令前指定：
 
 ```bash
@@ -142,9 +144,16 @@ tar 包通常会保留可执行位，但 ZIP、面板上传或跨文件系统复
 
 ### 2.1 交互式安装
 
+建议先把系统更新装完，再执行安装脚本：
+
 ```bash
+apt update && apt upgrade      # Debian / Ubuntu
+dnf -y update                  # CentOS / RHEL（CentOS 7 用 yum -y update）
 bash install.sh lnmp
 ```
+
+VPS新装的Linux系统,一般是Lite版，待装更新多，系统自动更新会长时间占用包管理器锁，如果此时安装LNMP，LNMP安装脚本装依赖时要排队
+等待，处理办法见 [9.12](#912-安装时卡在-waiting-for-cache-lock)。可以先手动进行系统更新，防止自动更新占用包管理器锁。
 
 先提醒检查 `lnmp.conf`（端口、目录等）并要求输入 `y` 才继续，然后自动探测
 系统实际监听的 SSH 端口并按此放行；监听 22 时会提示改端口的步骤并要求再输入
@@ -165,41 +174,6 @@ bash install.sh lnmp
 
 安装 LAMP/LNMPA 时还会询问 Apache `ServerAdmin`，这里只接受合法邮箱；空白、斜杠、
 分号和配置片段会在写 Apache 配置前被拒绝。ACME 邮箱支持最长 63 位顶级域，三种栈规则一致。
-
-**系统自动更新占用包管理器锁**
-
-刚重装的 VPS 开机后会由 `apt-daily.timer` / `apt-daily-upgrade.timer` 触发
-`unattended-upgrades` 安装安全更新，期间独占 `/var/lib/dpkg/lock-frontend`。
-安装脚本装依赖时会撞上这把锁，输出 apt 自己的英文提示：
-
-```
-Waiting for cache lock: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 1472 (unattended-upgr)...
-```
-
-这不是报错，是 apt 在排队等待。锁空闲时脚本不会就此多说一句；只有真的撞上锁，
-才会先打印占用现象与当前持锁进程，再用中文说明成因、等待上限和可选的停用命令。
-每次 apt 调用最多等待 `APT_LOCK_TIMEOUT` 秒（默认 300），超时则该次调用失败；
-依赖包的重试轮会先等锁释放再重试，最多等 300 秒。
-
-自动更新跑完锁就会释放，安装继续。想避开等待，在**开始安装前**于另一终端停用计时器，
-装完再恢复：
-
-```bash
-systemctl stop apt-daily.timer apt-daily-upgrade.timer
-# 安装结束后
-systemctl start apt-daily.timer apt-daily-upgrade.timer
-```
-
-上述命令只停计时器，不会中断已经在跑的自动更新。确认它是否还在跑：
-
-```bash
-systemctl is-active apt-daily-upgrade.service
-ps -p 1472            # 换成提示里给出的 pid
-```
-
-已经在跑就等它自行结束，不要 `kill` 进程或删除锁文件 —— dpkg 写库中途被打断会留下
-半配置的包和损坏的数据库。安装脚本同样不会这么做。等待期间脚本会打印当前持锁进程，
-例如 `当前持锁进程：1472(unattended-upgr)`，据此判断是自动更新还是别人在手工操作。
 
 ### 2.1.1 安装中断或重新安装
 
@@ -4124,6 +4098,64 @@ lnmp perm uninit; echo "rc=$?"
 **不纳入核对的内容**：`/run` 下的运行时目录与 socket（每次启动重建）、
 用户自建站点目录（5.6 加固后属主本就不同）、已存在时项目不会改写的
 `/etc/nftables.conf`。
+
+[返回顶部](#top)
+
+---
+
+### 9.12 安装时卡在 Waiting for cache lock
+
+刚重装的 VPS 开机后会由 `apt-daily.timer` / `apt-daily-upgrade.timer` 触发
+`unattended-upgrades` 安装安全更新，期间独占 `/var/lib/dpkg/lock-frontend`。
+安装脚本装依赖时会撞上这把锁，输出 apt 自己的英文提示：
+
+```
+Waiting for cache lock: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 1472 (unattended-upgr)...
+```
+
+这不是报错，是 apt 在排队等待，等到锁就继续装。锁空闲时脚本不会就此多说一句；
+只有真的撞上锁，才会先打印占用现象与当前持锁进程，再用中文说明成因、等待上限
+和可选的停用命令。每次 apt 调用最多等待 `APT_LOCK_TIMEOUT` 秒（默认 300），
+超时则该次调用失败；依赖包的重试轮会先等锁释放再重试，最多等 300 秒。
+
+自动更新跑完锁就会释放，安装继续。想避开等待，在**开始安装前**于另一终端停用计时器，
+装完再恢复：
+
+```bash
+systemctl stop apt-daily.timer apt-daily-upgrade.timer   # Debian / Ubuntu
+systemctl stop dnf-automatic.timer                       # CentOS / RHEL
+# 安装结束后把停掉的计时器再启回来
+systemctl start apt-daily.timer apt-daily-upgrade.timer
+systemctl start dnf-automatic.timer
+```
+
+脚本对 yum 系检查的是 `dnf-automatic.timer`、`dnf-automatic-install.timer` 与
+`dnf-automatic-download.timer`，提示里只列出其中处于 active 的单元，停用和恢复命令
+按实际列出的单元给。
+
+上述命令只停计时器，不会中断已经在跑的自动更新。确认它是否还在跑，以及这台机器
+是否真的开了自动更新：
+
+```bash
+systemctl is-active apt-daily-upgrade.service
+ps -p 1472                              # 换成提示里给出的 pid
+cat /etc/apt/apt.conf.d/20auto-upgrades  # Debian / Ubuntu：决定自动更新是否真的干活
+grep apply_updates /etc/dnf/automatic.conf # CentOS / RHEL：同样的开关
+systemctl list-timers 'apt-daily*' 'dnf-automatic*' --all  # 下次触发时间
+```
+
+已经在跑就等它自行结束，不要 `kill` 进程或删除锁文件 —— dpkg 写库中途被打断会留下
+半配置的包和损坏的数据库。安装脚本同样不会这么做。等待期间脚本会打印当前持锁进程，
+例如 `当前持锁进程：1472(unattended-upgr)`，据此判断是自动更新还是别人在手工操作。
+
+`/usr/lib/apt/apt.systemd.daily` 在 `APT::Periodic::*` 全为 0 时直接退出，全程不碰锁。
+这些值来自 `20auto-upgrades`：文件不存在或值为 0 的机器（Debian 默认）从不因此撞锁；
+值为 1 的机器（多数 VPS 镜像、Ubuntu）才会真的下载并安装更新。
+
+最省事的办法是安装前先 `apt update && apt upgrade` 把更新装完（见 2.1 开头）。
+安装脚本自身只执行 `apt-get update` 与 `apt-get install`，不会替你执行 `apt upgrade`
+或 `dist-upgrade`。注意手动 `apt update` 并不能让自动更新跳过 —— `apt.systemd.daily`
+判断间隔用的是它自己维护的 `/var/lib/apt/periodic/update-stamp`，手动执行不写该文件。
 
 [返回顶部](#top)
 
