@@ -584,31 +584,93 @@ Apt_Get()
     apt-get -o DPkg::Lock::Timeout="${APT_LOCK_TIMEOUT}" "$@"
 }
 
+# 输出当前包管理器的锁文件列表，供占用检测与持锁进程识别共用。
+PM_Lock_Files()
+{
+    if [ "${PM}" = "yum" ]; then
+        echo /var/run/yum.pid /var/lib/rpm/.rpm.lock
+    else
+        echo /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock
+    fi
+}
+
 PM_Lock_Busy()
 {
     # fuser 直接检查锁文件是否由进程持有。
     local f
-    if [ "${PM}" = "yum" ]; then
-        for f in /var/run/yum.pid /var/lib/rpm/.rpm.lock; do
-            [ -e "${f}" ] || continue
-            fuser "${f}" >/dev/null 2>&1 && return 0
-        done
-        # 旧版 yum 可能只保留 pid 文件，因此同时检查对应进程是否存活。
-        if [ -s /var/run/yum.pid ]; then
-            kill -0 "$(cat /var/run/yum.pid 2>/dev/null)" 2>/dev/null && return 0
-        fi
-    else
-        for f in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
-            [ -e "${f}" ] || continue
-            fuser "${f}" >/dev/null 2>&1 && return 0
-        done
+    for f in $(PM_Lock_Files); do
+        [ -e "${f}" ] || continue
+        fuser "${f}" >/dev/null 2>&1 && return 0
+    done
+    # 旧版 yum 可能只保留 pid 文件，因此同时检查对应进程是否存活。
+    if [ "${PM}" = "yum" ] && [ -s /var/run/yum.pid ]; then
+        kill -0 "$(cat /var/run/yum.pid 2>/dev/null)" 2>/dev/null && return 0
     fi
     return 1
 }
 
+# 输出持锁进程的 pid 与命令名，无进程持锁或无法识别时返回 1。
+PM_Lock_Holder()
+{
+    local f pid seen='' out=''
+
+    command -v fuser >/dev/null 2>&1 || return 1
+    for f in $(PM_Lock_Files); do
+        [ -e "${f}" ] || continue
+        for pid in $(fuser "${f}" 2>/dev/null); do
+            case " ${seen} " in *" ${pid} "*) continue ;; esac
+            seen="${seen} ${pid}"
+            if [ -r "/proc/${pid}/comm" ]; then
+                out="${out} ${pid}($(cat "/proc/${pid}/comm" 2>/dev/null))"
+            else
+                out="${out} ${pid}"
+            fi
+        done
+    done
+    [ -n "${out}" ] || return 1
+    printf '%s' "${out# }"
+}
+
+# 锁被占用时说明自动更新计时器的状态与处置办法，同一次运行只提示一次。
+# 仅提示，不停用任何服务，也不改变等待时长。
+Warn_Auto_Upgrade()
+{
+    local t timers active=''
+
+    # 依赖安装阶段可能多次等锁，同一次运行只提示一次。
+    [ -n "${PM_Auto_Upgrade_Warned:-}" ] && return 0
+    command -v systemctl >/dev/null 2>&1 || return 0
+    if [ "${PM}" = "yum" ]; then
+        timers='dnf-automatic.timer dnf-automatic-install.timer dnf-automatic-download.timer'
+    else
+        timers='apt-daily.timer apt-daily-upgrade.timer'
+    fi
+    for t in ${timers}; do
+        systemctl is-active --quiet "${t}" 2>/dev/null && active="${active} ${t}"
+    done
+    [ -n "${active}" ] || return 0
+    PM_Auto_Upgrade_Warned=y
+
+    Echo_Yellow "系统自动更新计时器处于启用状态：${active# }，锁多半由它触发的自动更新持有。"
+    if [ "${PM}" = "yum" ]; then
+        Echo_Yellow "dnf 需等其结束才能继续。"
+    else
+        Echo_Yellow "后续 apt 调用会打印 Waiting for cache lock 排队等待，"
+        Echo_Yellow "每次调用最多等 ${APT_LOCK_TIMEOUT:-300} 秒，超时则该次调用失败。"
+    fi
+    Echo_Yellow "刚重装的系统首轮自动更新耗时较长，请耐心等待，不要强行终止或删除锁文件。"
+    Echo_Yellow "如需避免后续再被占用，可在另一终端停用计时器："
+    Echo_Yellow "  systemctl stop${active}"
+    Echo_Yellow "安装结束后恢复："
+    Echo_Yellow "  systemctl start${active}"
+    Echo_Yellow "停用只对尚未触发的计时器有效，不会中断正在跑的自动更新。"
+}
+
+# Wait_PM [nofail]：等待包管理器锁释放。
+# 默认在超时后中止安装；nofail 时只返回 1，由调用方决定是否继续。
 Wait_PM()
 {
-    local waited=0
+    local waited=0 holder nofail="${1:-}"
 
     if ! command -v fuser >/dev/null 2>&1; then
         Echo_Yellow "未找到 fuser（psmisc），跳过包管理器锁检测。"
@@ -619,13 +681,17 @@ Wait_PM()
     PM_Lock_Busy || return 0
 
     Echo_Yellow "检测到包管理器正在被占用（通常是系统自动更新），等待其结束..."
+    holder=$(PM_Lock_Holder) && Echo_Yellow "当前持锁进程：${holder}"
+    Warn_Auto_Upgrade
     while PM_Lock_Busy; do
         if [ ${waited} -ge ${PM_Lock_Wait_Sec} ]; then
-            Echo_Red "等待 ${PM_Lock_Wait_Sec} 秒后包管理器仍被占用，中止安装。"
-            Echo_Red "请确认没有 unattended-upgrades / dnf-automatic 或其他管理员的操作在跑，"
-            Echo_Red "结束后重新执行本脚本。"
+            Echo_Red "等待 ${PM_Lock_Wait_Sec} 秒后包管理器仍被占用。"
+            holder=$(PM_Lock_Holder) && Echo_Red "当前持锁进程：${holder}"
+            Echo_Red "请确认没有 unattended-upgrades / dnf-automatic 或其他管理员的操作在跑。"
             Echo_Red "（本脚本不会强杀包管理进程，也不会删除锁文件 ——"
             Echo_Red "  在 dpkg/rpm 写库中途被打断会留下半配置的包和损坏的数据库。）"
+            [ "${nofail}" = "nofail" ] && return 1
+            Echo_Red "中止安装，请在自动更新结束后重新执行本脚本。"
             exit 1
         fi
         sleep 5

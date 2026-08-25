@@ -790,9 +790,10 @@ Deb_Dependent()
     fi
 
     # 首轮失败多为中途被其他 apt 进程抢占锁，重装一轮再判定。
-    # Apt_Get 已带锁等待超时，此处不再自行等待，仅给一次重试机会。
+    # 重试前先等锁释放（等不到也照常重试），避免抢锁期间两轮都失败。
     if [ -n "${failed}" ]; then
         Echo_Yellow "下列依赖包首次安装失败，重试一次：${failed# }"
+        Wait_PM nofail
         retry="${failed# }"
         failed=""
         for pkg in ${retry}; do

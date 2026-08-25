@@ -166,6 +166,41 @@ bash install.sh lnmp
 安装 LAMP/LNMPA 时还会询问 Apache `ServerAdmin`，这里只接受合法邮箱；空白、斜杠、
 分号和配置片段会在写 Apache 配置前被拒绝。ACME 邮箱支持最长 63 位顶级域，三种栈规则一致。
 
+**系统自动更新占用包管理器锁**
+
+刚重装的 VPS 开机后会由 `apt-daily.timer` / `apt-daily-upgrade.timer` 触发
+`unattended-upgrades` 安装安全更新，期间独占 `/var/lib/dpkg/lock-frontend`。
+安装脚本装依赖时会撞上这把锁，输出 apt 自己的英文提示：
+
+```
+Waiting for cache lock: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 1472 (unattended-upgr)...
+```
+
+这不是报错，是 apt 在排队等待。锁空闲时脚本不会就此多说一句；只有真的撞上锁，
+才会先打印占用现象与当前持锁进程，再用中文说明成因、等待上限和可选的停用命令。
+每次 apt 调用最多等待 `APT_LOCK_TIMEOUT` 秒（默认 300），超时则该次调用失败；
+依赖包的重试轮会先等锁释放再重试，最多等 300 秒。
+
+自动更新跑完锁就会释放，安装继续。想避开等待，在**开始安装前**于另一终端停用计时器，
+装完再恢复：
+
+```bash
+systemctl stop apt-daily.timer apt-daily-upgrade.timer
+# 安装结束后
+systemctl start apt-daily.timer apt-daily-upgrade.timer
+```
+
+上述命令只停计时器，不会中断已经在跑的自动更新。确认它是否还在跑：
+
+```bash
+systemctl is-active apt-daily-upgrade.service
+ps -p 1472            # 换成提示里给出的 pid
+```
+
+已经在跑就等它自行结束，不要 `kill` 进程或删除锁文件 —— dpkg 写库中途被打断会留下
+半配置的包和损坏的数据库。安装脚本同样不会这么做。等待期间脚本会打印当前持锁进程，
+例如 `当前持锁进程：1472(unattended-upgr)`，据此判断是自动更新还是别人在手工操作。
+
 ### 2.1.1 安装中断或重新安装
 
 安装中断后直接重跑同一条命令，不需要先卸载：
