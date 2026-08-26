@@ -3494,6 +3494,10 @@ Vhost_Has_Domain()
 # acme.sh 插件目录与账户配置，安装位置固定。
 Acme_DNSAPI_Dir="/usr/local/acme.sh/dnsapi"
 Acme_Account_Conf="/usr/local/acme.sh/account.conf"
+# 按域名保存的 DNS API 凭据目录，acme.sh 续期时由 account.conf 的加载块读取。
+Acme_DNS_Cred_Dir="/usr/local/acme.sh/lnmp-dnscred"
+# 本次交互确定的凭据，元素形如 NAME=VALUE，签发成功后写入凭据文件。
+Acme_DNS_Cred_Values=()
 
 # 解析 acme.sh dnsapi 插件头部的 dns_<provider>_info 元数据，取出所需变量。
 # 输出每行：组号<TAB>变量名<TAB>required|optional<TAB>说明
@@ -3527,12 +3531,181 @@ Parse_DNS_API_Options()
 }
 
 # 读取 acme.sh account.conf 中已保存的凭据，用于提示可直接沿用。
+# 新式插件存 SAVED_<KEY>，旧式插件（如 dns_nsone）直接存 <KEY>，两种都要认。
 Acme_Saved_Conf_Value()
 {
-    local key="$1" conf="${Acme_Account_Conf}"
+    local key="$1" conf="${Acme_Account_Conf}" val
 
     [ -s "${conf}" ] || return 0
-    sed -n "s/^SAVED_${key}='\(.*\)'\$/\1/p" "${conf}" | tail -n 1
+    val=$(sed -n "s/^SAVED_${key}='\(.*\)'\$/\1/p" "${conf}" | tail -n 1)
+    [ -n "${val}" ] || val=$(sed -n "s/^${key}='\(.*\)'\$/\1/p" "${conf}" | tail -n 1)
+    printf '%s' "${val}"
+}
+
+# acme.sh 每次运行都会 source account.conf，旧式插件保存的裸 <KEY> 行会覆盖
+# 本次 export 的新凭据。换凭据时先删掉该行，同一服务商的第二个账号才生效。
+Acme_Clear_Conf_Key()
+{
+    local key="$1" conf="${Acme_Account_Conf}" tmp
+
+    [ -s "${conf}" ] || return 0
+    grep -q "^${key}=" "${conf}" || return 0
+    tmp=$(mktemp "${conf}.XXXXXX") || return 1
+    if ! sed "/^${key}=/d" "${conf}" > "${tmp}"; then
+        rm -f "${tmp}"
+        return 1
+    fi
+    chmod --reference="${conf}" "${tmp}" 2>/dev/null || chmod 600 "${tmp}"
+    mv -f "${tmp}" "${conf}" || { rm -f "${tmp}"; return 1; }
+}
+
+# 凭据文件按证书主域名命名，泛域名的 * 转成 _wildcard. 避免路径被展开。
+Acme_DNS_Cred_File()
+{
+    local main="$1"
+
+    [ -n "${main}" ] || return 1
+    printf '%s/%s.conf' "${Acme_DNS_Cred_Dir}" "${main/#\*./_wildcard.}"
+}
+
+# 写入某个域名的凭据文件，参数为主域名加若干 NAME=VALUE。
+# 值用单引号包裹，内部单引号按 shell 规则转义；不输出凭据内容。
+Acme_DNS_Cred_Write()
+{
+    local main="$1" file tmp item name val
+    shift
+
+    [ "$#" -gt 0 ] || return 0
+    file=$(Acme_DNS_Cred_File "${main}") || return 1
+    mkdir -p "${Acme_DNS_Cred_Dir}" || return 1
+    chmod 700 "${Acme_DNS_Cred_Dir}" || return 1
+    tmp=$(mktemp "${Acme_DNS_Cred_Dir}/cred.XXXXXX") || return 1
+    chmod 600 "${tmp}"
+    {
+        printf '# lnmp 按域名保存的 DNS API 凭据，由 lnmp dnsssl 维护。\n'
+        for item in "$@";do
+            name="${item%%=*}"
+            val="${item#*=}"
+            [ -n "${name}" ] || continue
+            printf "%s='%s'\n" "${name}" "${val//\'/\'\\\'\'}"
+        done
+    } > "${tmp}" || { rm -f "${tmp}"; return 1; }
+    mv -f "${tmp}" "${file}" || { rm -f "${tmp}"; return 1; }
+}
+
+# account.conf 末尾的加载块正文，必须是 POSIX sh：该文件由 acme.sh 用 sh 执行。
+# 块内赋值一律缩进，acme.sh 的 _setopt 会 sed 改写顶格的 KEY= 行。
+Acme_DNS_Cred_Block_Text()
+{
+    cat <<EOF
+# LNMP-DNSCRED-BEGIN 由 lnmp 维护，勿手工编辑
+if [ -n "\${Le_Domain-}" ]; then
+  case "\$Le_Domain" in
+    '*.'*) _lnmp_dc="_wildcard.\${Le_Domain#\\*.}" ;;
+    *) _lnmp_dc="\$Le_Domain" ;;
+  esac
+  if [ -f "${Acme_DNS_Cred_Dir}/\$_lnmp_dc.conf" ]; then
+    . "${Acme_DNS_Cred_Dir}/\$_lnmp_dc.conf"
+  fi
+  unset _lnmp_dc
+fi
+# LNMP-DNSCRED-END
+EOF
+}
+
+# 预置本次服务商的全部凭据变量行，再把加载块重建到 account.conf 末尾。
+# acme.sh 每次运行都 source account.conf，renew 在 source 前就设好 Le_Domain，
+# issue 不设，因此块只在续期时生效，交互签发仍用当场输入的凭据。
+# 预置的作用：_setopt 只对不存在的 key 追加到文件尾，key 提前存在就只会原地替换，
+# 不会排到加载块后面把按域名加载的值覆盖掉。
+Acme_DNS_Cred_Block_Sync()
+{
+    local provider="${1:-}" conf="${Acme_Account_Conf}" tmp opts g name req desc
+    local -a preset=()
+
+    [ -s "${conf}" ] || return 0
+    if [ -n "${provider}" ]; then
+        opts=$(Parse_DNS_API_Options "${Acme_DNSAPI_Dir}/dns_${provider}.sh")
+        while IFS=$'\t' read -r g name req desc;do
+            [ -n "${name}" ] || continue
+            grep -q "^${name}=" "${conf}" || preset+=("${name}")
+        done <<EOF
+${opts}
+EOF
+    fi
+
+    tmp=$(mktemp "${conf}.XXXXXX") || return 1
+    {
+        sed '/^# LNMP-DNSCRED-BEGIN/,/^# LNMP-DNSCRED-END$/d' "${conf}"
+        for name in "${preset[@]}";do
+            printf "%s=''\n" "${name}"
+        done
+        Acme_DNS_Cred_Block_Text
+    } > "${tmp}" || { rm -f "${tmp}"; return 1; }
+    chmod --reference="${conf}" "${tmp}" 2>/dev/null || chmod 600 "${tmp}"
+    mv -f "${tmp}" "${conf}" || { rm -f "${tmp}"; return 1; }
+}
+
+# 换凭据前，把 account.conf 里此刻的凭据固化给已用同一服务商签发、
+# 但还没有凭据文件的证书，否则它们续期时会拿到新账号的凭据。
+Acme_DNS_Cred_Snapshot()
+{
+    local provider="${1:-}" opts g name req desc val has_val='n'
+    local main rest file conf webroot
+    local -a values=()
+
+    [ -n "${provider}" ] || return 0
+    [ -s /usr/local/acme.sh/acme.sh ] || return 0
+    opts=$(Parse_DNS_API_Options "${Acme_DNSAPI_Dir}/dns_${provider}.sh")
+    [ -n "${opts}" ] || return 0
+
+    while IFS=$'\t' read -r g name req desc;do
+        [ -n "${name}" ] || continue
+        val=$(Acme_Saved_Conf_Value "${name}")
+        case "${val}" in __ACME_BASE64__START_*) val='' ;; esac
+        [ -n "${val}" ] && has_val='y'
+        values+=("${name}=${val}")
+    done <<EOF
+${opts}
+EOF
+    # 一个值都没有说明此前没用过该服务商，写空文件反而会挡住全局凭据。
+    [ "${has_val}" = 'y' ] || return 0
+
+    while IFS='|' read -r main rest;do
+        [ -n "${main}" ] && [ "${main}" != "Main_Domain" ] || continue
+        file=$(Acme_DNS_Cred_File "${main}") || continue
+        [ -e "${file}" ] && continue
+        conf="${Acme_Cert_Home}/${main}_ecc/${main}.conf"
+        [ -s "${conf}" ] || continue
+        webroot=$(sed -n "s/^Le_Webroot='\(.*\)'\$/\1/p" "${conf}" | tail -n 1)
+        [ "${webroot}" = "dns_${provider}" ] || continue
+        if Acme_DNS_Cred_Write "${main}" "${values[@]}";then
+            echo "已为已有证书 ${main} 固化当前 ${provider} 凭据，其续期不受本次更换影响。"
+        else
+            Echo_Yellow "为 ${main} 固化 ${provider} 凭据失败，该证书续期可能受本次更换影响。"
+            echo
+        fi
+    done <<EOF
+$(/usr/local/acme.sh/acme.sh ${acme_sh_sudo} --list --listraw 2>/dev/null)
+EOF
+    return 0
+}
+
+# 签发成功后保存本次凭据，并把加载块重新挪到 account.conf 末尾：
+# 插件首次保存某个 key 时 acme.sh 会把它追加到文件尾，排到加载块后面。
+Acme_DNS_Cred_Save()
+{
+    local main="$1" provider="${2:-}"
+
+    [ -n "${main}" ] || return 0
+    [ "${#Acme_DNS_Cred_Values[@]}" -gt 0 ] || return 0
+    if ! Acme_DNS_Cred_Write "${main}" "${Acme_DNS_Cred_Values[@]}";then
+        Echo_Yellow "保存 ${main} 的 DNS API 凭据失败，到期前需重新执行本命令续期。"
+        echo
+        return 1
+    fi
+    Acme_DNS_Cred_Block_Sync "${provider}"
+    return 0
 }
 
 # 交互获取 DNS 服务商 API 凭据并导出，避免用户手工 export。
@@ -3541,6 +3714,7 @@ Prompt_DNS_API_Credentials()
 {
     local provider="${1:-}" plugin opts group g name req desc hint saved val
 
+    Acme_DNS_Cred_Values=()
     [ -z "${provider}" ] && return 0
     plugin="${Acme_DNSAPI_Dir}/dns_${provider}.sh"
     opts=$(Parse_DNS_API_Options "${plugin}")
@@ -3567,7 +3741,12 @@ Prompt_DNS_API_Credentials()
 
     echo "请输入 ${provider} 的 API 凭据，acme.sh 会保存供续期复用。"
     while IFS=$'\t' read -r g name req desc <&3; do
-        [ "${g}" = "${group}" ] || continue
+        if [ "${g}" != "${group}" ];then
+            # 未选中那组必须显式置空，否则续期时会读到别的域名留下的同名凭据，
+            # 插件按变量是否为空挑分支，会走错到另一套凭据上。
+            Acme_DNS_Cred_Values+=("${name}=")
+            continue
+        fi
         hint="可留空"
         # acme.sh 元数据把 CF_Account_ID 标为必填，实际只用于缩小 zone 查询范围，可留空。
         if [ "${provider}" = "cf" ] && [ "${name}" = "CF_Account_ID" ]; then
@@ -3575,6 +3754,8 @@ Prompt_DNS_API_Credentials()
             hint="CF_Token 有区域权限可留空"
         fi
         saved=$(Acme_Saved_Conf_Value "${name}")
+        # base64 保存的值直接 source 拿到的是编码串，不能当作可沿用值。
+        case "${saved}" in __ACME_BASE64__START_*) saved='' ;; esac
         while :;do
             if [ -n "${saved}" ]; then
                 Echo_Yellow "${name}（${desc}）[已保存，回车沿用]: "
@@ -3586,11 +3767,17 @@ Prompt_DNS_API_Credentials()
             Read_Input val "${name}"
             if [ -n "${val}" ]; then
                 export "${name}=${val}"
+                Acme_Clear_Conf_Key "${name}"
+                Acme_DNS_Cred_Values+=("${name}=${val}")
+                if [ -n "${saved}" ] && [ "${val}" != "${saved}" ]; then
+                    Echo_Yellow "${name} 已更换，本次凭据按域名单独保存，不影响其它域名续期。"
+                    echo
+                fi
                 break
             fi
             # 留空且已有保存值时不导出，由 acme.sh 读取自身保存的凭据。
-            [ -n "${saved}" ] && break
-            [ "${req}" = "optional" ] && break
+            [ -n "${saved}" ] && { Acme_DNS_Cred_Values+=("${name}=${saved}"); break; }
+            [ "${req}" = "optional" ] && { Acme_DNS_Cred_Values+=("${name}="); break; }
             Echo_Red "${name} 不能为空。"
         done
     done 3<<EOF
@@ -4948,6 +5135,8 @@ Add_Dns_SSL()
         echo "未找到 DNS 服务商插件：${provider}。"
         exit 1
     fi
+    Acme_DNS_Cred_Block_Sync "${provider}"
+    Acme_DNS_Cred_Snapshot "${provider}"
     Prompt_DNS_API_Credentials "${provider}" || exit 1
 
     # 泛域名已覆盖同级子域名，重复申请只会多一次 TXT 验证。
@@ -4989,6 +5178,7 @@ Add_Dns_SSL()
 
     # acme.sh 默认签发 ECC 证书，须显式安装到站点证书目录。
     if [ "${lets_status}" = 0 ]; then
+        Acme_DNS_Cred_Save "${cert_main}" "${provider}"
         mkdir -p "${cert_dir}" || { Restore_Cert_Dir; return 1; }
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --install-cert -d "${cert_main}" --ecc \
             --key-file "${cert_dir}/${cert_dir_name}.key" \
@@ -5048,6 +5238,8 @@ Add_Dns_SSL_Only()
         echo "未找到 DNS 服务商插件：${provider}。"
         exit 1
     fi
+    Acme_DNS_Cred_Block_Sync "${provider}"
+    Acme_DNS_Cred_Snapshot "${provider}"
     Prompt_DNS_API_Credentials "${provider}" || exit 1
 
     # 泛域名已覆盖同级子域名，重复申请只会多一次 TXT 验证。
@@ -5090,6 +5282,7 @@ Add_Dns_SSL_Only()
 
     # acme.sh 默认签发 ECC 证书，须显式安装到站点证书目录。
     if [ "${lets_status}" = 0 ]; then
+        Acme_DNS_Cred_Save "${cert_main}" "${provider}"
         mkdir -p "${cert_dir}" || { Restore_Cert_Dir; return 1; }
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --install-cert -d "${cert_main}" --ecc \
             --key-file "${cert_dir}/${cert_dir_name}.key" \

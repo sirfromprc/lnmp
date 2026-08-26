@@ -2101,6 +2101,22 @@ DNS 验证，请输入域名（示例：www.example.com）: www.example.com
 凭据由 acme.sh 保存在 `/usr/local/acme.sh/account.conf`，
 续期时自动复用，再次执行命令时直接回车即可沿用已保存的值。
 
+**同一服务商下有多个账号**（例如两个域名分属不同的 NS1 账号，API Key 不同）：
+acme.sh 自身只在 `account.conf` 里存一份凭据，后签发的会顶掉先签发的。
+本项目在签发成功后另把本次凭据写入
+`/usr/local/acme.sh/lnmp-dnscred/<主域名>.conf`（泛域名写成
+`_wildcard.example.com.conf`），并在 `account.conf` 末尾维护一段加载块，
+让 acme.sh 续期时按域名取各自的凭据，签发时仍用当场输入的值。
+两个文件都是 600 权限。
+
+换凭据前，命令会把 `account.conf` 里此刻的凭据固化给已经用同一服务商签发、
+且还没有独立凭据文件的证书，并打印 `已为已有证书 <域名> 固化当前 <服务商> 凭据`。
+只有 `acme.sh --list` 列得出的证书会被固化。本次改动之前签发的证书若当时的凭据
+已经被顶掉，对它重新执行一次 `lnmp dnsssl <服务商>` 输入正确凭据即可。
+
+手工升级 acme.sh（`/usr/local/acme.sh/upgrade.sh`）不会删除加载块和凭据文件，
+但建议升级后重新执行一次 `lnmp dnsssl <服务商>`，让加载块和预置项重新对齐。
+
 **不带服务商参数**（`lnmp dnsssl` / `lnmp onlyssl`）进入手工 TXT 模式：
 屏幕上打印 TXT 记录，给 120 秒去 DNS 面板添加，然后继续验证。
 **该模式不能自动续期**，证书到期前必须再手工执行一次。
