@@ -626,7 +626,25 @@ curl http://127.0.0.1:1008/lua
 # hello world
 ```
 
+`1008` 是主配置里状态 `server` 的默认端口，与站点端口冲突时可自行改掉，
+`lnmp health` 会自动跟随。
+
 ### 2.5 配置总索引
+
+> ⚠️ **改配置或排查故障前，先停掉健康检查。**
+>
+> ```bash
+> systemctl stop lnmp-health.timer        # 调试期间暂停
+> # ……调试配置、反复 reload/restart……
+> systemctl start lnmp-health.timer       # 调试完成后恢复
+> lnmp health reset nginx                 # 如调试期已累计失败，清零计数与熔断标记
+> ```
+>
+> `lnmp-health.timer` 每分钟探测一次，服务连续 3 次无响应（约 3 分钟）就会执行
+> `systemctl restart` 。调试期间服务本来就时起时停，这个自动重启会和手工操作抢着
+> 重启同一个服务：日志里混进不是你发起的重启，问题现象被掩盖，还会占用 systemd
+> 的启动限流配额（60 秒内 10 次），让你自己的 `restart` 被拒。
+> 健康检查的重启不经过 `lnmp` 命令，不会自动清除限流状态。
 
 本项目有三层配置，修改时先确认自己改的是哪一层：
 
@@ -826,6 +844,10 @@ LNMP_Auto=y bash addons.sh install redis </dev/null
 
 ## 三、安装 Redis
 
+> ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
+> `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
+> 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
+
 WordPress 的对象缓存要用到。**PHP 的 redis 扩展在主安装时就装好了**
 （`Enable_PHP_Default_Redis='y'`），这一步装的是 **Redis 服务端**。
 
@@ -1014,6 +1036,10 @@ tail -f /home/wwwlogs/wp.example.com.error.log
 
 **自己加的配置写在自定义区块里。** 站点配置末尾留有两行注释，指令写在中间：
 
+> ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
+> `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
+> 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
+
 ```nginx
         # 自定义配置--开始
         client_max_body_size 64m;
@@ -1127,6 +1153,10 @@ Apache 侧更是必需项：`.php` 的处理器挂在 `httpd.conf` 全局，站�
 就等于照常执行 PHP。
 
 **Go / Node 站点的反向代理**需按后端实际监听端口配置；本开关只关闭 PHP 执行入口：
+
+> ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
+> `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
+> 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
 ```nginx
 # /usr/local/nginx/conf/vhost/app.example.com.conf
@@ -1425,6 +1455,10 @@ wp-admin: 301        ← wordpress.conf 的补斜杠规则，跳到 /wp-admin/
 
 ### 5.6 可选加固：禁止 PHP 改写代码目录
 
+> ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
+> `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
+> 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
+
 **执行前提**：安装向导已完成、HTTPS 可访问、伪静态验证通过（5.4、5.5），
 需要的插件与主题已装好并确认可用。收紧权限会关闭后台的安装与更新能力，
 在功能尚未验证的站点上执行，会把权限问题和配置问题混在一起。
@@ -1543,6 +1577,10 @@ php -r '$r=new Redis(); $r->connect("127.0.0.1",6379);
 
 ### 6.2 PHP 与 OPcache
 
+> ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
+> `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
+> 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
+
 安装后的 `/usr/local/php/etc/php.ini` 来自 PHP 的 production 模板，脚本明确改动
 `upload_max_filesize=50M`、`post_max_size=50M`、`max_execution_time=300`、
 `cgi.fix_pathinfo=0`、`expose_php=Off`、时区和禁用函数。`memory_limit` 仍是模板的
@@ -1583,6 +1621,10 @@ OPcache 已由 `Enable_PHP_Default_Opcache=y` 默认安装，配置在
 
 ### 6.3 PHP-FPM 进程模型
 
+> ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
+> `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
+> 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
+
 配置文件`/usr/local/php/etc/php-fpm.conf`，本项目安装时会自动配置，可自行修改。
 
 项目先生成 `pm=dynamic`、`pm.max_children=10`，随后按机器总内存自动改为：
@@ -1621,6 +1663,10 @@ journalctl -k --since today | grep -Ei 'oom|out of memory|killed process'
 `server reached pm.max_children` 和系统 Swap/OOM，而不是看到 CPU 空闲就继续加 worker。
 
 ### 6.4 MySQL 8.4 / MariaDB
+
+> ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
+> `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
+> 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
 MySQL 与 MariaDB 安装都调用项目的 `MySQL_Opt`：按总内存把
 `innodb_buffer_pool_size` 设为 128M（1～2GB）、256M（2～4GB）、512M（4～8GB），
@@ -1722,6 +1768,10 @@ WordPress 常见的第一收益仍是删除低效插件/查询、补正确索引
 替换数据库品牌。
 
 ### 6.5 Redis 对象缓存容量
+
+> ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
+> `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
+> 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
 项目安装的 Redis 默认没有 `maxmemory`，这意味着对象缓存可以一直增长到系统开始回收
 甚至 OOM。只把该实例用于可重建的 WordPress 对象缓存时，应在
@@ -2510,13 +2560,18 @@ tail -20 /var/log/lnmp/health.log
 `/usr/local/redis/etc/redis.conf` 读取，改端口后无须另行配置。
 
 Web 探针同样走 `/dev/tcp`，不依赖 `curl`。Nginx 探的是主配置内置的
-`127.0.0.1:1008/nginx_status`，该 location 已关闭访问日志，每分钟一次的探测不会写进
-`/home/wwwlogs/default.log`；该端点被改动时回退到站点端口。Apache 没有等价端点，探测请求带
+`127.0.0.1:1008/nginx_status`，该 `server` 已关闭访问日志，每分钟一次的探测不写任何
+访问日志。改动该 `server` 的 `listen` 端口无须改配置：探针先试 `1008`，不通时从 Nginx
+的回环监听里逐个试 `/nginx_status`，命中即用，故障提示也按实际端口输出。默认端口可用时
+不会调用 `ss`，探测开销与写死端口时相同。整个 `server` 被删除时才回退到站点端口，
+此时探测请求会写进站点访问日志。Apache 没有等价端点，探测请求带
 固定 `User-Agent: lnmp-health`，LAMP 与 LNMPA 的默认站点配置按该标识跳过访问日志。
 LNMPA 中 Apache 只监听 `127.0.0.1:88`，探针取的就是这个端口，探的是 Apache 自身而非前端 Nginx。
 
 连续失败 3 次（约 3 分钟）才执行一次 `systemctl restart`；30 分钟内已重启 2 次仍
-未恢复则熔断，只告警不再重启。数据库达阈值只告警，不自动重启。`lnmp stop` 之后
+未恢复则熔断，只告警不再重启。 **调试配置前先执行 `systemctl stop lnmp-health.timer`** ，
+否则这个自动重启会和手工 `restart` 抢同一个服务，见 [九、故障排查](#九故障排查) 开头。
+该重启直接调 `systemctl` ，不经过 `lnmp` 命令，不会自动清除 systemd 启动限流状态。数据库达阈值只告警，不自动重启。`lnmp stop` 之后
 服务不会被健康检查重新拉起。
 
 服务已停止（unit 仍是开机自启但不在运行）时不做探测，连续 3 轮仍未运行会写日志
@@ -2854,6 +2909,10 @@ lnmp-tgnotice ...                                        与 lnmp tgnotice 等�
 [↑ 命令目录](#cmd-index) · [返回顶部](#top)
 
 ### 8.2 lnmp 命令不纳管的服务与自定义
+
+> ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
+> `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
+> 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
 #### 8.2.1 纳管边界
 
@@ -3605,6 +3664,10 @@ SHA-256。大小核对能发现传输截断和文件缺失，发现不了内容�
 
 ### 8.7 日志
 
+> ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
+> `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
+> 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
+
 | 日志 | 路径 |
 |---|---|
 | nginx 错误日志 | `/home/wwwlogs/nginx_error.log` |
@@ -3667,6 +3730,21 @@ log_format main '$time_iso8601 $status "$request_time" $remote_addr $scheme://$h
 ---
 
 ## 九、故障排查
+
+> ⚠️ **改配置或排查故障前，先停掉健康检查。**
+>
+> ```bash
+> systemctl stop lnmp-health.timer        # 调试期间暂停
+> # ……调试配置、反复 reload/restart……
+> systemctl start lnmp-health.timer       # 调试完成后恢复
+> lnmp health reset nginx                 # 如调试期已累计失败，清零计数与熔断标记
+> ```
+>
+> `lnmp-health.timer` 每分钟探测一次，服务连续 3 次无响应（约 3 分钟）就会执行
+> `systemctl restart` 。调试期间服务本来就时起时停，这个自动重启会和手工操作抢着
+> 重启同一个服务：日志里混进不是你发起的重启，问题现象被掩盖，还会占用 systemd
+> 的启动限流配额（60 秒内 10 次），让你自己的 `restart` 被拒。
+> 健康检查的重启不经过 `lnmp` 命令，不会自动清除限流状态。
 
 ### 9.1 站点 502 Bad Gateway
 
@@ -4181,6 +4259,10 @@ systemctl list-timers 'apt-daily*' 'dnf-automatic*' --all  # 下次触发时间
 
 ### 10.1 本项目提供的主机基线
 
+> ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
+> `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
+> 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
+
 本包安装后已经做好的：
 
 | 项 | 状态 | 注意 |
@@ -4357,6 +4439,10 @@ WordPress 自动更新是否可写与本指南的 root-owned 发布模型存在�
 回归测试；不能既禁止 Web 写代码，又假设后台自动更新仍会成功。
 
 ### 10.3 禁止上传目录执行 PHP
+
+> ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
+> `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
+> 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
 禁止 PHP 在上传目录执行（WordPress 被上传 webshell 的常见路径）：
 

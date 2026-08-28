@@ -265,6 +265,11 @@ bash install.sh mphp
 
 ### 3.7 监控与权限检查
 
+> ⚠️ **调试配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，调完
+> `systemctl start lnmp-health.timer` 恢复，必要时 `lnmp health reset <服务>` 清零计数。
+> 它每分钟探测一次，连续 3 次失败就会自动 `systemctl restart` ，会和手工重启抢同一个
+> 服务，并占用 systemd 启动限流配额。具体见 `HowtoGuides.md` 九、故障排查开头。
+
 ```bash
 lnmp health check
 lnmp health status
@@ -276,7 +281,7 @@ lnmp perm init
 
 - `health status` 只读探测服务并显示失败计数；`health check` 会累计失败，达到阈值后可能
   重启对应服务；`health init` 安装周期探测和有限重启策略。服务已停止（unit 仍是开机
-  自启）时只告警，不自动拉起。
+  自启）时只告警，不自动拉起。该重启直接调 `systemctl` ，不经过 `lnmp` 命令。
 - 装有 Nginx 的栈会自动安装 `lnmp-cutlogs.timer`，每天切割并归档 `/home/wwwlogs`
   下的日志，保留天数等可在 `/etc/lnmp/cutlogs.conf` 覆盖。
 - `perm` 核对服务所需目录和文件权限；默认只报告，不自动递归修改权限。

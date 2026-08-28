@@ -96,6 +96,22 @@ Detect_Managed_Services()
     fi
 }
 
+# systemd 的启动限流按窗口内的启动次数计数，成功启动同样累计，命中后连正确
+# 配置也拒绝启动。计数在 unit 仍是 active、Result 仍是 success 时就已累加，
+# 按 Result 判断会漏掉第一次被拒，因此人工 start 与 restart 前无条件重置。
+# reset-failed 只清 failed 状态与计数，不影响运行中的进程；Restart= 触发的
+# 自动重启循环不经过这里，仍受限流约束。
+Reset_Start_Limit()
+{
+    local service="$1" failed=0
+
+    systemctl is-failed --quiet "${service}.service" 2>/dev/null && failed=1
+    systemctl reset-failed "${service}.service" >/dev/null 2>&1
+    [ "${failed}" -eq 1 ] && \
+        echo "${service}: 已清除上次的 failed 状态与 systemd 启动限流计数。"
+    return 0
+}
+
 Svc()
 {
     local service="$1" action="$2"
@@ -106,6 +122,9 @@ Svc()
     start|stop|restart|reload|status)
         if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1 \
            && Systemd_Service_Exists "${service}"; then
+            case "${action}" in
+            start|restart) Reset_Start_Limit "${service}" ;;
+            esac
             systemctl --no-pager "${action}" "${service}.service"
             return $?
         fi
@@ -1552,7 +1571,14 @@ Check_DB_Init_Script_Integrity()
 # 免得只看到退出码还要再手工跑一遍。
 Diagnose_Web_Start_Failure()
 {
-    local service="$1" tester=''
+    local service="$1" tester='' result
+
+    result=$(systemctl show -p Result --value "${service}.service" 2>/dev/null)
+    if [ "${result}" = "start-limit-hit" ]; then
+        echo "短时间内启动次数过多，systemd 已限流并拒绝本次启动。"
+        echo "排除启动失败原因后执行：systemctl reset-failed ${service}.service"
+        return 0
+    fi
 
     case "${service}" in
     nginx)
@@ -1566,6 +1592,7 @@ Diagnose_Web_Start_Failure()
 
     echo "配置测试结果："
     ${tester} 2>&1 | sed 's/^/  /'
+    echo "配置无误仍启动失败时，查看：journalctl -xeu ${service}.service"
     return 0
 }
 

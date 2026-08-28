@@ -2,10 +2,11 @@
 Description=LNMP managed application %i
 After=network.target
 
-# 崩溃循环退避：300 秒窗口内最多启动 5 次，超出后标记 failed 并停止重试。
+# 崩溃循环退避：60 秒窗口内最多启动 10 次，超出后标记 failed 并停止重试。
+# 该限流对人工 restart 同样计数，窗口取短值避免调试期正常重启被拒绝。
 # 不设 StartLimitAction，保持默认 none，不触发整机重启。
-StartLimitIntervalSec=300
-StartLimitBurst=5
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 # %i 为应用名。运行目录与启动命令由 lnmp app add 写入 EnvironmentFile，

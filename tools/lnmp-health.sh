@@ -46,6 +46,13 @@ Restart_Window_Sec=1800
 Restart_Max=2
 # 单次探测超时，取值需小于 timer 间隔。
 Probe_Timeout=5
+# 主配置内置的 Nginx 状态端点端口。使用者改动该 server 的 listen 后由
+# Nginx_Status_Port 自动改探实际端口，这里只作为首选值。
+Nginx_Status_Port_Default=1008
+# Nginx_Status_Probe 的输出。命令替换会开子 shell，函数内的赋值传不回来，
+# 因此端口与响应码都用全局变量回传，调用方只看返回码。
+Nginx_Status_Port_Found=''
+Nginx_Status_Code=''
 # 同一服务的告警间隔，防止持续故障刷屏。
 Notify_Quiet_Sec=3600
 # 全部服务正常时的日志摘要间隔，用于确认检查任务确实在跑。
@@ -385,7 +392,9 @@ Http_Status()
 {
     local port="$1" path="$2" line code
 
-    exec 9<>"/dev/tcp/127.0.0.1/${port}" 2>/dev/null || return 1
+    # 重定向失败时 bash 在 exec 阶段就写 stderr，同一命令上的 2>/dev/null 抑制不掉，
+    # 必须包成复合命令，否则每轮探测都往 journal 里灌两行 Connection refused。
+    { exec 9<>"/dev/tcp/127.0.0.1/${port}"; } 2>/dev/null || return 1
     printf 'GET %s HTTP/1.0\r\nHost: localhost\r\nUser-Agent: lnmp-health\r\nConnection: close\r\n\r\n' \
         "${path}" >&9 2>/dev/null
     line=""
@@ -401,19 +410,63 @@ Http_Status()
     return 1
 }
 
+# 列出 Nginx 绑在回环地址上的监听端口，供状态端点改过端口时定位。
+Nginx_Loopback_Ports()
+{
+    command -v ss >/dev/null 2>&1 || return 0
+    ss -lntpH 2>/dev/null | awk '
+        $0 !~ "\"nginx\"" { next }
+        {
+            port = $4
+            sub(/^.*:/, "", port)
+            addr = substr($4, 1, length($4) - length(port) - 1)
+            if (addr == "127.0.0.1" || addr == "[::1]") print port
+        }
+    ' | sort -u
+}
+
+# 定位 Nginx 状态端点并探测，结果写入 Nginx_Status_Port_Found 与 Nginx_Status_Code。
+#
+# 先探默认端口，命中就不调 ss——默认配置下探测次数与调用开销和写死端口时相同。
+# 只有使用者改过该 server 的 listen 才会去回环监听里逐个试，避免退到站点端口：
+# 站点端口的探测请求会写进站点访问日志，且探的是业务根路径而非状态端点。
+Nginx_Status_Probe()
+{
+    local port code
+
+    Nginx_Status_Port_Found=''
+    Nginx_Status_Code=''
+
+    code=$(Http_Status "${Nginx_Status_Port_Default}" /nginx_status)
+    if [ -n "${code}" ]; then
+        Nginx_Status_Port_Found="${Nginx_Status_Port_Default}"
+        Nginx_Status_Code="${code}"
+        return 0
+    fi
+
+    for port in $(Nginx_Loopback_Ports); do
+        [ "${port}" = "${Nginx_Status_Port_Default}" ] && continue
+        code=$(Http_Status "${port}" /nginx_status) || continue
+        Nginx_Status_Port_Found="${port}"
+        Nginx_Status_Code="${code}"
+        return 0
+    done
+    return 1
+}
+
 # Web 探针。连接失败、超时或 5xx 判为异常；2xx/3xx/4xx 均表示服务在响应。
 #
-# Nginx 优先探主配置内置的 127.0.0.1:1008 状态端点：该 location 已关闭访问日志，
-# 每分钟一次的探测不会写进站点访问日志。端点不可用（配置被改动）时回退站点端口。
+# Nginx 优先探状态端点：该 server 已关闭访问日志，每分钟一次的探测不写站点日志。
+# 端点定位不到（server 被删除等）时才回退站点端口。
 Probe_Http()
 {
     local svc="$1" port code fell_back='n'
 
     if [ "${svc}" = "nginx" ]; then
-        code=$(Http_Status 1008 /nginx_status)
-        if [ -n "${code}" ]; then
-            case "${code}" in
-                5??) printf -v Probe_Detail '127.0.0.1:1008/nginx_status 返回 %s' "${code}"
+        if Nginx_Status_Probe; then
+            case "${Nginx_Status_Code}" in
+                5??) printf -v Probe_Detail '127.0.0.1:%s/nginx_status 返回 %s' \
+                         "${Nginx_Status_Port_Found}" "${Nginx_Status_Code}"
                      return 1 ;;
             esac
             return 0
@@ -430,8 +483,8 @@ Probe_Http()
     if [ -z "${code}" ]; then
         # 两个端点都不通更能说明 worker 卡死或进程已停，只报站点端口会被当成端口配置问题。
         if [ "${fell_back}" = 'y' ]; then
-            printf -v Probe_Detail '127.0.0.1:1008/nginx_status 与 127.0.0.1:%s 均连接失败或超时' \
-                "${port}"
+            printf -v Probe_Detail 'Nginx 状态端点未定位到（默认 %s）且 127.0.0.1:%s 连接失败或超时' \
+                "${Nginx_Status_Port_Default}" "${port}"
         else
             printf -v Probe_Detail '连接 127.0.0.1:%s 失败或超时' "${port}"
         fi
@@ -500,7 +553,7 @@ Probe_Redis()
     # port 0 表示只监听 unixsocket，没有 TCP 端口可探测，不判为故障。
     [ "${port}" = "0" ] && return 0
 
-    exec 9<>"/dev/tcp/127.0.0.1/${port}" 2>/dev/null || {
+    { exec 9<>"/dev/tcp/127.0.0.1/${port}"; } 2>/dev/null || {
         printf -v Probe_Detail '连接 127.0.0.1:%s 失败' "${port}"
         return 1
     }
@@ -534,7 +587,7 @@ Probe_Memcached()
         ''|*[!0-9]*) port=11211 ;;
     esac
 
-    exec 9<>"/dev/tcp/${ip}/${port}" 2>/dev/null || {
+    { exec 9<>"/dev/tcp/${ip}/${port}"; } 2>/dev/null || {
         printf -v Probe_Detail '连接 %s:%s 失败' "${ip}" "${port}"
         return 1
     }
