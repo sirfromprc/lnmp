@@ -418,6 +418,39 @@ bash upgrade.sh {nginx|openresty|mysql|mariadb|m2m|php|phpa|phpmyadmin|mphp}
 数据库升级没有自动回滚，`upgrade.sh php` 会清空 `/usr/local/php/conf.d/`，升级后扩展要重装。
 这些入口的完整说明见 [8.1.19 不属于 lnmp 命令的入口](#8119-不属于-lnmp-命令的入口)。
 
+**升级到新版本时的完整性校验**：`upgrade.sh` 各目标的校验依据不同，只有 MySQL 需要事先手工写入校验值，
+其余目标的校验值或签名由上游按版本自动提供，升级到任意新版本都不用改代码。
+
+| 目标 | 校验依据 | 新版本是否需要手工改 |
+|---|---|---|
+| `nginx` | 上游 PGP 签名 `nginx-<版本>.tar.gz.asc` | 不需要 |
+| `openresty` | 上游 PGP 签名 `openresty-<版本>.tar.gz.asc` | 不需要 |
+| `mysql` | `src/checksums.sha256` 静态清单 | **需要** |
+| `mariadb`、`m2m` | downloads.mariadb.org REST API 的 `sha256sum` | 不需要 |
+| `php`、`phpa`、`mphp` | php.net releases API 的 `sha256` | 不需要 |
+| `phpmyadmin` | 上游 `<包名>.sha256` | 不需要 |
+
+MySQL 官方只把校验值印在下载页上，没有可自动获取的校验文件。升级到清单里没有的版本时会中止并
+提示写入方法，到 <https://dev.mysql.com/downloads/mysql/> 核对该版本的 SHA256 后追加一行再重试：
+
+```bash
+echo '<sha256>  mysql-8.4.8.tar.gz' >> src/checksums.sha256                          # 源码编译
+echo '<sha256>  mysql-8.4.8-linux-glibc2.17-x86_64.tar.xz' >> src/checksums.sha256   # 官方通用二进制
+```
+
+写哪一行取决于升级时是否选官方通用二进制，两种包的校验值不同；8.0 的二进制包文件名是
+`glibc2.28`，8.4 是 `glibc2.17`。源码编译所需的 Boost 版本由 MySQL 源码里的 `cmake/boost.cmake`
+决定，校验值从 archives.boost.io 的 `.json` 自动获取，不用手工写。
+
+nginx 与 OpenResty 的验签公钥随包分发在 `conf/nginx-signing-keys.asc` 和
+`conf/openresty-signing-key.asc`，对应的指纹白名单在 `include/verify.sh`。上游轮换签名密钥后
+验签会报「签名者密钥不在随包白名单内」，此时要同时更新公钥文件和指纹白名单，只改其中一处不生效。
+
+软件仓库 GPG 只用在 OpenResty 的 apt/yum 源安装路径上（`/usr/share/keyrings/openresty.gpg`），
+`upgrade.sh openresty` 走源码编译，不经过软件源，也就与仓库 GPG 无关。OpenResty 的自定义编译模块
+由使用者在 `lnmp.conf` 中逐条填写 SHA256（[2.3.1 OpenResty 自定义编译模块与 Lua 库](#231-openresty-自定义编译模块与-lua-库)），
+升级时沿用已记录的配置，更换模块版本要同步改这些值。
+
 ### 2.2 非交互安装（站群自动部署）
 
 常用标量选择可以用环境变量传入；OpenResty 数组选项仍需编辑 `lnmp.conf`：
