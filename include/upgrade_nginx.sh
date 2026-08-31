@@ -156,6 +156,17 @@ Upgrade_Nginx()
 
     # 通过运行状态和版本检查后再清理构建目录。
     cd ${cur_dir} && rm -rf "${build_dir}"
+
+    # 早期版本只给 LNMPA 装 proxy.conf，其它栈的自定义反代站点 include 它会让
+    # nginx -t 失败。补齐缺失的包含文件，已存在的保留站点自己的修改。
+    Check_Stack
+    if [ "${Get_Stack:-}" = 'lnmpa' ]; then
+        Write_Nginx_Proxy_Conf /usr/local/nginx/conf y y ||
+            Echo_Red "补齐反代包含文件失败，可手工 cp conf/proxy.conf 到 /usr/local/nginx/conf/。"
+    else
+        Write_Nginx_Proxy_Conf /usr/local/nginx/conf n y ||
+            Echo_Red "补齐反代包含文件失败，可手工 cp conf/proxy.conf 到 /usr/local/nginx/conf/。"
+    fi
     if [ "${Enable_Nginx_Lua}" = 'y' ]; then
         if ! grep -q 'lua_package_path "/usr/local/nginx/lib/lua/?.lua";' /usr/local/nginx/conf/nginx.conf; then
             sed -i "/server_tokens off;/i\    lua_package_path \"/usr/local/nginx/lib/lua/?.lua\";\n" /usr/local/nginx/conf/nginx.conf

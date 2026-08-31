@@ -1034,7 +1034,8 @@ lnmp vhost add
 tail -f /home/wwwlogs/wp.example.com.error.log
 ```
 
-**自己加的配置写在自定义区块里。** 站点配置末尾留有两行注释，指令写在中间：
+**自己加的配置写在自定义区块里。** nginx 站点配置在 `access_log` / `error_log` 之上、
+Apache 站点配置在 `</VirtualHost>` 之前留有两行注释，指令写在中间：
 
 > ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
 > `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
@@ -1166,10 +1167,27 @@ location / {
 }
 ```
 
+`proxy.conf` 是随包安装的反代公共参数（超时、缓冲、`Host` 与 `X-Forwarded-*` 透传），
+三种栈都装。2.3 以前只给 LNMPA 装，老机器上可能缺，`nginx -t` 会报
+`open() "/usr/local/nginx/conf/proxy.conf" failed`，从源码目录补一份即可：
+
+```bash
+cp conf/proxy.conf /usr/local/nginx/conf/proxy.conf
+/usr/local/nginx/sbin/nginx -t && /usr/local/nginx/sbin/nginx -s reload
+```
+
+OpenResty 的路径是 `/usr/local/openresty/nginx/conf/`。`./upgrade.sh nginx`
+和 `./upgrade.sh openresty` 也会补齐缺失的这份文件，已有的不覆盖。
+
 整站反代时若需要把 `.php` 路径原样透传给后端，删掉配置里那段带
 `# 本站点未开启 PHP` 注释的 `location` 即可（正则 location 优先级高于
 `location /`，留着会先被它拦成 404）。删掉后 `lnmp ssl add` 追加的 443
 配置不会把它写回。
+
+模板里静态资源缓存（`.js`、`.css`、图片的 `expires`）与隐藏文件拦截
+（`location ~ /\.`）三条正则默认是注释状态，反代站点不必再删。静态站点需要时
+把它们复制到 `# 自定义配置` 区再取消注释，`lnmp ssl add` 才会一并写入 443 配置；
+留在原位取消注释只对 80 端口生效。
 
 反代规则写在 `# 自定义配置--开始` 与 `# 自定义配置--结束` 之间，
 `lnmp ssl add` 会把该区块原样复制到 443 配置里，HTTPS 不需要再写一遍。

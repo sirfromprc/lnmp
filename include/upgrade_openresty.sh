@@ -44,6 +44,17 @@ Upgrade_OpenResty()
     new_ver=$(/usr/local/openresty/nginx/sbin/nginx -v 2>&1 | sed 's/.*openresty\///;s/ .*//')
     echo "升级后版本：${new_ver:-未知}"
 
+    # 早期版本只给 LNMPA 装 proxy.conf，其它栈的自定义反代站点 include 它会让
+    # nginx -t 失败。补齐缺失的包含文件，已存在的保留站点自己的修改。
+    Check_Stack
+    if [ "${Get_Stack:-}" = 'lnmpa' ]; then
+        Write_Nginx_Proxy_Conf /usr/local/openresty/nginx/conf y y ||
+            Echo_Red "补齐反代包含文件失败，可手工 cp conf/proxy.conf 到 /usr/local/openresty/nginx/conf/。"
+    else
+        Write_Nginx_Proxy_Conf /usr/local/openresty/nginx/conf n y ||
+            Echo_Red "补齐反代包含文件失败，可手工 cp conf/proxy.conf 到 /usr/local/openresty/nginx/conf/。"
+    fi
+
     if ! /usr/local/nginx/sbin/nginx -t; then
         Echo_Red "升级后配置检查未通过 —— 服务**没有**重载，站点仍在用旧进程。"
         Echo_Red "请先修正配置，再执行：/etc/init.d/nginx restart"

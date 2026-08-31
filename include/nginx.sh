@@ -267,6 +267,36 @@ Install_Ngx_FancyIndex()
     fi
 }
 
+# 分发 Nginx 和 OpenResty 共用的反代包含文件。
+# proxy.conf 是三栈通用的反代参数，LNMPA 转发 PHP 与其它栈的自定义反代站点都 include 它；
+# proxy-pass-php.conf 只把 PHP 转给本机 Apache，仅 LNMPA 需要。
+# keep_existing 为 y 时只补缺失文件，不覆盖站点已有的修改。
+Write_Nginx_Proxy_Conf()
+{
+    local conf_dir="${1:-/usr/local/nginx/conf}"
+    local is_lnmpa="${2:-n}"
+    local keep_existing="${3:-n}"
+    local name
+
+    if [ ! -d "${conf_dir}" ]; then
+        Echo_Red "Nginx 配置目录不存在：${conf_dir}"
+        return 1
+    fi
+    for name in proxy.conf proxy-pass-php.conf; do
+        if [ "${name}" = 'proxy-pass-php.conf' ] && [ "${is_lnmpa}" != 'y' ]; then
+            continue
+        fi
+        if [ "${keep_existing}" = 'y' ] && [ -s "${conf_dir}/${name}" ]; then
+            continue
+        fi
+        if ! \cp "${cur_dir}/conf/${name}" "${conf_dir}/${name}"; then
+            Echo_Red "写入 ${conf_dir}/${name} 失败。"
+            return 1
+        fi
+    done
+    return 0
+}
+
 # 生成 Nginx 和 OpenResty 共用的静态默认站点。
 Write_Nginx_Default_VHost()
 {
@@ -336,12 +366,12 @@ ${demo_php_block}
         deny all;
     }
 
-    access_log  /home/wwwlogs/default.log main;
-    error_log   /home/wwwlogs/default.error.log;
-
     # 自定义配置--开始
 
     # 自定义配置--结束
+
+    access_log  /home/wwwlogs/default.log main;
+    error_log   /home/wwwlogs/default.error.log;
 }
 EOF
     return 0
@@ -418,10 +448,11 @@ Install_Nginx()
             \cp conf/nginx.conf /usr/local/nginx/conf/nginx.conf
         fi
     fi
-    # LNMPA 站点配置引用这两个文件，缺失会让 nginx -t 直接失败。
+    # 站点配置引用这两个文件，缺失会让 nginx -t 直接失败。
     if [ "${nginx_conf_stack}" = "lnmpa" ] || [ "${Get_Stack:-}" = "lnmpa" ]; then
-        \cp conf/proxy.conf /usr/local/nginx/conf/proxy.conf
-        \cp conf/proxy-pass-php.conf /usr/local/nginx/conf/proxy-pass-php.conf
+        Write_Nginx_Proxy_Conf /usr/local/nginx/conf y || exit 1
+    else
+        Write_Nginx_Proxy_Conf /usr/local/nginx/conf n || exit 1
     fi
     \cp -ra conf/rewrite /usr/local/nginx/conf/
     \cp conf/pathinfo.conf /usr/local/nginx/conf/pathinfo.conf
