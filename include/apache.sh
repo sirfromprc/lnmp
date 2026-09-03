@@ -58,7 +58,8 @@ Install_Apache_24()
 
     sed -i "s/ServerAdmin you@example.com/ServerAdmin ${ServerAdmin}/g" /usr/local/apache/conf/httpd.conf
     sed -i "s/webmaster@example.com/${ServerAdmin}/g" /usr/local/apache/conf/extra/httpd-vhosts.conf
-    mkdir /usr/local/apache/conf/vhost
+    # shared/ 保存站点公共配置片段，供站点的 80 与 443 两个 VirtualHost 共同 Include。
+    mkdir -p /usr/local/apache/conf/vhost/shared
 
     sed -i 's/NameVirtualHost .*//g' /usr/local/apache/conf/extra/httpd-vhosts.conf
     if [ "${Default_Website_Dir}" != "/home/wwwroot/default" ]; then

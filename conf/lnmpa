@@ -896,34 +896,6 @@ Site_PHP_Menu()
     done
 }
 
-# 取出配置文件中“自定义配置--开始/结束”之间的内容，保留原缩进。
-# 标记缺失、不成对或区块只有空行时输出空，由调用方决定后续行为。
-Extract_Custom_Block()
-{
-    local conf="$1"
-
-    [ -s "${conf}" ] || return 0
-    awk '
-        !started && /# 自定义配置--开始/ { started = 1; next }
-        started && !finished && /# 自定义配置--结束/ { finished = 1; next }
-        started && !finished { lines[++n] = $0 }
-        END {
-            if (!started || !finished) exit
-            s = 1; e = n
-            while (s <= e && lines[s] ~ /^[ \t\r]*$/) s++
-            while (e >= s && lines[e] ~ /^[ \t\r]*$/) e--
-            for (i = s; i <= e; i++) print lines[i]
-        }
-    ' "${conf}"
-}
-
-# 判断自定义配置里是否已经声明了 location /。
-# 同一 server 内出现第二个 location / 会被 Nginx 判为 duplicate location。
-Custom_Block_Has_Root_Location()
-{
-    printf '%s\n' "$1" | grep -Eq '^[[:space:]]*location[[:space:]]+/[[:space:]]*\{'
-}
-
 # Nginx 的 HTTP 与 HTTPS 共用以下规则，防止未解析的 .php 文件作为静态内容泄露。
 Site_PHP_Off_Block()
 {
@@ -2901,6 +2873,28 @@ Add_SSL_Only_Info_Menu()
     Load_Vhost_Params
 }
 
+# LNMPA 的站点目录在 Nginx 与 Apache 两份配置里各写一次，两端必须指向同一目录：
+# 静态文件由 Nginx 从 root 读取，PHP 由 Apache 在 DocumentRoot 执行，不一致会各用一半。
+# 任一端读不出目录时不作判断，交给调用方后续的存在性校验处理。
+Check_VHost_Dir_Consistency()
+{
+    local nginx_conf="$1" apache_conf="$2" nginx_dir apache_dir
+
+    nginx_dir=$(awk '$1 == "root" { value=$2; sub(/;$/, "", value); print value; exit }' "${nginx_conf}")
+    apache_dir=$(awk '$1 == "DocumentRoot" { value=$2; gsub(/^"|"$/, "", value); print value; exit }' "${apache_conf}")
+    [ -n "${nginx_dir}" ] && [ -n "${apache_dir}" ] || return 0
+    # 末尾斜杠不改变实际目录，比较前统一去掉。
+    [ "${nginx_dir%/}" = "${apache_dir%/}" ] && return 0
+
+    Echo_Red "网站 ${domain} 在 Nginx 与 Apache 两端的站点目录不一致："
+    Echo_Red "  ${nginx_conf}: ${nginx_dir}"
+    Echo_Red "  ${apache_conf}: ${apache_dir}"
+    Echo_Yellow "静态文件由 Nginx 从前者读取，PHP 由 Apache 在后者执行。"
+    Echo_Yellow "请先把两端改成同一目录，再执行本命令。"
+    echo
+    return 1
+}
+
 # 从现有虚拟主机读回站点参数，供 ssl add 与 dnsssl 复用。
 Load_Vhost_Params()
 {
@@ -2924,6 +2918,7 @@ Load_Vhost_Params()
         echo
         return 1
     fi
+    Check_VHost_Dir_Consistency "${vhost_conf}" "${apache_vhost_conf}" || return 1
     if Vhost_Has_HTTPS "${vhost_conf}"; then
         Echo_Red "网站 ${domain} 已存在 HTTPS/443 配置，不能重复添加证书。"
         Echo_Yellow "如需更换证书，请先检查并处理现有 SSL 配置。"
@@ -2953,29 +2948,6 @@ Load_Vhost_Params()
         }
     ' "${vhost_conf}")
 
-    # HTTPS 沿用现有站点的 PHP 状态，防止 .php 源码作为静态文件返回。
-    # default 站点由 Create_SSL_Config 单独处理。
-    if [ "${domain}" != "default" ] && ! grep -Eq '^[[:space:]]*include[[:space:]]+proxy-pass-php\.conf;' "${vhost_conf}"; then
-        enable_site_php="n"
-        echo "网站 ${domain} 未开启 PHP，HTTPS 配置沿用同一状态。"
-    else
-        enable_site_php="y"
-    fi
-
-    # HTTPS 必须继承 HTTP 的站点级自定义配置，否则反代、WebSocket 等规则
-    # 只在 80 端口生效，443 会落到静态 root 上返回目录内容、404 或 502。
-    ssl_custom_block=$(Extract_Custom_Block "${vhost_conf}")
-    if [ -n "${ssl_custom_block}" ]; then
-        echo "已读取网站 ${domain} 的自定义配置，将一并写入 HTTPS 配置。"
-    fi
-
-    # 自定义配置区可能含站点自己的 access_log，取站点级日志时跳过该区间。
-    al=$(awk '
-        /# 自定义配置--开始/ { in_custom = 1; next }
-        /# 自定义配置--结束/ { in_custom = 0; next }
-        !in_custom && $1 == "access_log" { sub(/^[[:space:]]*/, ""); print; exit }
-    ' "${vhost_conf}")
-    al="${al:-access_log off;}"
     if grep -Eq '^[[:space:]]*listen[[:space:]]+\[::\]:80' "${vhost_conf}"; then
         enable_ipv6="y"
     else
@@ -4302,41 +4274,105 @@ EOF
     return 0
 }
 
+# 把 HTTPS 监听和 SSL 指令插入站点现有的 80 端口 server 块。
+# 参数：配置文件 站点名（default 按 default_server 匹配） listen 片段文件 SSL 片段文件
+# 返回：0 成功；2 目标 server 块不唯一；3 块内缺少 server_name 或 root；
+#       4 目标块已有 443 监听；1 写入失败
+Insert_SSL_Into_VHost()
+{
+    local conf="$1" target="$2" listen_frag="$3" ssl_frag="$4" tmp rc
+
+    tmp=$(mktemp "${conf}.XXXXXXXX") || return 1
+    awk -v target="${target}" -v lf="${listen_frag}" -v sf="${ssl_frag}" '
+        function load(file, arr,   n, line) {
+            n = 0
+            while ((getline line < file) > 0) arr[++n] = line
+            close(file)
+            return n
+        }
+        BEGIN {
+            ln = load(lf, ins_listen)
+            sn = load(sf, ins_ssl)
+        }
+        {
+            rec[NR] = $0
+            # 注释不参与花括号计数和指令匹配。
+            t = $0
+            sub(/#.*/, "", t)
+            if (!inb && t ~ /^[[:space:]]*server[[:space:]]*\{/) {
+                inb = 1
+                nb++
+            }
+            if (!inb) next
+            if (t ~ /^[[:space:]]*listen[[:space:]]/) {
+                v = t
+                sub(/^[[:space:]]*listen[[:space:]]+/, "", v)
+                sub(/[[:space:];].*$/, "", v)
+                sub(/.*:/, "", v)
+                if (v == "80") has80[nb] = 1
+                if (v == "443" && t ~ /[[:space:]]ssl([[:space:];]|$)/) has443[nb] = 1
+                if (t ~ /default_server/) isdef[nb] = 1
+            }
+            if (t ~ /^[[:space:]]*server_name[[:space:]]/) {
+                if (!at_name[nb]) at_name[nb] = NR
+                v = t
+                sub(/^[[:space:]]*server_name[[:space:]]+/, "", v)
+                sub(/;.*$/, "", v)
+                c = split(v, names, /[[:space:]]+/)
+                for (i = 1; i <= c; i++) if (names[i] == target) named[nb] = 1
+            }
+            if (t ~ /^[[:space:]]*root[[:space:]]/ && !at_root[nb]) at_root[nb] = NR
+            depth += gsub(/\{/, "", t) - gsub(/\}/, "", t)
+            if (depth <= 0) { inb = 0; depth = 0 }
+        }
+        END {
+            for (i = 1; i <= nb; i++) {
+                if (!has80[i]) continue
+                if (target == "default") { if (!isdef[i]) continue }
+                else if (!named[i]) continue
+                hits++
+                blk = i
+            }
+            if (hits != 1) exit 2
+            if (!at_name[blk] || !at_root[blk]) exit 3
+            if (has443[blk]) exit 4
+            for (r = 1; r <= NR; r++) {
+                if (r == at_name[blk]) for (i = 1; i <= ln; i++) print ins_listen[i]
+                print rec[r]
+                if (r == at_root[blk]) for (i = 1; i <= sn; i++) print ins_ssl[i]
+            }
+        }
+    ' "${conf}" >"${tmp}"
+    rc=$?
+    if [ "${rc}" != 0 ]; then
+        rm -f "${tmp}"
+        return "${rc}"
+    fi
+    chmod --reference="${conf}" "${tmp}" 2>/dev/null || chmod 644 "${tmp}"
+    if ! mv "${tmp}" "${conf}"; then
+        rm -f "${tmp}"
+        return 1
+    fi
+    return 0
+}
+
+# HTTPS 与 HTTP 共用同一个 server 块：证书签发后把 443 监听和 SSL 指令插入
+# 站点已有的 80 端口块，站点级规则只保留一份。
 Create_SSL_Config()
 {
     local vhost_conf="/usr/local/nginx/conf/vhost/${domain}.conf" backup
+    local listen_frag ssl_frag insert_rc
     local ssl_listen='listen 443 ssl;' ssl_ipv6_listen='#listen [::]:443 ssl;'
-    local ssl_server_name="${domain} ${moredomain}" ssl_php_block='include proxy-pass-php.conf;' ssl_index
 
     Check_Config_File_Path "${ssl_certificate}" "SSL 证书文件" || return 1
     Check_Config_File_Path "${ssl_certificate_key}" "SSL 私钥文件" || return 1
-    ssl_index="$(Site_Index_Line)"
-    if [ "${enable_site_php}" = "n" ]; then
-        # 站点自行移除 .php 拦截时（整站反代要把 .php 交给后端）不再写回：
-        # 正则 location 优先级高于 location /，写回会把反代请求拦成 404。
-        if grep -qF '[^/]\.php(/|$)' "${vhost_conf}"; then
-            ssl_php_block="$(Site_PHP_Off_Block)"
-        else
-            ssl_php_block=''
-        fi
+    if [ ! -s "${vhost_conf}" ]; then
+        Echo_Red "未找到网站 ${domain} 的虚拟主机配置：${vhost_conf}"
+        return 1
     fi
     if [ "${domain}" = "default" ]; then
         ssl_listen='listen 443 ssl default_server;'
         ssl_ipv6_listen='#listen [::]:443 ssl default_server ipv6only=on;'
-        ssl_server_name='_'
-        # default 的 HTTPS 配置保留 phpMyAdmin，并拒绝根目录中的其它 .php。
-        ssl_index='index index.html index.htm index.php default.html default.htm default.php;'
-        ssl_php_block='include phpmyadmin.*.conf;
-
-    # 与 80 端口的 default 站点一致：仅放行按开关部署的演示页，由 Apache 执行。
-    location ~ ^/(phpinfo|redis|memcached)\.php$ {
-        proxy_pass http://127.0.0.1:88;
-        include proxy.conf;
-    }
-
-    location ~ [^/]\.php(/|$) {
-        return 404;
-    }'
     fi
     if [ "${enable_ipv6}" = "y" ]; then
         if [ "${domain}" = "default" ]; then
@@ -4346,18 +4382,21 @@ Create_SSL_Config()
         fi
     fi
 
-    backup=$(mktemp /tmp/lnmpa-ssl-vhost.XXXXXXXX) || return 1
-    \cp -p "${vhost_conf}" "${backup}" || { rm -f "${backup}"; return 1; }
-    cat >>"${vhost_conf}"<<EOF
+    listen_frag=$(mktemp /tmp/lnmpa-ssl-listen.XXXXXXXX) || return 1
+    ssl_frag=$(mktemp /tmp/lnmpa-ssl-frag.XXXXXXXX) || { rm -f "${listen_frag}"; return 1; }
+    backup=$(mktemp /tmp/lnmpa-ssl-vhost.XXXXXXXX) || { rm -f "${listen_frag}" "${ssl_frag}"; return 1; }
 
-server {
+    cat >"${listen_frag}"<<EOF
     ${ssl_listen}
     ${ssl_ipv6_listen}
-    # Nginx 1.25.1 及以上使用独立的 http2 指令。
+EOF
+
+    cat >"${ssl_frag}"<<EOF
+
+    # SSL 配置--开始
+    # Nginx 1.25.1 及以上使用独立的 http2 指令。明文端口的 h2c 由该端口默认
+    # server 决定，default 站点配证书后 80 端口接受 h2c，浏览器不使用该方式。
     http2 on;
-    server_name ${ssl_server_name};
-    ${ssl_index}
-    root  ${vhostdir};
 
     ssl_certificate ${ssl_certificate};
     ssl_certificate_key ${ssl_certificate_key};
@@ -4377,49 +4416,59 @@ server {
     # HSTS 会在有效期内强制浏览器使用 HTTPS。启用前须确认主域名和所有
     # 子域名均可持续提供有效证书，否则浏览器无法回退到 HTTP。
     #add_header Strict-Transport-Security "max-age=31536000" always;
-
-    #error_page   404   /404.html;
-
-    # 可按需禁止指定目录执行 PHP。
-    #location ~ /(wp-content|uploads|wp-includes|images)/.*\.php$ { deny all; }
-
-    ${ssl_php_block}
-
-    # 以下规则默认关闭：正则 location 优先于 location /，会把整站反向代理的
-    # js、css、图片请求拦在本地 root 上返回 404。需要时复制到自定义配置区，
-    # HTTPS 配置才会一并继承。
-    #location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)$ { expires 30d; }
-    #location ~ .*\.(js|css)$ { expires 12h; }
-    #location ~ /\. { deny all; }
-
-    location ^~ /.well-known/ {
-        allow all;
-    }
-
-    # 自定义配置--开始
-${ssl_custom_block}
-    # 自定义配置--结束
-
-    ${al}
-    error_log   /home/wwwlogs/${domain}.error.log;
-}
 EOF
 
-    if [ "${using_301}" == "y" ]; then
-        if Custom_Block_Has_Root_Location "${ssl_custom_block}"; then
-            # 站点已自定义 location /，再插一个会 duplicate location 使 nginx -t 失败。
-            # 改用 server 级跳转，并放行 ACME 续期用的 .well-known 路径。
-            # 锚点用文件里第一个 server 起始行：日志与自定义配置区的相对位置都可能被站点改动。
-            sed -i '0,/^server {/!b;//a\    if ($request_uri !~ "^/\\.well-known/") {\n        return 301 https://$host$request_uri;\n    }\n' /usr/local/nginx/conf/vhost/${domain}.conf
-        else
-            sed -i '0,/^server {/!b;//a\    location / {\n        return 301 https://$host$request_uri;\n    }\n' /usr/local/nginx/conf/vhost/${domain}.conf
-        fi
-        sed -i '0,/include proxy-pass-php.conf;/s/include proxy-pass-php.conf;/#include proxy-pass-php.conf;/' /usr/local/nginx/conf/vhost/${domain}.conf
+    if [ "${using_301}" = "y" ]; then
+        cat >>"${ssl_frag}"<<EOF
+
+    # HTTP 跳转到 HTTPS。判断放在 server 级，覆盖本站全部 location；
+    # ACME 验证路径保留在 HTTP 上，否则续期无法完成。
+    set \$to_https 0;
+    if (\$scheme = http) { set \$to_https 1; }
+    if (\$request_uri ~ "^/\\.well-known/") { set \$to_https 0; }
+    if (\$to_https = 1) {
+        return 301 https://\$host\$request_uri;
+    }
+EOF
+    fi
+    printf '    # SSL 配置--结束\n' >>"${ssl_frag}"
+
+    if ! \cp -p "${vhost_conf}" "${backup}"; then
+        rm -f "${listen_frag}" "${ssl_frag}" "${backup}"
+        return 1
+    fi
+    Insert_SSL_Into_VHost "${vhost_conf}" "${domain}" "${listen_frag}" "${ssl_frag}"
+    insert_rc=$?
+    rm -f "${listen_frag}" "${ssl_frag}"
+    if [ "${insert_rc}" != 0 ]; then
+        case "${insert_rc}" in
+        2)
+            Echo_Red "${vhost_conf} 中没有唯一匹配的 80 端口 server 块，未写入 HTTPS 配置。"
+            if [ "${domain}" = "default" ]; then
+                Echo_Yellow "该文件需要有且只有一个带 default_server 的 80 端口 server 块。"
+            else
+                Echo_Yellow "该文件需要有且只有一个 server_name 含 ${domain} 的 80 端口 server 块。"
+            fi
+            ;;
+        3)
+            Echo_Red "${vhost_conf} 的 80 端口 server 块缺少 server_name 或 root，未写入 HTTPS 配置。"
+            ;;
+        4)
+            Echo_Red "${vhost_conf} 的 server 块已有 443 监听，未重复写入 HTTPS 配置。"
+            Echo_Yellow "如需更换证书，请直接修改该块中 # SSL 配置 区间内的证书路径。"
+            ;;
+        *)
+            Echo_Red "写入 ${vhost_conf} 失败。"
+            ;;
+        esac
+        \cp -p "${backup}" "${vhost_conf}"
+        rm -f "${backup}"
+        return 1
     fi
 
     echo "正在检查 Nginx 配置......"
     if ! /usr/local/nginx/sbin/nginx -t; then
-        Echo_Red "Nginx 配置测试未通过，已恢复添加 SSL 前的虚拟主机配置。"
+        Echo_Red "Nginx 配置测试未通过，已撤销本次写入的 HTTPS 配置。"
         \cp -p "${backup}" "${vhost_conf}"
         rm -f "${backup}"
         return 1

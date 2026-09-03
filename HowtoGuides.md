@@ -1067,8 +1067,9 @@ lnmp vhost add
 tail -f /home/wwwlogs/wp.example.com.error.log
 ```
 
-**自己加的配置写在自定义区块里。** nginx 站点配置在 `access_log` / `error_log` 之上、
-Apache 站点配置在 `</VirtualHost>` 之前留有两行注释，指令写在中间：
+**自己加的配置写在自定义区块里。** nginx 站点配置在 `access_log` / `error_log` 之上留有
+两行注释；LAMP 站点的公共配置在 `/usr/local/apache/conf/vhost/shared/<域名>.conf`，
+自定义区块在该片段末尾。指令写在两行注释中间：
 
 > ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
 > `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
@@ -1177,8 +1178,10 @@ printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
 | LNMPA | 不写 `include proxy-pass-php.conf;`（不再反代给 Apache）；Apache 侧同时 `php_admin_flag engine off` 并把 `.php` 挡成 404 |
 | LAMP | Apache `php_admin_flag engine off` + `RedirectMatch 404 "\.php(/\|$)"`，`open_basedir` 一并注释掉 |
 
-三栈共同点：首页候选去掉 `index.php`、`default.php`，站点目录不写 `.user.ini`，
-`lnmp ssl add` 追加 443 配置时会从现有站点配置读回同一状态，不会重新打开 PHP。
+三栈共同点：首页候选去掉 `index.php`、`default.php`，站点目录不写 `.user.ini`。
+Nginx 侧 HTTPS 与 HTTP 共用同一个 server 块，`lnmp ssl add` 只插入 443 监听和证书指令，
+不改动站点的 PHP 状态。LAMP 的 80 与 443 是两个 VirtualHost，但都 Include
+`conf/vhost/shared/<域名>.conf`，PHP 状态同样只有一份。
 
 Nginx 侧那条 404 规则**不能省**：站点目录里一旦出现 `.php` 文件（旧站遗留、备份、
 被写入的后门），Nginx 会当成普通静态文件返回——自带的 `mime.types` 没有 `.php`，
@@ -1214,22 +1217,21 @@ OpenResty 的路径是 `/usr/local/openresty/nginx/conf/`。`./upgrade.sh nginx`
 
 整站反代时若需要把 `.php` 路径原样透传给后端，删掉配置里那段带
 `# 本站点未开启 PHP` 注释的 `location` 即可（正则 location 优先级高于
-`location /`，留着会先被它拦成 404）。删掉后 `lnmp ssl add` 追加的 443
-配置不会把它写回。
+`location /`，留着会先被它拦成 404）。删掉后 HTTPS 同样没有这条规则——
+两者共用同一个 server 块。
 
 模板里静态资源缓存（`.js`、`.css`、图片的 `expires`）与隐藏文件拦截
 （`location ~ /\.`）三条正则默认是注释状态，反代站点不必再删。静态站点需要时
-把它们复制到 `# 自定义配置` 区再取消注释，`lnmp ssl add` 才会一并写入 443 配置；
-留在原位取消注释只对 80 端口生效。
+就地取消注释即可，HTTP 与 HTTPS 一并生效。
 
-反代规则写在 `# 自定义配置--开始` 与 `# 自定义配置--结束` 之间，
-`lnmp ssl add` 会把该区块原样复制到 443 配置里，HTTPS 不需要再写一遍。
-选 HTTP 301 跳转时，若该区块已有 `location /`，跳转改用 server 级实现并放行
-`/.well-known/`（同一 server 内出现两个 `location /` 会让 `nginx -t` 报
-`duplicate location`）。
+反代规则写在 `# 自定义配置--开始` 与 `# 自定义配置--结束` 之间，HTTP 与 HTTPS
+共用同一个 server 块，不需要再为 443 写一遍。
+选 HTTP 301 跳转时，跳转判断写在 server 级，覆盖本站全部 location（`/.well-known/`
+除外），与自定义的 `location /` 不冲突。
 
 **站点建好后想改主意**：直接编辑 `/usr/local/nginx/conf/vhost/<域名>.conf`
-（LAMP 是 `/usr/local/apache/conf/vhost/<域名>.conf`），加回或删掉上述几行，
+（LAMP 站点的公共配置是 `/usr/local/apache/conf/vhost/shared/<域名>.conf`），
+加回或删掉上述几行，
 `nginx -t` / `httpd -t` 通过后 reload 即可，不必删站重建。
 
 ### 4.5 托管 Node / Go 应用进程
@@ -1271,7 +1273,7 @@ lnmp app del myapp             # 取消托管；询问是否删除专属账号�
 
 完整的一条链是：`lnmp app add` 托管进程 → `lnmp vhost add` 建站（PHP 选 `n`）
 → 在站点的自定义配置区块写 `proxy_pass http://127.0.0.1:<端口>;`
-→ `lnmp ssl add` 加证书（反代规则会自动继承到 443）。
+→ `lnmp ssl add` 加证书（反代规则本身就对 HTTPS 生效）。
 参考配置见 `/usr/local/nginx/conf/example/nginx-reverse-proxy-example.conf`。
 
 元数据在 `/etc/lnmp/apps/<应用名>.env`（0640），模板单元是
@@ -1952,9 +1954,9 @@ lnmp ssl add
 
 `ssl add` 只给**已经存在的站点**添加证书。输入域名后会先检查对应虚拟主机配置；
 不存在就提示先执行 `lnmp vhost add` 并退出，不会在证书流程中创建网站或重新询问
-目录、rewrite、日志、Pathinfo、IPv6。现有站点的目录和附加域名会从配置中读取，
-**站点的 PHP 开关状态也一并读回**：建站时选了不开启 PHP 的站点，追加的 443
-配置同样不写 PHP 执行入口（会打印一行 `网站 <域名> 未开启 PHP，HTTPS 配置沿用同一状态。`）。
+目录、rewrite、日志、Pathinfo、IPv6。现有站点的目录和附加域名会从配置中读取。
+**HTTPS 与 HTTP 共用同一个 server 块**：证书写入后，站点的 PHP 开关、伪静态和自定义
+配置保持原样，不存在两份配置需要同步。
 
 交互顺序：域名 → **证书来源(1-4)** → 是否 301 跳转。选择自有证书时会继续询问
 证书和私钥路径；选择 CA 时按需询问账户邮箱。
@@ -2053,7 +2055,7 @@ acme.sh DNS 插件名。
 |---|---|---|---|
 | 验证方式 | HTTP-01 | DNS-01 | DNS-01 |
 | 要求站点已存在 | 是 | 是 | 否 |
-| 修改 Nginx 配置 | 是，追加 443 server | 是，追加 443 server | 否 |
+| 修改 Nginx 配置 | 是，向 80 块插入 443 监听与证书 | 同左 | 否 |
 | 支持泛域名 | 否 | 是 | 是 |
 | 要求 80 端口公网可达 | 是 | 否 | 否 |
 | 要求 DNS API 凭据 | 否 | 是（手工 TXT 模式除外） | 是（手工 TXT 模式除外） |
@@ -2235,6 +2237,22 @@ ls -d /usr/local/nginx/conf/ssl/*.lnmp-bak.*   # 查看是否有遗留备份
 ### 7.4 强制 HTTPS
 
 `lnmp ssl add`、`lnmp dnsssl` 最后一步问 `是否将 HTTP 301 跳转到 HTTPS [y/N]` 选 `y` 即可。
+跳转判断写在 server 级：
+
+```nginx
+set $to_https 0;
+if ($scheme = http) { set $to_https 1; }
+if ($request_uri ~ "^/\.well-known/") { set $to_https 0; }
+if ($to_https = 1) {
+    return 301 https://$host$request_uri;
+}
+```
+
+它在 rewrite 阶段执行，**覆盖本站全部 location**，包括 phpMyAdmin 入口、伪静态规则
+和自定义配置区里的反代规则；`/.well-known/` 是唯一例外，ACME 续期要用。
+明文 `ws://` 的 WebSocket 连接会收到 301，多数客户端不跟随重定向，开启 301 后
+客户端需改用 `wss://`。
+
 WordPress 侧还要把站点地址改成 https：
 
 ```bash
@@ -2242,6 +2260,87 @@ mysql -u wpdemo -p -h 127.0.0.1 wpdemo -e \
   "UPDATE wp_options SET option_value='https://wp.example.com'
    WHERE option_name IN ('siteurl','home');"
 ```
+
+### 7.5 证书文件缺失时的应急处置
+
+Nginx 侧 HTTPS 与 HTTP 在同一个 server 块内，`ssl_certificate` 指向的文件被删除或
+损坏时 `nginx -t` 不通过，该站点的 HTTP 会一并不可用。
+
+证书相关配置由 `# SSL 配置--开始` 与 `# SSL 配置--结束` 包围，删掉这段和 443 监听行
+即可恢复纯 HTTP 访问：
+
+```bash
+conf=/usr/local/nginx/conf/vhost/<域名>.conf
+sed -i '/# SSL 配置--开始/,/# SSL 配置--结束/d' "${conf}"
+sed -i '/^[[:space:]]*listen[[:space:]].*443[[:space:]].*ssl/d' "${conf}"
+/usr/local/nginx/sbin/nginx -t && /usr/local/nginx/sbin/nginx -s reload
+```
+
+证书恢复后重新执行 `lnmp ssl add` 写回。2.3 之前签发的站点是独立的 443 server 块，
+应急时删除整个 server 块；两种形态可以并存，不影响其它命令的判断。
+
+### 7.6 LAMP 的站点配置结构
+
+Apache 的 `SSLEngine` 只能按 VirtualHost 开关，没有 Nginx 那种一个块两个 `listen` 的写法
+（`<VirtualHost *:80 *:443>` 加 `SSLEngine on` 会让 80 端口按 TLS 处理，明文请求返回 400
+`You're speaking plain HTTP to an SSL-enabled server port`）。LAMP 因此保留两个 VirtualHost，
+但站点配置只有一份：
+
+```
+/usr/local/apache/conf/vhost/<域名>.conf          主文件，两个 VirtualHost
+/usr/local/apache/conf/vhost/shared/<域名>.conf   公共配置片段，被两个块 Include
+```
+
+主文件形如：
+
+```apache
+<VirtualHost *:80>
+RewriteEngine On
+RewriteCond %{HTTPS} off
+RewriteCond %{REQUEST_URI} !^/\.well-known/.*$
+RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+Include conf/vhost/shared/example.com.conf
+</VirtualHost>
+
+<VirtualHost *:443>
+SSLEngine on
+SSLCertificateFile /usr/local/nginx/conf/ssl/example.com/fullchain.cer
+SSLCertificateKeyFile /usr/local/nginx/conf/ssl/example.com/example.com.key
+Include conf/vhost/shared/example.com.conf
+</VirtualHost>
+```
+
+`DocumentRoot`、`ServerName`、`ServerAlias`、日志、`<Directory>`、PHP 开关和自定义配置区
+都在片段里，改一次对 HTTP 与 HTTPS 同时生效。SSL 指令和 301 跳转写在各自的 VirtualHost 内，
+不进片段。`lnmp vhost del` 会连同片段一起删除。
+
+2.3 之前建的站点是内联结构，两个 VirtualHost 各写一份完整配置。`lnmp ssl add` 会识别并沿用
+原来的写法，不改动已有站点；要转成片段结构需手工整理或删站重建。
+
+### 7.7 LNMPA 两端站点目录必须一致
+
+LNMPA 的一个站点有两份配置，语法不同，无法共用片段：
+
+```
+/usr/local/nginx/conf/vhost/<域名>.conf     Nginx：80/443，root
+/usr/local/apache/conf/vhost/<域名>.conf    Apache：88，DocumentRoot、open_basedir、<Directory>
+```
+
+静态文件由 Nginx 从 `root` 读取，PHP 由 Apache 在 `DocumentRoot` 执行。手工改站点目录必须
+两个文件一起改，只改一处会让同一个站点一半用新目录、一半用旧目录，且不会报错。
+
+`lnmp ssl add` 与 `lnmp dnsssl` 在读取站点参数时会比对这两个值，不一致就中止并列出两端的
+路径（末尾斜杠的差异不算不一致）：
+
+```
+网站 wp.example.com 在 Nginx 与 Apache 两端的站点目录不一致：
+  /usr/local/nginx/conf/vhost/wp.example.com.conf: /home/wwwroot/new
+  /usr/local/apache/conf/vhost/wp.example.com.conf: /home/wwwroot/old
+静态文件由 Nginx 从前者读取，PHP 由 Apache 在后者执行。
+请先把两端改成同一目录，再执行本命令。
+```
+
+泛域名批量签发时，不一致的站点会被跳过并计入汇总，其余站点照常写入。
 
 [返回顶部](#top)
 
@@ -4326,7 +4425,7 @@ systemctl list-timers 'apt-daily*' 'dnf-automatic*' --all  # 下次触发时间
 | Apache（LAMP/LNMPA） | 只把末尾 `.php` 交给 mod_php；根目录默认拒绝；站点使用 `SymLinksIfOwnerMatch` | 已在 Debian 13 两种栈实测；其它发行版部署前仍需复验模块与目录边界 |
 | Pure-FTPd | 新安装默认 `TLS 2`，拒绝明文登录 | 客户端选择显式 FTPS；既有部署需直接核对运行配置，不会被源码更新自动改写 |
 | phpinfo / phpMyAdmin / 演示页 | **默认全部不部署** | 需在 `lnmp.conf` 显式开启 |
-| default 站点的 PHP 边界 | 只放行 `phpinfo.php` / `redis.php` / `memcached.php` 三个固定文件名与 phpMyAdmin 入口，其余 `.php` 一律拒绝 | 放行的三个文件仅在对应开关打开时才会写入，未写入时访问返回 404；80 与 443 的规则一致，为 default 配 HTTPS 后行为不变；往 default 根目录手工放同名文件同样会被执行，该站点是系统默认创建，其他需求 php 的请自建新站点 |
+| default 站点的 PHP 边界 | 只放行 `phpinfo.php` / `redis.php` / `memcached.php` 三个固定文件名与 phpMyAdmin 入口，其余 `.php` 一律拒绝 | 放行的三个文件仅在对应开关打开时才会写入，未写入时访问返回 404；80 与 443 在同一个 server 块内共用同一套规则，为 default 配 HTTPS 后行为不变；往 default 根目录手工放同名文件同样会被执行，该站点是系统默认创建，其他需求 php 的请自建新站点 |
 | phpMyAdmin（已开启时） | 装在网站根目录之外（`/usr/local/phpmyadmin`）；访问路径随机生成 | 挡的是批量扫描与源码直接下载，**不等于**做了访问控制；对外服务仍建议加来源白名单 |
 | 下载完整性 | **默认要求一种已配置的完整性机制**，按组件不同分别是：静态 SHA256 清单（`src/checksums.sha256`）、上游发布的 SHA256、**PGP 签名**（nginx / OpenResty 源码）、**包仓库 GPG 签名**（OpenResty apt/yum） | 不是"全部 SHA256"；且 `Enable_Download_Checksum` **可以被关掉**，关掉就没有这层保护 |
 

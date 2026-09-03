@@ -927,9 +927,35 @@ RedirectMatch 404 "\.php(/|$)"
 EOF
 }
 
+# 站点公共配置片段目录。SSLEngine 只能按 VirtualHost 开关，80 与 443 无法合并成
+# 一个块，改为两个块 Include 同一个片段，使站点级配置只有一份来源。
+Vhost_Shared_Dir="/usr/local/apache/conf/vhost/shared"
+
+# 片段在 Apache 配置中的 Include 路径，相对 ServerRoot。
+Site_Shared_Include()
+{
+    printf 'conf/vhost/shared/%s.conf' "$1"
+}
+
+# 返回站点参数所在的配置文件：片段结构返回片段，内联结构返回主文件。
+# 2.3 之前建的站点没有片段，两种形态都要能读。
+Site_Params_Conf()
+{
+    local domain="$1" main="${2:-/usr/local/apache/conf/vhost/$1.conf}"
+    local frag="${Vhost_Shared_Dir}/${domain}.conf"
+
+    if [ -s "${frag}" ] && grep -qF "Include $(Site_Shared_Include "${domain}")" "${main}" 2>/dev/null; then
+        printf '%s' "${frag}"
+    else
+        printf '%s' "${main}"
+    fi
+}
+
 Add_VHost_Config()
 {
     local apache_open_basedir apache_php_off apache_dir_index
+    local main_conf="/usr/local/apache/conf/vhost/${domain}.conf"
+    local shared_conf="${Vhost_Shared_Dir}/${domain}.conf"
 
     Check_Config_Name "${al_name}" "访问日志文件名" || return 1
     Check_Server_Admin_Email "${email}" || return 1
@@ -943,8 +969,15 @@ Add_VHost_Config()
         apache_dir_index="DirectoryIndex index.html"
     fi
 
-    cat >"/usr/local/apache/conf/vhost/${domain}.conf"<<EOF
-<VirtualHost *:80>
+    if ! mkdir -p "${Vhost_Shared_Dir}"; then
+        Echo_Red "创建站点公共配置目录失败：${Vhost_Shared_Dir}"
+        return 1
+    fi
+
+    # 片段被 80 与 443 共同 Include，只放两个端口都适用的指令。
+    cat >"${shared_conf}"<<EOF || { Echo_Red "写入 ${shared_conf} 失败。"; return 1; }
+# 站点公共配置，由 80 与 443 两个 VirtualHost 共同 Include。
+# SSLEngine、证书路径和 301 跳转写在各自的 VirtualHost 内，不放这里。
 ServerAdmin ${email}
 ${apache_open_basedir}
 DocumentRoot "${vhostdir}"
@@ -962,24 +995,29 @@ ${apache_php_off}
 # 自定义配置--开始
 
 # 自定义配置--结束
+EOF
+
+    cat >"${main_conf}"<<EOF || { Echo_Red "写入 ${main_conf} 失败。"; rm -f "${shared_conf}"; return 1; }
+<VirtualHost *:80>
+Include $(Site_Shared_Include "${domain}")
 </VirtualHost>
 EOF
 
     # 错误日志始终保留，仅访问日志随开关关闭。
     if [ "${access_log}" != 'y' ]; then
-        sed -i 's/^CustomLog/#CustomLog/g' /usr/local/apache/conf/vhost/${domain}.conf
+        sed -i 's/^CustomLog/#CustomLog/g' "${shared_conf}"
     fi
 
     if [ "${moredomain}" != "" ]; then
-        sed -i "/ServerName/a\
-    ServerAlias ${moredomain}" /usr/local/apache/conf/vhost/${domain}.conf
+        sed -i "/^ServerName/a\
+ServerAlias ${moredomain}" "${shared_conf}"
     fi
 
     # 配置测试失败时撤销虚拟主机，避免无效配置影响 Apache。
     echo "正在检查 Apache 配置..."
     if ! /etc/init.d/httpd configtest; then
         Echo_Red "Apache 配置测试未通过，已撤销本次新增的虚拟主机配置。"
-        rm -f "/usr/local/apache/conf/vhost/${domain}.conf"
+        rm -f "${main_conf}" "${shared_conf}"
         return 1
     fi
     echo "正在平滑重载 Apache..."
@@ -1241,7 +1279,8 @@ Del_VHost_Files()
 {
     local domain="$1"
     local vhost_conf="/usr/local/apache/conf/vhost/${domain}.conf"
-    local conf_backup
+    local shared_conf="${Vhost_Shared_Dir}/${domain}.conf"
+    local conf_backup shared_backup=''
 
     conf_backup=$(mktemp /tmp/lamp-del-vhost.XXXXXXXX) || return 1
     if ! \cp -p "${vhost_conf}" "${conf_backup}"; then
@@ -1249,17 +1288,34 @@ Del_VHost_Files()
         Echo_Red "备份 ${vhost_conf} 失败，未删除任何文件。"
         return 1
     fi
+    # 片段结构的站点要连同片段删除，否则同名站点重建时会读到旧配置。
+    if [ -s "${shared_conf}" ]; then
+        if ! shared_backup=$(mktemp /tmp/lamp-del-shared.XXXXXXXX); then
+            rm -f "${conf_backup}"
+            return 1
+        fi
+        if ! \cp -p "${shared_conf}" "${shared_backup}"; then
+            rm -f "${conf_backup}" "${shared_backup}"
+            Echo_Red "备份 ${shared_conf} 失败，未删除任何文件。"
+            return 1
+        fi
+    fi
 
     rm -f "${vhost_conf}"
+    if [ -n "${shared_backup}" ]; then
+        rm -f "${shared_conf}"
+    fi
 
     # 删除配置后必须重载 Apache，才能使运行中的站点下线。
     if ! Del_VHost_Reload; then
-        Del_VHost_Restore "${domain}" "${vhost_conf}" "${conf_backup}"
+        Del_VHost_Restore "${domain}" "${vhost_conf}" "${conf_backup}" "${shared_conf}" "${shared_backup}"
         rm -f "${conf_backup}"
+        [ -n "${shared_backup}" ] && rm -f "${shared_backup}"
         return 1
     fi
 
     rm -f "${conf_backup}"
+    [ -n "${shared_backup}" ] && rm -f "${shared_backup}"
     return 0
 }
 
@@ -1267,8 +1323,12 @@ Del_VHost_Files()
 Del_VHost_Restore()
 {
     local domain="$1" vhost_conf="$2" conf_backup="$3"
+    local shared_conf="${4:-}" shared_backup="${5:-}"
 
     \cp -p "${conf_backup}" "${vhost_conf}"
+    if [ -n "${shared_backup}" ] && [ -n "${shared_conf}" ]; then
+        \cp -p "${shared_backup}" "${shared_conf}"
+    fi
     Echo_Yellow "已恢复站点 ${domain} 的配置文件，站点仍然存在。"
 
     # 恢复后尽力让运行配置与磁盘一致；此处失败不改变删站已失败的结论。
@@ -2765,7 +2825,7 @@ Add_SSL_Only_Info_Menu()
 # 从现有虚拟主机读回站点参数，供 ssl add 与 dnsssl 复用。
 Load_Vhost_Params()
 {
-    local vhost_conf
+    local vhost_conf params_conf
 
     if [ "${domain}" = "default" ]; then
         vhost_conf="/usr/local/apache/conf/extra/httpd-vhosts.conf"
@@ -2785,10 +2845,12 @@ Load_Vhost_Params()
         return 1
     fi
     ssl_vhost_conf="${vhost_conf}"
+    # 站点参数在片段结构下位于片段文件内，内联结构下仍在主文件内。
+    params_conf=$(Site_Params_Conf "${domain}" "${vhost_conf}")
 
-    vhostdir=$(awk '$1 == "DocumentRoot" { value=$2; gsub(/^\"|\"$/, "", value); print value; exit }' "${vhost_conf}")
+    vhostdir=$(awk '$1 == "DocumentRoot" { value=$2; gsub(/^"|"$/, "", value); print value; exit }' "${params_conf}")
     if [ -z "${vhostdir}" ] || [ ! -d "${vhostdir}" ]; then
-        Echo_Red "网站 ${domain} 的根目录不存在或无法从 ${vhost_conf} 读取。"
+        Echo_Red "网站 ${domain} 的根目录不存在或无法从 ${params_conf} 读取。"
         return 1
     fi
 
@@ -2802,12 +2864,12 @@ Load_Vhost_Params()
             }
         }
         END { print out }
-    ' "${vhost_conf}")
-    email=$(awk '$1 == "ServerAdmin" { print $2; exit }' "${vhost_conf}")
+    ' "${params_conf}")
+    email=$(awk '$1 == "ServerAdmin" { print $2; exit }' "${params_conf}")
     email="${email:-webmaster@example.com}"
     # HTTPS 沿用现有站点的 PHP 状态，防止 443 端口意外执行 .php。
     # default 站点由 Create_SSL_Config 单独处理。
-    if [ "${domain}" != "default" ] && grep -Eq '^[[:space:]]*php_admin_flag[[:space:]]+engine[[:space:]]+off' "${vhost_conf}"; then
+    if [ "${domain}" != "default" ] && grep -Eq '^[[:space:]]*php_admin_flag[[:space:]]+engine[[:space:]]+off' "${params_conf}"; then
         enable_site_php="n"
         echo "网站 ${domain} 未开启 PHP，HTTPS 配置沿用同一状态。"
     else
@@ -2816,12 +2878,12 @@ Load_Vhost_Params()
 
     # HTTPS 必须继承 HTTP 的站点级自定义配置，否则 ProxyPass 等规则
     # 只在 80 端口生效，443 会落到静态 DocumentRoot 上。
-    ssl_custom_block=$(Extract_Custom_Block "${vhost_conf}")
+    ssl_custom_block=$(Extract_Custom_Block "${params_conf}")
     if [ -n "${ssl_custom_block}" ]; then
         echo "已读取网站 ${domain} 的自定义配置，将一并写入 HTTPS 配置。"
     fi
     al_name="${domain}"
-    if grep -Eq '^[[:space:]]*CustomLog[[:space:]]+' "${vhost_conf}"; then
+    if grep -Eq '^[[:space:]]*CustomLog[[:space:]]+' "${params_conf}"; then
         access_log="y"
     else
         access_log="n"
@@ -3315,11 +3377,12 @@ Find_Site_For_SSL()
         fi
     done
 
-    # 站点名不匹配时再比对配置内声明的全部域名。
+    # 站点名不匹配时再比对配置内声明的全部域名；片段结构下域名写在片段里。
     for f in "${Vhost_Conf_Dir}"/*.conf; do
         [ -s "${f}" ] || continue
-        if Vhost_Has_Domain "${f}" "${input}"; then
-            Site_Match_Name=$(basename "${f}" .conf)
+        name=$(basename "${f}" .conf)
+        if Vhost_Has_Domain "$(Site_Params_Conf "${name}" "${f}")" "${input}"; then
+            Site_Match_Name="${name}"
             return 0
         fi
     done
@@ -4163,8 +4226,17 @@ EOF
 Create_SSL_Config()
 {
     local vhost_conf="${ssl_vhost_conf:-/usr/local/apache/conf/vhost/${domain}.conf}"
-    local backup httpd_conf_backup
+    local backup httpd_conf_backup use_shared='n'
     local ssl_server_name="${domain}" ssl_open_basedir ssl_directory_options ssl_php_off
+
+    # 站点已是片段结构时，443 只写 SSL 专有指令并 Include 同一片段。
+    # default 站点的配置在 httpd-vhosts.conf 内，2.3 之前建的站点是内联结构，
+    # 两者都保持原来的完整 VirtualHost 写法。
+    if [ "${domain}" != 'default' ] \
+        && [ -s "${Vhost_Shared_Dir}/${domain}.conf" ] \
+        && grep -qF "Include $(Site_Shared_Include "${domain}")" "${vhost_conf}"; then
+        use_shared='y'
+    fi
 
     Check_Config_Name "${al_name}" "访问日志文件名" || return 1
     Check_Server_Admin_Email "${email}" || return 1
@@ -4226,6 +4298,19 @@ Create_SSL_Config()
     fi
 
     sed -i 's@#Include conf/extra/httpd-ssl.conf@Include conf/extra/httpd-ssl.conf@g' /usr/local/apache/conf/httpd.conf
+    if [ "${use_shared}" = 'y' ]; then
+        cat >>"${vhost_conf}"<<EOF
+
+<VirtualHost *:443>
+SSLEngine on
+SSLCertificateFile ${ssl_certificate}
+SSLCertificateKeyFile ${ssl_certificate_key}
+${Conf_SSLChain}
+${Conf_H2}
+Include $(Site_Shared_Include "${domain}")
+</VirtualHost>
+EOF
+    else
     cat >>"${vhost_conf}"<<EOF
 
 <VirtualHost *:443>
@@ -4251,18 +4336,26 @@ ${ssl_custom_block}
 # 自定义配置--结束
 </VirtualHost>
 EOF
+    fi
 
-    # 错误日志始终保留，仅访问日志随开关关闭。
-    if [ "${access_log}" != 'y' ]; then
-        sed -i 's/^CustomLog/#CustomLog/g' "${vhost_conf}"
+    # 片段结构的日志、ServerAlias 都在片段里，两个 VirtualHost 共用，无需再处理。
+    if [ "${use_shared}" != 'y' ]; then
+        # 错误日志始终保留，仅访问日志随开关关闭。
+        if [ "${access_log}" != 'y' ]; then
+            sed -i 's/^CustomLog/#CustomLog/g' "${vhost_conf}"
+        fi
+        if [ "${moredomain}" != "" ]; then
+            sed -i "/^SSLEngine on/i\ServerAlias ${moredomain}" "${vhost_conf}"
+        fi
     fi
 
     if [ "${using_301}" = "y" ]; then
-        sed -i '0,/^ServerName/!b;//a\RewriteEngine On\nRewriteCond %{HTTPS} off\nRewriteCond %{REQUEST_URI} !^\/\.well-known/.*$\nRewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]' "${vhost_conf}"
-    fi
-
-    if [ "${moredomain}" != "" ]; then
-        sed -i "/^SSLEngine on/i\ServerAlias ${moredomain}" "${vhost_conf}"
+        if [ "${use_shared}" = 'y' ]; then
+            # 片段结构的 80 端口块内没有 ServerName，锚点改用块起始行。
+            sed -i '0,/^<VirtualHost \*:80>/!b;//a\RewriteEngine On\nRewriteCond %{HTTPS} off\nRewriteCond %{REQUEST_URI} !^\/\.well-known/.*$\nRewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]' "${vhost_conf}"
+        else
+            sed -i '0,/^ServerName/!b;//a\RewriteEngine On\nRewriteCond %{HTTPS} off\nRewriteCond %{REQUEST_URI} !^\/\.well-known/.*$\nRewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]' "${vhost_conf}"
+        fi
     fi
 
     echo "正在检查 Apache 配置..."

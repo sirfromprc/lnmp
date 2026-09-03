@@ -1233,7 +1233,10 @@ Cmd_Test()
 # 新建站点后可重新执行 init 扫描，或直接在备份配置中添加站点。
 Discover_Sites()
 {
-    local f root domain db
+    local f root domain db src frag
+    # LNMPA 的站点在 Nginx 与 Apache 两个 vhost 目录各有一份配置，两端一致时只输出一条；
+    # 两端的域名或目录不一致时都会列出，便于发现配置漂移。
+    {
     for f in /usr/local/nginx/conf/vhost/*.conf; do
         [ -f "${f}" ] || continue
         domain=$(awk '/^[ \t]*server_name/ {gsub(/;/,""); print $2; exit}' "${f}")
@@ -1246,12 +1249,19 @@ Discover_Sites()
     done
     for f in /usr/local/apache/conf/vhost/*.conf; do
         [ -f "${f}" ] || continue
-        domain=$(awk '/^[ \t]*ServerName/ {print $2; exit}' "${f}")
-        root=$(awk '/^[ \t]*DocumentRoot/ {gsub(/"/,""); print $2; exit}' "${f}")
+        src="${f}"
+        # 片段结构的站点参数在 shared/ 下的片段里，主文件只有 VirtualHost 与 Include。
+        if ! grep -Eq '^[ \t]*ServerName' "${src}"; then
+            frag="/usr/local/apache/conf/vhost/shared/$(basename "${f}")"
+            [ -f "${frag}" ] && src="${frag}"
+        fi
+        domain=$(awk '/^[ \t]*ServerName/ {print $2; exit}' "${src}")
+        root=$(awk '/^[ \t]*DocumentRoot/ {gsub(/"/,""); print $2; exit}' "${src}")
         [ -n "${domain}" ] && [ -n "${root}" ] || continue
         db=$(Guess_Db "${root}")
         printf '%s|%s|%s\n' "${domain}" "${root%/}" "${db}"
     done
+    } | awk '!seen[$0]++'
 }
 
 # 扫描后由使用者确认备份站点，可排除 default 占位站点、测试站或不需要备份的静态目录。
