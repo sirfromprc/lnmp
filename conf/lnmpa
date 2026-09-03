@@ -851,11 +851,25 @@ Function_Ftp()
 esac
 }
 
+# 本机是否有可供站点使用的 PHP：Apache 加载的 PHP 由此编译产物提供。
+Site_PHP_Available()
+{
+    [ -s /usr/local/php/bin/php-config ]
+}
+
 # 站点级 PHP 开关：默认由 Nginx 将 PHP 请求转发给 Apache；关闭后两端均拒绝 PHP。
 # 非交互执行通过 VHOST_PHP=n 关闭 PHP，未设置时保持默认开启。
 Site_PHP_Menu()
 {
     local answer
+    # 未装 PHP 时开启只会让 .php 请求失败，直接关闭并说明原因。
+    if ! Site_PHP_Available; then
+        enable_site_php="n"
+        Echo_Yellow "未检测到已安装的 PHP，本站点关闭 PHP，所有 .php 请求返回 404。"
+        echo
+        echo "如需 PHP，请重新执行完整安装。"
+        return 0
+    fi
     if [ ! -t 0 ]; then
         case "${VHOST_PHP}" in
             [nN])
@@ -932,16 +946,27 @@ Site_Index_Line()
 # 站点启用 IPv6 后同步启用 default 的 IPv6 监听：[::]:80 上没有 default_server
 # 时，未匹配 Host 的 IPv6 请求会落到先加载的业务站点，而不是 default。
 # 返回 0 表示本次改动了 default 配置，调用方失败时需要回滚。
+# 本次实际由注释状态改为启用的端口，回滚时只还原这些行。
+Default_IPv6_Enabled_Ports=''
+
 Enable_Default_IPv6_Listen()
 {
     local conf=/usr/local/nginx/conf/vhost/default.conf
 
+    Default_IPv6_Enabled_Ports=''
     [ -s "${conf}" ] || return 1
-    grep -q '^[[:space:]]*#listen \[::\]:80 default_server' "${conf}" || return 1
-    sed -i 's/#listen \[::\]:80 default_server/listen [::]:80 default_server/' "${conf}" || return 1
+    if grep -q '^[[:space:]]*#listen \[::\]:80 default_server' "${conf}"; then
+        sed -i 's/#listen \[::\]:80 default_server/listen [::]:80 default_server/' "${conf}" || return 1
+        Default_IPv6_Enabled_Ports='80'
+    fi
     # 443 的兜底块同理：站点开了 IPv6 而 default 没开，[::]:443 上就没有
     # default_server，未知 SNI 会落到业务站点。
-    sed -i 's/#listen \[::\]:443 ssl default_server/listen [::]:443 ssl default_server/' "${conf}"
+    if grep -q '^[[:space:]]*#listen \[::\]:443 ssl default_server' "${conf}"; then
+        if sed -i 's/#listen \[::\]:443 ssl default_server/listen [::]:443 ssl default_server/' "${conf}"; then
+            Default_IPv6_Enabled_Ports="${Default_IPv6_Enabled_Ports:+${Default_IPv6_Enabled_Ports} }443"
+        fi
+    fi
+    [ -n "${Default_IPv6_Enabled_Ports}" ] || return 1
     echo "已同步启用 default 站点的 IPv6 监听。"
     return 0
 }
@@ -949,11 +974,20 @@ Enable_Default_IPv6_Listen()
 # 回滚 Enable_Default_IPv6_Listen 的改动。
 Disable_Default_IPv6_Listen()
 {
-    local conf=/usr/local/nginx/conf/vhost/default.conf
+    local conf=/usr/local/nginx/conf/vhost/default.conf port
 
     [ -s "${conf}" ] || return 0
-    sed -i 's/^\([[:space:]]*\)listen \[::\]:80 default_server/\1#listen [::]:80 default_server/' "${conf}"
-    sed -i 's/^\([[:space:]]*\)listen \[::\]:443 ssl default_server/\1#listen [::]:443 ssl default_server/' "${conf}"
+    for port in ${Default_IPv6_Enabled_Ports}; do
+        case "${port}" in
+            80)
+                sed -i 's/^\([[:space:]]*\)listen \[::\]:80 default_server/\1#listen [::]:80 default_server/' "${conf}"
+                ;;
+            443)
+                sed -i 's/^\([[:space:]]*\)listen \[::\]:443 ssl default_server/\1#listen [::]:443 ssl default_server/' "${conf}"
+                ;;
+        esac
+    done
+    Default_IPv6_Enabled_Ports=''
     return 0
 }
 
@@ -1179,7 +1213,7 @@ Add_VHost()
         Reject_Wildcard_Site "${domain}" || continue
         if [[ -f "/usr/local/nginx/conf/vhost/${domain}.conf" || -f "/usr/local/apache/conf/vhost/${domain}.conf" ]]; then
             Echo_Red "域名 ${domain} 已存在，请检查。"
-            exit 1
+            continue
         fi
         Check_Domain_Not_Taken "${domain}" || continue
         echo "您的域名：${domain}"
@@ -1192,6 +1226,7 @@ Add_VHost()
         Lower_Domain_Input moredomain
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" || continue
+        Check_More_Domains_Unique "${domain}" "${moredomain}" || continue
         Reject_Wildcard_Site "${moredomain}" || continue
         Check_Domain_Not_Taken "${moredomain}" || continue
         break
@@ -1284,15 +1319,30 @@ Add_VHost()
     vhostdir_created="n"
     [ -d "${vhostdir}" ] || vhostdir_created="y"
     mkdir -p "${vhostdir}" || return 1
+    # 只记录本次新建的日志文件，回滚时才删除，避免清掉已有站点的日志。
+    access_log_created=()
     if [ "${access_log}" == "y" ]; then
-        touch /home/wwwlogs/${al_name}.log
-        touch /home/wwwlogs/${al_name}-access_log
+        for access_log_file in "/home/wwwlogs/${al_name}.log" "/home/wwwlogs/${al_name}-access_log"; do
+            [ -e "${access_log_file}" ] && continue
+            if ! touch "${access_log_file}"; then
+                Echo_Red "创建访问日志 ${access_log_file} 失败，已放弃建站。"
+                [ ${#access_log_created[@]} -gt 0 ] && rm -f "${access_log_created[@]}"
+                [ "${vhostdir_created}" = "y" ] && rmdir "${vhostdir}" 2>/dev/null
+                return 1
+            fi
+            access_log_created+=("${access_log_file}")
+        done
     fi
     echo "正在设置虚拟主机目录权限......"
-    Prepare_Vhost_Dir_Perm "${vhostdir}" "${vhostdir_created}"
+    # 权限设置失败不阻断建站，但必须提示用户核对，否则 PHP 可能读不到站点文件。
+    if ! Prepare_Vhost_Dir_Perm "${vhostdir}" "${vhostdir_created}"; then
+        Echo_Yellow "站点目录权限或属主未完全设置，建站继续，请稍后核对 ${vhostdir}。"
+        echo
+    fi
 
     if ! Add_VHost_Config; then
         [ "${vhostdir_created}" = "y" ] && rmdir "${vhostdir}" 2>/dev/null
+        [ ${#access_log_created[@]} -gt 0 ] && rm -f "${access_log_created[@]}"
         return 1
     fi
 
@@ -1448,7 +1498,8 @@ Del_VHost_Files()
     local nginx_backup='' apache_backup=''
 
     if [ -f "${nginx_conf}" ]; then
-        nginx_backup=$(mktemp /tmp/lnmpa-del-nginx.XXXXXXXX) || return 1
+        LNMP_Tmp_Init || return 1
+        nginx_backup=$(LNMP_Mktemp del-nginx) || return 1
         if ! \cp -p "${nginx_conf}" "${nginx_backup}"; then
             rm -f "${nginx_backup}"
             Echo_Red "备份 ${nginx_conf} 失败，未删除任何文件。"
@@ -1456,7 +1507,8 @@ Del_VHost_Files()
         fi
     fi
     if [ -f "${apache_conf}" ]; then
-        apache_backup=$(mktemp /tmp/lnmpa-del-apache.XXXXXXXX) || { rm -f "${nginx_backup}"; return 1; }
+        LNMP_Tmp_Init || { rm -f "${nginx_backup}"; return 1; }
+        apache_backup=$(LNMP_Mktemp del-apache) || { rm -f "${nginx_backup}"; return 1; }
         if ! \cp -p "${apache_conf}" "${apache_backup}"; then
             rm -f "${nginx_backup}" "${apache_backup}"
             Echo_Red "备份 ${apache_conf} 失败，未删除任何文件。"
@@ -1475,6 +1527,8 @@ Del_VHost_Files()
         return 1
     fi
 
+    # TLS 由前端 Nginx 终结，证书只出现在 Nginx 侧配置里。
+    Report_Vhost_Cert_Residue "${nginx_backup}"
     rm -f "${nginx_backup}" "${apache_backup}"
     return 0
 }
@@ -1534,6 +1588,88 @@ Del_VHost_Reload()
     fi
 
     return ${rc}
+}
+
+# 站点配置中引用的证书与私钥路径。
+Vhost_Cert_Paths()
+{
+    awk '($1 == "ssl_certificate" || $1 == "ssl_certificate_key") {
+             v = $2
+             sub(/;$/, "", v)
+             if (substr(v, 1, 1) == "/") print v
+         }' "$1" | sort -u
+}
+
+# 证书目录是否仍被现存站点引用。泛域名证书常被多个站点共用，且各站点未必
+# 引用目录里同一个文件，因此按目录而不是按文件路径判断。
+Cert_Dir_In_Use()
+{
+    local dir="$1" f
+
+    for f in "${Vhost_Conf_Dir}"/*.conf; do
+        [ -s "${f}" ] || continue
+        awk -v d="${dir}/" '
+            ($1 == "ssl_certificate" || $1 == "ssl_certificate_key") {
+                v = $2
+                sub(/;$/, "", v)
+                if (substr(v, 1, length(d)) == d) hit = 1
+            }
+            END { exit hit ? 0 : 1 }
+        ' "${f}" && return 0
+    done
+    return 1
+}
+
+# 删站后提示证书残留，不自动删除：同一份证书可能仍被其它站点引用，
+# 删错会让在线站点失去 HTTPS。只列出剩余站点都不再引用且仍在磁盘上的目录。
+Report_Vhost_Cert_Residue()
+{
+    local conf_backup="$1" p dir base main workdir dirs='' nl=$'\n'
+
+    [ -s "${conf_backup}" ] || return 0
+    while IFS= read -r p; do
+        [ -n "${p}" ] || continue
+        # 只报告本包管理的证书目录，用户自备路径不提示。
+        case "${p}" in
+        "${Acme_Cert_Home}"/*) ;;
+        *) continue ;;
+        esac
+        dir="${p%/*}"
+        # 证书直接放在证书主目录下时，目录本身不是站点专属目录，不能作为残留报告。
+        [ "${dir}" != "${Acme_Cert_Home}" ] || continue
+        [ -d "${dir}" ] || continue
+        case "${nl}${dirs}${nl}" in
+        *"${nl}${dir}${nl}"*) continue ;;
+        esac
+        Cert_Dir_In_Use "${dir}" && continue
+        dirs="${dirs:+${dirs}${nl}}${dir}"
+    done <<EOF
+$(Vhost_Cert_Paths "${conf_backup}")
+EOF
+    [ -n "${dirs}" ] || return 0
+
+    echo
+    Echo_Yellow "以下证书文件已不被任何站点引用，未自动删除："
+    echo
+    while IFS= read -r dir; do
+        [ -n "${dir}" ] || continue
+        echo "  ${dir}/"
+        base="${dir##*/}"
+        # 泛域名的证书目录名把 *. 换成了 _wildcard.，acme.sh 台账里仍是 *. 开头。
+        main="${base/#_wildcard./*.}"
+        workdir="${Acme_Cert_Home}/${main}_ecc"
+        [ -d "${workdir}" ] || continue
+        echo "  ${workdir}/"
+        Echo_Yellow "  acme.sh 仍会为 ${main} 续期，停止续期："
+        echo
+        echo "    . /usr/local/acme.sh/acme.sh.env"
+        printf "    /usr/local/acme.sh/acme.sh --remove -d '%s' --ecc\n" "${main}"
+    done <<EOF
+${dirs}
+EOF
+    Echo_Yellow "确认不再使用后手工删除上面列出的目录。"
+    echo
+    return 0
 }
 
 First_Executable()
@@ -2106,6 +2242,33 @@ Check_More_Domains()
     for d in $1; do
         Check_Domain_Name "${d}" || return 1
     done
+    return 0
+}
+
+# 附加域名与主域名或彼此重复会写出重复的 server_name/ServerAlias，
+# reload 时 Web 服务会报 conflicting server name。
+Check_More_Domains_Unique()
+{
+    local main="$1" d seen=''
+
+    # 附加域名可能含泛域名，拆词前关闭通配符展开。
+    set -f
+    for d in $2; do
+        if [ "${d}" = "${main}" ]; then
+            set +f
+            Echo_Red "附加域名 ${d} 与主域名重复，请重新输入。"
+            return 1
+        fi
+        case " ${seen} " in
+            *" ${d} "*)
+                set +f
+                Echo_Red "附加域名 ${d} 重复出现，请重新输入。"
+                return 1
+                ;;
+        esac
+        seen="${seen:+${seen} }${d}"
+    done
+    set +f
     return 0
 }
 
@@ -2889,7 +3052,7 @@ Add_SSL_Only_Info_Menu()
         Lower_Domain_Input input
         Check_Domain_Name "${input}" || continue
         # HTTP-01 不能签发泛域名，ACME 规定泛域名只接受 DNS-01。
-        Reject_Wildcards_For_HTTP "${input}" || return 1
+        Reject_Wildcards_For_HTTP "${input}" || continue
         if [ "${input}" = "default" ]; then
             domain="default"
             break
@@ -3071,7 +3234,7 @@ Load_Vhost_Params()
 
 Check_Acme_EMail()
 {
-    if [ ! -s /usr/local/acme.sh/account.conf ] || ! cat /usr/local/acme.sh/account.conf | grep -Eq "^ACCOUNT_EMAIL="; then
+    if [ ! -s /usr/local/acme.sh/account.conf ] || ! grep -Eq "^ACCOUNT_EMAIL=" /usr/local/acme.sh/account.conf; then
         while :;do
             Echo_Yellow "请输入证书账户邮箱（可留空）: "
             Read_Input email_address "邮箱地址"
@@ -4146,6 +4309,7 @@ Add_DNS_SSL_Only_Info_Menu()
         Lower_Domain_Input moredomain
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" || continue
+        Check_More_Domains_Unique "${domain}" "${moredomain}" || continue
         Check_Extra_Wildcards "${moredomain}" && break
     done
     if [ "${moredomain}" != "" ]; then
@@ -4272,11 +4436,11 @@ Prepare_Default_Site_IP_Cert()
         Echo_Red "${ip} 未绑定在本机任何接口上，这台机器在 NAT 后面。"
         echo "只有已把该 IP 的 80 端口转发到本机，HTTP-01 验证才可能通过；"
         echo "否则本次申请会失败，并消耗账户的失败验证次数。"
-        read -p "确认已做端口转发并继续申请？(y/N)：" nat_confirm
-        case "${nat_confirm}" in
-            y|Y|yes|YES) ;;
-            *) Echo_Red "已取消 default 站点的证书申请。"; return 1 ;;
-        esac
+        Read_YN nat_confirm "确认已做端口转发并继续申请? (y/N，默认 n) " n "端口转发确认"
+        if [ "${nat_confirm}" != "y" ]; then
+            Echo_Red "已取消 default 站点的证书申请。"
+            return 1
+        fi
         echo
     fi
 
@@ -4576,9 +4740,10 @@ Create_SSL_Config()
         fi
     fi
 
-    listen_frag=$(mktemp /tmp/lnmpa-ssl-listen.XXXXXXXX) || return 1
-    ssl_frag=$(mktemp /tmp/lnmpa-ssl-frag.XXXXXXXX) || { rm -f "${listen_frag}"; return 1; }
-    backup=$(mktemp /tmp/lnmpa-ssl-vhost.XXXXXXXX) || { rm -f "${listen_frag}" "${ssl_frag}"; return 1; }
+    LNMP_Tmp_Init || return 1
+    listen_frag=$(LNMP_Mktemp ssl-listen) || return 1
+    ssl_frag=$(LNMP_Mktemp ssl-frag) || { rm -f "${listen_frag}"; return 1; }
+    backup=$(LNMP_Mktemp ssl-vhost) || { rm -f "${listen_frag}" "${ssl_frag}"; return 1; }
 
     cat >"${listen_frag}"<<EOF
     ${ssl_listen}
@@ -4896,8 +5061,7 @@ Add_SSL()
         Verify_Own_Cert "${ssl_certificate}" "${ssl_certificate_key}" \
             "${domain}" "${moredomain}" || return 1
         Create_SSL_Config || return 1
-    elif echo "${ssl_choice}" | grep -Eqi "^[23]$"; then
-        letsdomain=""
+    elif [[ "${ssl_choice}" =~ ^(2|3)$ ]]; then
         cert_profile_opt=""
         letsdomain="-d ${domain}"
         if [ "${moredomain}" != "" ]; then
@@ -4924,7 +5088,7 @@ Add_SSL()
             return 1
         fi
 
-        Install_Check_Acme.sh || exit 1
+        Install_Check_Acme.sh || return 1
 
         Backup_Cert_Dir "/usr/local/nginx/conf/ssl/${domain}" || return 1
         acme_target="${domain}"

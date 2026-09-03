@@ -843,11 +843,25 @@ Function_Ftp()
 esac
 }
 
+# 本机是否有可供站点使用的 PHP：Apache 加载的 PHP 由此编译产物提供。
+Site_PHP_Available()
+{
+    [ -s /usr/local/php/bin/php-config ]
+}
+
 # 站点级 PHP 开关：默认由 mod_php 执行 .php；关闭后所有 .php 请求返回 404。
 # 非交互执行通过 VHOST_PHP=n 关闭 PHP，未设置时保持默认开启。
 Site_PHP_Menu()
 {
     local answer
+    # 未装 PHP 时开启只会让 .php 请求失败，直接关闭并说明原因。
+    if ! Site_PHP_Available; then
+        enable_site_php="n"
+        Echo_Yellow "未检测到已安装的 PHP，本站点关闭 PHP，所有 .php 请求返回 404。"
+        echo
+        echo "如需 PHP，请重新执行完整安装。"
+        return 0
+    fi
     if [ ! -t 0 ]; then
         case "${VHOST_PHP}" in
             [nN])
@@ -1123,7 +1137,7 @@ Add_VHost()
         Reject_Wildcard_Site "${domain}" || continue
         if [ -f "/usr/local/apache/conf/vhost/${domain}.conf" ]; then
             Echo_Red "域名 ${domain} 已存在，请检查。"
-            exit 1
+            continue
         fi
         Check_Domain_Not_Taken "${domain}" || continue
         echo "您的域名：${domain}"
@@ -1136,6 +1150,7 @@ Add_VHost()
         Lower_Domain_Input moredomain
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" || continue
+        Check_More_Domains_Unique "${domain}" "${moredomain}" || continue
         Reject_Wildcard_Site "${moredomain}" || continue
         Check_Domain_Not_Taken "${moredomain}" || continue
         break
@@ -1220,7 +1235,11 @@ Add_VHost()
     [ -d "${vhostdir}" ] || vhostdir_created="y"
     mkdir -p "${vhostdir}" || return 1
     echo "正在设置虚拟主机目录权限......"
-    Prepare_Vhost_Dir_Perm "${vhostdir}" "${vhostdir_created}"
+    # 权限设置失败不阻断建站，但必须提示用户核对，否则 PHP 可能读不到站点文件。
+    if ! Prepare_Vhost_Dir_Perm "${vhostdir}" "${vhostdir_created}"; then
+        Echo_Yellow "站点目录权限或属主未完全设置，建站继续，请稍后核对 ${vhostdir}。"
+        echo
+    fi
 
     if ! Add_VHost_Config; then
         [ "${vhostdir_created}" = "y" ] && rmdir "${vhostdir}" 2>/dev/null
@@ -1369,7 +1388,8 @@ Del_VHost_Files()
     local shared_conf="${Vhost_Shared_Dir}/${domain}.conf"
     local conf_backup shared_backup=''
 
-    conf_backup=$(mktemp /tmp/lamp-del-vhost.XXXXXXXX) || return 1
+    LNMP_Tmp_Init || return 1
+    conf_backup=$(LNMP_Mktemp del-vhost) || return 1
     if ! \cp -p "${vhost_conf}" "${conf_backup}"; then
         rm -f "${conf_backup}"
         Echo_Red "备份 ${vhost_conf} 失败，未删除任何文件。"
@@ -1377,7 +1397,7 @@ Del_VHost_Files()
     fi
     # 片段结构的站点要连同片段删除，否则同名站点重建时会读到旧配置。
     if [ -s "${shared_conf}" ]; then
-        if ! shared_backup=$(mktemp /tmp/lamp-del-shared.XXXXXXXX); then
+        if ! shared_backup=$(LNMP_Mktemp del-shared); then
             rm -f "${conf_backup}"
             return 1
         fi
@@ -1401,6 +1421,8 @@ Del_VHost_Files()
         return 1
     fi
 
+    # 站点已下线，此时扫描剩余站点才能判断证书是否还有人引用。
+    Report_Vhost_Cert_Residue "${conf_backup}"
     rm -f "${conf_backup}"
     [ -n "${shared_backup}" ] && rm -f "${shared_backup}"
     return 0
@@ -1444,6 +1466,89 @@ Del_VHost_Reload()
     fi
     Echo_Red "Apache 未能重载，运行中的 httpd 仍在提供该站点。"
     return 1
+}
+
+# 站点配置中引用的证书与私钥路径。
+Vhost_Cert_Paths()
+{
+    awk '($1 == "SSLCertificateFile" || $1 == "SSLCertificateKeyFile") {
+             v = $2
+             sub(/;$/, "", v)
+             if (substr(v, 1, 1) == "/") print v
+         }' "$1" | sort -u
+}
+
+# 证书目录是否仍被现存站点引用。泛域名证书常被多个站点共用，且各站点未必
+# 引用目录里同一个文件，因此按目录而不是按文件路径判断。
+Cert_Dir_In_Use()
+{
+    local dir="$1" f
+
+    for f in "${Vhost_Conf_Dir}"/*.conf; do
+        [ -s "${f}" ] || continue
+        awk -v d="${dir}/" '
+            ($1 == "SSLCertificateFile" || $1 == "SSLCertificateKeyFile" \
+             || $1 == "SSLCertificateChainFile") {
+                v = $2
+                sub(/;$/, "", v)
+                if (substr(v, 1, length(d)) == d) hit = 1
+            }
+            END { exit hit ? 0 : 1 }
+        ' "${f}" && return 0
+    done
+    return 1
+}
+
+# 删站后提示证书残留，不自动删除：同一份证书可能仍被其它站点引用，
+# 删错会让在线站点失去 HTTPS。只列出剩余站点都不再引用且仍在磁盘上的目录。
+Report_Vhost_Cert_Residue()
+{
+    local conf_backup="$1" p dir base main workdir dirs='' nl=$'\n'
+
+    [ -s "${conf_backup}" ] || return 0
+    while IFS= read -r p; do
+        [ -n "${p}" ] || continue
+        # 只报告本包管理的证书目录，用户自备路径不提示。
+        case "${p}" in
+        "${Acme_Cert_Home}"/*) ;;
+        *) continue ;;
+        esac
+        dir="${p%/*}"
+        # 证书直接放在证书主目录下时，目录本身不是站点专属目录，不能作为残留报告。
+        [ "${dir}" != "${Acme_Cert_Home}" ] || continue
+        [ -d "${dir}" ] || continue
+        case "${nl}${dirs}${nl}" in
+        *"${nl}${dir}${nl}"*) continue ;;
+        esac
+        Cert_Dir_In_Use "${dir}" && continue
+        dirs="${dirs:+${dirs}${nl}}${dir}"
+    done <<EOF
+$(Vhost_Cert_Paths "${conf_backup}")
+EOF
+    [ -n "${dirs}" ] || return 0
+
+    echo
+    Echo_Yellow "以下证书文件已不被任何站点引用，未自动删除："
+    echo
+    while IFS= read -r dir; do
+        [ -n "${dir}" ] || continue
+        echo "  ${dir}/"
+        base="${dir##*/}"
+        # 泛域名的证书目录名把 *. 换成了 _wildcard.，acme.sh 台账里仍是 *. 开头。
+        main="${base/#_wildcard./*.}"
+        workdir="${Acme_Cert_Home}/${main}_ecc"
+        [ -d "${workdir}" ] || continue
+        echo "  ${workdir}/"
+        Echo_Yellow "  acme.sh 仍会为 ${main} 续期，停止续期："
+        echo
+        echo "    . /usr/local/acme.sh/acme.sh.env"
+        printf "    /usr/local/acme.sh/acme.sh --remove -d '%s' --ecc\n" "${main}"
+    done <<EOF
+${dirs}
+EOF
+    Echo_Yellow "确认不再使用后手工删除上面列出的目录。"
+    echo
+    return 0
 }
 
 First_Executable()
@@ -2016,6 +2121,33 @@ Check_More_Domains()
     for d in $1; do
         Check_Domain_Name "${d}" || return 1
     done
+    return 0
+}
+
+# 附加域名与主域名或彼此重复会写出重复的 server_name/ServerAlias，
+# reload 时 Web 服务会报 conflicting server name。
+Check_More_Domains_Unique()
+{
+    local main="$1" d seen=''
+
+    # 附加域名可能含泛域名，拆词前关闭通配符展开。
+    set -f
+    for d in $2; do
+        if [ "${d}" = "${main}" ]; then
+            set +f
+            Echo_Red "附加域名 ${d} 与主域名重复，请重新输入。"
+            return 1
+        fi
+        case " ${seen} " in
+            *" ${d} "*)
+                set +f
+                Echo_Red "附加域名 ${d} 重复出现，请重新输入。"
+                return 1
+                ;;
+        esac
+        seen="${seen:+${seen} }${d}"
+    done
+    set +f
     return 0
 }
 
@@ -2803,7 +2935,7 @@ Add_SSL_Only_Info_Menu()
         Lower_Domain_Input input
         Check_Domain_Name "${input}" || continue
         # HTTP-01 不能签发泛域名，ACME 规定泛域名只接受 DNS-01。
-        Reject_Wildcards_For_HTTP "${input}" || return 1
+        Reject_Wildcards_For_HTTP "${input}" || continue
         if [ "${input}" = "default" ]; then
             domain="default"
             break
@@ -2906,7 +3038,7 @@ Load_Vhost_Params()
 
 Check_Acme_EMail()
 {
-    if [ ! -s /usr/local/acme.sh/account.conf ] || ! cat /usr/local/acme.sh/account.conf | grep -Eq "^ACCOUNT_EMAIL="; then
+    if [ ! -s /usr/local/acme.sh/account.conf ] || ! grep -Eq "^ACCOUNT_EMAIL=" /usr/local/acme.sh/account.conf; then
         while :;do
             Echo_Yellow "请输入证书账户邮箱（可留空）: "
             Read_Input email_address "邮箱地址"
@@ -3966,6 +4098,7 @@ Add_DNS_SSL_Only_Info_Menu()
         Lower_Domain_Input moredomain
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" || continue
+        Check_More_Domains_Unique "${domain}" "${moredomain}" || continue
         Check_Extra_Wildcards "${moredomain}" && break
     done
     if [ "${moredomain}" != "" ]; then
@@ -4105,11 +4238,11 @@ Prepare_Default_Site_IP_Cert()
         Echo_Red "${ip} 未绑定在本机任何接口上，这台机器在 NAT 后面。"
         echo "只有已把该 IP 的 80 端口转发到本机，HTTP-01 验证才可能通过；"
         echo "否则本次申请会失败，并消耗账户的失败验证次数。"
-        read -p "确认已做端口转发并继续申请？(y/N)：" nat_confirm
-        case "${nat_confirm}" in
-            y|Y|yes|YES) ;;
-            *) Echo_Red "已取消 default 站点的证书申请。"; return 1 ;;
-        esac
+        Read_YN nat_confirm "确认已做端口转发并继续申请? (y/N，默认 n) " n "端口转发确认"
+        if [ "${nat_confirm}" != "y" ]; then
+            Echo_Red "已取消 default 站点的证书申请。"
+            return 1
+        fi
         echo
     fi
 
@@ -4328,8 +4461,9 @@ Create_SSL_Config()
     DirectoryIndex index.html'
     fi
 
-    backup=$(mktemp /tmp/lamp-ssl-vhost.XXXXXXXX) || return 1
-    httpd_conf_backup=$(mktemp /tmp/lamp-ssl-httpd.XXXXXXXX) || { rm -f "${backup}"; return 1; }
+    LNMP_Tmp_Init || return 1
+    backup=$(LNMP_Mktemp ssl-vhost) || return 1
+    httpd_conf_backup=$(LNMP_Mktemp ssl-httpd) || { rm -f "${backup}"; return 1; }
     \cp -p "${vhost_conf}" "${backup}" || { rm -f "${backup}" "${httpd_conf_backup}"; return 1; }
     \cp -p /usr/local/apache/conf/httpd.conf "${httpd_conf_backup}" || {
         rm -f "${backup}" "${httpd_conf_backup}"
@@ -4628,8 +4762,7 @@ Add_SSL()
         Verify_Own_Cert "${ssl_certificate}" "${ssl_certificate_key}" \
             "${domain}" "${moredomain}" || return 1
         Create_SSL_Config || return 1
-    elif echo "${ssl_choice}" | grep -Eqi "^[23]$"; then
-        letsdomain=""
+    elif [[ "${ssl_choice}" =~ ^(2|3)$ ]]; then
         cert_profile_opt=""
         letsdomain="-d ${domain}"
         if [ "${moredomain}" != "" ]; then
@@ -4656,7 +4789,7 @@ Add_SSL()
             return 1
         fi
 
-        Install_Check_Acme.sh || exit 1
+        Install_Check_Acme.sh || return 1
 
         Backup_Cert_Dir "/usr/local/apache/conf/ssl/${domain}" || return 1
         acme_target="${domain}"

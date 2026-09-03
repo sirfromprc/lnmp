@@ -534,6 +534,18 @@ Probe_Fpm()
     return 0
 }
 
+# 从 redis.conf 读取监听端口，缺失或非数字时回退到 Redis 默认的 6379。
+Redis_Conf_Port()
+{
+    local port
+
+    port=$(awk '$1 == "port" { print $2; exit }' "${Redis_Dir}/etc/redis.conf" 2>/dev/null)
+    case "${port}" in
+        ''|*[!0-9]*) port=6379 ;;
+    esac
+    printf '%s' "${port}"
+}
+
 # Redis 探针。用 bash 的 /dev/tcp 直接发 inline 命令，不调 redis-cli。
 #
 # 不用 redis-cli 的原因是超时无法保证：其 -t 只控制建立连接的超时，服务器接受
@@ -546,10 +558,7 @@ Probe_Redis()
 {
     local port line
 
-    port=$(awk '$1 == "port" { print $2; exit }' "${Redis_Dir}/etc/redis.conf" 2>/dev/null)
-    case "${port}" in
-        ''|*[!0-9]*) port=6379 ;;
-    esac
+    port=$(Redis_Conf_Port)
     # port 0 表示只监听 unixsocket，没有 TCP 端口可探测，不判为故障。
     [ "${port}" = "0" ] && return 0
 

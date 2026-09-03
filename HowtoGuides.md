@@ -1022,7 +1022,14 @@ lnmp vhost add
 
 **第 1、2 步会检查域名是否已被占用**：主域名和附加域名都会与现有站点的 `server_name`
 （Apache 栈是 `ServerName` 与 `ServerAlias`）比对，已被声明就列出占用它的配置文件并
-要求重新输入，不会建出两个都声明同一域名的站点。
+要求重新输入，不会建出两个都声明同一域名的站点。本机已存在同名站点配置时同样是重新
+提示输入，不会终止整条命令。第 2 步还会拒绝与主域名重复、或附加域名内部重复的输入，
+避免写出含重复项的 `server_name`。
+
+**第 6 步只在本机装有 PHP 时出现**：检测不到主 PHP（`/usr/local/php/bin/php-config`
+与 `/etc/init.d/php-fpm`）也没有任何完整安装的附加版本时，站点 PHP 直接关闭并说明原因，
+建出的站点所有 `.php` 请求返回 404。只用 `install.sh nginx` 装了 Nginx 的机器属于这种
+情况，装好 PHP 后重新建站或手工改站点配置即可。
 
 **第 16 步之后可能还有一问**：站点目录是本次新建或原本为空时统一设为 755；复用已有的
 非空目录时保留其中文件的权限位，并询问 `是否把目录统一改为 755、普通文件改为 644?`
@@ -2342,6 +2349,13 @@ Include conf/vhost/shared/example.com.conf
 
 2.3 之前建的站点是内联结构，两个 VirtualHost 各写一份完整配置。`lnmp ssl add` 会识别并沿用
 原来的写法，不改动已有站点；要转成片段结构需手工整理或删站重建。
+
+**LAMP 的 443 没有未知 SNI 兜底**：Nginx 两栈的 default 站点用 `ssl_reject_handshake`
+在握手阶段拒绝未匹配任何站点的 HTTPS 请求，Apache 没有等价指令，`SSLStrictSNIVHostCheck`
+只拦不带 SNI 的请求。因此在 LAMP 上按服务器 IP 直连 HTTPS，或把别的域名解析到这台机器，
+会拿到加载顺序最靠前的那个 443 VirtualHost 的响应（内容是该站点的，证书仍然不匹配，
+浏览器会先告警）。需要遮蔽时自建一个证书齐备、排在最前的默认 `<VirtualHost *:443>`。
+LNMPA 不受影响：它的 Apache 只监听 `127.0.0.1:88`，TLS 由前端 Nginx 终结。
 
 ### 7.7 LNMPA 两端站点目录必须一致
 
@@ -4184,8 +4198,13 @@ Apache）；重启失败会恢复备份并返回非零。
 
 ### 9.9 程序提示 open_basedir 限制
 
-站点目录之外的路径读写会被 `.user.ini` 的 `open_basedir` 拦下，日志里是
+站点目录之外的路径读写会被 `open_basedir` 拦下，日志里是
 `open_basedir restriction in effect`。常见于把附件、缓存或字体放在站点目录之外。
+三套栈允许的路径集合一致：站点目录、`/tmp/`、`/var/tmp/`、`/proc/`。
+
+LNMP 上生效的是 `fastcgi.conf` 里 `fastcgi_param PHP_ADMIN_VALUE` 设置的值；
+站点目录里的 `.user.ini` 是同值的第二层，PHP 不允许 `.user.ini` 覆盖 admin 值，
+因此解除限制必须两层一起改（下面的脚本已经这样做）。
 
 优先改程序路径，让它留在站点目录内。确需去掉限制时执行：
 

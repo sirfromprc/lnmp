@@ -401,7 +401,7 @@ Write_Nginx_Default_Php_Baseline()
     [ -f "${Default_Website_Dir}/.user.ini" ] && \
         chattr -i "${Default_Website_Dir}/.user.ini" 2>/dev/null
     if ! cat >"${Default_Website_Dir}/.user.ini"<<EOF
-open_basedir=${Default_Website_Dir}:/tmp/:/proc/
+open_basedir=${Default_Website_Dir}:/tmp/:/var/tmp/:/proc/
 EOF
     then
         Echo_Red "错误：写入 ${Default_Website_Dir}/.user.ini 失败，默认站点缺少 open_basedir 限制。"
@@ -424,7 +424,7 @@ EOF
         return 0
     fi
     if ! cat >>"${fastcgi_conf}"<<EOF
-fastcgi_param PHP_ADMIN_VALUE "open_basedir=\$document_root/:/tmp/:/proc/";
+fastcgi_param PHP_ADMIN_VALUE "open_basedir=\$document_root/:/tmp/:/var/tmp/:/proc/";
 EOF
     then
         Echo_Red "写入 ${fastcgi_conf} 失败，PHP 请求缺少 FastCGI 层的 open_basedir 兜底。"
