@@ -373,7 +373,63 @@ ${demo_php_block}
     access_log  /home/wwwlogs/default.log main;
     error_log   /home/wwwlogs/default.error.log;
 }
+
+server {
+    # 未匹配 SNI 的 HTTPS 请求在此终止。没有这个块时，443 上的第一个业务
+    # 站点会成为隐式默认站点，IP 直连和错误 DNS 指向都会拿到它的响应。
+    # 为 default 配置证书时，lnmp ssl add 会自动移除本块。
+    listen 443 ssl default_server;
+    #listen [::]:443 ssl default_server ipv6only=on;
+    ssl_reject_handshake on;
+}
 EOF
+    return 0
+}
+
+# default 站点的 PHP 安全基线：站点级 .user.ini 与 FastCGI 层按 $document_root
+# 计算的 PHP_ADMIN_VALUE。Nginx 与 OpenResty 共用，仅连接 PHP-FPM 的栈需要。
+Write_Nginx_Default_Php_Baseline()
+{
+    local conf_dir="${1:-/usr/local/nginx/conf}"
+    local fastcgi_conf="${conf_dir}/fastcgi.conf"
+
+    if [ ! -d "${Default_Website_Dir}" ] && ! mkdir -p "${Default_Website_Dir}"; then
+        Echo_Red "创建默认站点目录失败：${Default_Website_Dir}"
+        return 1
+    fi
+    # 重复安装时旧文件可能仍带 immutable，不先解除就写不进新的 open_basedir。
+    [ -f "${Default_Website_Dir}/.user.ini" ] && \
+        chattr -i "${Default_Website_Dir}/.user.ini" 2>/dev/null
+    if ! cat >"${Default_Website_Dir}/.user.ini"<<EOF
+open_basedir=${Default_Website_Dir}:/tmp/:/proc/
+EOF
+    then
+        Echo_Red "错误：写入 ${Default_Website_Dir}/.user.ini 失败，默认站点缺少 open_basedir 限制。"
+        return 1
+    fi
+    chmod 644 "${Default_Website_Dir}/.user.ini"
+    # immutable 是加固项，置不上不中断安装，但必须让用户看到。
+    if ! chattr +i "${Default_Website_Dir}/.user.ini" 2>/dev/null; then
+        Echo_Yellow "警告：无法为 ${Default_Website_Dir}/.user.ini 设置 immutable 属性。"
+        Echo_Yellow "该文件可被站点内的写入覆盖，可稍后手工执行："
+        Echo_Yellow "  chattr +i ${Default_Website_Dir}/.user.ini"
+    fi
+
+    if [ ! -s "${fastcgi_conf}" ]; then
+        Echo_Red "找不到 ${fastcgi_conf}，无法写入 FastCGI 层的 open_basedir 兜底。"
+        return 1
+    fi
+    # 重复安装不重复追加，否则同一参数会在 fastcgi.conf 里堆积多行。
+    if grep -q '^fastcgi_param PHP_ADMIN_VALUE' "${fastcgi_conf}"; then
+        return 0
+    fi
+    if ! cat >>"${fastcgi_conf}"<<EOF
+fastcgi_param PHP_ADMIN_VALUE "open_basedir=\$document_root/:/tmp/:/proc/";
+EOF
+    then
+        Echo_Red "写入 ${fastcgi_conf} 失败，PHP 请求缺少 FastCGI 层的 open_basedir 兜底。"
+        return 1
+    fi
     return 0
 }
 
@@ -490,26 +546,7 @@ Install_Nginx()
     Write_Nginx_Default_VHost /usr/local/nginx/conf || exit 1
 
     if [ "${Stack}" = "lnmp" ]; then
-        # 重复安装时旧文件可能仍带 immutable，不先解除就写不进新的 open_basedir。
-        [ -f "${Default_Website_Dir}/.user.ini" ] && \
-            chattr -i "${Default_Website_Dir}/.user.ini" 2>/dev/null
-        if ! cat >"${Default_Website_Dir}/.user.ini"<<EOF
-open_basedir=${Default_Website_Dir}:/tmp/:/proc/
-EOF
-        then
-            Echo_Red "错误：写入 ${Default_Website_Dir}/.user.ini 失败，默认站点缺少 open_basedir 限制。"
-            exit 1
-        fi
-        chmod 644 "${Default_Website_Dir}/.user.ini"
-        # immutable 是加固项，置不上不中断安装，但必须让用户看到。
-        if ! chattr +i "${Default_Website_Dir}/.user.ini" 2>/dev/null; then
-            Echo_Yellow "警告：无法为 ${Default_Website_Dir}/.user.ini 设置 immutable 属性。"
-            Echo_Yellow "该文件可被站点内的写入覆盖，可稍后手工执行："
-            Echo_Yellow "  chattr +i ${Default_Website_Dir}/.user.ini"
-        fi
-        cat >>/usr/local/nginx/conf/fastcgi.conf<<EOF
-fastcgi_param PHP_ADMIN_VALUE "open_basedir=\$document_root/:/tmp/:/proc/";
-EOF
+        Write_Nginx_Default_Php_Baseline /usr/local/nginx/conf || exit 1
     fi
 
     \cp init.d/init.d.nginx /etc/init.d/nginx

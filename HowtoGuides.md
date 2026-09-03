@@ -1014,11 +1014,19 @@ lnmp vhost add
 | 12 | `请输入当前数据库 root 密码（输入不回显）:` | 数据库 root 密码（不回显） |
 | 13 | `请输入数据库名（只允许字母、数字和下划线）:` | `wpdemo`（库名与用户名相同） |
 | 14 | `请输入数据库用户 <库名> 的密码（输入不回显）:` | 库用户密码（不回显） |
-| 15 | `是否添加 SSL 证书? (y/N，默认 n)` | 先 `n`，第七章单独做 |
+| 15 | `是否添加 SSL 证书?（HTTP 验证，需 80 端口可从公网访问）(y/N，默认 n)` | 先 `n`，第七章单独做 |
 | 16 | `按任意键开始创建虚拟主机，或按 Ctrl+C 取消...` | 任意键 |
 
 第 5 步之前会先列出已内置的伪静态规则名（`wordpress`、`typecho`、`discuzx` 等），
 第 9 步只在第 8 步选了 `y` 时出现；第 12–14 步只在第 11 步选了 `y` 时出现。
+
+**第 1、2 步会检查域名是否已被占用**：主域名和附加域名都会与现有站点的 `server_name`
+（Apache 栈是 `ServerName` 与 `ServerAlias`）比对，已被声明就列出占用它的配置文件并
+要求重新输入，不会建出两个都声明同一域名的站点。
+
+**第 16 步之后可能还有一问**：站点目录是本次新建或原本为空时统一设为 755；复用已有的
+非空目录时保留其中文件的权限位，并询问 `是否把目录统一改为 755、普通文件改为 644?`
+（默认 `n`）。两种情况下目录属主都会改为 `www`。非交互执行不占输入行，见 4.2。
 
 上表是 LNMP（Nginx）的问答顺序。三套栈的问答项并不相同，逐项对照如下
 （`—` 表示该栈没有这一问）：
@@ -1117,6 +1125,10 @@ printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
 > 注意：**第 6 步的 PHP 开关不占喂入序列的一行**。非交互执行时不读标准输入，
 > 只读取环境变量 `VHOST_PHP`：未设置时开启 PHP，
 > 上面这条命令不用改。要建不带 PHP 的站点见 4.4。
+>
+> 注意：**复用已有非空目录时的权限提问同样不占一行**。目录是新建的或为空时统一设为
+> 755；复用非空目录时保留其中文件的权限位，需要一并规范化就设 `VHOST_FIX_PERM=y`
+> （目录改 755、普通文件改 644）。无论哪种情况，目录属主都会改为 `www`。
 
 **LNMPA 与 LAMP 的序列**（按 4.1 的三栏对照表，PHP 开关同样不占一行）：
 
@@ -1220,9 +1232,16 @@ OpenResty 的路径是 `/usr/local/openresty/nginx/conf/`。`./upgrade.sh nginx`
 `location /`，留着会先被它拦成 404）。删掉后 HTTPS 同样没有这条规则——
 两者共用同一个 server 块。
 
-模板里静态资源缓存（`.js`、`.css`、图片的 `expires`）与隐藏文件拦截
-（`location ~ /\.`）三条正则默认是注释状态，反代站点不必再删。静态站点需要时
-就地取消注释即可，HTTP 与 HTTPS 一并生效。
+模板里静态资源缓存（`.js`、`.css`、图片的 `expires`）两条正则默认是注释状态，
+反代站点不必再删。静态站点需要时就地取消注释即可，HTTP 与 HTTPS 一并生效。
+
+隐藏文件拦截（`location ~ /\.`）**默认启用**，位置在 `include enable-php*.conf`
+之前——正则 location 取首个匹配，排在后面挡不住 `.hidden.php` 和 `/.git/a.css`。
+它拒绝 `.user.ini`、`.env`、`.git` 一类点开头的路径；ACME 用的 `/.well-known/`
+是 `^~` 前缀 location，优先级高于全部正则，不受影响。整站反代确实需要把点开头
+的路径交给上游时，删掉这条 `location` 即可。
+LAMP 站点的等价规则写在公共片段里，是 `<DirectoryMatch>` 与 `<FilesMatch>` 两段
+`Require all denied`，同样放行 `.well-known`。
 
 反代规则写在 `# 自定义配置--开始` 与 `# 自定义配置--结束` 之间，HTTP 与 HTTPS
 共用同一个 server 块，不需要再为 443 写一遍。
@@ -1635,15 +1654,16 @@ php -r '$r=new Redis(); $r->connect("127.0.0.1",6379);
 > 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
 安装后的 `/usr/local/php/etc/php.ini` 来自 PHP 的 production 模板，脚本明确改动
-`upload_max_filesize=50M`、`post_max_size=50M`、`max_execution_time=300`、
-`cgi.fix_pathinfo=0`、`expose_php=Off`、时区和禁用函数。`memory_limit` 仍是模板的
+`upload_max_filesize=50M`、`post_max_size=64M`、`max_execution_time=300`、
+`cgi.fix_pathinfo=0`、`expose_php=Off`、时区和禁用函数。`post_max_size` 高于上传上限是
+为了给表单其余字段留出开销，与 `nginx.conf` 的 `client_max_body_size 64m` 配套。`memory_limit` 仍是模板的
 128M，`max_input_vars` 仍是 1000。不要把所有站点一律改成 256M/3000：
 
 | 参数 | 建议起点 | 何时调整 |
 |---|---:|---|
 | `memory_limit` | 普通站 128M；电商/页面构建器 256M | 先看 PHP fatal error 和插件文档；它是单请求上限，不是预留内存 |
 | `upload_max_filesize` | 50M | 只按业务最大上传调，不建议用 PHP 上传大视频/备份 |
-| `post_max_size` | 不小于上传上限，另留表单开销 | 必须与 Nginx `client_max_body_size` 一起改 |
+| `post_max_size` | 项目值 64M，不小于上传上限并留表单开销 | 必须与 Nginx `client_max_body_size`（项目值 64m）一起改 |
 | `max_input_vars` | 1000 | 菜单/复杂表单确认发生截断后再升到 2000～3000 |
 | `max_execution_time` | 300 是项目值，普通页面应远低于此值 | 长任务移到队列/CLI；不要靠继续加超时掩盖慢请求 |
 
@@ -1710,9 +1730,12 @@ grep -E '^(MemAvailable|SwapFree):' /proc/meminfo
 journalctl -k --since today | grep -Ei 'oom|out of memory|killed process'
 ```
 
-低流量 1～4GB VPS 可用 `pm=ondemand` 降低常驻内存，并保留
-`pm.process_idle_timeout=10s`；稳定高流量用 `dynamic` 减少冷启动。两种模式都保留
-`pm.max_requests=500~1000` 控制长期碎片。调整后观察 502、FPM 日志中的
+低流量 1～4GB VPS 可用 `pm=ondemand` 降低常驻内存，此时再自行加一行
+`pm.process_idle_timeout=10s`（该指令只对 `ondemand` 生效，项目生成的 `dynamic`
+模板不写它）；稳定高流量用 `dynamic` 减少冷启动。项目生成的 `pm.max_requests=1024`
+用于控制长期碎片，两种模式都应保留同一量级的取值。模板另有
+`request_terminate_timeout=310`，比 `php.ini` 的 `max_execution_time=300` 高一档：
+让脚本先按 PHP 的限制超时返回，而不是执行到一半被 FPM 掐断连接。调整后观察 502、FPM 日志中的
 `server reached pm.max_children` 和系统 Swap/OOM，而不是看到 CPU 空闲就继续加 worker。
 
 ### 6.4 MySQL 8.4 / MariaDB
@@ -1958,10 +1981,13 @@ lnmp ssl add
 **HTTPS 与 HTTP 共用同一个 server 块**：证书写入后，站点的 PHP 开关、伪静态和自定义
 配置保持原样，不存在两份配置需要同步。
 
-交互顺序：域名 → **证书来源(1-4)** → 是否 301 跳转。选择自有证书时会继续询问
+交互顺序：域名 → **证书来源(普通站点 1-3，default 站点 1-2)** → 是否 301 跳转。选择自有证书时会继续询问
 证书和私钥路径；选择 CA 时按需询问账户邮箱。
 
 证书来源：`1`=用自己的证书 `2`=Let's Encrypt `3`=ZeroSSL。
+default 站点只有 `1`、`2` 两项：它没有域名，走 Let's Encrypt 的 IP 证书流程，ZeroSSL 不签发 IP 证书。
+选自有证书时会先校验证书能否解析、是否过期、私钥是否配对、SAN 是否覆盖站点域名，
+不覆盖时列出缺少的域名并要求确认。
 选 2-3 时会问一个邮箱，可以直接回车留空——ACME 规范里账户邮箱是可选的，
 Let's Encrypt 无邮箱也能签发。填写时**不能用 `example.com` 这类保留域名**，
 Let's Encrypt 会直接拒绝并报 `invalidContact`。选 ZeroSSL 时会再单独确认一次
@@ -2079,7 +2105,7 @@ CA 访问 `http://<域名>/.well-known/acme-challenge/...` 来验证控制权，
 `server_name` 含该域名的站点 `example.com`。**不做 `dnsssl` 那样的根域回退**——
 HTTP 验证要求该域名由现有网站直接服务，输入站点没有声明的子域会被要求改正。
 
-交互顺序：域名 → 证书来源(1-4) → 是否 301 跳转。
+交互顺序：域名 → 证书来源(普通站点 1-3，default 站点 1-2) → 是否 301 跳转。
 
 **DNS 验证 + 写站点配置 (`lnmp dnsssl <服务商>`)**
 
@@ -2951,6 +2977,7 @@ SSH 端口是唯一例外：以实际监听为准（`ss` → `netstat` → `sshd
 | 变量 | 作用 | 说明 |
 |---|---|---|
 | `VHOST_PHP=n` | 建站时关闭 PHP | 见 [4.4 建不带 PHP 的站点](#44-建不带-php-的站点) |
+| `VHOST_FIX_PERM=y` | 建站复用非空目录时统一权限位 | 未设置时保留原权限位，见 [4.2 非交互创建](#42-非交互创建) |
 | `LNMP_Import_Allow_Cross_Db=yes` | 放行跨库导入 | 见 [8.4 数据库管理](#84-数据库管理) |
 
 `install.sh` 的整套非交互变量见 [2.2 非交互安装（站群自动部署）](#22-非交互安装站群自动部署)。
@@ -3357,7 +3384,7 @@ nft list ruleset | grep -E '6379|11211'         # 对外阻断规则是否覆盖
 ```text
 lnmp vhost add       # 新增站点
 lnmp vhost list      # 列出所有站点
-lnmp vhost del       # 删除站点（只删 nginx 配置，保留网站文件）
+lnmp vhost del       # 删除站点（只删 Web 配置，保留网站文件）
 lnmp app add         # 托管 Node/Go 等应用进程，见 4.5
 lnmp app list        # 已托管应用及运行状态
 lnmp app logs <name> # 查看应用日志
@@ -3970,8 +3997,10 @@ tail -50 "$WP_DEBUG_LOG_DIR/debug.log"
 > ```
 > 并在站点配置中增加回退规则（放在 `include enable-php.conf;` 之前）：
 > ```nginx
-> location ~* \.(log|sql|bak|old|swp|env)$ { deny all; }
+> location ~* \.(log|sql|bak|old|swp)$ { deny all; }
 > ```
+> `.env` 这类点开头的文件已由模板默认启用的 `location ~ /\.` 拒绝（见 4.4），
+> 这条规则补的是 `.log`、`.sql`、`.bak` 一类不以点开头的文件。
 
 **排查完成后立即恢复配置并清理日志**。debug 日志可能集中记录敏感信息。
 
@@ -4035,6 +4064,12 @@ MariaDB 把上面的 `/usr/local/mysql` 换成 `/usr/local/mariadb`。`lnmp heal
 grep -E "upload_max_filesize|post_max_size" /usr/local/php/etc/php.ini
 grep client_max_body_size /usr/local/nginx/conf/nginx.conf
 ```
+
+项目安装值是 `upload_max_filesize=50M`、`post_max_size=64M`、
+`client_max_body_size 64m`，因此实际上限由 50M 决定。要传更大的文件，三处一起改：
+`post_max_size` 与 `client_max_body_size` 都要高于新的 `upload_max_filesize`。
+站点配置的自定义区块里写了 `client_max_body_size` 时，它覆盖 `nginx.conf` 的全局值。
+Apache 栈没有 `client_max_body_size`，只看 php.ini 两项。
 
 ### 9.5 Redis 缓存不生效
 
@@ -4139,11 +4174,11 @@ bash tools/reset_mysql_root_password.sh
 bash tools/remove_disable_function.sh
 ```
 
-- `1` 删除全部禁用函数（默认）
-- `2` 仅放行 `scandir`
-- `3` 仅放行 `exec`
+菜单按 `php.ini` 里当前实际禁用的函数生成：`1` 清空全部禁用函数，`2` 之后每一项
+对应一个当前被禁用的函数。编号非法会原地重问，不会跳过修改直接重启服务。
 
-脚本会重启 PHP-FPM（LAMP/LNMPA 下同时重启 Apache）使配置生效。
+脚本先备份 `php.ini`，改完核对配置确实变了，再重启 PHP-FPM（LAMP/LNMPA 下重启
+Apache）；重启失败会恢复备份并返回非零。
 解禁范围越大，PHP 被利用后可执行的系统操作越多；只放行程序确实需要的那个函数，
 不要图省事直接选 `1`。
 
@@ -4159,8 +4194,19 @@ bash tools/remove_open_basedir_restriction.sh
 # 按提示输入网站根目录，例如 /home/wwwroot/example.com
 ```
 
+脚本按 vhost 里的 `root` 找到使用该目录的站点，只改这些站点：把它们 include 的
+`enable-php*.conf` 换成同名的 `-nobasedir` 版本（该版本 include 的是不带
+`PHP_ADMIN_VALUE` 的 `fastcgi-nobasedir.conf`），再删除站点目录里的 `.user.ini`。
+全局 `fastcgi.conf` 不改动，**其它站点的 FastCGI 层兜底保持有效**。
+执行前会列出将要修改的配置文件并要求确认，`nginx -t` 不通过时回滚。
+
+恢复：把站点配置里的 `enable-php*-nobasedir.conf` 改回原文件名，重新写入
+`.user.ini` 后执行 `lnmp nginx reload`。
+
 该限制是多站点之间的目录边界，去掉后这个站点的 PHP 可以读写 `open_basedir`
 原本挡住的路径。单站点服务器影响有限，共享主机场景不建议去掉。
+LAMP、LNMPA 的边界来自 Apache 的 `php_admin_value open_basedir`，本工具不适用，
+需要直接编辑该站点的 Apache 配置。
 
 ### 9.10 服务起不来，或状态与 systemd 对不上
 

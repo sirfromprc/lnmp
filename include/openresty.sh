@@ -310,6 +310,12 @@ OpenResty_Post_Install()
     chown root:root /home/wwwlogs
     chmod 755 /home/wwwlogs
 
+    # LNMPA 把 PHP 转发给 Apache，其余栈连接 PHP-FPM，需要 default 的 open_basedir 基线。
+    # 放在递归授权之后：.user.ini 会被置为 immutable，chown -R 无法再改动它。
+    if [ "${Stack}" != 'lnmpa' ] && [ "${Get_Stack:-}" != 'lnmpa' ]; then
+        Write_Nginx_Default_Php_Baseline "${ordir}/conf" || exit 1
+    fi
+
     # 在 nginx -t 前生成动态模块和 Lua 搜索路径配置，确保 include 文件存在。
     if ! OR_Modules_Post_Build; then
         Echo_Red "生成模块与 Lua 路径配置失败。"

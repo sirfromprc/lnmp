@@ -2,8 +2,28 @@
 
 Install_PHP_Imap()
 {
+    local branch
+
     cd "${cur_dir}/src" || return 1
     echo "====== 正在安装 PHP IMAP 扩展 ======"
+    # PHP 8.4 起 ext/imap 移出主仓库改由 PECL 发布，源码包里解不出该目录，
+    # 先拦下来，避免装完依赖、下完源码才失败。
+    # 版本必须按所选的 PHP_Path 取：此刻 Cur_PHP_Version 还是 Select_PHP 写下的
+    # 主 PHP 版本，要到 Addons_Get_PHP_Ext_Dir 才会按 PHP_Path 重设。
+    branch=$("${PHP_Path}/bin/php-config" --version 2>/dev/null | cut -d. -f1-2)
+    if [ -z "${branch}" ]; then
+        Echo_Red "无法从 ${PHP_Path}/bin/php-config 读取 PHP 版本。"
+        return 1
+    fi
+    case "${branch}" in
+    8.0|8.1|8.2|8.3) ;;
+    *)
+        Echo_Red "PHP ${branch} 的源码不含 imap 扩展（8.4 起改由 PECL 发布）。"
+        Echo_Yellow "请改用：${PHP_Path}/bin/pecl install imap"
+        echo
+        return 1
+        ;;
+    esac
     Press_Start || return 1
 
     Addons_Get_PHP_Ext_Dir

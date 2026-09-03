@@ -101,162 +101,90 @@ Print_Banner \
     "安装缓存、优化器、加速器等附加组件" \
     "仅使用上游官方源码，并强制校验完整性"
 
+# 可与主 PHP 并存的附加版本。编号按已安装版本动态生成，不写死在菜单里：
+# 接受未安装的编号会把 PHP_Path 指向不存在的目录，后续 phpize 与 ini 写入全部失败。
+Addons_PHP_Version_List="5.2 5.3 5.4 5.5 5.6 7.0 7.1 7.2 7.3 7.4 8.0 8.1 8.2 8.3 8.4 8.5"
+
+# 二进制、Nginx include 和 init 脚本三者齐备才算这个版本可用。
+Addons_PHP_Installed()
+{
+    local ver="$1"
+
+    [ -s "/usr/local/php${ver}/sbin/php-fpm" ] \
+        && [ -s "/usr/local/nginx/conf/enable-php${ver}.conf" ] \
+        && [ -s "/etc/init.d/php-fpm${ver}" ]
+}
+
+# 输出已安装的附加 PHP 版本，供菜单和选择校验共用。
+Addons_PHP_Installed_List()
+{
+    local ver out=''
+
+    for ver in ${Addons_PHP_Version_List}; do
+        Addons_PHP_Installed "${ver}" && out="${out:+${out} }${ver}"
+    done
+    printf '%s' "${out}"
+}
+
 Select_PHP()
 {
+    local installed ver idx choice sel_ver
+
     if [ "${action2}" == "exit" ]; then
         exit 1
     fi
-    if [[ ! -s /usr/local/php5.2/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.2.conf ]] && [[ ! -s /usr/local/php5.3/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.3.conf ]] && [[ ! -s /usr/local/php5.4/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.4.conf ]] && [[ ! -s /usr/local/php5.5/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.5.conf ]] && [[ ! -s /usr/local/php5.6/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.6.conf ]] && [[ ! -s /usr/local/php7.0/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.0.conf ]] && [[ ! -s /usr/local/php7.1/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.1.conf ]] && [[ ! -s /usr/local/php7.2/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.2.conf ]] && [[ ! -s /usr/local/php7.3/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.3.conf ]] && [[ ! -s /usr/local/php7.4/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.4.conf ]] && [[ ! -s /usr/local/php8.0/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.0.conf ]] && [[ ! -s /usr/local/php8.1/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.1.conf ]] && [[ ! -s /usr/local/php8.2/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.2.conf ]] && [[ ! -s /usr/local/php8.3/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.3.conf ]] && [[ ! -s /usr/local/php8.4/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.4.conf ]] && [[ ! -s /usr/local/php8.5/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.5.conf ]]; then
+
+    installed="$(Addons_PHP_Installed_List)"
+    if [ -z "${installed}" ]; then
         PHP_Path='/usr/local/php'
         PHPFPM_Initd='/etc/init.d/php-fpm'
-    else
-        echo "检测到多个 PHP 版本，请选择要操作的版本。"
-        Cur_PHP_Version="`/usr/local/php/bin/php-config --version`"
-        Echo_Green "1: 默认主 PHP ${Cur_PHP_Version}"
-        if [[ -s /usr/local/php5.2/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.2.conf && -s /etc/init.d/php-fpm5.2 ]]; then
-            Echo_Green "2: PHP 5.2 [已安装]"
-        fi
-        if [[ -s /usr/local/php5.3/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.3.conf && -s /etc/init.d/php-fpm5.3 ]]; then
-            Echo_Green "3: PHP 5.3 [已安装]"
-        fi
-        if [[ -s /usr/local/php5.4/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.4.conf && -s /etc/init.d/php-fpm5.4 ]]; then
-            Echo_Green "4: PHP 5.4 [已安装]"
-        fi
-        if [[ -s /usr/local/php5.5/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.5.conf && -s /etc/init.d/php-fpm5.5 ]]; then
-            Echo_Green "5: PHP 5.5 [已安装]"
-        fi
-        if [[ -s /usr/local/php5.6/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.6.conf && -s /etc/init.d/php-fpm5.6 ]]; then
-            Echo_Green "6: PHP 5.6 [已安装]"
-        fi
-        if [[ -s /usr/local/php7.0/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.0.conf && -s /etc/init.d/php-fpm7.0 ]]; then
-            Echo_Green "7: PHP 7.0 [已安装]"
-        fi
-        if [[ -s /usr/local/php7.1/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.1.conf && -s /etc/init.d/php-fpm7.1 ]]; then
-            Echo_Green "8: PHP 7.1 [已安装]"
-        fi
-        if [[ -s /usr/local/php7.2/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.2.conf && -s /etc/init.d/php-fpm7.2 ]]; then
-            Echo_Green "9: PHP 7.2 [已安装]"
-        fi
-        if [[ -s /usr/local/php7.3/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.3.conf && -s /etc/init.d/php-fpm7.3 ]]; then
-            Echo_Green "10: PHP 7.3 [已安装]"
-        fi
-        if [[ -s /usr/local/php7.4/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.4.conf && -s /etc/init.d/php-fpm7.4 ]]; then
-            Echo_Green "11: PHP 7.4 [已安装]"
-        fi
-        if [[ -s /usr/local/php8.0/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.0.conf && -s /etc/init.d/php-fpm8.0 ]]; then
-            Echo_Green "12: PHP 8.0 [已安装]"
-        fi
-        if [[ -s /usr/local/php8.1/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.1.conf && -s /etc/init.d/php-fpm8.1 ]]; then
-            Echo_Green "13: PHP 8.1 [已安装]"
-        fi
-        if [[ -s /usr/local/php8.2/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.2.conf && -s /etc/init.d/php-fpm8.2 ]]; then
-            Echo_Green "14: PHP 8.2 [已安装]"
-        fi
-        if [[ -s /usr/local/php8.3/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.3.conf && -s /etc/init.d/php-fpm8.3 ]]; then
-            Echo_Green "15: PHP 8.3 [已安装]"
-        fi
-        if [[ -s /usr/local/php8.4/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.4.conf && -s /etc/init.d/php-fpm8.4 ]]; then
-            Echo_Green "16: PHP 8.4 [已安装]"
-        fi
-        if [[ -s /usr/local/php8.5/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.5.conf && -s /etc/init.d/php-fpm8.5 ]]; then
-            Echo_Green "17: PHP 8.5 [已安装]"
-        fi
-        Echo_Yellow "请选择 [1-17]（默认 1，主 PHP）："
-        read php_select
-        case "${php_select}" in
-            1)
-                echo "当前选择：PHP ${Cur_PHP_Version}"
-                PHP_Path='/usr/local/php'
-                PHPFPM_Initd='/etc/init.d/php-fpm'
-                ;;
-            2)
-                echo "当前选择：PHP `/usr/local/php5.2/bin/php-config --version`"
-                PHP_Path='/usr/local/php5.2'
-                PHPFPM_Initd='/etc/init.d/php-fpm5.2'
-                ;;
-            3)
-                echo "当前选择：PHP `/usr/local/php5.3/bin/php-config --version`"
-                PHP_Path='/usr/local/php5.3'
-                PHPFPM_Initd='/etc/init.d/php-fpm5.3'
-                ;;
-            4)
-                echo "当前选择：PHP `/usr/local/php5.4/bin/php-config --version`"
-                PHP_Path='/usr/local/php5.4'
-                PHPFPM_Initd='/etc/init.d/php-fpm5.4'
-                ;;
-            5)
-                echo "当前选择：PHP `/usr/local/php5.5/bin/php-config --version`"
-                PHP_Path='/usr/local/php5.5'
-                PHPFPM_Initd='/etc/init.d/php-fpm5.5'
-                ;;
-            6)
-                echo "当前选择：PHP `/usr/local/php5.6/bin/php-config --version`"
-                PHP_Path='/usr/local/php5.6'
-                PHPFPM_Initd='/etc/init.d/php-fpm5.6'
-                ;;
-            7)
-                echo "当前选择：PHP `/usr/local/php7.0/bin/php-config --version`"
-                PHP_Path='/usr/local/php7.0'
-                PHPFPM_Initd='/etc/init.d/php-fpm7.0'
-                ;;
-            8)
-                echo "当前选择：PHP `/usr/local/php7.1/bin/php-config --version`"
-                PHP_Path='/usr/local/php7.1'
-                PHPFPM_Initd='/etc/init.d/php-fpm7.1'
-                ;;
-            9)
-                echo "当前选择：PHP `/usr/local/php7.2/bin/php-config --version`"
-                PHP_Path='/usr/local/php7.2'
-                PHPFPM_Initd='/etc/init.d/php-fpm7.2'
-                ;;
-            10)
-                echo "当前选择：PHP `/usr/local/php7.3/bin/php-config --version`"
-                PHP_Path='/usr/local/php7.3'
-                PHPFPM_Initd='/etc/init.d/php-fpm7.3'
-                ;;
-            11)
-                echo "当前选择：PHP `/usr/local/php7.4/bin/php-config --version`"
-                PHP_Path='/usr/local/php7.4'
-                PHPFPM_Initd='/etc/init.d/php-fpm7.4'
-                ;;
-            12)
-                echo "当前选择：PHP `/usr/local/php8.0/bin/php-config --version`"
-                PHP_Path='/usr/local/php8.0'
-                PHPFPM_Initd='/etc/init.d/php-fpm8.0'
-                ;;
-            13)
-                echo "当前选择：PHP `/usr/local/php8.1/bin/php-config --version`"
-                PHP_Path='/usr/local/php8.1'
-                PHPFPM_Initd='/etc/init.d/php-fpm8.1'
-                ;;
-            14)
-                echo "当前选择：PHP `/usr/local/php8.2/bin/php-config --version`"
-                PHP_Path='/usr/local/php8.2'
-                PHPFPM_Initd='/etc/init.d/php-fpm8.2'
-                ;;
-            15)
-                echo "当前选择：PHP `/usr/local/php8.3/bin/php-config --version`"
-                PHP_Path='/usr/local/php8.3'
-                PHPFPM_Initd='/etc/init.d/php-fpm8.3'
-                ;;
-            16)
-                echo "当前选择：PHP `/usr/local/php8.4/bin/php-config --version`"
-                PHP_Path='/usr/local/php8.4'
-                PHPFPM_Initd='/etc/init.d/php-fpm8.4'
-                ;;
-            17)
-                echo "当前选择：PHP `/usr/local/php8.5/bin/php-config --version`"
-                PHP_Path='/usr/local/php8.5'
-                PHPFPM_Initd='/etc/init.d/php-fpm8.5'
-                ;;
-            *)
-                echo "未输入，默认选择主 PHP ${Cur_PHP_Version}。"
-                php_select="1"
-                PHP_Path='/usr/local/php'
-                PHPFPM_Initd='/etc/init.d/php-fpm'
-                ;;
-        esac
+        return 0
     fi
+
+    echo "检测到多个 PHP 版本，请选择要操作的版本。"
+    Cur_PHP_Version="$(/usr/local/php/bin/php-config --version)"
+    Echo_Green "1: 默认主 PHP ${Cur_PHP_Version}"
+    idx=1
+    for ver in ${installed}; do
+        idx=$((idx + 1))
+        Echo_Green "${idx}: PHP ${ver} [已安装]"
+    done
+
+    while :;do
+        Echo_Yellow "请选择 [1-${idx}]（默认 1，主 PHP）："
+        if ! read -r choice; then
+            echo
+            choice=''
+        fi
+        if [ -z "${choice}" ]; then
+            echo "未输入，默认选择主 PHP ${Cur_PHP_Version}。"
+            choice=1
+        fi
+        case "${choice}" in
+        *[!0-9]*)
+            Echo_Red "请输入 1 到 ${idx} 之间的编号。"
+            continue
+            ;;
+        esac
+        if [ "${choice}" -lt 1 ] || [ "${choice}" -gt "${idx}" ]; then
+            Echo_Red "只能选择上面列出的编号 1 到 ${idx}。"
+            continue
+        fi
+        break
+    done
+
+    php_select="${choice}"
+    if [ "${choice}" = "1" ]; then
+        echo "当前选择：PHP ${Cur_PHP_Version}"
+        PHP_Path='/usr/local/php'
+        PHPFPM_Initd='/etc/init.d/php-fpm'
+        return 0
+    fi
+    sel_ver=$(printf '%s\n' ${installed} | sed -n "$((choice - 1))p")
+    echo "当前选择：PHP $(/usr/local/php${sel_ver}/bin/php-config --version)"
+    PHP_Path="/usr/local/php${sel_ver}"
+    PHPFPM_Initd="/etc/init.d/php-fpm${sel_ver}"
+    return 0
 }
 
 # 扩展需要当前 PHP 的编译环境。缺少 PHP 时必须在安装服务端、init 脚本和

@@ -56,7 +56,7 @@ Install_MPHP8x()
     PHP_Openssl3_Patch
     # configure 的 iconv 探针要能加载 /usr/local/lib 里的 libiconv.so.2。
     Ensure_Libiconv_Ldpath || exit 1
-    ./configure --prefix=${MPHP_Path} --with-config-file-path=${MPHP_Path}/etc --with-config-file-scan-dir=${MPHP_Path}/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
+    ./configure --prefix=${MPHP_Path} --with-config-file-path=${MPHP_Path}/etc --with-config-file-scan-dir=${MPHP_Path}/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd $(PHP_Common_Configure_Opts)
 
     PHP_Make_Install || exit 1
 
@@ -70,30 +70,8 @@ Install_MPHP8x()
     cd "${cur_dir}/src" || return 1
 
     echo "正在创建新的 php-fpm 配置文件..."
-    cat >${MPHP_Path}/etc/php-fpm.conf<<EOF
-[global]
-pid = ${MPHP_Path}/var/run/php-fpm.pid
-error_log = ${MPHP_Path}/var/log/php-fpm.log
-log_level = notice
-
-[www]
-    listen = /run/php-fpm/php-cgi${MPHP_Short_Ver}.sock
-listen.backlog = -1
-listen.allowed_clients = 127.0.0.1
-listen.owner = www
-listen.group = www
-listen.mode = 0660
-user = www
-group = www
-pm = dynamic
-pm.max_children = 10
-pm.start_servers = 2
-pm.min_spare_servers = 1
-pm.max_spare_servers = 6
-request_terminate_timeout = 100
-request_slowlog_timeout = 0
-slowlog = var/log/slow.log
-EOF
+    Write_PHP_FPM_Conf "${MPHP_Path}/etc/php-fpm.conf" "${MPHP_Path}" \
+        "/run/php-fpm/php-cgi${MPHP_Short_Ver}.sock" || return 1
 
     echo "正在复制 php-fpm init.d 服务脚本..."
     \cp ${cur_dir}/src/${Php_Ver}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm${MPHP_Short_Ver}

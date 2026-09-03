@@ -40,14 +40,12 @@ PHP_with_openssl()
     with_openssl='--with-openssl'
 }
 
+# n 一律禁用，y 保持 PHP 默认（编译进去）。不按内存做隐式分支，
+# 否则大内存机器上显式设 n 也仍然编出 fileinfo。
 PHP_with_fileinfo()
 {
     if [ "${Enable_PHP_Fileinfo}" = "n" ]; then
-        if [[ $(awk '/MemTotal/ {printf( "%d\n", $2 / 1024 )}' /proc/meminfo) -lt 1024 ]]; then
-            with_fileinfo='--disable-fileinfo'
-        else
-            with_fileinfo=''
-        fi
+        with_fileinfo='--disable-fileinfo'
     else
         with_fileinfo=''
     fi
@@ -116,32 +114,49 @@ PHP_with_Sodium()
 
 PHP_with_Imap()
 {
+    local branch
+
     if [ "${Enable_PHP_Imap}" = "n" ]; then
         with_imap=''
-    else
-        if [ "$PM" = "yum" ]; then
-            if [ "${DISTRO}" = "Oracle" ]; then
-                yum -y install oracle-epel-release
-            else
-                yum -y install epel-release
-            fi
-            yum -y install libc-client-devel krb5-devel uw-imap-devel
-            if echo "${CentOS_Version}${Alma_Version}${Rocky_Version}" | grep -Eq "^9"; then
-                if ! rpm -qa | grep "libc-client-2007f" || ! rpm -qa | grep "uw-imap-devel"; then
+        return 0
+    fi
+    branch=$(Cur_PHP_Branch)
+    # PHP 8.4 起 ext/imap 移出主仓库改由 PECL 发布，源码树里没有该扩展，
+    # 传 --with-imap 会让 configure 直接失败，因此在编译前就跳过。
+    case "${branch}" in
+    8.0|8.1|8.2|8.3) ;;
+    *)
+        with_imap=''
+        Echo_Yellow "PHP ${branch} 的源码不含 imap 扩展（8.4 起改由 PECL 发布），"
+        echo
+        Echo_Yellow "已忽略 Enable_PHP_Imap=y。需要 IMAP 请在安装完成后执行：pecl install imap"
+        echo
+        return 0
+        ;;
+    esac
 
-                    if [ -s "${cur_dir}/src/libc-client-2007f-24.el9.${ARCH}.rpm" ]; then
-                        rpm -ivh ${cur_dir}/src/libc-client-2007f-24.el9.${ARCH}.rpm ${cur_dir}/src/uw-imap-devel-2007f-24.el9.${ARCH}.rpm
-                    else
-                        Echo_Red "src/ 中未找到 uw-imap RPM，IMAP 支持可能编译失败。"
-                    fi
+    if [ "$PM" = "yum" ]; then
+        if [ "${DISTRO}" = "Oracle" ]; then
+            yum -y install oracle-epel-release
+        else
+            yum -y install epel-release
+        fi
+        yum -y install libc-client-devel krb5-devel uw-imap-devel
+        if echo "${CentOS_Version}${Alma_Version}${Rocky_Version}" | grep -Eq "^9"; then
+            if ! rpm -qa | grep "libc-client-2007f" || ! rpm -qa | grep "uw-imap-devel"; then
+                if [ -s "${cur_dir}/src/libc-client-2007f-24.el9.${ARCH}.rpm" ]; then
+                    rpm -ivh ${cur_dir}/src/libc-client-2007f-24.el9.${ARCH}.rpm ${cur_dir}/src/uw-imap-devel-2007f-24.el9.${ARCH}.rpm
+                else
+                    Echo_Red "src/ 中未找到 uw-imap RPM，IMAP 支持可能编译失败。"
                 fi
             fi
-            [[ -s /usr/lib64/libc-client.so ]] && ln -sf /usr/lib64/libc-client.so /usr/lib/libc-client.so
-        elif [ "$PM" = "apt" ]; then
-            Apt_Get install -y libc-client-dev libkrb5-dev
         fi
-        with_imap='--with-imap --with-imap-ssl --with-kerberos'
+        [[ -s /usr/lib64/libc-client.so ]] && ln -sf /usr/lib64/libc-client.so /usr/lib/libc-client.so
+    elif [ "$PM" = "apt" ]; then
+        Apt_Get install -y libc-client-dev libkrb5-dev
     fi
+    with_imap='--with-imap --with-imap-ssl --with-kerberos'
+    return 0
 }
 
 # 当前 PHP 8.x 使用发行版提供的 ICU，无需单独安装旧版 ICU。
@@ -151,6 +166,18 @@ PHP_with_Intl()
         export CXX="g++ -DTRUE=1 -DFALSE=0"
         export  CC="gcc -DTRUE=1 -DFALSE=0"
     fi
+}
+
+# 四条 PHP 构建路径（安装、多版本安装、两条升级）共用的 configure 参数。
+# 前缀、SAPI 和 mysqlnd 由各路径自行追加，其余集中在此，避免增删扩展时漏改。
+PHP_Common_Configure_Opts()
+{
+    echo "--with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local \
+--with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath \
+--enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring \
+--enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash \
+--enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache \
+--with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}"
 }
 
 Check_PHP_Option()
@@ -177,6 +204,52 @@ Ln_PHP_Bin()
     fi
 }
 
+# PHP-FPM pool 配置。安装、多版本安装与两条升级路径共用同一份，
+# 避免四条路径的进程回收和超时参数出现漂移。
+# 参数：目标配置文件 安装前缀 socket 路径
+Write_PHP_FPM_Conf()
+{
+    local conf="$1" prefix="$2" sock="$3"
+
+    if [ -z "${conf}" ] || [ -z "${prefix}" ] || [ -z "${sock}" ]; then
+        Echo_Red "生成 php-fpm.conf 缺少参数。"
+        return 1
+    fi
+    # socket 的访问边界来自 owner/group/mode；listen.allowed_clients 只对
+    # TCP 监听生效，不写入。pm.process_idle_timeout 只对 pm=ondemand 生效，同样不写。
+    if ! cat >"${conf}"<<EOF
+[global]
+pid = ${prefix}/var/run/php-fpm.pid
+error_log = ${prefix}/var/log/php-fpm.log
+log_level = notice
+
+[www]
+listen = ${sock}
+listen.backlog = -1
+listen.owner = www
+listen.group = www
+listen.mode = 0660
+user = www
+group = www
+pm = dynamic
+pm.max_children = 10
+pm.start_servers = 2
+pm.min_spare_servers = 1
+pm.max_spare_servers = 6
+pm.max_requests = 1024
+# 硬超时高于 php.ini 的 max_execution_time(300)：让脚本先按 PHP 的限制超时
+# 返回，而不是在正常执行中途被 FPM 杀掉连接。
+request_terminate_timeout = 310
+request_slowlog_timeout = 0
+slowlog = var/log/slow.log
+EOF
+    then
+        Echo_Red "写入 ${conf} 失败。"
+        return 1
+    fi
+    return 0
+}
+
 # php.ini 基线参数。安装、多版本安装与两条升级路径共用同一份，
 # 避免各入口各写一份导致 disable_functions 等安全基线漂移。
 PHP_Ini_Tune()
@@ -188,7 +261,9 @@ PHP_Ini_Tune()
         return 1
     fi
 
-    sed -i 's/post_max_size =.*/post_max_size = 50M/g' "${ini}"
+    # 文件上限 50M；multipart 请求体还有 boundary 和表单字段开销，
+    # post_max_size 必须高于它，Nginx 的 client_max_body_size 同为 64m。
+    sed -i 's/post_max_size =.*/post_max_size = 64M/g' "${ini}"
     sed -i 's/upload_max_filesize =.*/upload_max_filesize = 50M/g' "${ini}"
     sed -i 's/;date.timezone =.*/date.timezone = PRC/g' "${ini}"
     sed -i 's/short_open_tag =.*/short_open_tag = On/g' "${ini}"
@@ -197,7 +272,7 @@ PHP_Ini_Tune()
     sed -i 's/^expose_php =.*/expose_php = Off/g' "${ini}"
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' "${ini}"
     # 禁用命令执行类函数。pcntl_exec 属执行类，pcntl_fork/signal/wait 不禁用。
-    sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server,pcntl_exec/g' "${ini}"
+    sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,stream_socket_server,pcntl_exec/g' "${ini}"
 
     return 0
 }
@@ -218,10 +293,12 @@ Install_Composer()
         return 0
     fi
 
-    if command -v php >/dev/null 2>&1; then
-        php_bin=$(command -v php)
-    elif [ -x /usr/local/php/bin/php ]; then
+    # 优先用本安装的 PHP：系统包管理器装的 php-cli 与本安装的扩展、php.ini 都不同，
+    # 用它跑 Composer 会按另一套环境解析平台依赖。
+    if [ -x /usr/local/php/bin/php ]; then
         php_bin=/usr/local/php/bin/php
+    elif command -v php >/dev/null 2>&1; then
+        php_bin=$(command -v php)
     else
         Echo_Red "未找到 PHP，跳过 Composer 安装。"
         return 1
@@ -264,15 +341,31 @@ Install_Composer()
     fi
     Echo_Green "Composer 安装程序 SHA384 校验通过。"
 
-    "${php_bin}" "${installer}" --install-dir=/usr/local/bin --filename=composer
+    "${php_bin}" "${installer}" --install-dir=/usr/local/bin --filename=composer.phar
     rm -rf "${tmpdir}"
-    if [ -s /usr/local/bin/composer ]; then
-        chmod +x /usr/local/bin/composer
-        echo "Composer 安装成功。"
-        return 0
+    if [ ! -s /usr/local/bin/composer.phar ]; then
+        Echo_Red "Composer 安装失败。"
+        return 1
     fi
-    Echo_Red "Composer 安装失败。"
-    return 1
+    chmod +x /usr/local/bin/composer.phar
+
+    # CLI 与 FPM 共用同一份 php.ini，其中禁用了 proc_open、exec 等进程函数，
+    # 而 Composer 执行 scripts、插件和 VCS 工具时依赖它们。包装脚本只为这一条
+    # 命令放开，Web 侧的 disable_functions 基线保持不变。
+    if ! cat >/usr/local/bin/composer<<EOF
+#!/bin/sh
+# 由 LNMP 生成：只为 Composer 放开进程类函数，不改 php.ini 的全局基线。
+exec ${php_bin} -d disable_functions= -d memory_limit=-1 \
+    /usr/local/bin/composer.phar "\$@"
+EOF
+    then
+        Echo_Red "写入 /usr/local/bin/composer 失败。"
+        return 1
+    fi
+    chmod 755 /usr/local/bin/composer
+    echo "Composer 安装成功：/usr/local/bin/composer 是包装脚本，"
+    echo "它只为 Composer 自身放开 disable_functions，Web 请求不受影响。"
+    return 0
 }
 
 # PHP 8.0 在 OpenSSL 3.x 环境中需要兼容补丁；PHP 8.1 及以上原生支持。
@@ -298,9 +391,9 @@ Install_PHP_8x()
     Ensure_Libiconv_Ldpath || exit 1
 
     if [ "${Stack}" = "lnmp" ]; then
-        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
+        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd $(PHP_Common_Configure_Opts)
     else
-        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --with-apxs2=/usr/local/apache/bin/apxs --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
+        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --with-apxs2=/usr/local/apache/bin/apxs $(PHP_Common_Configure_Opts)
     fi
 
     PHP_Make_Install || exit 1
@@ -324,32 +417,8 @@ Install_PHP_8x()
 if [ "${Stack}" = "lnmp" ]; then
     # PHP-FPM socket 限定为 www 用户组访问，防止其他本地账号提交 FastCGI 请求。
     echo "正在创建新的 php-fpm 配置文件..."
-    cat >/usr/local/php/etc/php-fpm.conf<<EOF
-[global]
-pid = /usr/local/php/var/run/php-fpm.pid
-error_log = /usr/local/php/var/log/php-fpm.log
-log_level = notice
-
-[www]
-    listen = /run/php-fpm/php-cgi.sock
-listen.backlog = -1
-listen.allowed_clients = 127.0.0.1
-listen.owner = www
-listen.group = www
-listen.mode = 0660
-user = www
-group = www
-pm = dynamic
-pm.max_children = 10
-pm.start_servers = 2
-pm.min_spare_servers = 1
-pm.max_spare_servers = 6
-pm.max_requests = 1024
-pm.process_idle_timeout = 10s
-request_terminate_timeout = 100
-request_slowlog_timeout = 0
-slowlog = var/log/slow.log
-EOF
+    Write_PHP_FPM_Conf /usr/local/php/etc/php-fpm.conf /usr/local/php \
+        /run/php-fpm/php-cgi.sock || return 1
 
     echo "正在复制 php-fpm init.d 服务脚本..."
     \cp ${cur_dir}/src/${Php_Ver}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm

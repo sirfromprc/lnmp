@@ -947,9 +947,93 @@ Site_Index_Line()
     fi
 }
 
+# 目录属主必须是 www，否则 PHP-FPM 读不到站点文件。权限位区别对待：
+# 新建或空目录直接给 755；复用的非空目录默认保持原样，递归 755 会给普通文件
+# 加上执行位，并把 .env、密钥一类原本 600/640 的文件放宽为所有本地用户可读。
+Prepare_Vhost_Dir_Perm()
+{
+    local dir="$1" created="$2" fix='n' rc=0
+
+    if [ "${created}" = 'y' ] || [ -z "$(ls -A "${dir}" 2>/dev/null)" ]; then
+        chmod 755 "${dir}" || rc=1
+    else
+        echo "目录 ${dir} 已存在且非空，默认保留其中文件的权限位。"
+        # 非交互执行不占用输入行，否则既有的管道调用会在这里因 EOF 中断建站。
+        if [ ! -t 0 ]; then
+            case "${VHOST_FIX_PERM:-}" in
+                [yY]) fix='y'; echo "非交互执行，按 VHOST_FIX_PERM=y 统一权限。" ;;
+                *)    echo "非交互执行，保留原权限位（如需统一，设置 VHOST_FIX_PERM=y）。" ;;
+            esac
+        else
+            Read_YN fix "是否把目录统一改为 755、普通文件改为 644? (y/N，默认 n) " n "权限规范化开关"
+        fi
+        if [ "${fix}" = 'y' ]; then
+            find "${dir}" -type d -exec chmod 755 {} + || rc=1
+            find "${dir}" -type f -exec chmod 644 {} + || rc=1
+        fi
+    fi
+    if ! chown -R www:www "${dir}"; then
+        Echo_Red "变更 ${dir} 属主失败，PHP-FPM 可能无法读取站点文件。"
+        rc=1
+    fi
+    return ${rc}
+}
+
+# 站点级 open_basedir。必须在站点对外可访问之前写好：站点一旦上线，缺少
+# 该文件就等于没有站点级路径边界。
+Write_Site_User_Ini()
+{
+    local dir="$1"
+
+    [ -f "${dir}/.user.ini" ] && chattr -i "${dir}/.user.ini" 2>/dev/null
+    if ! cat >"${dir}/.user.ini"<<EOF
+open_basedir=${dir}:/tmp/:/proc/
+EOF
+    then
+        Echo_Red "写入 ${dir}/.user.ini 失败，站点缺少 open_basedir 限制，已放弃建站。"
+        return 1
+    fi
+    chmod 644 "${dir}/.user.ini"
+    # immutable 是加固项，置不上不影响站点可用，但必须让用户看到。
+    if ! chattr +i "${dir}/.user.ini" 2>/dev/null; then
+        Echo_Yellow "警告：无法为 ${dir}/.user.ini 设置 immutable 属性，"
+        Echo_Yellow "该文件可被站点内的写入覆盖。"
+        echo
+    fi
+    return 0
+}
+
+# 站点启用 IPv6 后同步启用 default 的 IPv6 监听：[::]:80 上没有 default_server
+# 时，未匹配 Host 的 IPv6 请求会落到先加载的业务站点，而不是 default。
+# 返回 0 表示本次改动了 default 配置，调用方失败时需要回滚。
+Enable_Default_IPv6_Listen()
+{
+    local conf=/usr/local/nginx/conf/vhost/default.conf
+
+    [ -s "${conf}" ] || return 1
+    grep -q '^[[:space:]]*#listen \[::\]:80 default_server' "${conf}" || return 1
+    sed -i 's/#listen \[::\]:80 default_server/listen [::]:80 default_server/' "${conf}" || return 1
+    # 443 的兜底块同理：站点开了 IPv6 而 default 没开，[::]:443 上就没有
+    # default_server，未知 SNI 会落到业务站点。
+    sed -i 's/#listen \[::\]:443 ssl default_server/listen [::]:443 ssl default_server/' "${conf}"
+    echo "已同步启用 default 站点的 IPv6 监听。"
+    return 0
+}
+
+# 回滚 Enable_Default_IPv6_Listen 的改动。
+Disable_Default_IPv6_Listen()
+{
+    local conf=/usr/local/nginx/conf/vhost/default.conf
+
+    [ -s "${conf}" ] || return 0
+    sed -i 's/^\([[:space:]]*\)listen \[::\]:80 default_server/\1#listen [::]:80 default_server/' "${conf}"
+    sed -i 's/^\([[:space:]]*\)listen \[::\]:443 ssl default_server/\1#listen [::]:443 ssl default_server/' "${conf}"
+    return 0
+}
+
 Add_VHost_Config()
 {
-    local vhost_index
+    local vhost_index default_ipv6_added='n'
 
     Check_Config_Name "${rewrite}" "伪静态规则名" || return 1
     if [ "${access_log:-n}" = 'y' ]; then
@@ -975,6 +1059,19 @@ server {
     include rewrite/${rewrite}.conf;
     #error_page   404   /404.html;
 
+    # ACME 验证路径用 ^~ 前缀声明，优先级高于全部正则 location，
+    # 不受下面的隐藏文件规则影响。
+    location ^~ /.well-known/ {
+        allow all;
+    }
+
+    # 拒绝 .user.ini、.env、.git 等隐藏文件。正则 location 取首个匹配，
+    # 该规则必须排在 PHP 和静态资源正则之前才能覆盖 .hidden.php、/.git/a.css。
+    # 整站反向代理需要把点开头路径交给上游时，删除本条。
+    location ~ /\. {
+        deny all;
+    }
+
     # Deny access to PHP files in specific directory
     #location ~ /(wp-content|uploads|wp-includes|images)/.*\.php$ { deny all; }
 
@@ -985,11 +1082,6 @@ server {
     # HTTPS 配置才会一并继承。
     #location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)$ { expires 30d; }
     #location ~ .*\.(js|css)$ { expires 12h; }
-    #location ~ /\. { deny all; }
-
-    location ^~ /.well-known/ {
-        allow all;
-    }
 
     # 自定义配置--开始
 
@@ -1001,293 +1093,161 @@ server {
 EOF
 
     if [ "${enable_ipv6}" == "y" ]; then
-        sed -i 's/#listen \[::\]:80;/listen \[::\]:80;/g' /usr/local/nginx/conf/vhost/${domain}.conf
+        sed -i 's/#listen \[::\]:80;/listen \[::\]:80;/g' "/usr/local/nginx/conf/vhost/${domain}.conf"
+        Enable_Default_IPv6_Listen && default_ipv6_added='y'
     fi
 
     echo "正在检查 Nginx 配置..."
     if ! /usr/local/nginx/sbin/nginx -t; then
         Echo_Red "Nginx 配置测试未通过，已撤销本次新增的虚拟主机配置。"
         rm -f "/usr/local/nginx/conf/vhost/${domain}.conf"
+        [ "${default_ipv6_added}" = 'y' ] && Disable_Default_IPv6_Listen
         return 1
     fi
+    if ! pgrep -f '/usr/local/nginx/sbin/nginx' >/dev/null 2>&1; then
+        echo "Nginx 未在运行，跳过 reload。"
+        return 0
+    fi
     echo "正在重载 Nginx..."
-    /usr/local/nginx/sbin/nginx -s reload
+    # reload 失败必须撤销站点配置：留在磁盘上会让下次建站报"域名已存在"，
+    # 而以后任意一次 reload 又会把这个未完成的站点放到线上。
+    if ! /usr/local/nginx/sbin/nginx -s reload; then
+        Echo_Red "Nginx 重载失败，已撤销本次新增的虚拟主机配置。"
+        rm -f "/usr/local/nginx/conf/vhost/${domain}.conf"
+        [ "${default_ipv6_added}" = 'y' ] && Disable_Default_IPv6_Listen
+        /usr/local/nginx/sbin/nginx -s reload >/dev/null 2>&1
+        return 1
+    fi
+    return 0
 }
 
-Multiple_PHP_Select()
+# 可与主 PHP 并存的附加版本。编号由已安装版本动态生成，不写死在菜单里。
+Multiple_PHP_Version_List="5.2 5.3 5.4 5.5 5.6 7.0 7.1 7.2 7.3 7.4 8.0 8.1 8.2 8.3 8.4 8.5"
+
+# 二进制、Nginx include 和 init 脚本三者齐备才算这个版本可用。
+Multiple_PHP_Installed()
 {
-    if [[ ! -s /usr/local/php5.2/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.2.conf ]] && [[ ! -s /usr/local/php5.3/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.3.conf ]] && [[ ! -s /usr/local/php5.4/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.4.conf ]] && [[ ! -s /usr/local/php5.5/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.5.conf ]] && [[ ! -s /usr/local/php5.6/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php5.6.conf ]] && [[ ! -s /usr/local/php7.0/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.0.conf ]] && [[ ! -s /usr/local/php7.1/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.1.conf ]] && [[ ! -s /usr/local/php7.2/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.2.conf ]] && [[ ! -s /usr/local/php7.3/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.3.conf ]] && [[ ! -s /usr/local/php7.4/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php7.4.conf ]] && [[ ! -s /usr/local/php8.0/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.0.conf ]] && [[ ! -s /usr/local/php8.1/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.1.conf ]] && [[ ! -s /usr/local/php8.2/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.2.conf ]] && [[ ! -s /usr/local/php8.3/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.3.conf ]] && [[ ! -s /usr/local/php8.4/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.4.conf ]] && [[ ! -s /usr/local/php8.5/sbin/php-fpm && ! -s /usr/local/nginx/conf/enable-php8.5.conf ]]; then
+    local ver="$1"
+
+    [ -s "/usr/local/php${ver}/sbin/php-fpm" ] \
+        && [ -s "/usr/local/nginx/conf/enable-php${ver}.conf" ] \
+        && [ -s "/etc/init.d/php-fpm${ver}" ]
+}
+
+# 输出已安装的附加 PHP 版本，供菜单和选择校验共用。
+Multiple_PHP_Installed_List()
+{
+    local ver out=''
+
+    for ver in ${Multiple_PHP_Version_List}; do
+        Multiple_PHP_Installed "${ver}" && out="${out:+${out} }${ver}"
+    done
+    printf '%s' "${out}"
+}
+
+# 存在二进制或配置残留，但三者不齐的版本单独报出来：它们不能选，
+# 选了会通过 nginx -t 却在请求时持续 502。
+Report_Multiple_PHP_Residue()
+{
+    local ver residue=''
+
+    for ver in ${Multiple_PHP_Version_List}; do
+        Multiple_PHP_Installed "${ver}" && continue
+        if [ -e "/usr/local/php${ver}" ] || [ -e "/usr/local/nginx/conf/enable-php${ver}.conf" ] \
+           || [ -e "/etc/init.d/php-fpm${ver}" ]; then
+            residue="${residue:+${residue} }${ver}"
+        fi
+    done
+    [ -n "${residue}" ] || return 0
+    Echo_Yellow "以下版本只有残留文件，未完整安装，不能选用：${residue}"
+    echo
+    Echo_Yellow "需要它们请重新执行 ./install.sh mphp 安装，或清理残留后再建站。"
+    echo
+    return 0
+}
+
+# 为选定的附加 PHP 版本准备 Nginx include 片段并写入 include_enable_php。
+Set_Include_Enable_PHP()
+{
+    local ver="$1" conf
+
+    if [ -z "${ver}" ]; then
         if [ "${enable_pathinfo}" == "y" ]; then
             include_enable_php="include enable-php-pathinfo.conf;"
         else
             include_enable_php="include enable-php.conf;"
         fi
-    else
-        echo "检测到多个 PHP 版本，请选择要使用的版本。"
-        Cur_PHP_Version="`/usr/local/php/bin/php-config --version`"
-        Echo_Green "1: 默认主 PHP ${Cur_PHP_Version}"
-        if [[ -s /usr/local/php5.2/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.2.conf && -s /etc/init.d/php-fpm5.2 ]]; then
-            Echo_Green "2: PHP 5.2 [已安装]"
-        fi
-        if [[ -s /usr/local/php5.3/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.3.conf && -s /etc/init.d/php-fpm5.3 ]]; then
-            Echo_Green "3: PHP 5.3 [已安装]"
-        fi
-        if [[ -s /usr/local/php5.4/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.4.conf && -s /etc/init.d/php-fpm5.4 ]]; then
-            Echo_Green "4: PHP 5.4 [已安装]"
-        fi
-        if [[ -s /usr/local/php5.5/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.5.conf && -s /etc/init.d/php-fpm5.5 ]]; then
-            Echo_Green "5: PHP 5.5 [已安装]"
-        fi
-        if [[ -s /usr/local/php5.6/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php5.6.conf && -s /etc/init.d/php-fpm5.6 ]]; then
-            Echo_Green "6: PHP 5.6 [已安装]"
-        fi
-        if [[ -s /usr/local/php7.0/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.0.conf && -s /etc/init.d/php-fpm7.0 ]]; then
-            Echo_Green "7: PHP 7.0 [已安装]"
-        fi
-        if [[ -s /usr/local/php7.1/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.1.conf && -s /etc/init.d/php-fpm7.1 ]]; then
-            Echo_Green "8: PHP 7.1 [已安装]"
-        fi
-        if [[ -s /usr/local/php7.2/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.2.conf && -s /etc/init.d/php-fpm7.2 ]]; then
-            Echo_Green "9: PHP 7.2 [已安装]"
-        fi
-        if [[ -s /usr/local/php7.3/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.3.conf && -s /etc/init.d/php-fpm7.3 ]]; then
-            Echo_Green "10: PHP 7.3 [已安装]"
-        fi
-        if [[ -s /usr/local/php7.4/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php7.4.conf && -s /etc/init.d/php-fpm7.4 ]]; then
-            Echo_Green "11: PHP 7.4 [已安装]"
-        fi
-        if [[ -s /usr/local/php8.0/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.0.conf && -s /etc/init.d/php-fpm8.0 ]]; then
-            Echo_Green "12: PHP 8.0 [已安装]"
-        fi
-        if [[ -s /usr/local/php8.1/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.1.conf && -s /etc/init.d/php-fpm8.1 ]]; then
-            Echo_Green "13: PHP 8.1 [已安装]"
-        fi
-        if [[ -s /usr/local/php8.2/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.2.conf && -s /etc/init.d/php-fpm8.2 ]]; then
-            Echo_Green "14: PHP 8.2 [已安装]"
-        fi
-        if [[ -s /usr/local/php8.3/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.3.conf && -s /etc/init.d/php-fpm8.3 ]]; then
-            Echo_Green "15: PHP 8.3 [已安装]"
-        fi
-        if [[ -s /usr/local/php8.4/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.4.conf && -s /etc/init.d/php-fpm8.4 ]]; then
-            Echo_Green "16: PHP 8.4 [已安装]"
-        fi
-        if [[ -s /usr/local/php8.5/sbin/php-fpm && -s /usr/local/nginx/conf/enable-php8.5.conf && -s /etc/init.d/php-fpm8.5 ]]; then
-            Echo_Green "17: PHP 8.5 [已安装]"
-        fi
-        Echo_Yellow "请选择 [1-17]（默认 1，主 PHP）："
-        Read_Input php_select "PHP 版本选择"
-        case "${php_select}" in
-            1)
-                echo "当前选择：PHP ${Cur_PHP_Version}"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php-pathinfo.conf;"
-                else
-                    include_enable_php="include enable-php.conf;"
-                fi
-                ;;
-            2)
-                echo "当前选择：PHP `/usr/local/php5.2/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php5.2-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php5.2-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php5.2-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi5.2.sock/g' /usr/local/nginx/conf/enable-php5.2-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php5.2.conf;"
-                fi
-                ;;
-            3)
-                echo "当前选择：PHP `/usr/local/php5.3/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php5.3-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php5.3-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php5.3-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi5.3.sock/g' /usr/local/nginx/conf/enable-php5.3-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php5.3.conf;"
-                fi
-                ;;
-            4)
-                echo "当前选择：PHP `/usr/local/php5.4/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php5.4-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php5.4-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php5.4-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi5.4.sock/g' /usr/local/nginx/conf/enable-php5.4-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php5.4.conf;"
-                fi
-                ;;
-            5)
-                echo "当前选择：PHP `/usr/local/php5.5/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php5.5-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php5.5-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php5.5-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi5.5.sock/g' /usr/local/nginx/conf/enable-php5.5-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php5.5.conf;"
-                fi
-                ;;
-            6)
-                echo "当前选择：PHP `/usr/local/php5.6/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php5.6-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php5.6-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php5.6-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi5.6.sock/g' /usr/local/nginx/conf/enable-php5.6-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php5.6.conf;"
-                fi
-                ;;
-            7)
-                echo "当前选择：PHP `/usr/local/php7.0/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php7.0-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php7.0-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php7.0-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi7.0.sock/g' /usr/local/nginx/conf/enable-php7.0-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php7.0.conf;"
-                fi
-                ;;
-            8)
-                echo "当前选择：PHP `/usr/local/php7.1/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php7.1-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php7.1-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php7.1-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi7.1.sock/g' /usr/local/nginx/conf/enable-php7.1-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php7.1.conf;"
-                fi
-                ;;
-            9)
-                echo "当前选择：PHP `/usr/local/php7.2/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php7.2-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php7.2-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php7.2-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi7.2.sock/g' /usr/local/nginx/conf/enable-php7.2-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php7.2.conf;"
-                fi
-                ;;
-            10)
-                echo "当前选择：PHP `/usr/local/php7.3/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php7.3-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php7.3-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php7.3-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi7.3.sock/g' /usr/local/nginx/conf/enable-php7.3-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php7.3.conf;"
-                fi
-                ;;
-            11)
-                echo "当前选择：PHP `/usr/local/php7.4/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php7.4-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php7.4-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php7.4-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi7.4.sock/g' /usr/local/nginx/conf/enable-php7.4-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php7.4.conf;"
-                fi
-                ;;
-            12)
-                echo "当前选择：PHP `/usr/local/php8.0/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php8.0-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php8.0-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php8.0-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi8.0.sock/g' /usr/local/nginx/conf/enable-php8.0-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php8.0.conf;"
-                fi
-                ;;
-            13)
-                echo "当前选择：PHP `/usr/local/php8.1/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php8.1-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php8.1-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php8.1-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi8.1.sock/g' /usr/local/nginx/conf/enable-php8.1-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php8.1.conf;"
-                fi
-                ;;
-            14)
-                echo "当前选择：PHP `/usr/local/php8.2/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php8.2-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php8.2-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php8.2-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi8.2.sock/g' /usr/local/nginx/conf/enable-php8.2-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php8.2.conf;"
-                fi
-                ;;
-            15)
-                echo "当前选择：PHP `/usr/local/php8.3/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php8.3-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php8.3-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php8.3-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi8.3.sock/g' /usr/local/nginx/conf/enable-php8.3-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php8.3.conf;"
-                fi
-                ;;
-            16)
-                echo "当前选择：PHP `/usr/local/php8.4/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php8.4-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php8.4-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php8.4-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi8.4.sock/g' /usr/local/nginx/conf/enable-php8.4-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php8.4.conf;"
-                fi
-                ;;
-            17)
-                echo "当前选择：PHP `/usr/local/php8.5/bin/php-config --version`"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php8.5-pathinfo.conf;"
-                    if [ ! -s /usr/local/nginx/conf/enable-php8.5-pathinfo.conf ]; then
-                        \cp /usr/local/nginx/conf/enable-php-pathinfo.conf /usr/local/nginx/conf/enable-php8.5-pathinfo.conf
-                        sed -i 's/php-cgi.sock/php-cgi8.5.sock/g' /usr/local/nginx/conf/enable-php8.5-pathinfo.conf
-                    fi
-                else
-                    include_enable_php="include enable-php8.5.conf;"
-                fi
-                ;;
-            *)
-                echo "未输入，默认选择主 PHP ${Cur_PHP_Version}。"
-                php_select="1"
-                if [ "${enable_pathinfo}" == "y" ]; then
-                    include_enable_php="include enable-php-pathinfo.conf;"
-                else
-                    include_enable_php="include enable-php.conf;"
-                fi
-                ;;
-        esac
+        return 0
     fi
+    if [ "${enable_pathinfo}" != "y" ]; then
+        include_enable_php="include enable-php${ver}.conf;"
+        return 0
+    fi
+    conf="/usr/local/nginx/conf/enable-php${ver}-pathinfo.conf"
+    include_enable_php="include enable-php${ver}-pathinfo.conf;"
+    [ -s "${conf}" ] && return 0
+    # Pathinfo 片段按主 PHP 的模板生成，只替换为该版本的 socket。
+    if ! \cp /usr/local/nginx/conf/enable-php-pathinfo.conf "${conf}"; then
+        Echo_Red "生成 ${conf} 失败。"
+        return 1
+    fi
+    sed -i "s/php-cgi.sock/php-cgi${ver}.sock/g" "${conf}" || return 1
+    return 0
+}
+
+Multiple_PHP_Select()
+{
+    local installed ver idx choice sel_ver
+
+    installed="$(Multiple_PHP_Installed_List)"
+    if [ -z "${installed}" ]; then
+        # 没有可用的附加版本时直接用主 PHP，但仍要报出残留，
+        # 否则用户会以为自己装过的版本凭空消失。
+        Report_Multiple_PHP_Residue
+        Set_Include_Enable_PHP ""
+        return 0
+    fi
+
+    echo "检测到多个 PHP 版本，请选择要使用的版本。"
+    Report_Multiple_PHP_Residue
+    Cur_PHP_Version="$(/usr/local/php/bin/php-config --version)"
+    Echo_Green "1: 默认主 PHP ${Cur_PHP_Version}"
+    idx=1
+    for ver in ${installed}; do
+        idx=$((idx + 1))
+        Echo_Green "${idx}: PHP ${ver} [已安装]"
+    done
+
+    while :;do
+        Echo_Yellow "请选择 [1-${idx}]（默认 1，主 PHP）："
+        Read_Input choice "PHP 版本选择"
+        if [ -z "${choice}" ]; then
+            echo "未输入，默认选择主 PHP ${Cur_PHP_Version}。"
+            php_select="1"
+            Set_Include_Enable_PHP "" || return 1
+            return 0
+        fi
+        case "${choice}" in
+        *[!0-9]*|'')
+            Echo_Red "请输入 1 到 ${idx} 之间的编号。"
+            continue
+            ;;
+        esac
+        if [ "${choice}" -lt 1 ] || [ "${choice}" -gt "${idx}" ]; then
+            Echo_Red "只能选择上面列出的编号 1 到 ${idx}。"
+            continue
+        fi
+        php_select="${choice}"
+        if [ "${choice}" = "1" ]; then
+            echo "当前选择：PHP ${Cur_PHP_Version}"
+            Set_Include_Enable_PHP "" || return 1
+            return 0
+        fi
+        sel_ver=$(printf '%s\n' ${installed} | sed -n "$((choice - 1))p")
+        echo "当前选择：PHP $(/usr/local/php${sel_ver}/bin/php-config --version)"
+        Set_Include_Enable_PHP "${sel_ver}" || return 1
+        return 0
+    done
 }
 
 # default 兜底站点接收未匹配其它域名的请求，包括直接访问服务器 IP。
@@ -1373,6 +1333,15 @@ server {
     access_log  /home/wwwlogs/default.log main;
     error_log   /home/wwwlogs/default.error.log;
 }
+
+server {
+    # 未匹配 SNI 的 HTTPS 请求在此终止。没有这个块时，443 上的第一个业务
+    # 站点会成为隐式默认站点，IP 直连和错误 DNS 指向都会拿到它的响应。
+    # 为 default 配置证书时，lnmp ssl add 会自动移除本块。
+    listen 443 ssl default_server;
+    #listen [::]:443 ssl default_server ipv6only=on;
+    ssl_reject_handshake on;
+}
 EOF
     echo "正在检查 Nginx 配置..."
     if ! /usr/local/nginx/sbin/nginx -t; then
@@ -1380,9 +1349,36 @@ EOF
         rm -f /usr/local/nginx/conf/vhost/default.conf
         return 1
     fi
-    /usr/local/nginx/sbin/nginx -s reload
+    if pgrep -f '/usr/local/nginx/sbin/nginx' >/dev/null 2>&1 \
+       && ! /usr/local/nginx/sbin/nginx -s reload; then
+        Echo_Red "Nginx 重载失败，已撤销刚补建的默认站点配置。"
+        rm -f /usr/local/nginx/conf/vhost/default.conf
+        return 1
+    fi
     Echo_Green " 已补建 default 兜底站点。"
     return 0
+}
+
+# 新站点声明的域名不能已被其它虚拟主机使用：重复的 server_name 不会让配置
+# 测试失败，但请求仍由先加载的站点处理，新站点实际访问不到。
+Check_Domain_Not_Taken()
+{
+    local names="$1" f taken=0 d
+
+    [ -d "${Vhost_Conf_Dir}" ] || return 0
+    for f in "${Vhost_Conf_Dir}"/*.conf; do
+        [ -s "${f}" ] || continue
+        for d in ${names}; do
+            Vhost_Has_Domain "${f}" "${d}" || continue
+            [ "${taken}" -eq 0 ] && Echo_Red "以下域名已被现有站点声明："
+            Echo_Red "  ${d} -> ${f}"
+            taken=1
+        done
+    done
+    [ "${taken}" -eq 0 ] && return 0
+    Echo_Yellow "请换一个域名，或先用 lnmp vhost del 删除占用它的站点。"
+    echo
+    return 1
 }
 
 Add_VHost()
@@ -1405,6 +1401,7 @@ Add_VHost()
             Echo_Red "域名 ${domain} 已存在，请检查！"
             exit 1
         fi
+        Check_Domain_Not_Taken "${domain}" || continue
         echo "您的域名：${domain}"
         break
     done
@@ -1416,7 +1413,9 @@ Add_VHost()
         Lower_Domain_Input moredomain
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" || continue
-        Reject_Wildcard_Site "${moredomain}" && break
+        Reject_Wildcard_Site "${moredomain}" || continue
+        Check_Domain_Not_Taken "${moredomain}" || continue
+        break
     done
     echo "域名列表：${domain} ${moredomain}"
 
@@ -1428,10 +1427,10 @@ Add_VHost()
         if [ "${vhostdir}" == "" ]; then
             vhostdir="/home/wwwroot/${domain}"
         fi
-        # 目录会用于递归创建和授权，因此必须先规范化并限制在站点根目录内。
-        Check_Vhost_Dir "${vhostdir}" || exit 1
-        # 校验通过后使用规范化的网站目录路径。
+        # 目录会用于递归创建和授权，必须先规范化并限制在站点根目录内；
+        # 校验通过后 Check_Vhost_Dir 会把规范化路径写回 vhostdir。
         Check_Vhost_Dir "${vhostdir}" && break
+        Echo_Red "请重新输入网站目录。"
     done
     echo "虚拟主机目录：${vhostdir}"
 
@@ -1496,7 +1495,7 @@ Add_VHost()
     fi
 
     if [ "${enable_site_php}" == "y" ]; then
-        Multiple_PHP_Select
+        Multiple_PHP_Select || return 1
     else
         include_enable_php="$(Site_PHP_Off_Block)"
     fi
@@ -1539,8 +1538,17 @@ Add_VHost()
     if [ "${enable_site_php}" != "n" ] && [ -f "${vhostdir}/.user.ini" ]; then
         chattr -i "${vhostdir}/.user.ini" 2>/dev/null
     fi
-    chmod -R 755 "${vhostdir}"
-    chown -R www:www "${vhostdir}"
+    Prepare_Vhost_Dir_Perm "${vhostdir}" "${vhostdir_created}"
+
+    # .user.ini 仅用于启用 PHP 的站点，且必须在写站点配置并 reload 之前完成：
+    # 站点一上线就可能收到 PHP 请求，此时缺少 open_basedir 就没有路径边界。
+    if [ "${enable_site_php}" != "n" ]; then
+        if ! Write_Site_User_Ini "${vhostdir}"; then
+            [ "${vhostdir_created}" = "y" ] && rmdir "${vhostdir}" 2>/dev/null
+            return 1
+        fi
+        /etc/init.d/php-fpm reload
+    fi
 
     # default 的 80 端口由内置 default_server 处理，避免重复监听。
     if [ "${domain}" != "default" ]; then
@@ -1548,28 +1556,6 @@ Add_VHost()
             [ "${vhostdir_created}" = "y" ] && rmdir "${vhostdir}" 2>/dev/null
             return 1
         fi
-    fi
-
-    # .user.ini 仅用于启用 PHP 的站点。
-    if [ "${enable_site_php}" != "n" ]; then
-        # 更新前解除 immutable 属性，使 open_basedir 与当前网站目录一致。
-        [ -f "${vhostdir}/.user.ini" ] && chattr -i "${vhostdir}/.user.ini" 2>/dev/null
-        if ! cat >"${vhostdir}/.user.ini"<<EOF
-open_basedir=${vhostdir}:/tmp/:/proc/
-EOF
-        then
-            Echo_Red "写入 ${vhostdir}/.user.ini 失败，该站点缺少 open_basedir 限制。"
-            Echo_Red "站点已创建，请手工补齐该文件后重载 php-fpm。"
-        else
-            chmod 644 "${vhostdir}/.user.ini"
-            # immutable 是加固项，置不上不影响站点可用，但必须让用户看到。
-            if ! chattr +i "${vhostdir}/.user.ini" 2>/dev/null; then
-                Echo_Yellow "警告：无法为 ${vhostdir}/.user.ini 设置 immutable 属性，"
-                Echo_Yellow "该文件可被站点内的写入覆盖。"
-            fi
-        fi
-
-        /etc/init.d/php-fpm reload
     fi
 
     if [ "${create_database}" == "y" ]; then
@@ -1650,6 +1636,19 @@ EOF
         echo "IPv6：未启用"
     fi
     Echo_Green "================================================"
+
+    # 站点主体已建成，但用户明确请求过的附加操作有失败时返回非零，
+    # 否则上层自动化会把未完成的站点当作已交付。
+    if [ "${create_database}" == "y" ] && [ "${database_add_rc:-1}" -ne 0 ]; then
+        return 1
+    fi
+    if [ "${create_ftp}" == "y" ] && [ "${ftp_add_rc:-1}" -ne 0 ]; then
+        return 1
+    fi
+    if [ "${create_ssl}" == "y" ] && [ "${ssl_add_rc:-1}" -ne 0 ]; then
+        return 1
+    fi
+    return 0
 }
 
 # 列出 vhost 目录下的配置名。目录为空时 glob 不展开，用 -e 跳过字面量。
@@ -3111,106 +3110,6 @@ Show_Ftp()
     return 0
 }
 
-Add_SSL_Info_Menu()
-{
-    domain=""
-    while :;do
-        Echo_Yellow "请输入域名（示例：www.example.com）: "
-        Read_Input domain "域名"
-        Lower_Domain_Input domain
-        Check_Domain_Name "${domain}" || continue
-        echo "您的域名：${domain}"
-        break
-    done
-
-    while :;do
-        Echo_Yellow "请输入更多域名（示例：example.com sub.example.com，留空跳过）: "
-        Read_Input moredomain "更多域名"
-        Lower_Domain_Input moredomain
-        [ -z "${moredomain}" ] && break
-        Check_More_Domains "${moredomain}" || continue
-        Reject_Wildcards_For_HTTP "${moredomain}" && break
-    done
-    if [ "${moredomain}" != "" ]; then
-        echo "附加域名：${moredomain}"
-    fi
-
-    Echo_Yellow "请输入域名 $domain 的网站目录: "
-    echo
-    echo "默认目录：/home/wwwroot/${domain}"
-    Read_Input vhostdir "网站目录"
-    if [ "${vhostdir}" == "" ]; then
-        vhostdir="/home/wwwroot/${domain}"
-    fi
-    # 网站目录会被递归创建和授权，因此必须限制在允许的站点根目录内。
-    Check_Vhost_Dir "${vhostdir}" || exit 1
-    echo "虚拟主机目录：${vhostdir}"
-
-    Read_YN allow_rewrite "是否启用伪静态规则 [y/N]（默认 n）: " n "伪静态规则开关"
-    if [ "${allow_rewrite}" == "n" ]; then
-        rewrite="none"
-    else
-        echo "请输入程序对应的伪静态规则名："
-        echo "已内置的伪静态规则（直接输名字即可）："
-        echo "  wordpress  wp2  typecho  typecho2  discuzx  dedecms  ecshop"
-        echo "  drupal  joomla  thinkphp  laravel  codeigniter  yii2  zblog"
-        echo "输入其它名字会在 /usr/local/nginx/conf/rewrite/ 下建一个空文件，规则需自己填。"
-        while :;do
-            Echo_Yellow "规则名（默认 other）: "
-            Read_Input rewrite "伪静态规则名"
-            if [ "${rewrite}" == "" ]; then
-                rewrite="other"
-            fi
-            Check_Config_Name "${rewrite}" "伪静态规则名" && break
-        done
-    fi
-    echo "选择的伪静态规则：$([ "${rewrite}" = "none" ] && echo "无" || echo "${rewrite}")"
-
-    Read_YN access_log "是否启用访问日志 [y/N]（默认 n）: " n "访问日志开关"
-    if [ "${access_log}" == "n" ]; then
-        echo "已禁用访问日志。"
-        al="access_log off;"
-        al_name="${domain}"
-    else
-        while :;do
-            Echo_Yellow "访问日志文件名（默认 ${domain}.log）: "
-            Read_Input al_name "访问日志文件名"
-            if [ "${al_name}" == "" ]; then
-                al_name="${domain}"
-            fi
-            Check_Config_Name "${al_name}" "访问日志文件名" && break
-        done
-        al="access_log  /home/wwwlogs/${al_name}.log main;"
-        echo "访问日志文件名：${al_name}.log"
-    fi
-
-    Site_PHP_Menu
-
-    if [ "${enable_site_php}" == "y" ]; then
-        Read_YN enable_pathinfo "是否启用 PHP Pathinfo [y/N]（默认 n）: " n "Pathinfo 开关"
-        if [ "${enable_pathinfo}" == "n" ]; then
-            echo "已禁用 Pathinfo。"
-        else
-            echo "已启用 Pathinfo。"
-        fi
-    else
-        enable_pathinfo="n"
-    fi
-
-    Read_YN enable_ipv6 "是否启用 IPv6 [y/N]（默认 n）: " n "IPv6 开关"
-    if [ "${enable_ipv6}" == "n" ]; then
-        echo "当前虚拟主机已禁用 IPv6。"
-    else
-        echo "当前虚拟主机已启用 IPv6。"
-    fi
-
-    if [ "${enable_site_php}" == "y" ]; then
-        Multiple_PHP_Select
-    else
-        include_enable_php="$(Site_PHP_Off_Block)"
-    fi
-}
-
 # HTTP 验证不能签发泛域名，用户当场输入泛域名时拒绝整组输入。
 Reject_Wildcards_For_HTTP()
 {
@@ -3244,14 +3143,7 @@ Add_SSL_Only_Info_Menu()
         Lower_Domain_Input input
         Check_Domain_Name "${input}" || continue
         # HTTP-01 不能签发泛域名，ACME 规定泛域名只接受 DNS-01。
-        case "${input}" in
-        \*.*)
-            Echo_Red "HTTP 验证不能签发泛域名证书，泛域名只接受 DNS 验证。"
-            Echo_Yellow "请改用 lnmp dnsssl {ali|cf|dp|he|gd|aws}。"
-            echo
-            return 1
-            ;;
-        esac
+        Reject_Wildcards_For_HTTP "${input}" || return 1
         if [ "${input}" = "default" ]; then
             domain="default"
             break
@@ -3282,10 +3174,72 @@ Add_SSL_Only_Info_Menu()
     Load_Vhost_Params
 }
 
+# 在 vhost 文件中定位目标域名的 80 端口 server 块，输出三行：
+# 网站根目录、该块声明的其它域名、是否监听 IPv6。
+# 返回 2 表示目标块不唯一，3 表示块内缺少 root。
+# 一个文件里可能有多个 server 块，按文件取首个 root 会读到别的站点的参数。
+Parse_Vhost_Block()
+{
+    local conf="$1" target="$2"
+
+    awk -v target="${target}" '
+        {
+            t = $0
+            sub(/#.*/, "", t)
+            if (!inb && t ~ /^[[:space:]]*server[[:space:]]*\{/) { inb = 1; nb++ }
+            if (!inb) next
+            if (t ~ /^[[:space:]]*listen[[:space:]]/) {
+                v = t
+                sub(/^[[:space:]]*listen[[:space:]]+/, "", v)
+                sub(/[[:space:];].*$/, "", v)
+                if (v ~ /^\[::\]/) ipv6[nb] = 1
+                sub(/.*:/, "", v)
+                if (v == "80") has80[nb] = 1
+                if (t ~ /default_server/) isdef[nb] = 1
+            }
+            if (t ~ /^[[:space:]]*server_name[[:space:]]/) {
+                v = t
+                sub(/^[[:space:]]*server_name[[:space:]]+/, "", v)
+                sub(/;.*$/, "", v)
+                c = split(v, names, /[[:space:]]+/)
+                for (i = 1; i <= c; i++) {
+                    if (names[i] == "") continue
+                    if (names[i] == target) named[nb] = 1
+                    else if (names[i] != "_")
+                        more[nb] = (more[nb] == "" ? names[i] : more[nb] " " names[i])
+                }
+            }
+            if (t ~ /^[[:space:]]*root[[:space:]]/ && root[nb] == "") {
+                v = t
+                sub(/^[[:space:]]*root[[:space:]]+/, "", v)
+                sub(/;.*$/, "", v)
+                gsub(/[[:space:]]/, "", v)
+                root[nb] = v
+            }
+            depth += gsub(/\{/, "", t) - gsub(/\}/, "", t)
+            if (depth <= 0) { inb = 0; depth = 0 }
+        }
+        END {
+            for (i = 1; i <= nb; i++) {
+                if (!has80[i]) continue
+                if (target == "default") { if (!isdef[i]) continue }
+                else if (!named[i]) continue
+                hits++
+                blk = i
+            }
+            if (hits != 1) exit 2
+            if (root[blk] == "") exit 3
+            print root[blk]
+            print more[blk]
+            print (ipv6[blk] ? "y" : "n")
+        }
+    ' "${conf}"
+}
+
 # 从现有虚拟主机读回站点参数，供 ssl add 与 dnsssl 复用。
 Load_Vhost_Params()
 {
-    local vhost_conf
+    local vhost_conf parsed
 
     vhost_conf="/usr/local/nginx/conf/vhost/${domain}.conf"
     if [ ! -s "${vhost_conf}" ]; then
@@ -3301,32 +3255,35 @@ Load_Vhost_Params()
         return 1
     fi
 
-    vhostdir=$(awk '$1 == "root" { value=$2; sub(/;$/, "", value); print value; exit }' "${vhost_conf}")
+    parsed=$(Parse_Vhost_Block "${vhost_conf}" "${domain}")
+    case "$?" in
+    0) ;;
+    2)
+        Echo_Red "${vhost_conf} 中没有唯一匹配的 80 端口 server 块，无法读取站点参数。"
+        if [ "${domain}" = "default" ]; then
+            Echo_Yellow "该文件需要有且只有一个带 default_server 的 80 端口 server 块。"
+        else
+            Echo_Yellow "该文件需要有且只有一个 server_name 含 ${domain} 的 80 端口 server 块。"
+        fi
+        echo
+        return 1
+        ;;
+    3)
+        Echo_Red "${vhost_conf} 的 80 端口 server 块缺少 root，无法确定网站目录。"
+        return 1
+        ;;
+    *)
+        Echo_Red "读取 ${vhost_conf} 失败。"
+        return 1
+        ;;
+    esac
+
+    vhostdir=$(printf '%s\n' "${parsed}" | sed -n 1p)
+    moredomain=$(printf '%s\n' "${parsed}" | sed -n 2p)
+    enable_ipv6=$(printf '%s\n' "${parsed}" | sed -n 3p)
     if [ -z "${vhostdir}" ] || [ ! -d "${vhostdir}" ]; then
         Echo_Red "网站 ${domain} 的根目录不存在或无法从 ${vhost_conf} 读取。"
         return 1
-    fi
-
-    moredomain=$(awk -v primary="${domain}" '
-        $1 == "server_name" {
-            out=""
-            for (i=2; i<=NF; i++) {
-                value=$i
-                sub(/;$/, "", value)
-                if (value != primary && value != "_") {
-                    if (out != "") out=out " "
-                    out=out value
-                }
-            }
-            print out
-            exit
-        }
-    ' "${vhost_conf}")
-
-    if grep -Eq '^[[:space:]]*listen[[:space:]]+\[::\]:80' "${vhost_conf}"; then
-        enable_ipv6="y"
-    else
-        enable_ipv6="n"
     fi
 
     return 0
@@ -3450,6 +3407,8 @@ Vhost_Conf_Dir="/usr/local/nginx/conf/vhost"
 # 判断 Nginx 虚拟主机配置中是否声明了该域名。
 Vhost_Has_Domain()
 {
+    # 配置文件不存在时直接判否：交给 awk 会让它转去读标准输入。
+    [ -s "$1" ] || return 1
     awk -v d="$2" '
         $1 == "server_name" {
             for (i=2; i<=NF; i++) { v=$i; sub(/;$/, "", v); if (v == d) f=1 }
@@ -3910,9 +3869,17 @@ Check_Wildcard_Base()
 }
 
 # 枚举被泛域名覆盖的现有站点，结果写入 Wildcard_Site_List。
+# 列出 vhost 配置中声明的全部域名，供泛域名覆盖判定使用。
+Vhost_Domains()
+{
+    awk '$1 == "server_name" {
+            for (i = 2; i <= NF; i++) { v = $i; sub(/;$/, "", v); if (v != "_") print v }
+         }' "$1" | sort -u
+}
+
 Find_Sites_Covered_By_Wildcard()
 {
-    local wildcard="$1" f name
+    local wildcard="$1" f name d hit
 
     Wildcard_Site_List=""
     [ -d "${Vhost_Conf_Dir}" ] || return 1
@@ -3921,17 +3888,53 @@ Find_Sites_Covered_By_Wildcard()
         [ -s "${f}" ] || continue
         name=$(basename "${f}" .conf)
         [ "${name}" = "default" ] && continue
-        Domain_Covered_By_Wildcard "${name}" "${wildcard}" || continue
-        Wildcard_Site_List="${Wildcard_Site_List:+${Wildcard_Site_List} }${name}"
+        hit=""
+        if Domain_Covered_By_Wildcard "${name}" "${wildcard}"; then
+            hit="${name}"
+        else
+            # 站点可能以别的名字命名，真正被泛域名覆盖的是它声明的其它域名，
+            # 只看文件名会把这类站点漏掉。存量配置里可能有泛域名，拆分期间
+            # 关闭路径展开。
+            set -f
+            for d in $(Vhost_Domains "${f}"); do
+                Domain_Covered_By_Wildcard "${d}" "${wildcard}" || continue
+                hit="${name}"
+                echo "网站 ${name} 的域名 ${d} 被 ${wildcard} 覆盖。"
+                break
+            done
+            set +f
+        fi
+        [ -n "${hit}" ] || continue
+        Wildcard_Site_List="${Wildcard_Site_List:+${Wildcard_Site_List} }${hit}"
     done
 
     [ -n "${Wildcard_Site_List}" ]
 }
 
-# 站点已有 HTTPS/443 配置时返回 0。
+# 站点已有 HTTPS/443 配置时返回 0。按 server 块判断：default 的未知 SNI
+# 拒绝块也监听 443，但它不承载站点，不能算作已配置 HTTPS。
 Vhost_Has_HTTPS()
 {
-    grep -Eq '^[[:space:]]*listen[[:space:]][^;]*443[^;]*ssl' "$1"
+    [ -s "$1" ] || return 1
+    awk '
+        {
+            t = $0
+            sub(/#.*/, "", t)
+            if (!inb && t ~ /^[[:space:]]*server[[:space:]]*\{/) {
+                inb = 1; depth = 0; ssl443 = 0; reject = 0
+            }
+            if (!inb) next
+            if (t ~ /^[[:space:]]*listen[[:space:]]/ && t ~ /443/ \
+                && t ~ /[[:space:]]ssl([[:space:];]|$)/) ssl443 = 1
+            if (t ~ /ssl_reject_handshake/) reject = 1
+            depth += gsub(/\{/, "", t) - gsub(/\}/, "", t)
+            if (depth <= 0) {
+                inb = 0
+                if (ssl443 && !reject) { found = 1; exit }
+            }
+        }
+        END { exit found ? 0 : 1 }
+    ' "$1"
 }
 
 # acme.sh 证书台账目录，与 Install_Check_Acme.sh 传入的 --certhome 一致。
@@ -4100,7 +4103,11 @@ Confirm_Wildcard_Base_Domain()
     Read_YN ans "检测到网站 ${base}，泛域名不覆盖它本身，是否一并签入本证书 [y/N]（默认 n）: " n "上级域名签入开关"
     if [ "${ans}" = "y" ]; then
         moredomain="${moredomain:+${moredomain} }${base}"
-        Wildcard_Site_List="${Wildcard_Site_List:+${Wildcard_Site_List} }${base}"
+        # 该站点可能已因别名被泛域名覆盖而在列表里，重复会让它被处理两次。
+        case " ${Wildcard_Site_List} " in
+        *" ${base} "*) ;;
+        *) Wildcard_Site_List="${Wildcard_Site_List:+${Wildcard_Site_List} }${base}" ;;
+        esac
         echo "${base} 已加入证书域名。"
     else
         echo "${base} 不参与本次证书。"
@@ -4580,6 +4587,38 @@ EOF
     return 0
 }
 
+# 删除 default 配置中拒绝未知 SNI 的兜底 server 块。
+# default 自己配上证书后由它提供 443 default_server，两者不能同时存在。
+Remove_SSL_Reject_Block()
+{
+    local conf="$1" tmp
+
+    grep -q 'ssl_reject_handshake' "${conf}" || return 0
+    tmp=$(mktemp "${conf}.XXXXXXXX") || return 1
+    awk '
+        {
+            t = $0
+            sub(/#.*/, "", t)
+            if (!inb && t ~ /^[[:space:]]*server[[:space:]]*\{/) {
+                inb = 1; n = 0; depth = 0; reject = 0
+            }
+            if (!inb) { print; next }
+            buf[++n] = $0
+            if (t ~ /ssl_reject_handshake/) reject = 1
+            depth += gsub(/\{/, "", t) - gsub(/\}/, "", t)
+            if (depth <= 0) {
+                inb = 0
+                if (!reject) { for (i = 1; i <= n; i++) print buf[i] }
+                n = 0
+            }
+        }
+    ' "${conf}" >"${tmp}" || { rm -f "${tmp}"; return 1; }
+    chmod --reference="${conf}" "${tmp}" 2>/dev/null || chmod 644 "${tmp}"
+    mv "${tmp}" "${conf}" || { rm -f "${tmp}"; return 1; }
+    echo "已移除 default 的未知 SNI 拒绝块，改由本次证书提供 443 默认站点。"
+    return 0
+}
+
 # 把 HTTPS 监听和 SSL 指令插入站点现有的 80 端口 server 块。
 # 参数：配置文件 站点名（default 按 default_server 匹配） listen 片段文件 SSL 片段文件
 # 返回：0 成功；2 目标 server 块不唯一；3 块内缺少 server_name 或 root；
@@ -4740,6 +4779,12 @@ EOF
     printf '    # SSL 配置--结束\n' >>"${ssl_frag}"
 
     if ! \cp -p "${vhost_conf}" "${backup}"; then
+        rm -f "${listen_frag}" "${ssl_frag}" "${backup}"
+        return 1
+    fi
+    if [ "${domain}" = "default" ] && ! Remove_SSL_Reject_Block "${vhost_conf}"; then
+        Echo_Red "移除 default 的未知 SNI 拒绝块失败，未写入 HTTPS 配置。"
+        \cp -p "${backup}" "${vhost_conf}"
         rm -f "${listen_frag}" "${ssl_frag}" "${backup}"
         return 1
     fi
@@ -5050,6 +5095,76 @@ Discard_Cert_Backup()
     return 0
 }
 
+# 证书的 SAN 是否覆盖该域名，支持一级泛域名。
+Cert_Covers_Domain()
+{
+    local d="$1" n
+
+    for n in $2; do
+        [ "${n}" = "${d}" ] && return 0
+        case "${n}" in
+        \*.*)
+            [ "${d}" != "${d#*.}" ] && [ "${d#*.}" = "${n#\*.}" ] && return 0
+            ;;
+        esac
+    done
+    return 1
+}
+
+# 自有证书写入前的预检：可解析、未过期、私钥与证书配对、SAN 覆盖站点域名。
+# nginx -t 只看语法，过期或域名不符的证书照样通过，浏览器才报错。
+Verify_Own_Cert()
+{
+    local cert="$1" key="$2" main="$3" extra="$4"
+    local cert_pub key_pub names d missing='' ans
+
+    if ! command -v openssl >/dev/null 2>&1; then
+        Echo_Yellow "系统没有 openssl，跳过证书预检。"
+        echo
+        return 0
+    fi
+    if ! openssl x509 -noout -in "${cert}" >/dev/null 2>&1; then
+        Echo_Red "${cert} 不是可解析的 PEM 证书。"
+        return 1
+    fi
+    if ! openssl x509 -noout -checkend 0 -in "${cert}" >/dev/null 2>&1; then
+        Echo_Red "证书已过期：$(openssl x509 -noout -enddate -in "${cert}" 2>/dev/null | sed 's/^notAfter=//')"
+        return 1
+    fi
+    cert_pub=$(openssl x509 -noout -pubkey -in "${cert}" 2>/dev/null)
+    key_pub=$(openssl pkey -pubout -in "${key}" 2>/dev/null)
+    if [ -z "${cert_pub}" ] || [ -z "${key_pub}" ] || [ "${cert_pub}" != "${key_pub}" ]; then
+        Echo_Red "私钥 ${key} 与证书 ${cert} 不是同一对密钥。"
+        return 1
+    fi
+    # default 站点用 IP 证书，没有域名可比对。
+    [ "${main}" = "default" ] && return 0
+
+    names=$(openssl x509 -noout -ext subjectAltName -in "${cert}" 2>/dev/null \
+        | tr ',' '\n' | sed -n 's/^[[:space:]]*DNS://p')
+    if [ -z "${names}" ]; then
+        names=$(openssl x509 -noout -subject -in "${cert}" 2>/dev/null \
+            | sed -n 's/.*CN[[:space:]]*=[[:space:]]*//p' | sed 's/[,/].*$//')
+    fi
+    # 证书里的泛域名带 *，比对期间关闭路径展开。
+    set -f
+    for d in ${main} ${extra}; do
+        Cert_Covers_Domain "${d}" "${names}" && continue
+        missing="${missing:+${missing} }${d}"
+    done
+    set +f
+    [ -z "${missing}" ] || {
+        Echo_Red "证书未覆盖这些域名：${missing}"
+        Echo_Yellow "证书覆盖的名称：$(printf '%s' "${names}" | tr '\n' ' ')"
+        echo
+        Echo_Yellow "用它启用 HTTPS 后，上述域名的访问会被浏览器判为证书名称不匹配。"
+        echo
+        Read_YN ans "仍要使用该证书? (y/N，默认 n) " n "证书覆盖确认"
+        [ "${ans}" = "y" ] || return 1
+    }
+    return 0
+}
+
 Add_SSL()
 {
     local vhost_conf="/usr/local/nginx/conf/vhost/${domain}.conf"
@@ -5070,6 +5185,8 @@ Add_SSL()
     fi
 
     if [ "${ssl_choice}" == "1" ]; then
+        Verify_Own_Cert "${ssl_certificate}" "${ssl_certificate_key}" \
+            "${domain}" "${moredomain}" || return 1
         Create_SSL_Config || return 1
     elif echo "${ssl_choice}" | grep -Eqi "^[23]$"; then
         letsdomain=""
@@ -5209,9 +5326,18 @@ Add_Dns_SSL()
         lets_status=$?
     else
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue "${letsdomain[@]}" --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
-        Echo_Yellow "请在 120 秒内为域名添加上方显示的 TXT 记录。"
+        Echo_Yellow "请按上方显示的内容添加 TXT 记录。CA 只在验证时查询一次，"
         echo
-        Sleep_Sec 120
+        Echo_Yellow "记录尚未传播就继续会验证失败，可先用 dig TXT _acme-challenge.<域名> 自查。"
+        echo
+        # 固定倒计时既可能不够用，也可能白等；交互执行时由用户决定何时继续。
+        if [ -t 0 ]; then
+            Press_Any_Key_Or_Line "记录已生效后按任意键继续验证，按 Ctrl+C 取消..." || return 1
+        else
+            Echo_Yellow "非交互执行，等待 120 秒后继续验证。"
+            echo
+            Sleep_Sec 120
+        fi
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --renew "${letsdomain[@]}" --yes-I-know-dns-manual-mode-enough-go-ahead-please
         lets_status=$?
     fi
@@ -5237,8 +5363,15 @@ Add_Dns_SSL()
     ssl_certificate="${cert_dir}/fullchain.cer"
     ssl_certificate_key="${cert_dir}/${cert_dir_name}.key"
     if [ "${Wildcard_Mode}" = "y" ]; then
-        # 证书已签发成功，个别站点写配置失败不回滚证书目录。
-        Install_Cert_To_Sites "${Wildcard_Site_List}"
+        # 证书已签发成功，个别站点写配置失败不回滚证书目录；但一个站点都没写
+        # 成功时本次目标未达成，必须返回失败，否则自动化会以为 HTTPS 已上线。
+        if ! Install_Cert_To_Sites "${Wildcard_Site_List}"; then
+            Discard_Cert_Backup
+            Echo_Red "证书已签发并保存在 ${cert_dir}，但没有任何站点写入 HTTPS 配置。"
+            Echo_Yellow "修正站点配置后重新执行 lnmp dnsssl ${provider}，输入同一个域名并选择复用现有证书。"
+            echo
+            return 1
+        fi
     else
         Create_SSL_Config || { Restore_Cert_Dir; return 1; }
     fi
@@ -5313,9 +5446,18 @@ Add_Dns_SSL_Only()
         lets_status=$?
     else
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue "${letsdomain[@]}" --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
-        Echo_Yellow "请在 120 秒内为域名添加上方显示的 TXT 记录。"
+        Echo_Yellow "请按上方显示的内容添加 TXT 记录。CA 只在验证时查询一次，"
         echo
-        Sleep_Sec 120
+        Echo_Yellow "记录尚未传播就继续会验证失败，可先用 dig TXT _acme-challenge.<域名> 自查。"
+        echo
+        # 固定倒计时既可能不够用，也可能白等；交互执行时由用户决定何时继续。
+        if [ -t 0 ]; then
+            Press_Any_Key_Or_Line "记录已生效后按任意键继续验证，按 Ctrl+C 取消..." || return 1
+        else
+            Echo_Yellow "非交互执行，等待 120 秒后继续验证。"
+            echo
+            Sleep_Sec 120
+        fi
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --renew "${letsdomain[@]}" --yes-I-know-dns-manual-mode-enough-go-ahead-please
         lets_status=$?
     fi
@@ -5542,9 +5684,10 @@ case "${arg1}" in
         echo "用法：lnmp fw {allow|block|unblock} {tcp|udp} <端口|起-止>"
         echo "用法：lnmp phpmyadmin {enable|disable|status}"
         echo "用法：lnmp ssl add"
-        echo "用法：lnmp {dnsssl|dns} {ali|cf|dp|he|gd|aws}"
-        echo "用法：lnmp onlyssl {ali|cf|dp|he|gd|aws}"
+        echo "用法：lnmp {dnsssl|dns} [ali|cf|dp|he|gd|aws]"
+        echo "用法：lnmp onlyssl [ali|cf|dp|he|gd|aws]"
         echo "      DNS 服务商名取 acme.sh 插件名，如 nsone、gcloud，见 /usr/local/acme.sh/dnsapi/"
+        echo "      不带服务商 = 手工添加 TXT 记录验证，不能自动续期"
         exit 1
         ;;
 esac

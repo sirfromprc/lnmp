@@ -909,13 +909,6 @@ Extract_Custom_Block()
     ' "${conf}"
 }
 
-# 判断自定义配置里是否已经声明了 location /。
-# 同一 server 内出现第二个 location / 会被 Nginx 判为 duplicate location。
-Custom_Block_Has_Root_Location()
-{
-    printf '%s\n' "$1" | grep -Eq '^[[:space:]]*location[[:space:]]+/[[:space:]]*\{'
-}
-
 # HTTP 与 HTTPS 共用以下规则，避免全局 PHP 处理器继续执行或泄露 .php 源文件。
 Site_Apache_PHP_Off_Block()
 {
@@ -924,6 +917,20 @@ Site_Apache_PHP_Off_Block()
 # Apache 将未解析的 .php 文件作为普通文件返回。
 php_admin_flag engine off
 RedirectMatch 404 "\.php(/|$)"
+EOF
+}
+
+# 拒绝隐藏文件与隐藏目录，ACME 的 .well-known 除外。80 与 443 共用。
+Site_Apache_Hidden_Deny_Block()
+{
+    cat <<'EOF'
+# 拒绝 .env、.git 等隐藏文件和隐藏目录；ACME 验证用的 .well-known 除外。
+<DirectoryMatch "/\.(?!well-known)">
+    Require all denied
+</DirectoryMatch>
+<FilesMatch "^\.(?!well-known)">
+    Require all denied
+</FilesMatch>
 EOF
 }
 
@@ -951,11 +958,45 @@ Site_Params_Conf()
     fi
 }
 
+# 目录属主必须是 www，否则 PHP 进程读不到站点文件。权限位区别对待：
+# 新建或空目录直接给 755；复用的非空目录默认保持原样，递归 755 会给普通文件
+# 加上执行位，并把 .env、密钥一类原本 600/640 的文件放宽为所有本地用户可读。
+Prepare_Vhost_Dir_Perm()
+{
+    local dir="$1" created="$2" fix='n' rc=0
+
+    if [ "${created}" = 'y' ] || [ -z "$(ls -A "${dir}" 2>/dev/null)" ]; then
+        chmod 755 "${dir}" || rc=1
+    else
+        echo "目录 ${dir} 已存在且非空，默认保留其中文件的权限位。"
+        # 非交互执行不占用输入行，否则既有的管道调用会在这里因 EOF 中断建站。
+        if [ ! -t 0 ]; then
+            case "${VHOST_FIX_PERM:-}" in
+                [yY]) fix='y'; echo "非交互执行，按 VHOST_FIX_PERM=y 统一权限。" ;;
+                *)    echo "非交互执行，保留原权限位（如需统一，设置 VHOST_FIX_PERM=y）。" ;;
+            esac
+        else
+            Read_YN fix "是否把目录统一改为 755、普通文件改为 644? (y/N，默认 n) " n "权限规范化开关"
+        fi
+        if [ "${fix}" = 'y' ]; then
+            find "${dir}" -type d -exec chmod 755 {} + || rc=1
+            find "${dir}" -type f -exec chmod 644 {} + || rc=1
+        fi
+    fi
+    if ! chown -R www:www "${dir}"; then
+        Echo_Red "变更 ${dir} 属主失败，PHP 进程可能无法读取站点文件。"
+        rc=1
+    fi
+    return ${rc}
+}
+
 Add_VHost_Config()
 {
-    local apache_open_basedir apache_php_off apache_dir_index
+    local apache_open_basedir apache_php_off apache_dir_index apache_hidden_deny
     local main_conf="/usr/local/apache/conf/vhost/${domain}.conf"
     local shared_conf="${Vhost_Shared_Dir}/${domain}.conf"
+
+    apache_hidden_deny="$(Site_Apache_Hidden_Deny_Block)"
 
     Check_Config_Name "${al_name}" "访问日志文件名" || return 1
     Check_Server_Admin_Email "${email}" || return 1
@@ -991,6 +1032,7 @@ ${apache_php_off}
     Require all granted
     ${apache_dir_index}
 </Directory>
+${apache_hidden_deny}
 
 # 自定义配置--开始
 
@@ -1021,7 +1063,15 @@ ServerAlias ${moredomain}" "${shared_conf}"
         return 1
     fi
     echo "正在平滑重载 Apache..."
-    /etc/init.d/httpd graceful
+    # 重载失败必须撤销站点配置：留在磁盘上会让下次建站报"域名已存在"，
+    # 而以后任意一次重载又会把这个未完成的站点放到线上。
+    if ! /etc/init.d/httpd graceful; then
+        Echo_Red "Apache 平滑重载失败，已撤销本次新增的虚拟主机配置。"
+        rm -f "${main_conf}" "${shared_conf}"
+        /etc/init.d/httpd graceful >/dev/null 2>&1
+        return 1
+    fi
+    return 0
 }
 
 Print_Default_Site_Intro()
@@ -1032,6 +1082,28 @@ Print_Default_Site_Intro()
     Echo_Green " 所有未匹配到其它站点的访问请求（包括直接通过服务器 IP 访问）都会进入此站点，"
     Echo_Green " 根目录为 /home/wwwroot/default，无需通过 vhost add 重复创建。"
     Echo_Green "===================================================================="
+}
+
+# 新站点声明的域名不能已被其它虚拟主机使用：重复的 ServerName / ServerAlias 不会让配置
+# 测试失败，但请求仍由先加载的站点处理，新站点实际访问不到。
+Check_Domain_Not_Taken()
+{
+    local names="$1" f taken=0 d
+
+    [ -d "${Vhost_Conf_Dir}" ] || return 0
+    for f in "${Vhost_Conf_Dir}"/*.conf; do
+        [ -s "${f}" ] || continue
+        for d in ${names}; do
+            Vhost_Has_Domain "$(Site_Params_Conf "$(basename "${f}" .conf)" "${f}")" "${d}" || continue
+            [ "${taken}" -eq 0 ] && Echo_Red "以下域名已被现有站点声明："
+            Echo_Red "  ${d} -> ${f}"
+            taken=1
+        done
+    done
+    [ "${taken}" -eq 0 ] && return 0
+    Echo_Yellow "请换一个域名，或先用 lnmp vhost del 删除占用它的站点。"
+    echo
+    return 1
 }
 
 Add_VHost()
@@ -1053,6 +1125,7 @@ Add_VHost()
             Echo_Red "域名 ${domain} 已存在，请检查。"
             exit 1
         fi
+        Check_Domain_Not_Taken "${domain}" || continue
         echo "您的域名：${domain}"
         break
     done
@@ -1063,7 +1136,9 @@ Add_VHost()
         Lower_Domain_Input moredomain
         [ -z "${moredomain}" ] && break
         Check_More_Domains "${moredomain}" || continue
-        Reject_Wildcard_Site "${moredomain}" && break
+        Reject_Wildcard_Site "${moredomain}" || continue
+        Check_Domain_Not_Taken "${moredomain}" || continue
+        break
     done
     if [ "${moredomain}" != "" ]; then
         echo "附加域名：${moredomain}"
@@ -1076,10 +1151,10 @@ Add_VHost()
         if [ "${vhostdir}" == "" ]; then
             vhostdir="/home/wwwroot/${domain}"
         fi
-        # 目录会用于递归创建和授权，因此必须先规范化并限制在站点根目录内。
-        Check_Vhost_Dir "${vhostdir}" || exit 1
-        # 校验通过后使用规范化的网站目录路径。
+        # 目录会用于递归创建和授权，必须先规范化并限制在站点根目录内；
+        # 校验通过后 Check_Vhost_Dir 会把规范化路径写回 vhostdir。
         Check_Vhost_Dir "${vhostdir}" && break
+        Echo_Red "请重新输入网站目录。"
     done
     echo "虚拟主机目录：${vhostdir}"
 
@@ -1145,8 +1220,7 @@ Add_VHost()
     [ -d "${vhostdir}" ] || vhostdir_created="y"
     mkdir -p "${vhostdir}" || return 1
     echo "正在设置虚拟主机目录权限......"
-    chmod -R 755 "${vhostdir}"
-    chown -R www:www "${vhostdir}"
+    Prepare_Vhost_Dir_Perm "${vhostdir}" "${vhostdir_created}"
 
     if ! Add_VHost_Config; then
         [ "${vhostdir_created}" = "y" ] && rmdir "${vhostdir}" 2>/dev/null
@@ -1224,6 +1298,19 @@ Add_VHost()
         fi
     fi
     Echo_Green "================================================"
+
+    # 站点主体已建成，但用户明确请求过的附加操作有失败时返回非零，
+    # 否则上层自动化会把未完成的站点当作已交付。
+    if [ "${create_database}" == "y" ] && [ "${database_add_rc:-1}" -ne 0 ]; then
+        return 1
+    fi
+    if [ "${create_ftp}" == "y" ] && [ "${ftp_add_rc:-1}" -ne 0 ]; then
+        return 1
+    fi
+    if [ "${create_ssl}" == "y" ] && [ "${ssl_add_rc:-1}" -ne 0 ]; then
+        return 1
+    fi
+    return 0
 }
 
 # 列出 vhost 目录下的配置名。目录为空时 glob 不展开，用 -e 跳过字面量。
@@ -2683,74 +2770,6 @@ Show_Ftp()
     return 0
 }
 
-Add_SSL_Info_Menu()
-{
-    domain=""
-    while :;do
-        Echo_Yellow "请输入域名（示例：www.example.com）: "
-        Read_Input domain "域名"
-        Lower_Domain_Input domain
-        Check_Domain_Name "${domain}" || continue
-        echo "您的域名：${domain}"
-        break
-    done
-
-    while :;do
-        Echo_Yellow "请输入更多域名（示例：example.com sub.example.com，留空跳过）: "
-        Read_Input moredomain "更多域名"
-        Lower_Domain_Input moredomain
-        [ -z "${moredomain}" ] && break
-        Check_More_Domains "${moredomain}" || continue
-        Reject_Wildcards_For_HTTP "${moredomain}" && break
-    done
-    echo "域名列表：${domain} ${moredomain}"
-
-    Echo_Yellow "请输入域名 $domain 的网站目录: "
-    echo
-    Echo_Yellow "网站目录（默认 /home/wwwroot/${domain}）: "
-    Read_Input vhostdir "网站目录"
-    if [ "${vhostdir}" == "" ]; then
-        vhostdir="/home/wwwroot/${domain}"
-    fi
-    # 网站目录会被递归创建和授权，因此必须限制在允许的站点根目录内。
-    Check_Vhost_Dir "${vhostdir}" || exit 1
-    echo "虚拟主机目录：${vhostdir}"
-
-    Site_PHP_Menu
-
-    Read_YN access_log "是否启用访问日志 [y/N]（默认 n）: " n "访问日志开关"
-    if [ "${access_log}" == "n" ]; then
-        echo "已禁用访问日志。"
-        al="access_log off;"
-        al_name="${domain}"
-    else
-        while :;do
-            Echo_Yellow "访问日志文件名（默认 ${domain}.log）: "
-            Read_Input al_name "访问日志文件名"
-            if [ "${al_name}" == "" ]; then
-                al_name="${domain}"
-            fi
-            Check_Config_Name "${al_name}" "访问日志文件名" && break
-        done
-        al="access_log  /home/wwwlogs/${al_name}.log;"
-        echo "访问日志文件名：${al_name}.log"
-    fi
-
-    email=""
-    while :;do
-        Echo_Yellow "请输入管理员邮箱（默认 webmaster@example.com）: "
-        Read_Input email "管理员邮箱"
-        if [ "${email}" == "" ]; then
-            echo "未输入，管理员邮箱将设为 webmaster@example.com。"
-            email='webmaster@example.com'
-            break
-        fi
-        Check_Server_Admin_Email "${email}" || continue
-        echo "服务器管理员邮箱：${email}"
-        break
-    done
-}
-
 # HTTP 验证不能签发泛域名，用户当场输入泛域名时拒绝整组输入。
 Reject_Wildcards_For_HTTP()
 {
@@ -2784,14 +2803,7 @@ Add_SSL_Only_Info_Menu()
         Lower_Domain_Input input
         Check_Domain_Name "${input}" || continue
         # HTTP-01 不能签发泛域名，ACME 规定泛域名只接受 DNS-01。
-        case "${input}" in
-        \*.*)
-            Echo_Red "HTTP 验证不能签发泛域名证书，泛域名只接受 DNS 验证。"
-            Echo_Yellow "请改用 lnmp dnsssl {ali|cf|dp|he|gd|aws}。"
-            echo
-            return 1
-            ;;
-        esac
+        Reject_Wildcards_For_HTTP "${input}" || return 1
         if [ "${input}" = "default" ]; then
             domain="default"
             break
@@ -3010,6 +3022,8 @@ Vhost_Conf_Dir="/usr/local/apache/conf/vhost"
 # 判断 Apache 虚拟主机配置中是否声明了该域名。
 Vhost_Has_Domain()
 {
+    # 配置文件不存在时直接判否：交给 awk 会让它转去读标准输入。
+    [ -s "$1" ] || return 1
     awk -v d="$2" '
         $1 == "ServerName" || $1 == "ServerAlias" {
             for (i=2; i<=NF; i++) if ($i == d) f=1
@@ -3471,9 +3485,21 @@ Check_Wildcard_Base()
 }
 
 # 枚举被泛域名覆盖的现有站点，结果写入 Wildcard_Site_List。
+# 列出虚拟主机声明的全部域名，供泛域名覆盖判定使用。
+# 片段结构的站点参数在 shared 片段里，需要先定位实际的参数文件。
+Vhost_Domains()
+{
+    local conf
+
+    conf=$(Site_Params_Conf "$(basename "$1" .conf)" "$1")
+    awk '$1 == "ServerName" || $1 == "ServerAlias" {
+            for (i = 2; i <= NF; i++) print $i
+         }' "${conf}" | sort -u
+}
+
 Find_Sites_Covered_By_Wildcard()
 {
-    local wildcard="$1" f name
+    local wildcard="$1" f name d hit
 
     Wildcard_Site_List=""
     [ -d "${Vhost_Conf_Dir}" ] || return 1
@@ -3482,8 +3508,24 @@ Find_Sites_Covered_By_Wildcard()
         [ -s "${f}" ] || continue
         name=$(basename "${f}" .conf)
         [ "${name}" = "default" ] && continue
-        Domain_Covered_By_Wildcard "${name}" "${wildcard}" || continue
-        Wildcard_Site_List="${Wildcard_Site_List:+${Wildcard_Site_List} }${name}"
+        hit=""
+        if Domain_Covered_By_Wildcard "${name}" "${wildcard}"; then
+            hit="${name}"
+        else
+            # 站点可能以别的名字命名，真正被泛域名覆盖的是它声明的其它域名，
+            # 只看文件名会把这类站点漏掉。存量配置里可能有泛域名，拆分期间
+            # 关闭路径展开。
+            set -f
+            for d in $(Vhost_Domains "${f}"); do
+                Domain_Covered_By_Wildcard "${d}" "${wildcard}" || continue
+                hit="${name}"
+                echo "网站 ${name} 的域名 ${d} 被 ${wildcard} 覆盖。"
+                break
+            done
+            set +f
+        fi
+        [ -n "${hit}" ] || continue
+        Wildcard_Site_List="${Wildcard_Site_List:+${Wildcard_Site_List} }${hit}"
     done
 
     [ -n "${Wildcard_Site_List}" ]
@@ -3661,7 +3703,11 @@ Confirm_Wildcard_Base_Domain()
     Read_YN ans "检测到网站 ${base}，泛域名不覆盖它本身，是否一并签入本证书 [y/N]（默认 n）: " n "上级域名签入开关"
     if [ "${ans}" = "y" ]; then
         moredomain="${moredomain:+${moredomain} }${base}"
-        Wildcard_Site_List="${Wildcard_Site_List:+${Wildcard_Site_List} }${base}"
+        # 该站点可能已因别名被泛域名覆盖而在列表里，重复会让它被处理两次。
+        case " ${Wildcard_Site_List} " in
+        *" ${base} "*) ;;
+        *) Wildcard_Site_List="${Wildcard_Site_List:+${Wildcard_Site_List} }${base}" ;;
+        esac
         echo "${base} 已加入证书域名。"
     else
         echo "${base} 不参与本次证书。"
@@ -4228,6 +4274,7 @@ Create_SSL_Config()
     local vhost_conf="${ssl_vhost_conf:-/usr/local/apache/conf/vhost/${domain}.conf}"
     local backup httpd_conf_backup use_shared='n'
     local ssl_server_name="${domain}" ssl_open_basedir ssl_directory_options ssl_php_off
+    local ssl_hidden_deny
 
     # 站点已是片段结构时，443 只写 SSL 专有指令并 Include 同一片段。
     # default 站点的配置在 httpd-vhosts.conf 内，2.3 之前建的站点是内联结构，
@@ -4245,6 +4292,7 @@ Create_SSL_Config()
     if [ "${ssl_choice}" = '1' ] && [ -n "${ssl_chain:-}" ]; then
         Check_Config_File_Path "${ssl_chain}" "SSL 证书链文件" || return 1
     fi
+    ssl_hidden_deny="$(Site_Apache_Hidden_Deny_Block)"
     ssl_open_basedir="php_admin_value open_basedir \"${vhostdir}:/tmp/:/var/tmp/:/proc/\""
     ssl_directory_options='    AllowOverride All
     Require all granted
@@ -4330,6 +4378,7 @@ ${ssl_php_off}
     Options SymLinksIfOwnerMatch
 ${ssl_directory_options}
 </Directory>
+${ssl_hidden_deny}
 
 # 自定义配置--开始
 ${ssl_custom_block}
@@ -4486,6 +4535,76 @@ Discard_Cert_Backup()
     return 0
 }
 
+# 证书的 SAN 是否覆盖该域名，支持一级泛域名。
+Cert_Covers_Domain()
+{
+    local d="$1" n
+
+    for n in $2; do
+        [ "${n}" = "${d}" ] && return 0
+        case "${n}" in
+        \*.*)
+            [ "${d}" != "${d#*.}" ] && [ "${d#*.}" = "${n#\*.}" ] && return 0
+            ;;
+        esac
+    done
+    return 1
+}
+
+# 自有证书写入前的预检：可解析、未过期、私钥与证书配对、SAN 覆盖站点域名。
+# nginx -t 只看语法，过期或域名不符的证书照样通过，浏览器才报错。
+Verify_Own_Cert()
+{
+    local cert="$1" key="$2" main="$3" extra="$4"
+    local cert_pub key_pub names d missing='' ans
+
+    if ! command -v openssl >/dev/null 2>&1; then
+        Echo_Yellow "系统没有 openssl，跳过证书预检。"
+        echo
+        return 0
+    fi
+    if ! openssl x509 -noout -in "${cert}" >/dev/null 2>&1; then
+        Echo_Red "${cert} 不是可解析的 PEM 证书。"
+        return 1
+    fi
+    if ! openssl x509 -noout -checkend 0 -in "${cert}" >/dev/null 2>&1; then
+        Echo_Red "证书已过期：$(openssl x509 -noout -enddate -in "${cert}" 2>/dev/null | sed 's/^notAfter=//')"
+        return 1
+    fi
+    cert_pub=$(openssl x509 -noout -pubkey -in "${cert}" 2>/dev/null)
+    key_pub=$(openssl pkey -pubout -in "${key}" 2>/dev/null)
+    if [ -z "${cert_pub}" ] || [ -z "${key_pub}" ] || [ "${cert_pub}" != "${key_pub}" ]; then
+        Echo_Red "私钥 ${key} 与证书 ${cert} 不是同一对密钥。"
+        return 1
+    fi
+    # default 站点用 IP 证书，没有域名可比对。
+    [ "${main}" = "default" ] && return 0
+
+    names=$(openssl x509 -noout -ext subjectAltName -in "${cert}" 2>/dev/null \
+        | tr ',' '\n' | sed -n 's/^[[:space:]]*DNS://p')
+    if [ -z "${names}" ]; then
+        names=$(openssl x509 -noout -subject -in "${cert}" 2>/dev/null \
+            | sed -n 's/.*CN[[:space:]]*=[[:space:]]*//p' | sed 's/[,/].*$//')
+    fi
+    # 证书里的泛域名带 *，比对期间关闭路径展开。
+    set -f
+    for d in ${main} ${extra}; do
+        Cert_Covers_Domain "${d}" "${names}" && continue
+        missing="${missing:+${missing} }${d}"
+    done
+    set +f
+    [ -z "${missing}" ] || {
+        Echo_Red "证书未覆盖这些域名：${missing}"
+        Echo_Yellow "证书覆盖的名称：$(printf '%s' "${names}" | tr '\n' ' ')"
+        echo
+        Echo_Yellow "用它启用 HTTPS 后，上述域名的访问会被浏览器判为证书名称不匹配。"
+        echo
+        Read_YN ans "仍要使用该证书? (y/N，默认 n) " n "证书覆盖确认"
+        [ "${ans}" = "y" ] || return 1
+    }
+    return 0
+}
+
 Add_SSL()
 {
     local vhost_conf="${ssl_vhost_conf:-/usr/local/apache/conf/vhost/${domain}.conf}"
@@ -4506,6 +4625,8 @@ Add_SSL()
     fi
 
     if [ "${ssl_choice}" == "1" ]; then
+        Verify_Own_Cert "${ssl_certificate}" "${ssl_certificate_key}" \
+            "${domain}" "${moredomain}" || return 1
         Create_SSL_Config || return 1
     elif echo "${ssl_choice}" | grep -Eqi "^[23]$"; then
         letsdomain=""
@@ -4643,9 +4764,18 @@ Add_Dns_SSL()
         lets_status=$?
     else
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue "${letsdomain[@]}" --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
-        Echo_Yellow "请在 120 秒内为域名添加上方显示的 TXT 记录。"
+        Echo_Yellow "请按上方显示的内容添加 TXT 记录。CA 只在验证时查询一次，"
         echo
-        Sleep_Sec 120
+        Echo_Yellow "记录尚未传播就继续会验证失败，可先用 dig TXT _acme-challenge.<域名> 自查。"
+        echo
+        # 固定倒计时既可能不够用，也可能白等；交互执行时由用户决定何时继续。
+        if [ -t 0 ]; then
+            Press_Any_Key_Or_Line "记录已生效后按任意键继续验证，按 Ctrl+C 取消..." || return 1
+        else
+            Echo_Yellow "非交互执行，等待 120 秒后继续验证。"
+            echo
+            Sleep_Sec 120
+        fi
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --renew "${letsdomain[@]}" --yes-I-know-dns-manual-mode-enough-go-ahead-please
         lets_status=$?
     fi
@@ -4673,8 +4803,15 @@ Add_Dns_SSL()
     ssl_certificate="${cert_dir}/${cert_dir_name}.cer"
     ssl_certificate_key="${cert_dir}/${cert_dir_name}.key"
     if [ "${Wildcard_Mode}" = "y" ]; then
-        # 证书已签发成功，个别站点写配置失败不回滚证书目录。
-        Install_Cert_To_Sites "${Wildcard_Site_List}"
+        # 证书已签发成功，个别站点写配置失败不回滚证书目录；但一个站点都没写
+        # 成功时本次目标未达成，必须返回失败，否则自动化会以为 HTTPS 已上线。
+        if ! Install_Cert_To_Sites "${Wildcard_Site_List}"; then
+            Discard_Cert_Backup
+            Echo_Red "证书已签发并保存在 ${cert_dir}，但没有任何站点写入 HTTPS 配置。"
+            Echo_Yellow "修正站点配置后重新执行 lnmp dnsssl ${provider}，输入同一个域名并选择复用现有证书。"
+            echo
+            return 1
+        fi
     else
         Create_SSL_Config || { Restore_Cert_Dir; return 1; }
     fi
@@ -4749,9 +4886,18 @@ Add_Dns_SSL_Only()
         lets_status=$?
     else
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --server ${ca_server} --issue "${letsdomain[@]}" --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
-        Echo_Yellow "请在 120 秒内为域名添加上方显示的 TXT 记录。"
+        Echo_Yellow "请按上方显示的内容添加 TXT 记录。CA 只在验证时查询一次，"
         echo
-        Sleep_Sec 120
+        Echo_Yellow "记录尚未传播就继续会验证失败，可先用 dig TXT _acme-challenge.<域名> 自查。"
+        echo
+        # 固定倒计时既可能不够用，也可能白等；交互执行时由用户决定何时继续。
+        if [ -t 0 ]; then
+            Press_Any_Key_Or_Line "记录已生效后按任意键继续验证，按 Ctrl+C 取消..." || return 1
+        else
+            Echo_Yellow "非交互执行，等待 120 秒后继续验证。"
+            echo
+            Sleep_Sec 120
+        fi
         /usr/local/acme.sh/acme.sh ${acme_sh_sudo} --renew "${letsdomain[@]}" --yes-I-know-dns-manual-mode-enough-go-ahead-please
         lets_status=$?
     fi
@@ -4976,9 +5122,10 @@ case "${arg1}" in
         echo "用法：lnmp fw {allow|block|unblock} {tcp|udp} <端口|起-止>"
         echo "用法：lnmp phpmyadmin {enable|disable|status}"
         echo "用法：lnmp ssl add"
-        echo "用法：lnmp {dnsssl|dns} {ali|cf|dp|he|gd|aws}"
-        echo "用法：lnmp onlyssl {ali|cf|dp|he|gd|aws}"
+        echo "用法：lnmp {dnsssl|dns} [ali|cf|dp|he|gd|aws]"
+        echo "用法：lnmp onlyssl [ali|cf|dp|he|gd|aws]"
         echo "      DNS 服务商名取 acme.sh 插件名，如 nsone、gcloud，见 /usr/local/acme.sh/dnsapi/"
+        echo "      不带服务商 = 手工添加 TXT 记录验证，不能自动续期"
         exit 1
         ;;
 esac

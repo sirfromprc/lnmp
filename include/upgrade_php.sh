@@ -285,9 +285,9 @@ Upgrade_PHP_8x()
     Ensure_Libiconv_Ldpath || exit 1
 
     if [ "${Stack}" = "lnmp" ]; then
-        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
+        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd $(PHP_Common_Configure_Opts)
     else
-        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --with-apxs2=/usr/local/apache/bin/apxs --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
+        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --with-apxs2=/usr/local/apache/bin/apxs $(PHP_Common_Configure_Opts)
     fi
 
     if [ $? -ne 0 ]; then
@@ -344,32 +344,8 @@ Upgrade_PHP_8x()
 
 if [ "${Stack}" = "lnmp" ]; then
     echo "正在创建新的 php-fpm 配置文件..."
-    cat >/usr/local/php/etc/php-fpm.conf<<EOF
-[global]
-pid = /usr/local/php/var/run/php-fpm.pid
-error_log = /usr/local/php/var/log/php-fpm.log
-log_level = notice
-
-[www]
-listen = /run/php-fpm/php-cgi.sock
-listen.backlog = -1
-listen.allowed_clients = 127.0.0.1
-listen.owner = www
-listen.group = www
-listen.mode = 0660
-user = www
-group = www
-pm = dynamic
-pm.max_children = 10
-pm.start_servers = 2
-pm.min_spare_servers = 1
-pm.max_spare_servers = 6
-pm.max_requests = 1024
-pm.process_idle_timeout = 10s
-request_terminate_timeout = 100
-request_slowlog_timeout = 0
-slowlog = var/log/slow.log
-EOF
+    Write_PHP_FPM_Conf /usr/local/php/etc/php-fpm.conf /usr/local/php \
+        /run/php-fpm/php-cgi.sock || exit 1
 
     echo "正在复制 php-fpm init.d 服务脚本..."
     \cp ${cur_dir}/src/php-${php_version}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm

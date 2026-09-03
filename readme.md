@@ -35,6 +35,12 @@ WordPress。Apache 栈及其它发行版的支持边界见 [HowtoGuides.md](Howt
 
 - 组件从上游官方来源下载，并按组件使用 SHA-256、PGP 或软件仓库 GPG 校验。
 - 数据库和缓存默认只监听回环地址；防火墙规则放在独立的 `inet lnmp` 表中。
+- 站点默认拒绝 `.user.ini`、`.env`、`.git` 等隐藏文件的 HTTP 与 HTTPS 访问，
+  ACME 用的 `/.well-known/` 例外。
+- default 站点在 443 上拒绝未知 SNI 的握手，未匹配的 HTTPS 请求不会落到业务站点
+  （LAMP 除外，Apache 无等价指令）。
+- PHP 站点的 `open_basedir` 在站点对外可访问之前写入；Composer 通过包装脚本获得
+  CLI 所需的进程函数，不放宽 Web 请求的 `disable_functions`。
 - 数据库和 PHP-FPM socket 位于 `/run` 下的专用目录，不使用共享 `/tmp`。
 - 数据库 root 随机密码不会写入安装日志；需要保存时使用权限为 0600 的凭据文件。
 - 安装、编译、配置测试或服务启动失败时返回非零退出码。
@@ -329,6 +335,8 @@ FTP 账号操作依赖已安装的 Pure-FTPd。Telegram 通知需要真实 Bot T
 3. 不要使用空变量拼接递归 `chown`、`chmod`、`rm` 或 `find`。站点权限操作必须先将路径
    规范化，并确认它位于预期的网站根目录下。
 4. 不要用 `chmod -R 777` 解决网站写入问题。它会扩大被入侵后的写入范围，也可能破坏服务配置。
+   用已有代码目录建站时，建站流程默认保留目录中原有的权限位，只改属主；确需统一权限时
+   按提示确认，它会把目录设为 755、普通文件设为 644。
 5. 修改 Nginx 配置后先执行 `nginx -t`，通过后再`lnmp nginx reload`。
 6. 不要用 `nft flush ruleset`、停用防火墙或递归改整个 `/usr/local` 权限来排障。
 7. 数据库导入、恢复、删除和升级都有数据影响；先执行独立备份并验证可恢复。
