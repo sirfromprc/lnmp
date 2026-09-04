@@ -715,7 +715,7 @@ curl http://127.0.0.1:1008/lua
 | `Enable_PHP_Default_Igbinary` | `y` | phpredis 紧凑序列化支持；使用 Redis 时建议保留 |
 | `Enable_PHP_Default_Redis` | `y` | 安装 phpredis 扩展，不等于安装 Redis 服务端 |
 | `Enable_PHP_Default_Imagick` | `y` | 图片处理扩展；不用 PDF/复杂图片处理时可评估关闭，WordPress 会回退 GD |
-| `Enable_PHP_Exif` | `n` | 需要读取照片 EXIF 的站点再开启 |
+| `Enable_PHP_Exif` | `y` | WordPress 读取照片方向与拍摄信息依赖它，不需要时设为 `n` |
 | `Enable_PHP_Fileinfo` | `y` | 上传 MIME 检测依赖，保持开启 |
 | `Enable_PHP_Ldap` | `n` | 只在对接 LDAP 时开启 |
 | `Enable_PHP_Bz2` | `n` | 只在应用明确依赖 bzip2 时开启 |
@@ -1133,9 +1133,11 @@ printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
 > 只读取环境变量 `VHOST_PHP`：未设置时开启 PHP，
 > 上面这条命令不用改。要建不带 PHP 的站点见 4.4。
 >
-> 注意：**复用已有非空目录时的权限提问同样不占一行**。目录是新建的或为空时统一设为
-> 755；复用非空目录时保留其中文件的权限位，需要一并规范化就设 `VHOST_FIX_PERM=y`
-> （目录改 755、普通文件改 644）。无论哪种情况，目录属主都会改为 `www`。
+> 注意：**复用已有非空目录时的两项提问同样不占一行**。目录是新建的或为空时统一设为
+> 755 并把属主改为 `www`；复用非空目录时权限位和属主都保留，需要统一分别设
+> `VHOST_FIX_PERM=y`（目录改 755、普通文件改 644）和 `VHOST_FIX_OWNER=y`
+> （递归改为 `www:www`）。保留属主是为了不破坏 Git/CI 部署账号或其它服务对目录里
+> 文件的归属；此时若 PHP 读不到站点文件，需自行给 `www` 用户授予读取权限。
 
 **LNMPA 与 LAMP 的序列**（按 4.1 的三栏对照表，PHP 开关同样不占一行）：
 
@@ -1275,8 +1277,14 @@ lnmp app add
 |---|---|
 | 应用名 | 小写字母、数字、中划线，最长 23 字符；用作 unit 实例名与账号名 |
 | 应用目录 | 必须位于 `/home`、`/var/www`、`/srv`、`/data`、`/www` 之一的**子目录**且已存在；进程的工作目录 |
-| 启动命令 | 可执行文件写绝对路径，如 `/usr/bin/node server.js` |
+| 启动命令 | 可执行文件写绝对路径，如 `/usr/bin/node server.js`；只支持以空格分隔的简单参数 |
 | 监听端口 | 用于占用检查，留空则跳过 |
+
+启动命令只接受字母、数字、空格和 `_ . / : = @ , + -`。unit 里 `APP_EXEC` 是未加引号
+展开的，shell 只做分词和通配，不会把展开结果里的引号、反斜杠、通配、变量展开、重定向和
+`&&`/`;` 重新当成语法，因此 `--name "my app"` 这类带空格的参数无法保留边界，
+这些字符在 `lnmp app add` 阶段就会被拒绝。需要这类写法时写成应用自己的启动脚本
+（在脚本里处理引号、变量和重定向），这里填该脚本的绝对路径。
 
 完成后应用以专属账号 `lnmp-app-<应用名>` 运行，已设为开机启动，
 崩溃后由 `Restart=on-failure` 自动拉起（300 秒窗口内最多 5 次，超出标记 failed）。
@@ -2382,6 +2390,32 @@ LNMPA 的一个站点有两份配置，语法不同，无法共用片段：
 
 泛域名批量签发时，不一致的站点会被跳过并计入汇总，其余站点照常写入。
 
+### 7.8 LNMPA 与 LAMP 的 Apache 只能用 prefork
+
+两栈的 PHP 编译成 mod_php 且未开启线程安全（ZTS），只能在 `mpm_prefork_module` 下运行。
+换成 `mpm_event_module` 或 `mpm_worker_module` 后，每个 PHP 请求都会让子进程段错误，
+错误日志里是连续的 `child pid ... exit signal Segmentation fault (11)`，浏览器侧表现为
+LNMPA 的 502 或 LAMP 的无响应。
+
+本包的 `httpd.conf` 默认就是 prefork，不要改。完整安装收尾与 `upgrade.sh php` 会检查
+`httpd -M` 是否加载了 `php_module`，是则要求 `httpd -V` 的 MPM 为 prefork，否则中止：
+
+```
+错误：Apache 当前 MPM 是 event，与 mod_php 不兼容。
+```
+
+存量机器如果已经是线程型 MPM，改回来的步骤是编辑 `/usr/local/apache/conf/httpd.conf`，
+只保留 `LoadModule mpm_prefork_module`，然后**完全停止再启动**：
+
+```bash
+systemctl stop httpd
+systemctl start httpd
+/usr/local/apache/bin/httpd -V | grep MPM
+```
+
+`restart` 与 `graceful` 都换不了 MPM，Apache 会报
+`AH00534: httpd: Configuration error: The MPM cannot be changed during restart.`。
+
 [返回顶部](#top)
 
 ---
@@ -2992,6 +3026,7 @@ SSH 端口是唯一例外：以实际监听为准（`ss` → `netstat` → `sshd
 |---|---|---|
 | `VHOST_PHP=n` | 建站时关闭 PHP | 见 [4.4 建不带 PHP 的站点](#44-建不带-php-的站点) |
 | `VHOST_FIX_PERM=y` | 建站复用非空目录时统一权限位 | 未设置时保留原权限位，见 [4.2 非交互创建](#42-非交互创建) |
+| `VHOST_FIX_OWNER=y` | 建站复用非空目录时统一属主为 `www:www` | 未设置时保留原属主，见 [4.2 非交互创建](#42-非交互创建) |
 | `LNMP_Import_Allow_Cross_Db=yes` | 放行跨库导入 | 见 [8.4 数据库管理](#84-数据库管理) |
 
 `install.sh` 的整套非交互变量见 [2.2 非交互安装（站群自动部署）](#22-非交互安装站群自动部署)。
@@ -3520,9 +3555,19 @@ lnmp backup test                     # 试恢复验证：导入临时库校验�
 lnmp backup list                       # 先看有哪些批次，也会显示备份服务器批次
 lnmp backup restore db <库名> [批次]    # 恢复数据库
 lnmp backup restore web <域名> [批次]   # 恢复网站
-lnmp backup restore db  wpdemo         # 不给批次就用最新的一批
+lnmp backup restore db  wpdemo         # 不给批次就自动挑最近一个可用批次
 lnmp backup restore web wp.example.com 20260810-033000
 ```
+
+不给批次时挑的不是「时间最新」，而是按时间倒序找到的第一个同时满足三个条件的批次：
+有 `SHA256SUMS`、含请求的目标文件、校验通过。被跳过的批次会打印原因。
+这样「先做全量、再对单个站点做一次备份」之后，恢复另一个站点仍能取到较早的完整批次；
+部分失败留下的新批次也不会挡住可用的恢复点。`test` 同样跳过不完整的批次。
+显式给了批次就只看那一个批次，缺文件或校验不过直接失败。
+
+站点恢复不直接把归档解到站点父目录：归档的顶层目录是备份时的目录名，站点改名或迁移后
+两者不一致。现在先解到私有暂存目录，确认归档只有一个顶层目录，再把其中的内容同步到
+配置里当前的站点目录，顶层名与当前目录名不同时会给出提示。
 
 > `tools/backup.sh` 是旧模板，已废弃，现在只会把请求转发到
 > `lnmp backup run all`。

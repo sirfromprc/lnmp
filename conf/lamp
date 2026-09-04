@@ -488,6 +488,7 @@ Add_App()
 
     while :; do
         Echo_Yellow "请输入启动命令（含绝对路径，如 /usr/bin/node server.js）: "
+        Echo_Yellow "只支持以空格分隔的简单参数，参数本身不能含空格。"
         Read_Input exec_cmd "启动命令"
         if [ -z "${exec_cmd}" ]; then
             Echo_Red "启动命令不能为空。"
@@ -497,6 +498,16 @@ Add_App()
         case "${exec_cmd}" in
         *$'\n'*) Echo_Red "启动命令不能包含换行。"; continue ;;
         esac
+        # APP_EXEC 在 unit 里以未加引号的形式展开，shell 只做分词和通配，
+        # 不会把展开结果里的引号、反斜杠、重定向和命令连接重新当成语法，
+        # 这些写法会静默改变参数边界。因此按白名单收字符，不合法就当场说清限制。
+        if printf '%s' "${exec_cmd}" | LC_ALL=C grep -q '[^A-Za-z0-9 _./:=@,+-]'; then
+            Echo_Red "启动命令只能用字母、数字、空格和 _ . / : = @ , + - 这些字符。"
+            Echo_Red "引号、反斜杠、通配、变量展开、重定向和命令连接符都不会生效，"
+            Echo_Red "带空格的参数也无法保留边界。"
+            Echo_Red "需要这些写法时，请写成应用自己的启动脚本，这里填该脚本的绝对路径。"
+            continue
+        fi
         bin=${exec_cmd%% *}
         case "${bin}" in
         /*) ;;
@@ -977,29 +988,53 @@ Site_Params_Conf()
 # 加上执行位，并把 .env、密钥一类原本 600/640 的文件放宽为所有本地用户可读。
 Prepare_Vhost_Dir_Perm()
 {
-    local dir="$1" created="$2" fix='n' rc=0
+    local dir="$1" created="$2" fix='n' own='n' rc=0
 
+    # 本次新建或本来就是空目录，里面没有别人的文件，可以直接定权限和属主。
     if [ "${created}" = 'y' ] || [ -z "$(ls -A "${dir}" 2>/dev/null)" ]; then
         chmod 755 "${dir}" || rc=1
-    else
-        echo "目录 ${dir} 已存在且非空，默认保留其中文件的权限位。"
-        # 非交互执行不占用输入行，否则既有的管道调用会在这里因 EOF 中断建站。
-        if [ ! -t 0 ]; then
-            case "${VHOST_FIX_PERM:-}" in
-                [yY]) fix='y'; echo "非交互执行，按 VHOST_FIX_PERM=y 统一权限。" ;;
-                *)    echo "非交互执行，保留原权限位（如需统一，设置 VHOST_FIX_PERM=y）。" ;;
-            esac
-        else
-            Read_YN fix "是否把目录统一改为 755、普通文件改为 644? (y/N，默认 n) " n "权限规范化开关"
+        if ! chown -R www:www "${dir}"; then
+            Echo_Red "变更 ${dir} 属主失败，PHP 进程 可能无法读取站点文件。"
+            rc=1
         fi
-        if [ "${fix}" = 'y' ]; then
-            find "${dir}" -type d -exec chmod 755 {} + || rc=1
-            find "${dir}" -type f -exec chmod 644 {} + || rc=1
-        fi
+        return ${rc}
     fi
-    if ! chown -R www:www "${dir}"; then
-        Echo_Red "变更 ${dir} 属主失败，PHP 进程可能无法读取站点文件。"
-        rc=1
+
+    echo "目录 ${dir} 已存在且非空，默认保留其中文件的权限位和属主。"
+    # 非交互执行不占用输入行，否则既有的管道调用会在这里因 EOF 中断建站。
+    if [ ! -t 0 ]; then
+        case "${VHOST_FIX_PERM:-}" in
+            [yY]) fix='y'; echo "非交互执行，按 VHOST_FIX_PERM=y 统一权限。" ;;
+            *)    echo "非交互执行，保留原权限位（如需统一，设置 VHOST_FIX_PERM=y）。" ;;
+        esac
+    else
+        Read_YN fix "是否把目录统一改为 755、普通文件改为 644? (y/N，默认 n) " n "权限规范化开关"
+    fi
+    if [ "${fix}" = 'y' ]; then
+        find "${dir}" -type d -exec chmod 755 {} + || rc=1
+        find "${dir}" -type f -exec chmod 644 {} + || rc=1
+    fi
+
+    # 属主单独确认：复用目录里可能有部署账号、CI 或其它服务的文件，
+    # 递归改成 www:www 会破坏后续部署和最小权限边界。
+    echo "该目录下现有的属主："
+    find "${dir}" -mindepth 1 -maxdepth 1 -printf '%u:%g\n' 2>/dev/null \
+        | sort -u | head -n 10 | sed 's/^/  /'
+    if [ ! -t 0 ]; then
+        case "${VHOST_FIX_OWNER:-}" in
+            [yY]) own='y'; echo "非交互执行，按 VHOST_FIX_OWNER=y 统一属主为 www:www。" ;;
+            *)    echo "非交互执行，保留原属主（如需统一，设置 VHOST_FIX_OWNER=y）。" ;;
+        esac
+    else
+        Read_YN own "是否把 ${dir} 下所有文件的属主统一改为 www:www? (y/N，默认 n) " n "属主统一开关"
+    fi
+    if [ "${own}" = 'y' ]; then
+        if ! chown -R www:www "${dir}"; then
+            Echo_Red "变更 ${dir} 属主失败，部分文件可能已改、部分未改，请自行核对。"
+            rc=1
+        fi
+    else
+        echo "已保留原属主；若 PHP 进程 读不到站点文件，请自行给 www 用户授予读取权限。"
     fi
     return ${rc}
 }

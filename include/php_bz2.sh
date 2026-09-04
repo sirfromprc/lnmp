@@ -28,13 +28,11 @@ Install_PHP_Bz2()
 extension = "bz2.so"
 EOF
 
-    Restart_PHP
-    if [ -s "${zend_ext}" ]; then
+    if Accept_PHP_Ext bz2 "${PHP_Path}/conf.d/009-bz2.ini" "${zend_ext}"; then
         Echo_Green "====== PHP Bz2 扩展安装完成 ======"
         Echo_Green "PHP Bz2 扩展安装成功。"
         return 0
     else
-        rm -f ${PHP_Path}/conf.d/009-bz2.ini
         Echo_Red "PHP Bz2 扩展安装失败！"
         return 1
     fi

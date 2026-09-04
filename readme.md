@@ -30,6 +30,8 @@ WordPress。Apache 栈及其它发行版的支持边界见 [HowtoGuides.md](Howt
 - 数据库可使用官方通用二进制，也可源码编译。普通服务器优先使用通用二进制；
   源码编译需要更多时间、内存和磁盘空间。
 - phpMyAdmin、phpinfo 和缓存测试页默认不部署，需要时显式开启。
+- PHP 默认编入 exif 和 fileinfo：WordPress 的图片方向、拍摄信息与上传 MIME 检测依赖它们，
+  不需要时把 `Enable_PHP_Exif`、`Enable_PHP_Fileinfo` 设为 `n`。
 
 ### 1.2 安全与可靠性
 
@@ -43,10 +45,13 @@ WordPress。Apache 栈及其它发行版的支持边界见 [HowtoGuides.md](Howt
   CLI 所需的进程函数，不放宽 Web 请求的 `disable_functions`。
 - 数据库和 PHP-FPM socket 位于 `/run` 下的专用目录，不使用共享 `/tmp`。
 - 数据库 root 随机密码不会写入安装日志；需要保存时使用权限为 0600 的凭据文件。
-- 安装、编译、配置测试或服务启动失败时返回非零退出码。
-- Nginx、PHP 和 phpMyAdmin 的升级包含切换前检查及失败回滚；数据库升级没有自动回滚，
-  操作前必须验证备份可恢复。
-- `lnmp database import` 和备份恢复会检查 SQL 的跨库操作边界，降低误删其它数据库的风险。
+- 安装、编译、配置测试或服务启动失败时返回非零退出码。安装收尾除了检查文件，
+  还确认各服务确实在运行，并对 Web、PHP-FPM 和数据库各做一次最小协议探测。
+- Nginx、PHP 和 phpMyAdmin 的升级包含切换前检查及失败回滚；数据库升级在搬走旧实例之后
+  挂上失败陷阱，中途失败会自动把旧数据库放回原位并重新启动，失败的新实例以
+  `.failed.<日期>` 保留。仍应在操作前验证备份可恢复。
+- `lnmp database import` 和备份恢复会按 SQL 词法扫描检查跨库操作边界：注释、换行和字符串
+  都不能用来藏关键字，跨库限定名的反引号与裸写形式都会被拦，无法确定语句边界时直接拒绝。
 
 ### 1.3 支持范围
 
@@ -260,7 +265,9 @@ bash upgrade.sh
 bash install.sh mphp
 ```
 
-- `addons.sh` 安装或卸载 Redis、Memcached 和 PHP 扩展。
+- `addons.sh` 安装或卸载 Redis、Memcached 和 PHP 扩展。扩展装完会用
+  `php --ri <模块>` 确认 PHP 真的能加载，加载不了或服务重启失败就撤回本次写入的
+  `conf.d` 配置并返回非零。
 - `pureftpd.sh` 管理 Pure-FTPd 安装。
 - `upgrade.sh` 按菜单升级组件；升级前先完成备份和恢复演练。
 - `install.sh mphp` 为 LNMP 模式增加一个 PHP 版本。

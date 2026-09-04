@@ -237,8 +237,9 @@ pm.start_servers = 2
 pm.min_spare_servers = 1
 pm.max_spare_servers = 6
 pm.max_requests = 1024
-# 硬超时高于 php.ini 的 max_execution_time(300)：让脚本先按 PHP 的限制超时
-# 返回，而不是在正常执行中途被 FPM 杀掉连接。
+; 硬超时高于 php.ini 的 max_execution_time(300)：让脚本先按 PHP 的限制超时
+; 返回，而不是在正常执行中途被 FPM 杀掉连接。
+; FPM 的配置解析器只认 ; 作注释，# 会被当成配置项，导致 FPM 无法启动。
 request_terminate_timeout = 310
 request_slowlog_timeout = 0
 slowlog = var/log/slow.log
@@ -422,7 +423,7 @@ if [ "${Stack}" = "lnmp" ]; then
 
     echo "正在复制 php-fpm init.d 服务脚本..."
     \cp ${cur_dir}/src/${Php_Ver}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm
-    \cp ${cur_dir}/init.d/php-fpm.service /etc/systemd/system/php-fpm.service
+    Install_Systemd_Unit "${cur_dir}/init.d/php-fpm.service" /etc/systemd/system/php-fpm.service || return 1
     chmod +x /etc/init.d/php-fpm
     Ensure_Runtime_Directory /run/php-fpm root root || return 1
     Patch_Init_Runtime_Directory /etc/init.d/php-fpm /run/php-fpm root root || return 1

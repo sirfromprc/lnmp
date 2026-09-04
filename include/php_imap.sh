@@ -72,13 +72,11 @@ Install_PHP_Imap()
 extension = "imap.so"
 EOF
 
-    Restart_PHP
-    if [ -s "${zend_ext}" ]; then
+    if Accept_PHP_Ext imap "${PHP_Path}/conf.d/009-imap.ini" "${zend_ext}"; then
         Echo_Green "====== PHP IMAP 扩展安装完成 ======"
         Echo_Green "PHP IMAP 扩展安装成功。"
         return 0
     else
-        rm -f ${PHP_Path}/conf.d/009-imap.ini
         Echo_Red "PHP IMAP 扩展安装失败！"
         return 1
     fi

@@ -83,7 +83,7 @@ Install_MPHP8x()
     # 模板 unit 由所有版本共用，%i 取版本号。装上后多版本 PHP 与主 php-fpm
     # 共享同一套自动重启策略，状态也与 systemctl 一致。
     if [ -d /etc/systemd/system ]; then
-        \cp ${cur_dir}/init.d/php-fpm@.service /etc/systemd/system/php-fpm@.service
+        Install_Systemd_Unit "${cur_dir}/init.d/php-fpm@.service" /etc/systemd/system/php-fpm@.service || return 1
         chmod 644 /etc/systemd/system/php-fpm@.service
     fi
 

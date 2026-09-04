@@ -1,0 +1,55 @@
+--- memcache-8.2.org/src/memcache_pool.h	2023-04-30 19:27:52.000000000 +0800
++++ memcache-8.2/src/memcache_pool.h	2026-09-04 19:31:05.158803405 +0800
+@@ -42,7 +42,7 @@
+ #include <string.h>
+ 
+ #include "php.h"
+-#include "ext/standard/php_smart_string_public.h"
++#include "Zend/zend_smart_string_public.h"
+ #include "memcache_queue.h"
+ 
+ /*
+--- memcache-8.2.org/src/memcache_pool.c	2023-04-30 19:27:52.000000000 +0800
++++ memcache-8.2/src/memcache_pool.c	2026-09-04 19:31:05.158803405 +0800
+@@ -35,7 +35,7 @@
+ #include "ext/standard/crc32.h"
+ #include "ext/standard/php_var.h"
+ #include "ext/standard/php_string.h"
+-#include "ext/standard/php_smart_string.h"
++#include "Zend/zend_smart_string.h"
+ #include "zend_smart_str.h"
+ #include "memcache_pool.h"
+ 
+--- memcache-8.2.org/src/memcache_session.c	2023-04-30 19:27:52.000000000 +0800
++++ memcache-8.2/src/memcache_session.c	2026-09-04 19:31:05.158803405 +0800
+@@ -29,7 +29,7 @@
+ #include "php_variables.h"
+ 
+ #include "SAPI.h"
+-#include "ext/standard/php_smart_string.h"
++#include "Zend/zend_smart_string.h"
+ #include "ext/standard/url.h"
+ #include "ext/session/php_session.h"
+ #ifdef PHP_WIN32
+--- memcache-8.2.org/src/memcache_ascii_protocol.c	2023-04-30 19:27:52.000000000 +0800
++++ memcache-8.2/src/memcache_ascii_protocol.c	2026-09-04 19:31:05.158803405 +0800
+@@ -24,7 +24,7 @@
+ #endif
+ 
+ #include "memcache_pool.h"
+-#include "ext/standard/php_smart_string.h"
++#include "Zend/zend_smart_string.h"
+ 
+ typedef struct mmc_ascii_request {
+ 	mmc_request_t	base;							/* enable cast to mmc_request_t */
+--- memcache-8.2.org/src/memcache_binary_protocol.c	2023-04-30 19:27:52.000000000 +0800
++++ memcache-8.2/src/memcache_binary_protocol.c	2026-09-04 19:31:05.158803405 +0800
+@@ -34,7 +34,7 @@
+ #include <netinet/in.h>
+ #endif
+ #include "memcache_pool.h"
+-#include "ext/standard/php_smart_string.h"
++#include "Zend/zend_smart_string.h"
+ 
+ #ifdef htonll
+ #undef htonll

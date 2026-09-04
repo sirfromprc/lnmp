@@ -419,15 +419,107 @@ EOF
         Echo_Red "找不到 ${fastcgi_conf}，无法写入 FastCGI 层的 open_basedir 兜底。"
         return 1
     fi
-    # 重复安装不重复追加，否则同一参数会在 fastcgi.conf 里堆积多行。
-    if grep -q '^fastcgi_param PHP_ADMIN_VALUE' "${fastcgi_conf}"; then
-        return 0
+    Sync_Fastcgi_Admin_Value "${fastcgi_conf}"
+}
+
+# FastCGI 层 open_basedir 的期望值。改这里要同步改 Sync_Fastcgi_Admin_Value 的注释。
+Fastcgi_Admin_Value_Line()
+{
+    printf '%s\n' 'fastcgi_param PHP_ADMIN_VALUE "open_basedir=$document_root/:/tmp/:/var/tmp/:/proc/";'
+}
+
+# 基线路径集合，判断和重写都以它为准。
+Fastcgi_Baseline_Paths='$document_root/ /tmp/ /var/tmp/ /proc/'
+
+# 从一行 fastcgi_param PHP_ADMIN_VALUE 中取出 open_basedir 的值；取不到输出空。
+Fastcgi_Open_Basedir_Value()
+{
+    printf '%s\n' "$1" | sed -n 's/.*open_basedir=\([^";]*\).*/\1/p' | head -n 1
+}
+
+# 只判断指令存在会把值为空、open_basedir=/、旧的宽松路径或用于其它 admin 配置
+# 的行当成基线已生效，兜底实际不存在。因此解析该行的实际取值逐项核对。
+#
+# 核对的是「基线路径都在，且没有 / 这种等于没有边界的项」，不要求整行完全相等：
+# 管理员可能按站点需要额外加了缓存目录等路径，整行覆盖会静默删掉它们并弄坏站点。
+# 需要重写时保留原有的额外路径，只补齐缺的基线路径并去掉 /。
+Sync_Fastcgi_Admin_Value()
+{
+    local conf="$1" want count tmp line value p merged extra ok='y'
+    want=$(Fastcgi_Admin_Value_Line)
+
+    count=$(grep -c '^[[:space:]]*fastcgi_param[[:space:]]\+PHP_ADMIN_VALUE' "${conf}")
+    if [ "${count}" -eq 1 ]; then
+        line=$(grep '^[[:space:]]*fastcgi_param[[:space:]]\+PHP_ADMIN_VALUE' "${conf}")
+        value=$(Fastcgi_Open_Basedir_Value "${line}")
+        if [ -n "${value}" ]; then
+            for p in ${Fastcgi_Baseline_Paths}; do
+                case ":${value}:" in
+                *":${p}:"*) ;;
+                *) ok='n' ;;
+                esac
+            done
+            # 单独一个 / 等于没有边界，必须去掉。
+            case ":${value}:" in
+            *":/:"*) ok='n' ;;
+            esac
+            [ "${ok}" = 'y' ] && return 0
+        else
+            ok='n'
+        fi
     fi
-    if ! cat >>"${fastcgi_conf}"<<EOF
-fastcgi_param PHP_ADMIN_VALUE "open_basedir=\$document_root/:/tmp/:/var/tmp/:/proc/";
-EOF
-    then
-        Echo_Red "写入 ${fastcgi_conf} 失败，PHP 请求缺少 FastCGI 层的 open_basedir 兜底。"
+
+    # 重写时保留原值里不属于基线、也不是 / 的额外路径。
+    merged="${Fastcgi_Baseline_Paths// /:}"
+    if [ "${count}" -eq 1 ] && [ -n "${value}" ]; then
+        extra=''
+        local IFS=':'
+        for p in ${value}; do
+            [ -z "${p}" ] && continue
+            [ "${p}" = '/' ] && continue
+            case " ${Fastcgi_Baseline_Paths} " in
+            *" ${p} "*) continue ;;
+            esac
+            extra="${extra}:${p}"
+        done
+        unset IFS
+        merged="${merged}${extra}"
+        want="fastcgi_param PHP_ADMIN_VALUE \"open_basedir=${merged}\";"
+        [ -n "${extra}" ] && Echo_Yellow "保留原有的额外路径：${extra#:}"
+    fi
+
+    if [ "${count}" -gt 0 ]; then
+        Echo_Yellow "${conf} 中的 PHP_ADMIN_VALUE 缺少基线路径或含过宽的取值（共 ${count} 行），将重写。"
+        grep -n '^[[:space:]]*fastcgi_param[[:space:]]\+PHP_ADMIN_VALUE' "${conf}" | sed 's/^/  原有：/'
+        Echo_Yellow "  写入：${want}"
+    fi
+
+    tmp=$(mktemp "${conf}.XXXXXXXX") || {
+        Echo_Red "无法创建临时文件，${conf} 未修改。"
+        return 1
+    }
+    # 只删本参数所在的行，文件里其它 fastcgi_param 保持原样。
+    # grep 返回 1 表示筛完没有剩余行，属于正常结果；大于 1 才是读取出错。
+    grep -v '^[[:space:]]*fastcgi_param[[:space:]]\+PHP_ADMIN_VALUE' "${conf}" > "${tmp}"
+    if [ $? -gt 1 ]; then
+        rm -f "${tmp}"
+        Echo_Red "读取 ${conf} 失败，未修改。"
+        return 1
+    fi
+    printf '%s\n' "${want}" >> "${tmp}" || { rm -f "${tmp}"; return 1; }
+    # 保留原有权限和属主，不因重写放宽访问。
+    chmod --reference="${conf}" "${tmp}" 2>/dev/null || chmod 644 "${tmp}"
+    chown --reference="${conf}" "${tmp}" 2>/dev/null
+    if ! mv -f "${tmp}" "${conf}"; then
+        rm -f "${tmp}"
+        Echo_Red "写入 ${conf} 失败，PHP 请求缺少 FastCGI 层的 open_basedir 兜底。"
+        return 1
+    fi
+
+    # 回读确认写入结果，不靠 mv 的返回值判定生效。
+    count=$(grep -c '^[[:space:]]*fastcgi_param[[:space:]]\+PHP_ADMIN_VALUE' "${conf}")
+    if [ "${count}" -ne 1 ] || ! grep -qxF "${want}" "${conf}"; then
+        Echo_Red "回读 ${conf} 未取到期望的 PHP_ADMIN_VALUE，FastCGI 层兜底未生效。"
         return 1
     fi
     return 0
@@ -550,7 +642,7 @@ Install_Nginx()
     fi
 
     \cp init.d/init.d.nginx /etc/init.d/nginx
-    \cp init.d/nginx.service /etc/systemd/system/nginx.service
+    Install_Systemd_Unit "${cur_dir}/init.d/nginx.service" /etc/systemd/system/nginx.service || return 1
     chmod +x /etc/init.d/nginx
 
     if [ "${SelectMalloc}" = "3" ]; then

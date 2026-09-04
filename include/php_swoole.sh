@@ -29,13 +29,11 @@ Install_PHP_Swoole()
 extension = "swoole.so"
 EOF
 
-    Restart_PHP
-    if [ -s "${zend_ext}" ]; then
+    if Accept_PHP_Ext swoole "${PHP_Path}/conf.d/009-swoole.ini" "${zend_ext}"; then
         Echo_Green "====== PHP Swoole 扩展安装完成 ======"
         Echo_Green "PHP Swoole 扩展安装成功。"
         return 0
     else
-        rm -f ${PHP_Path}/conf.d/009-swoole.ini
         Echo_Red "PHP Swoole 扩展安装失败！"
         return 1
     fi

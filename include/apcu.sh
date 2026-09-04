@@ -38,13 +38,11 @@ apc.enable_cli=1
 
 EOF
 
-    if [ -s "${zend_ext}" ]; then
-        Restart_PHP
+    if Accept_PHP_Ext apcu "${PHP_Path}/conf.d/009-apcu.ini" "${zend_ext}"; then
         Echo_Green "======== APCu 安装完成 ======"
         Echo_Green "APCu 安装成功。"
         return 0
     fi
-    rm -f ${PHP_Path}/conf.d/009-apcu.ini
     Echo_Red "APCu 安装失败！"
     return 1
 }

@@ -1063,6 +1063,43 @@ Cmd_List()
 # ---------------------------------------------------------------------------
 Latest_Batch() { List_Batches "$1" | tail -n 1; }
 
+# 按时间倒序找出最近一个可用批次：既要有校验清单、含目标文件，也要校验通过。
+# 只取最新目录会被指定站点备份或部分失败留下的新批次挡住，导致明明有完整的
+# 恢复点却报找不到。
+# Find_Usable_Batch <类型> <文件名，空表示任意数据库转储>
+Find_Usable_Batch()
+{
+    local type="$1" want="$2" batch dir picked=''
+
+    while read -r batch; do
+        [ -n "${batch}" ] || continue
+        dir="${Backup_Home}/${type}/${batch}"
+        if [ ! -f "${dir}/SHA256SUMS" ]; then
+            Say "跳过批次 ${batch}：缺少校验清单，属于未完成的备份。" >&2
+            continue
+        fi
+        if [ -n "${want}" ]; then
+            if [ ! -f "${dir}/${want}" ] && [ ! -f "${dir}/${want}.enc" ]; then
+                Say "跳过批次 ${batch}：不含 ${want}。" >&2
+                continue
+            fi
+        elif [ -z "$(find "${dir}" -maxdepth 1 -type f \
+                     \( -name 'db-*.sql.gz' -o -name 'db-*.sql.gz.enc' \) -print -quit)" ]; then
+            Say "跳过批次 ${batch}：不含数据库转储。" >&2
+            continue
+        fi
+        if ! Verify_Checksums "${dir}" >/dev/null 2>&1; then
+            Say "跳过批次 ${batch}：SHA256 校验不通过。" >&2
+            continue
+        fi
+        picked="${batch}"
+        break
+    done < <(List_Batches "${type}" | sort -r)
+
+    [ -n "${picked}" ] || return 1
+    printf '%s\n' "${picked}"
+}
+
 Prepare_Payload()
 {
     local src="$1" work="$2" base out
@@ -1105,16 +1142,17 @@ Cmd_Restore()
     esac
     [ -n "${name}" ] || { Err "缺少名称。"; return 1; }
 
+    # 显式指定批次时保持严格语义：只看这一个批次，缺文件就失败。
     if [ "${kind}" = "db" ]; then
-        [ -n "${batch}" ] || batch=$(Latest_Batch db)
+        [ -n "${batch}" ] || batch=$(Find_Usable_Batch db "db-${name}.sql.gz")
         dir="${Backup_Home}/db/${batch}"
         file="${dir}/db-${name}.sql.gz"
     else
-        [ -n "${batch}" ] || batch=$(Latest_Batch www)
+        [ -n "${batch}" ] || batch=$(Find_Usable_Batch www "www-${name}.tar.gz")
         dir="${Backup_Home}/www/${batch}"
         file="${dir}/www-${name}.tar.gz"
     fi
-    [ -n "${batch}" ] || { Err "没有可用批次。"; return 1; }
+    [ -n "${batch}" ] || { Err "没有同时满足「有校验清单、含 ${name}、校验通过」的批次。"; return 1; }
     [ -d "${dir}" ] || { Err "批次不存在：${dir}"; return 1; }
     [ -f "${file}" ] || [ -f "${file}.enc" ] || { Err "备份里没有 ${name}：${file}"; return 1; }
     [ -f "${file}" ] || file="${file}.enc"
@@ -1147,13 +1185,57 @@ Cmd_Restore()
         fi
         Ok "数据库 ${name} 已从批次 ${batch} 恢复。"
     else
-        local target
+        local target stage top count
         target=$(printf '%s\n' "${Backup_Site[@]}" | awk -F'|' -v d="${name}" '$1 == d { print $2 }' | head -n 1)
         [ -n "${target}" ] || { Err "配置里没有站点 ${name}，无法确定恢复目录。"; return 1; }
-        Warn "即将把备份解压覆盖到 ${target}，同名文件会被替换。"
+
+        # 归档顶层目录是备份时的目录名，站点改名或迁移后与当前目标不同。
+        # 直接 tar -C "${target%/*}" 会解到旧目录，却报告恢复到了新目录，
+        # 因此先解到私有暂存目录，确认只有一个顶层目录，再同步到当前目标。
+        stage="${work}/site"
+        mkdir -p "${stage}" || { Err "无法创建暂存目录。"; return 1; }
+        tar zxf "${payload}" -C "${stage}" || { Err "解压失败。"; return 1; }
+        count=$(find "${stage}" -mindepth 1 -maxdepth 1 | wc -l)
+        if [ "${count}" -ne 1 ]; then
+            Err "归档里有 ${count} 个顶层条目，预期只有站点目录本身，已拒绝恢复。"
+            return 1
+        fi
+        top=$(find "${stage}" -mindepth 1 -maxdepth 1)
+        [ -d "${top}" ] || { Err "归档顶层不是目录：${top##*/}"; return 1; }
+        if [ "${top##*/}" != "${target##*/}" ]; then
+            Warn "归档里的目录名是 ${top##*/}，当前站点目录是 ${target##*/}，按当前目录恢复。"
+        fi
+
+        Warn "即将把备份内容覆盖到 ${target}，同名文件会被替换。"
         Say "5 秒后开始，Ctrl+C 取消..."
         sleep 5
-        tar zxf "${payload}" -C "${target%/*}" || { Err "解压失败。"; return 1; }
+        mkdir -p "${target}" || { Err "无法创建 ${target}。"; return 1; }
+
+        # 站点 .user.ini 由建站流程置为 immutable，不先解除就写不进去，
+        # 整次同步会中断。解除前记下原状态，同步后按原状态还原。
+        local uini="${target}/.user.ini" had_i='n'
+        if [ -f "${uini}" ] && lsattr -d "${uini}" 2>/dev/null | awk '{print $1}' | grep -q 'i'; then
+            had_i='y'
+            chattr -i "${uini}" 2>/dev/null || Warn "无法解除 ${uini} 的 immutable，同步可能失败。"
+        fi
+
+        local sync_rc=0
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a "${top}/" "${target}/" || sync_rc=1
+        else
+            ( cd "${top}" && tar cf - . ) | ( cd "${target}" && tar xf - ) || sync_rc=1
+        fi
+
+        # 无论同步成败都把 immutable 加回去，不留下可被站点覆盖的 .user.ini。
+        if [ "${had_i}" = 'y' ] && [ -f "${uini}" ] && ! chattr +i "${uini}" 2>/dev/null; then
+            Warn "无法为 ${uini} 重新设置 immutable，请手工执行：chattr +i ${uini}"
+        fi
+        [ "${sync_rc}" -eq 0 ] || { Err "同步到 ${target} 失败。"; return 1; }
+        # 报告成功前确认目标确实被写入。
+        if [ -z "$(ls -A "${target}" 2>/dev/null)" ]; then
+            Err "同步后 ${target} 仍为空，恢复未生效。"
+            return 1
+        fi
         Ok "站点 ${name} 已从批次 ${batch} 恢复到 ${target}。"
     fi
     return 0
@@ -1173,8 +1255,8 @@ Cmd_Test()
     mysql_bin=$(Find_Mysql_Client) || { Err "找不到 mysql 客户端。"; return 1; }
     Check_Perm "${MySQL_Option_File}" || return 1
 
-    batch=$(Latest_Batch db)
-    [ -n "${batch}" ] || { Err "还没有任何数据库备份。"; return 1; }
+    batch=$(Find_Usable_Batch db "")
+    [ -n "${batch}" ] || { Err "没有可用于试恢复的完整数据库批次。"; return 1; }
     dir="${Backup_Home}/db/${batch}"
     Say "试恢复批次：${batch}"
     Verify_Checksums "${dir}" || { Err "校验清单不匹配。"; return 1; }

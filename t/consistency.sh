@@ -311,14 +311,17 @@ check_v11()
 {
     local missing=""
     [ -s init.d/memcached.service ] || missing="${missing} memcached.service"
-    grep -q 'init.d/memcached.service /etc/systemd/system/' include/memcached.sh \
+    grep -q 'Install_Systemd_Unit "${cur_dir}/init.d/memcached.service" /etc/systemd/system/' include/memcached.sh \
         || missing="${missing} memcached-unit-未部署"
     grep -q '^[[:space:]]*/etc/init.d/memcached start' include/memcached.sh \
         && missing="${missing} memcached-仍直调SysV"
     grep -qE 'StartOrStop (start|restart) memcached' include/memcached.sh \
         || missing="${missing} memcached-未走StartOrStop"
-    grep -q 'StartOrStop start pureftpd' pureftpd.sh \
+    # 重装会重写配置和二进制，必须 restart 才会重读；start 对已在运行的服务无效。
+    grep -qE 'StartOrStop (start|restart) pureftpd' pureftpd.sh \
         || missing="${missing} pureftpd-未走StartOrStop"
+    grep -q 'StartOrStop restart pureftpd' pureftpd.sh \
+        || missing="${missing} pureftpd-重装未restart"
     # 自造 systemctl 判断会漏掉 WSL/容器，必须复用 Use_Systemd_Unit
     grep -q 'Use_Systemd_Unit pureftpd' pureftpd.sh \
         || missing="${missing} pureftpd-未复用Use_Systemd_Unit"
@@ -479,7 +482,7 @@ check_v15()
         && missing="${missing} redis探针仍调用redis-cli"
     grep -q 'tools/lnmp-health.sh:/bin/lnmp-health' include/end.sh \
         || missing="${missing} lnmp-health未随管理命令安装"
-    grep -q 'init.d/php-fpm@.service /etc/systemd/system/' include/multiplephp.sh \
+    grep -q 'Install_Systemd_Unit "${cur_dir}/init.d/php-fpm@.service" /etc/systemd/system/' include/multiplephp.sh \
         || missing="${missing} php-fpm@模板未部署"
     # lnmp kill 直接发信号会被 Restart=on-failure 判为崩溃并立即拉起
     grep -q 'Kill_By_Unit' conf/lnmp \

@@ -144,9 +144,9 @@ Install_Database()
     Dispatch "${DB_Install}" || return 1
     TempMycnf_Clean
 
-    if [ "${DB_Kind}" != "none" ]; then
-        StartUp "${DB_Service}"
-        StartOrStop start "${DB_Service}"
+    if [ "${DB_Kind}" != "none" ] && ! Start_And_Verify "${DB_Service}"; then
+        Echo_Red "${DB_Service} 未能启动，独立安装未完成。"
+        return 1
     fi
 
     # 独立安装数据库也必须限制 DB_Port 和 DB_X_Port；防火墙失败时安装返回非零。

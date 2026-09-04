@@ -63,13 +63,16 @@ Install_ImageMagic()
 extension = "imagick.so"
 EOF
 
-    if [ -s "${zend_ext}" ] && [ -s /usr/local/imagemagick/bin/convert ]; then
-        Restart_PHP
+    if [ ! -s /usr/local/imagemagick/bin/convert ]; then
+        rm -f ${PHP_Path}/conf.d/008-imagick.ini
+        Echo_Red "ImageMagick 库未安装成功：/usr/local/imagemagick/bin/convert 不存在。"
+        return 1
+    fi
+    if Accept_PHP_Ext imagick "${PHP_Path}/conf.d/008-imagick.ini" "${zend_ext}"; then
         Echo_Green "====== ImageMagick 安装完成 ======"
         Echo_Green "ImageMagick 安装成功。"
         return 0
     fi
-    rm -f ${PHP_Path}/conf.d/008-imagick.ini
     Echo_Red "imagick 扩展安装失败！"
     return 1
 }

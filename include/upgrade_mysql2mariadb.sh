@@ -29,6 +29,27 @@ Backup_MySQL2()
         Move_For_Upgrade "${MariaDB_Data_Dir}" "${MariaDB_Data_Dir}${Upgrade_Date}" || Abort_Upgrade_Move
     fi
 
+    # 旧实例已搬走，此后任何退出都要自动放回并重新启动。
+    # 本流程还改过命令链接、开机自启和 /bin/lnmp，交给额外还原步骤处理。
+    Arm_DB_Upgrade_Guard "/root/mysql_all_backup${Upgrade_Date}.sql" \
+        "/usr/local/mysql2mariadb${Upgrade_Date}" mysql \
+        "/usr/local/mysql2mariadb${Upgrade_Date}/bin/mysql" /usr/local/mariadb \
+        Restore_MySQL_Stack
+}
+
+# 迁移回滚的额外还原：命令链接指回 MySQL，恢复开机自启，并把管理命令里的
+# 服务名改回来。
+Restore_MySQL_Stack()
+{
+    local rc=0
+
+    Restore_MySQL_Command_Links "/usr/local/mysql2mariadb${Upgrade_Date}" || rc=1
+    if [ -s /bin/lnmp ]; then
+        sed -i 's#^DB_SERVICE=mariadb$#DB_SERVICE=mysql#' /bin/lnmp || rc=1
+        sed -i 's#/etc/init.d/mariadb#/etc/init.d/mysql#g' /bin/lnmp || rc=1
+    fi
+    StartUp mysql || rc=1
+    return ${rc}
 }
 
 Upgrade_MySQL2MariaDB()
@@ -154,13 +175,7 @@ Upgrade_MySQL2MariaDB()
 
         cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mariadb -DMYSQL_UNIX_ADDR=/run/mysqld/mysqld.sock -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_READLINE=1 -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 -DWITHOUT_TOKUDB=1
         if ! Make_Install; then
-            # 编译失败时列出旧程序、服务脚本和备份的人工恢复步骤。
-            Echo_Red "编译失败，升级中止。此时旧数据库已被停止并移走。"
-            Echo_Red "人工恢复："
-            Echo_Red "  1) mv /usr/local/oldmysql${Upgrade_Date} /usr/local/mysql"
-            Echo_Red "  2) \cp /usr/local/oldmysql${Upgrade_Date}/init.d.mysql.bak.${Upgrade_Date} /etc/init.d/mysql"
-            Echo_Red "  3) /etc/init.d/mysql start"
-            Echo_Red "数据备份在 /root/mysql_all_backup${Upgrade_Date}.sql"
+            Echo_Red "编译失败，迁移中止，旧数据库将自动放回并重新启动。"
             exit 1
         fi
     fi
@@ -255,7 +270,7 @@ EOF
     chown -R mariadb:mariadb ${MariaDB_Data_Dir}
     Secure_Initial_DB_Password mariadb mariadb || exit 1
     \cp /usr/local/mariadb/support-files/mysql.server /etc/init.d/mariadb
-    \cp ${cur_dir}/init.d/mariadb.service /etc/systemd/system/mariadb.service
+    Install_Systemd_Unit "${cur_dir}/init.d/mariadb.service" /etc/systemd/system/mariadb.service || exit 1
     chmod 755 /etc/init.d/mariadb
     Rewrite_MariaDB_Initd_Names /etc/init.d/mariadb /usr/local/mariadb/bin
     Patch_Init_Runtime_Directory /etc/init.d/mariadb /run/mysqld mariadb mariadb || exit 1
@@ -270,8 +285,6 @@ EOF
     # 跨引擎导入不完整时立即中止，并保留原 MySQL 实例用于恢复。
     if ! "${client_bin}" --defaults-file="${HOME}/.my.cnf" < /root/mysql_all_backup${Upgrade_Date}.sql; then
         Echo_Red "备份导入失败，数据未完整迁移到 MariaDB。"
-        Restore_MySQL_Command_Links "/usr/local/mysql2mariadb${Upgrade_Date}"
-        DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/mysql2mariadb${Upgrade_Date}"
         exit 1
     fi
     echo "MariaDB 数据库导入成功。"
@@ -280,7 +293,6 @@ EOF
     if ! "${upgrade_bin}" --defaults-file="${HOME}/.my.cnf"; then
         Echo_Red "MariaDB 升级程序执行失败。"
         Restore_MySQL_Command_Links "/usr/local/mysql2mariadb${Upgrade_Date}"
-        DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/mysql2mariadb${Upgrade_Date}"
         exit 1
     fi
 
@@ -299,13 +311,13 @@ EOF
     # 迁移成功需确认服务可连接、数据库列表完整且仍保持本地监听限制。
     if [[ -x "${client_bin}" && -x "${safe_bin}" && -s /etc/my.cnf ]] \
         && Verify_DB_Upgraded "${client_bin}" "${DB_List_Before}" "${DB_Port}"; then
+        Disarm_DB_Upgrade_Guard
         Echo_Green "======== MySQL 迁移到 MariaDB 完成 ======"
         rm -f "${DB_List_Before}"
     else
         Echo_Red "======== MySQL 迁移到 MariaDB 失败 ======"
         Echo_Red "迁移日志：/root/upgrade_mysql2mariadb${Upgrade_Date}.log"
         Restore_MySQL_Command_Links "/usr/local/mysql2mariadb${Upgrade_Date}"
-        DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/mysql2mariadb${Upgrade_Date}"
         exit 1
     fi
 }

@@ -33,6 +33,8 @@ FW_UNIT_FILE="/etc/systemd/system/${FW_UNIT_NAME}.service"
 
 # 测试注入点：默认取实际系统路径。
 Fw_Conf="${LNMP_FW_CONF:-/etc/lnmp/fw.conf}"
+# firewalld 后端记录本工具放行过的端口，供下次 sync 收回不再需要的项。
+Fw_Firewalld_Ports="${LNMP_FW_FIREWALLD_PORTS:-/etc/lnmp/firewalld-ports}"
 Source_Dir_File="${LNMP_FW_SOURCE_DIR_FILE:-/etc/lnmp/source-dir}"
 Redis_Conf="${LNMP_FW_REDIS_CONF:-/usr/local/redis/etc/redis.conf}"
 Memcached_Init="${LNMP_FW_MEMCACHED_INIT:-/etc/init.d/memcached}"
@@ -729,23 +731,93 @@ Cmd_Sync()
 }
 
 # firewalld 下只维护端口放行，阻断由该端口不在放行列表实现。
+#
+# 计划里同一端口可能既有自定义项又有标准项。nft 侧靠首条匹配让自定义项生效，
+# firewalld 没有这个语义，逐行执行会让后出现的标准项覆盖前面的自定义意图，
+# 因此先按「协议 端口」归并成唯一动作，仍取计划中首次出现的那条。
+Merge_Firewalld_Plan()
+{
+    Plan_Rules | awk '
+        $1 == "accept" || $1 == "drop" {
+            key = $2 " " $3
+            if (!(key in seen)) { seen[key] = 1; print $1 " " $2 " " $3 }
+        }'
+}
+
+# 读取上次由本工具放行的端口集合。文件不存在按空集处理。
+Load_Firewalld_Owned()
+{
+    local line
+    [ -s "${Fw_Firewalld_Ports}" ] || return 0
+    while read -r line; do
+        case "${line}" in ''|\#*) continue ;; esac
+        printf '%s\n' "${line}"
+    done < "${Fw_Firewalld_Ports}"
+}
+
+Save_Firewalld_Owned()
+{
+    local tmp
+    mkdir -p "$(dirname "${Fw_Firewalld_Ports}")" || return 1
+    tmp=$(mktemp "${Fw_Firewalld_Ports}.XXXXXXXX") || return 1
+    {
+        echo '# 由 lnmp fw 维护的 firewalld 放行端口，格式：协议 端口'
+        cat
+    } > "${tmp}" || { rm -f "${tmp}"; return 1; }
+    chmod 600 "${tmp}"
+    mv -f "${tmp}" "${Fw_Firewalld_Ports}" || { rm -f "${tmp}"; return 1; }
+    return 0
+}
+
 Sync_Firewalld()
 {
-    local line rc=0
+    local plan wanted stale line proto port rc=0 state
+
+    plan=$(Merge_Firewalld_Plan)
+    wanted=$(printf '%s\n' "${plan}" | awk '$1 == "accept" { print $2 " " $3 }' | sort -u)
+
+    # 上次放行、本次计划里已经没有的端口要收回，否则改端口或 unblock 之后
+    # 旧端口会永久留在 firewalld 里。
+    stale=$(comm -23 <(Load_Firewalld_Owned | sort -u) <(printf '%s\n' "${wanted}" | sed '/^$/d'))
+    while read -r proto port; do
+        [ -n "${port}" ] || continue
+        firewall-cmd --permanent --remove-port="${port}/${proto}" >/dev/null 2>&1
+    done <<< "${stale}"
 
     while read -r line; do
+        [ -n "${line}" ] || continue
         set -- ${line}
         case "$1" in
         accept) firewall-cmd --permanent --add-port="$3/$2" >/dev/null 2>&1 || rc=1 ;;
         drop)   firewall-cmd --permanent --remove-port="$3/$2" >/dev/null 2>&1 ;;
         esac
-    done < <(Plan_Rules)
+    done <<< "${plan}"
 
     if ! firewall-cmd --reload >/dev/null 2>&1; then
         Err "firewall-cmd --reload 失败，端口规则可能未生效。"
         return 1
     fi
-    [ ${rc} -eq 0 ] || Warn "部分端口放行失败，请核对 firewall-cmd --list-ports。"
+
+    # 回读每个端口的实际状态，不能只看 add/remove 的返回值。
+    while read -r line; do
+        [ -n "${line}" ] || continue
+        set -- ${line}
+        state='no'
+        firewall-cmd --query-port="$3/$2" >/dev/null 2>&1 && state='yes'
+        case "$1" in
+        accept) [ "${state}" = 'yes' ] || { Err "端口 $3/$2 应放行，回读结果是未放行。"; rc=1; } ;;
+        drop)   [ "${state}" = 'no' ]  || { Err "端口 $3/$2 应阻断，回读结果仍是放行。"; rc=1; } ;;
+        esac
+    done <<< "${plan}"
+
+    if [ ${rc} -ne 0 ]; then
+        Err "firewalld 端口状态与预期不一致，请核对 firewall-cmd --list-ports。"
+        return 1
+    fi
+
+    if ! printf '%s\n' "${wanted}" | sed '/^$/d' | Save_Firewalld_Owned; then
+        Warn "写入 ${Fw_Firewalld_Ports} 失败，下次 sync 无法收回本次放行的端口。"
+    fi
     Ok "端口规则已通过 firewalld 持久化。"
     return 0
 }

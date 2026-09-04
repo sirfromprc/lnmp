@@ -29,13 +29,11 @@ Install_PHP_Fileinfo()
 extension = "fileinfo.so"
 EOF
 
-    Restart_PHP
-    if [ -s "${zend_ext}" ]; then
+    if Accept_PHP_Ext fileinfo "${PHP_Path}/conf.d/009-fileinfo.ini" "${zend_ext}"; then
         Echo_Green "====== PHP Fileinfo 扩展安装完成 ======"
         Echo_Green "PHP Fileinfo 扩展安装成功。"
         return 0
     else
-        rm -f ${PHP_Path}/conf.d/009-exif.ini
         Echo_Red "PHP Fileinfo 扩展安装失败！"
         return 1
     fi

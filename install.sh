@@ -7,7 +7,14 @@ if [ "$(id -u)" != "0" ]; then
     exit 1
 fi
 
-cur_dir=$(pwd)
+# 源码根目录按脚本自身位置确定：从其它目录以绝对路径启动时，
+# pwd 指向调用者的当前目录，相对路径 source 会加载到那里的同名文件。
+cur_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) || exit 1
+if [ ! -s "${cur_dir}/lnmp.conf" ] || [ ! -d "${cur_dir}/include" ]; then
+    echo "错误：${cur_dir} 不是 LNMP 源码目录，缺少 lnmp.conf 或 include/。"
+    exit 1
+fi
+cd "${cur_dir}" || exit 1
 Stack=$1
 if [ "${Stack}" = "" ]; then
     Stack="lnmp"
@@ -16,32 +23,32 @@ else
 fi
 
 LNMP_Ver='2.3'
-. lnmp.conf
+. "${cur_dir}/lnmp.conf"
 # version.sh 提供菜单所需的组件版本常量，必须在选择函数执行前载入。
-. include/version.sh
-. include/main.sh
-. include/verify.sh
-. include/firewall.sh
-. include/profile.sh
-. include/dbcommon.sh
-. include/init.sh
-. include/mysql.sh
-. include/mariadb.sh
-. include/php.sh
-. include/nginx.sh
+. "${cur_dir}/include/version.sh"
+. "${cur_dir}/include/main.sh"
+. "${cur_dir}/include/verify.sh"
+. "${cur_dir}/include/firewall.sh"
+. "${cur_dir}/include/profile.sh"
+. "${cur_dir}/include/dbcommon.sh"
+. "${cur_dir}/include/init.sh"
+. "${cur_dir}/include/mysql.sh"
+. "${cur_dir}/include/mariadb.sh"
+. "${cur_dir}/include/php.sh"
+. "${cur_dir}/include/nginx.sh"
 # 提供安装和升级流程使用的 Telegram 通知函数。
-. tools/lnmp-tgnotice.sh
-. include/openresty_modules.sh
-. include/openresty.sh
-. include/apache.sh
-. include/end.sh
-. include/only.sh
-. include/multiplephp.sh
-. include/imageMagick.sh
-. include/php_default_ext.sh
-. include/cleanup.sh
-. include/residue.sh
-. include/precheck.sh
+. "${cur_dir}/tools/lnmp-tgnotice.sh"
+. "${cur_dir}/include/openresty_modules.sh"
+. "${cur_dir}/include/openresty.sh"
+. "${cur_dir}/include/apache.sh"
+. "${cur_dir}/include/end.sh"
+. "${cur_dir}/include/only.sh"
+. "${cur_dir}/include/multiplephp.sh"
+. "${cur_dir}/include/imageMagick.sh"
+. "${cur_dir}/include/php_default_ext.sh"
+. "${cur_dir}/include/cleanup.sh"
+. "${cur_dir}/include/residue.sh"
+. "${cur_dir}/include/precheck.sh"
 
 Validate_Service_Ports || exit 1
 Get_Dist_Name
@@ -155,8 +162,11 @@ LNMP_Stack()
     Install_WebServer || return 1
     Creat_PHP_Tools || return 1
     Add_Firewall_Rules
-    Add_LNMP_Startup || return 1
-    Check_LNMP_Install
+    # 启动阶段失败仍要打印验收结果，返回码由两者合并。
+    local startup_rc=0
+    Add_LNMP_Startup || startup_rc=1
+    Check_LNMP_Install || return 1
+    return ${startup_rc}
 }
 
 LNMPA_Stack()
@@ -169,8 +179,11 @@ LNMPA_Stack()
     Install_WebServer || return 1
     Creat_PHP_Tools || return 1
     Add_Firewall_Rules
-    Add_LNMPA_Startup || return 1
-    Check_LNMPA_Install
+    # 启动阶段失败仍要打印验收结果，返回码由两者合并。
+    local startup_rc=0
+    Add_LNMPA_Startup || startup_rc=1
+    Check_LNMPA_Install || return 1
+    return ${startup_rc}
 }
 
 LAMP_Stack()
@@ -182,8 +195,11 @@ LAMP_Stack()
     Install_PHP
     Creat_PHP_Tools || return 1
     Add_Firewall_Rules
-    Add_LAMP_Startup || return 1
-    Check_LAMP_Install
+    # 启动阶段失败仍要打印验收结果，返回码由两者合并。
+    local startup_rc=0
+    Add_LAMP_Startup || startup_rc=1
+    Check_LAMP_Install || return 1
+    return ${startup_rc}
 }
 
 

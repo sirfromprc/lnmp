@@ -35,13 +35,12 @@ EOF
     fi
 
     # OPcache 控制面板会泄露应用路径和内存统计，并提供缓存重置操作，因此不部署。
-    Restart_PHP
-    if [ -s "${zend_ext}" ]; then
+    # OPcache 以 zend_extension 注册，--ri 只认注册名 Zend OPcache。
+    if Accept_PHP_Ext "Zend OPcache" "${PHP_Path}/conf.d/004-opcache.ini" "${zend_ext}"; then
         Echo_Green "====== OPcache 安装完成 ======"
         Echo_Green "OPcache 安装成功。"
         return 0
     else
-        rm -f ${PHP_Path}/conf.d/004-opcache.ini
         Echo_Red "OPcache 安装失败！"
         return 1
     fi

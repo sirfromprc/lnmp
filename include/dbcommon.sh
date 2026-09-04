@@ -389,11 +389,126 @@ Verify_DB_Upgraded()
 # 升级失败时显示保留的备份文件和原实例目录。
 DB_Upgrade_Abort()
 {
-    Echo_Red "======== 升级失败，已中止 ======"
+    Echo_Red "======== 自动回滚未完成，已保留现场 ======"
     Echo_Red "数据备份：$1"
     Echo_Red "原实例目录：$2"
-    Echo_Red "上述内容均未删除，可据此回滚。修复问题前请勿重复执行升级。"
+    Echo_Red "上述内容均未删除，可据此手工回滚。修复问题前请勿重复执行升级。"
     return 1
+}
+
+# ---------------------------------------------------------------------------
+# 数据库升级失败陷阱
+#
+# 升级流程先停旧库并把程序、init 脚本、配置和外置数据目录整体搬走，之后才
+# 构建、初始化新实例。这中间任何一步失败直接退出，都会让所有依赖数据库的站点
+# 持续中断，因此搬迁完成后统一挂上陷阱，退出前自动把旧实例放回原位并启动。
+# ---------------------------------------------------------------------------
+DB_Upgrade_Guard_Active='n'
+DB_Upgrade_Guard_Backup=''
+DB_Upgrade_Guard_OldPrefix=''
+DB_Upgrade_Guard_Service=''
+DB_Upgrade_Guard_Client=''
+DB_Upgrade_Guard_Prefix=''
+# 栈特有的额外还原步骤（如恢复命令链接、开机自启），在还原搬迁项之后执行。
+DB_Upgrade_Guard_Post=''
+
+# Arm_DB_Upgrade_Guard <备份文件> <原实例目录> <服务名> <旧客户端路径> <新实例目录> [额外还原函数]
+Arm_DB_Upgrade_Guard()
+{
+    DB_Upgrade_Guard_Backup="$1"
+    DB_Upgrade_Guard_OldPrefix="$2"
+    DB_Upgrade_Guard_Service="$3"
+    DB_Upgrade_Guard_Client="$4"
+    DB_Upgrade_Guard_Prefix="$5"
+    DB_Upgrade_Guard_Post="${6:-}"
+    DB_Upgrade_Guard_Active='y'
+    # INT/TERM 的处理函数返回后脚本会继续往下走，因此这两个信号显式退出。
+    trap 'DB_Upgrade_Guard_Fire' EXIT
+    trap 'DB_Upgrade_Guard_Fire; exit 130' INT
+    trap 'DB_Upgrade_Guard_Fire; exit 143' TERM
+}
+
+# 升级确认成功后解除，之后的正常退出不再触发回滚。
+Disarm_DB_Upgrade_Guard()
+{
+    DB_Upgrade_Guard_Active='n'
+    trap - EXIT INT TERM
+}
+
+DB_Upgrade_Guard_Fire()
+{
+    [ "${DB_Upgrade_Guard_Active}" = 'y' ] || return 0
+    # 回滚过程中的退出不再重复触发。
+    DB_Upgrade_Guard_Active='n'
+    trap - EXIT INT TERM
+    DB_Upgrade_Rollback
+}
+
+# 自动回滚：隔离本次新建的实例，按逆序还原旧程序、init 脚本、配置和外置数据
+# 目录，再启动旧服务并确认可连接。只有回滚自身失败才保留现场并给人工命令。
+DB_Upgrade_Rollback()
+{
+    local backup="${DB_Upgrade_Guard_Backup}"
+    local old_prefix="${DB_Upgrade_Guard_OldPrefix}"
+    local service="${DB_Upgrade_Guard_Service}"
+    local client="${DB_Upgrade_Guard_Client}"
+    local prefix="${DB_Upgrade_Guard_Prefix}"
+
+    Echo_Yellow "======== 升级未完成，正在自动回滚到升级前的数据库 ======"
+
+    # 新实例可能已经启动，进程不退出就搬不走目录，旧实例也会撞上同一个 socket。
+    # 迁移场景里新旧 init 脚本名不同，两个都尝试停止。
+    local svc
+    for svc in mysql mariadb; do
+        [ -x "/etc/init.d/${svc}" ] && "/etc/init.d/${svc}" stop >/dev/null 2>&1
+    done
+    if ! Ensure_DB_Stopped "${prefix}/bin/(mysqld|mariadbd)"; then
+        Echo_Red "新实例的数据库进程仍在运行，无法自动回滚。"
+        DB_Upgrade_Abort "${backup}" "${old_prefix}"
+        return 1
+    fi
+
+    if ! Quarantine_Upgrade_Targets "${Upgrade_Date}"; then
+        DB_Upgrade_Abort "${backup}" "${old_prefix}"
+        return 1
+    fi
+    if ! Rollback_Upgrade_Moves; then
+        DB_Upgrade_Abort "${backup}" "${old_prefix}"
+        return 1
+    fi
+    ldconfig 2>/dev/null
+
+    if [ -n "${DB_Upgrade_Guard_Post}" ] && ! "${DB_Upgrade_Guard_Post}"; then
+        Echo_Red "回滚的额外还原步骤 ${DB_Upgrade_Guard_Post} 失败。"
+        DB_Upgrade_Abort "${backup}" "${old_prefix}"
+        return 1
+    fi
+
+    if [ ! -x "/etc/init.d/${service}" ]; then
+        Echo_Red "还原后仍找不到 /etc/init.d/${service}，无法启动旧数据库。"
+        DB_Upgrade_Abort "${backup}" "${old_prefix}"
+        return 1
+    fi
+    if ! "/etc/init.d/${service}" start; then
+        Echo_Red "旧数据库服务启动失败。"
+        DB_Upgrade_Abort "${backup}" "${old_prefix}"
+        return 1
+    fi
+    # 启动成功不代表能登录，用升级前的凭据实际连一次。
+    if [ -x "${client}" ] && [ -s "${HOME}/.my.cnf" ] \
+       && ! "${client}" --defaults-file="${HOME}/.my.cnf" -e "SELECT 1;" >/dev/null 2>&1; then
+        Echo_Red "旧数据库已启动，但用升级前的凭据连接失败。"
+        DB_Upgrade_Abort "${backup}" "${old_prefix}"
+        return 1
+    fi
+
+    # 升级开始时执行过 lnmp stop，回滚后把 Web 和 PHP 一并拉起来。
+    [ -x /bin/lnmp ] && /bin/lnmp start
+
+    Echo_Green "======== 已回滚到升级前的数据库，服务已恢复 ======"
+    Echo_Yellow "数据备份保留在 ${backup}。"
+    Echo_Yellow "本次失败的新实例以 .failed.${Upgrade_Date} 结尾保留，确认无用后可删除。"
+    return 0
 }
 
 # 数据库安全初始化任一步骤失败都会由 end.sh 汇总并使安装返回非零状态。

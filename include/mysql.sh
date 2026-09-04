@@ -321,7 +321,7 @@ EOF
     chown -R mysql:mysql ${MySQL_Data_Dir}
     Secure_Initial_DB_Password mysql mysql || return 1
     \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
-    \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service
+    Install_Systemd_Unit "${cur_dir}/init.d/mysql.service" /etc/systemd/system/mysql.service || exit 1
     chmod 755 /etc/init.d/mysql
     Patch_Init_Runtime_Directory /etc/init.d/mysql /run/mysqld mysql mysql || return 1
     cat > /etc/ld.so.conf.d/mysql.conf<<EOF
@@ -438,7 +438,7 @@ EOF
     chown -R mysql:mysql ${MySQL_Data_Dir}
     Secure_Initial_DB_Password mysql mysql || return 1
     \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
-    \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service
+    Install_Systemd_Unit "${cur_dir}/init.d/mysql.service" /etc/systemd/system/mysql.service || exit 1
     chmod 755 /etc/init.d/mysql
     Patch_Init_Runtime_Directory /etc/init.d/mysql /run/mysqld mysql mysql || return 1
     cat > /etc/ld.so.conf.d/mysql.conf<<EOF

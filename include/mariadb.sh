@@ -331,7 +331,7 @@ EOF
     chown -R mariadb:mariadb ${MariaDB_Data_Dir}
     Secure_Initial_DB_Password mariadb mariadb || return 1
     \cp /usr/local/mariadb/support-files/mysql.server /etc/init.d/mariadb
-    \cp ${cur_dir}/init.d/mariadb.service /etc/systemd/system/mariadb.service
+    Install_Systemd_Unit "${cur_dir}/init.d/mariadb.service" /etc/systemd/system/mariadb.service || return 1
     chmod 755 /etc/init.d/mariadb
     Rewrite_MariaDB_Initd_Names /etc/init.d/mariadb /usr/local/mariadb/bin
     Patch_Init_Runtime_Directory /etc/init.d/mariadb /run/mysqld mariadb mariadb || return 1

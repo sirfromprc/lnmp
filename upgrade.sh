@@ -7,36 +7,43 @@ if [ "$(id -u)" != "0" ]; then
     exit 1
 fi
 
-cur_dir=$(pwd)
+# 源码根目录按脚本自身位置确定：从其它目录以绝对路径启动时，
+# pwd 指向调用者的当前目录，相对路径 source 会加载到那里的同名文件。
+cur_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) || exit 1
+if [ ! -s "${cur_dir}/lnmp.conf" ] || [ ! -d "${cur_dir}/include" ]; then
+    echo "错误：${cur_dir} 不是 LNMP 源码目录，缺少 lnmp.conf 或 include/。"
+    exit 1
+fi
+cd "${cur_dir}" || exit 1
 action=$1
 shopt -s extglob
 Upgrade_Date=$(date +"%Y%m%d%H%M%S")
 
-. lnmp.conf
-. include/version.sh
-. include/main.sh
-. include/verify.sh
-. include/firewall.sh
-. include/profile.sh
-. include/dbcommon.sh
-. include/init.sh
-. include/php.sh
-. include/php_default_ext.sh
-. include/nginx.sh
+. "${cur_dir}/lnmp.conf"
+. "${cur_dir}/include/version.sh"
+. "${cur_dir}/include/main.sh"
+. "${cur_dir}/include/verify.sh"
+. "${cur_dir}/include/firewall.sh"
+. "${cur_dir}/include/profile.sh"
+. "${cur_dir}/include/dbcommon.sh"
+. "${cur_dir}/include/init.sh"
+. "${cur_dir}/include/php.sh"
+. "${cur_dir}/include/php_default_ext.sh"
+. "${cur_dir}/include/nginx.sh"
 # 提供安装和升级流程使用的 Telegram 通知函数。
-. tools/lnmp-tgnotice.sh
-. include/openresty_modules.sh
-. include/openresty.sh
-. include/mysql.sh
-. include/mariadb.sh
-. include/upgrade_nginx.sh
-. include/upgrade_openresty.sh
-. include/upgrade_php.sh
-. include/upgrade_mysql.sh
-. include/upgrade_mariadb.sh
-. include/upgrade_mysql2mariadb.sh
-. include/upgrade_phpmyadmin.sh
-. include/upgrade_mphp.sh
+. "${cur_dir}/tools/lnmp-tgnotice.sh"
+. "${cur_dir}/include/openresty_modules.sh"
+. "${cur_dir}/include/openresty.sh"
+. "${cur_dir}/include/mysql.sh"
+. "${cur_dir}/include/mariadb.sh"
+. "${cur_dir}/include/upgrade_nginx.sh"
+. "${cur_dir}/include/upgrade_openresty.sh"
+. "${cur_dir}/include/upgrade_php.sh"
+. "${cur_dir}/include/upgrade_mysql.sh"
+. "${cur_dir}/include/upgrade_mariadb.sh"
+. "${cur_dir}/include/upgrade_mysql2mariadb.sh"
+. "${cur_dir}/include/upgrade_phpmyadmin.sh"
+. "${cur_dir}/include/upgrade_mphp.sh"
 
 Validate_Service_Ports || exit 1
 Get_Dist_Name

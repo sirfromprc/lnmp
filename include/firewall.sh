@@ -168,6 +168,31 @@ Firewall_Unblock()
 }
 
 
+# 撤销由本工具添加的放行规则。Firewall_Unblock 的语义是解除阻断，对 firewalld
+# 来说恰好是放行端口，因此收回放行必须用单独的实现。
+Firewall_Revoke()
+{
+    Firewall_Backend
+    case "${FW_Backend}" in
+    firewalld)
+        firewall-cmd --permanent --remove-port="$2/$1" >/dev/null 2>&1
+        return 0
+        ;;
+    nft)
+        local handle
+        nft list chain ${FW_TABLE} ${FW_CHAIN} >/dev/null 2>&1 || return 0
+        for handle in $(nft -a list chain ${FW_TABLE} ${FW_CHAIN} 2>/dev/null \
+                        | grep "$1 dport $2 accept" \
+                        | grep -oE 'handle [0-9]+' | awk '{print $2}'); do
+            nft delete rule ${FW_TABLE} ${FW_CHAIN} handle ${handle} 2>/dev/null
+        done
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
 # 部署并启用 lnmp-nftables.service。该单元 After/PartOf nftables.service，
 # 在 nftables 启动、重启后重新加载 ${FW_INCLUDE_FILE}，因此即使用户重写
 # /etc/nftables.conf 抹掉了 include 行，inet lnmp 表也不会丢失。

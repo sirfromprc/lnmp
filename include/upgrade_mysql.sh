@@ -27,6 +27,10 @@ Backup_MySQL()
         Move_For_Upgrade "${MySQL_Data_Dir}" "${MySQL_Data_Dir}${Upgrade_Date}" || Abort_Upgrade_Move
     fi
 
+    # 旧实例已搬走，此后任何退出都要自动放回并重新启动。
+    Arm_DB_Upgrade_Guard "/root/mysql_all_backup${Upgrade_Date}.sql" \
+        "/usr/local/oldmysql${Upgrade_Date}" mysql \
+        "/usr/local/oldmysql${Upgrade_Date}/bin/mysql" /usr/local/mysql
 }
 
 
@@ -41,16 +45,10 @@ Upgrade_MySQL80()
         Echo_Blue "正在使用源码升级 MySQL ${mysql_version}..."
         Tar_Cd ${mysql_src} mysql-${mysql_version}
         Install_Boost
-        mkdir build && cd build || return 1
+        mkdir build && cd build || exit 1
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
         if ! Make_Install; then
-            # 编译失败时列出旧程序、服务脚本和备份的人工恢复步骤。
-            Echo_Red "编译失败，升级中止。此时旧数据库已被停止并移走。"
-            Echo_Red "人工恢复："
-            Echo_Red "  1) mv /usr/local/oldmysql${Upgrade_Date} /usr/local/mysql"
-            Echo_Red "  2) \cp /usr/local/oldmysql${Upgrade_Date}/init.d.mysql.bak.${Upgrade_Date} /etc/init.d/mysql"
-            Echo_Red "  3) /etc/init.d/mysql start"
-            Echo_Red "数据备份在 /root/mysql_all_backup${Upgrade_Date}.sql"
+            Echo_Red "编译失败，升级中止，旧数据库将自动放回并重新启动。"
             exit 1
         fi
     fi
@@ -157,16 +155,10 @@ Upgrade_MySQL84()
         Echo_Blue "正在使用源码升级 MySQL ${mysql_version}..."
         Tar_Cd ${mysql_src} mysql-${mysql_version}
         Install_Boost
-        mkdir build && cd build || return 1
+        mkdir build && cd build || exit 1
         cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
         if ! Make_Install; then
-            # 编译失败时列出旧程序、服务脚本和备份的人工恢复步骤。
-            Echo_Red "编译失败，升级中止。此时旧数据库已被停止并移走。"
-            Echo_Red "人工恢复："
-            Echo_Red "  1) mv /usr/local/oldmysql${Upgrade_Date} /usr/local/mysql"
-            Echo_Red "  2) \cp /usr/local/oldmysql${Upgrade_Date}/init.d.mysql.bak.${Upgrade_Date} /etc/init.d/mysql"
-            Echo_Red "  3) /etc/init.d/mysql start"
-            Echo_Red "数据备份在 /root/mysql_all_backup${Upgrade_Date}.sql"
+            Echo_Red "编译失败，升级中止，旧数据库将自动放回并重新启动。"
             exit 1
         fi
     fi
@@ -266,7 +258,7 @@ Restore_Start_MySQL()
 {
     chgrp -R mysql /usr/local/mysql/.
     \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
-    \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service
+    Install_Systemd_Unit "${cur_dir}/init.d/mysql.service" /etc/systemd/system/mysql.service || exit 1
     chmod 755 /etc/init.d/mysql
     Patch_Init_Runtime_Directory /etc/init.d/mysql /run/mysqld mysql mysql || exit 1
 
@@ -278,7 +270,6 @@ Restore_Start_MySQL()
     echo "正在恢复数据库备份..."
     if ! /usr/local/mysql/bin/mysql --defaults-file="${HOME}/.my.cnf" < /root/mysql_all_backup${Upgrade_Date}.sql; then
         Echo_Red "备份导入失败，数据未完整恢复。"
-        DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/oldmysql${Upgrade_Date}"
         exit 1
     fi
     echo "正在检查并修复数据库..."
@@ -301,7 +292,6 @@ Restore_Start_MySQL()
         if ! /usr/local/mysql/bin/mysqladmin --defaults-file="${HOME}/.my.cnf" ping >/dev/null 2>&1; then
             Echo_Red "MySQL 强制升级未能完成，等待 ${upgrade_wait} 秒后实例仍无响应。"
             kill ${mysqld_pid} 2>/dev/null
-            DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/oldmysql${Upgrade_Date}"
             exit 1
         fi
         /usr/local/mysql/bin/mysqladmin --defaults-file="${HOME}/.my.cnf" shutdown
@@ -309,7 +299,6 @@ Restore_Start_MySQL()
     else
         if ! /usr/local/mysql/bin/mysql_upgrade --defaults-file="${HOME}/.my.cnf"; then
             Echo_Red "mysql_upgrade 执行失败。"
-            DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/oldmysql${Upgrade_Date}"
             exit 1
         fi
     fi
@@ -322,12 +311,12 @@ Restore_Start_MySQL()
     # 升级成功需确认服务可连接、数据库列表完整且仍保持本地监听限制。
     if [[ -s /usr/local/mysql/bin/mysql && -s /usr/local/mysql/bin/mysqld_safe && -s /etc/my.cnf ]] \
         && Verify_DB_Upgraded /usr/local/mysql/bin/mysql "${DB_List_Before}" "${DB_Port}" "${DB_X_Port}"; then
+        Disarm_DB_Upgrade_Guard
         Echo_Green "======== MySQL 升级完成 ======"
         rm -f "${DB_List_Before}"
     else
         Echo_Red "======== MySQL 升级失败 ======"
         Echo_Red "MySQL 升级日志：/root/upgrade_mysq${Upgrade_Date}.log"
-        DB_Upgrade_Abort "/root/mysql_all_backup${Upgrade_Date}.sql" "/usr/local/oldmysql${Upgrade_Date}"
         exit 1
     fi
 }

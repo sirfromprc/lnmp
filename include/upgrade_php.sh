@@ -255,6 +255,8 @@ Check_PHP_Upgrade_Files()
             Echo_LNMPA_Upgrade_PHP_Failed
             return 1
         fi
+        # 存量机器的 httpd.conf 可能仍是线程型 MPM，与 mod_php 不兼容。
+        Check_Apache_MPM_For_ModPHP || return 1
     fi
 
     # 除文件完整外，还需确认运行版本及 PHP-FPM 主进程状态。

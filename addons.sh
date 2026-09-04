@@ -7,30 +7,37 @@ if [ "$(id -u)" != "0" ]; then
     exit 1
 fi
 
-cur_dir=$(pwd)
+# 源码根目录按脚本自身位置确定：从其它目录以绝对路径启动时，
+# pwd 指向调用者的当前目录，相对路径 source 会加载到那里的同名文件。
+cur_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) || exit 1
+if [ ! -s "${cur_dir}/lnmp.conf" ] || [ ! -d "${cur_dir}/include" ]; then
+    echo "错误：${cur_dir} 不是 LNMP 源码目录，缺少 lnmp.conf 或 include/。"
+    exit 1
+fi
+cd "${cur_dir}" || exit 1
 action=$1
 action2=$2
 
-. lnmp.conf
-. include/main.sh
-. include/verify.sh
-. include/firewall.sh
-. include/profile.sh
-. include/init.sh
-. include/version.sh
-. include/memcached.sh
-. include/opcache.sh
-. include/redis.sh
-. include/imageMagick.sh
+. "${cur_dir}/lnmp.conf"
+. "${cur_dir}/include/main.sh"
+. "${cur_dir}/include/verify.sh"
+. "${cur_dir}/include/firewall.sh"
+. "${cur_dir}/include/profile.sh"
+. "${cur_dir}/include/init.sh"
+. "${cur_dir}/include/version.sh"
+. "${cur_dir}/include/memcached.sh"
+. "${cur_dir}/include/opcache.sh"
+. "${cur_dir}/include/redis.sh"
+. "${cur_dir}/include/imageMagick.sh"
 # ionCube 未接入安装流程。以下函数用于显示状态及清理既有安装。
-. include/apcu.sh
-. include/php_exif.sh
-. include/php_fileinfo.sh
-. include/php_ldap.sh
-. include/php_bz2.sh
-. include/php_sodium.sh
-. include/php_imap.sh
-. include/php_swoole.sh
+. "${cur_dir}/include/apcu.sh"
+. "${cur_dir}/include/php_exif.sh"
+. "${cur_dir}/include/php_fileinfo.sh"
+. "${cur_dir}/include/php_ldap.sh"
+. "${cur_dir}/include/php_bz2.sh"
+. "${cur_dir}/include/php_sodium.sh"
+. "${cur_dir}/include/php_imap.sh"
+. "${cur_dir}/include/php_swoole.sh"
 
 # Redis 与 Memcached 的端口会写入服务配置和防火墙规则，因此必须在系统变更前校验。
 Validate_Service_Ports || exit 1
@@ -93,6 +100,37 @@ Restart_PHP()
     fi
 
     StartOrStop restart "${service}"
+}
+
+# 扩展验收：Accept_PHP_Ext <模块名> <本次写入的 ini> [产物路径]
+# 产物存在不代表 PHP 能加载，因此依次确认产物、CLI 能 --ri 到该模块、
+# 重启后 Web 侧 PHP 服务仍在运行。任一步失败都撤回本次 ini 并返回非零。
+Accept_PHP_Ext()
+{
+    local module="$1" ini="$2" so="${3:-}" out
+
+    if [ -n "${so}" ] && [ ! -s "${so}" ]; then
+        Echo_Red "PHP 模块 ${module} 的产物未生成：${so}"
+        rm -f "${ini}"
+        return 1
+    fi
+
+    if ! out=$("${PHP_Path}/bin/php" --ri "${module}" 2>&1); then
+        Echo_Red "PHP 模块 ${module} 写入 ini 后仍无法加载，已删除 ${ini}。"
+        printf '%s\n' "${out}" | sed 's/^/  /' | head -n 20
+        rm -f "${ini}"
+        Restart_PHP
+        return 1
+    fi
+
+    if ! Restart_PHP; then
+        Echo_Red "PHP 模块 ${module} 可加载，但重启 PHP 服务失败，已删除 ${ini}。"
+        Echo_Red "撤回配置后重新启动服务，请再执行 lnmp status 复查。"
+        rm -f "${ini}"
+        Restart_PHP
+        return 1
+    fi
+    return 0
 }
 
 clear 2>/dev/null || true

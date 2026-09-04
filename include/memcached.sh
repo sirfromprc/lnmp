@@ -8,10 +8,40 @@ Install_PHPMemcache()
     Download_Files https://pecl.php.net/get/${PHP8Memcache_Ver}.tgz ${PHP8Memcache_Ver}.tgz
     Require_File "${PHP8Memcache_Ver}.tgz" "pecl memcache"
     Tar_Cd ${PHP8Memcache_Ver}.tgz ${PHP8Memcache_Ver}
+    Patch_PHPMemcache_Smart_String || return 1
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config
     Make_Install || return 1
     cd ../
+}
+
+# memcache 8.2 引用的 ext/standard/php_smart_string*.h 在 PHP 8.5 已删除，
+# 这两个头在 8.0-8.4 只是转发到 Zend 的同名头，改为直接引用 Zend 版本对各分支通用。
+# 上游 2023-04-30 后未再发版，只能在本地打补丁。
+Patch_PHPMemcache_Smart_String()
+{
+    local patch_file="${cur_dir}/src/patch/memcache-8.2-php85.patch"
+
+    # 已改过就不重复打；解包目录可能是上一次安装留下的。
+    if ! grep -q 'ext/standard/php_smart_string' src/memcache_pool.h 2>/dev/null; then
+        return 0
+    fi
+    if [ ! -s "${patch_file}" ]; then
+        Echo_Red "缺少补丁文件：${patch_file}"
+        return 1
+    fi
+    # addons 是独立入口，不能假定主安装的依赖已装齐。
+    if ! command -v patch >/dev/null 2>&1; then
+        Echo_Red "缺少 patch 命令，无法修正 memcache 源码。"
+        Echo_Yellow "请先安装：apt install patch（Debian 系）或 yum install patch（RHEL 系）。"
+        return 1
+    fi
+    # 行号有偏移时 GNU patch 默认会留 .orig 备份，编译目录里不需要。
+    if ! patch -p1 --forward --no-backup-if-mismatch < "${patch_file}"; then
+        Echo_Red "memcache 源码打补丁失败，无法在当前 PHP 分支编译。"
+        return 1
+    fi
+    return 0
 }
 
 Install_PHPMemcached()
@@ -63,11 +93,74 @@ Install_Memcached_Deps()
 }
 
 # 服务端未装成时的统一出口：撤掉本次写入的 PHP ini，不部署 unit、开机自启和防火墙规则。
+# 重装会先删掉现有 ini 与扩展产物，失败时要放回去，否则站点会丢掉本来可用的扩展。
+Memcached_Ext_Backup_Dir=''
+Memcached_Was_Running='n'
+
+Backup_Existing_PHPMemcached()
+{
+    Memcached_Ext_Backup_Dir=$(mktemp -d /tmp/lnmp-phpmemcached-bak.XXXXXXXX) || return 1
+    if [ -s "${PHP_Path}/conf.d/005-memcached.ini" ]; then
+        \cp -p "${PHP_Path}/conf.d/005-memcached.ini" "${Memcached_Ext_Backup_Dir}/005-memcached.ini" || return 1
+    fi
+    if [ -s "${zend_ext}" ]; then
+        \cp -p "${zend_ext}" "${Memcached_Ext_Backup_Dir}/${PHP_ZTS}" || return 1
+    fi
+    return 0
+}
+
+Restore_Existing_PHPMemcached()
+{
+    local restored='n'
+
+    [ -n "${Memcached_Ext_Backup_Dir}" ] || return 0
+    if [ -s "${Memcached_Ext_Backup_Dir}/${PHP_ZTS}" ]; then
+        \cp -p "${Memcached_Ext_Backup_Dir}/${PHP_ZTS}" "${zend_ext}" && restored='y'
+    fi
+    if [ -s "${Memcached_Ext_Backup_Dir}/005-memcached.ini" ]; then
+        \cp -p "${Memcached_Ext_Backup_Dir}/005-memcached.ini" "${PHP_Path}/conf.d/005-memcached.ini" && restored='y'
+    fi
+    if [ "${restored}" = 'y' ]; then
+        Echo_Yellow "已恢复安装前的 PHP Memcached 扩展并重载 PHP。"
+        Restart_PHP
+    fi
+    rm -rf "${Memcached_Ext_Backup_Dir}"
+    Memcached_Ext_Backup_Dir=''
+    return 0
+}
+
+Clear_PHPMemcached_Backup()
+{
+    [ -n "${Memcached_Ext_Backup_Dir}" ] && rm -rf "${Memcached_Ext_Backup_Dir}"
+    Memcached_Ext_Backup_Dir=''
+    return 0
+}
+
+# 构建失败时旧二进制和旧 init 脚本仍在原位，重新启动即可恢复重装前的服务。
+Restart_Old_Memcached_Service()
+{
+    [ "${Memcached_Was_Running}" = 'y' ] || return 0
+    if [ ! -s /usr/local/memcached/bin/memcached ]; then
+        Echo_Red "旧 memcached 二进制已不在 /usr/local/memcached/bin/memcached，无法自动恢复服务。"
+        return 1
+    fi
+    echo "正在把重装前的 Memcached 服务重新启动..."
+    if StartOrStop start memcached && Memcached_Service_Active; then
+        Echo_Yellow "已恢复重装前的 Memcached 服务，版本与配置均未改变。"
+        return 0
+    fi
+    Echo_Red "重装前的 Memcached 服务未能自动恢复，请手工执行：lnmp memcached start"
+    return 1
+}
+
+# 失败出口：撤回本次 ini，放回备份的扩展，并把停掉的旧服务拉起来。
 Memcached_Abort()
 {
     rm -f ${PHP_Path}/conf.d/005-memcached.ini
     Echo_Red "$1"
     Echo_Red "已移除 005-memcached.ini，未部署服务单元、开机自启和防火墙规则。"
+    Restore_Existing_PHPMemcached
+    Restart_Old_Memcached_Service
     return 0
 }
 
@@ -132,6 +225,7 @@ Prepare_Memcached_Rebuild()
     [ -s "${init}" ] && old_port=$(grep -E '^PORT=' "${init}" | head -1 | cut -d= -f2 | tr -d '"')
 
     if Memcached_Service_Active; then
+        Memcached_Was_Running='y'
         echo "重新编译前先停止现有 Memcached 服务..."
         StartOrStop stop memcached
         if Memcached_Service_Active; then
@@ -182,9 +276,14 @@ Install_Memcached()
     Print_Memcached_Install_Summary
     Press_Start || return 1
 
-    rm -f ${PHP_Path}/conf.d/005-memcached.ini
     Addons_Get_PHP_Ext_Dir
     zend_ext=${zend_ext_dir}${PHP_ZTS}
+    # 现有 ini 与产物在编译前就被清掉，先备份，编译失败时放回原位。
+    Backup_Existing_PHPMemcached || {
+        Echo_Red "备份现有 PHP Memcached 扩展失败，已中止，未改动任何文件。"
+        return 1
+    }
+    rm -f ${PHP_Path}/conf.d/005-memcached.ini
     if [ -s "${zend_ext}" ]; then
         rm -f "${zend_ext}"
     fi
@@ -245,7 +344,7 @@ EOF
     fi
 
     # 重复安装时也部署 systemd 单元，确保服务通过统一入口管理。
-    \cp ${cur_dir}/init.d/memcached.service /etc/systemd/system/memcached.service
+    Install_Systemd_Unit "${cur_dir}/init.d/memcached.service" /etc/systemd/system/memcached.service || return 1
     StartUp memcached
 
     # PHP 扩展失败后仍完成服务启动、防火墙和验收，以分别报告服务端与扩展状态。
@@ -266,7 +365,12 @@ EOF
         echo "如需自测：cp conf/memcached${ver}.php ${Default_Website_Dir}/memcached.php"
     fi
 
-    Restart_PHP
+    # 扩展验收含 PHP 重启；未通过时撤回 ini 并按扩展失败汇总。
+    if [ "${ext_rc}" -eq 0 ]; then
+        Accept_PHP_Ext "${PHP_ZTS%.so}" "${PHP_Path}/conf.d/005-memcached.ini" "${zend_ext}" || ext_rc=1
+    else
+        Restart_PHP
+    fi
 
     # Memcached 无认证，需阻止公网访问缓存内容并避免 UDP 反射风险。
     Firewall_Block tcp "${Memcached_Port}"
@@ -284,6 +388,7 @@ EOF
     [ -s "${zend_ext}" ] && [ "${ext_rc}" -eq 0 ] && ext_ok=1
 
     if [ "${svc_ok}" -eq 1 ] && [ "${ext_ok}" -eq 1 ]; then
+        Clear_PHPMemcached_Backup
         Echo_Green "====== Memcached 安装完成 ======"
         Echo_Green "Memcached 安装成功。"
         return 0
@@ -293,6 +398,9 @@ EOF
     if [ "${ext_ok}" -eq 0 ]; then
         rm -f ${PHP_Path}/conf.d/005-memcached.ini
         Echo_Red "PHP 扩展 ${PHP_ZTS} 没有装成，已移除对应的 ini，避免 PHP 启动报警告。"
+        Restore_Existing_PHPMemcached
+    else
+        Clear_PHPMemcached_Backup
     fi
     Echo_Red "Memcached 安装失败！"
     return 1

@@ -6,7 +6,14 @@ if [ "$(id -u)" != "0" ]; then
     echo "错误：必须使用 root 用户运行此脚本。"
     exit 1
 fi
-cur_dir=$(pwd)
+# 源码根目录按脚本自身位置确定：从其它目录以绝对路径启动时，
+# pwd 指向调用者的当前目录，相对路径 source 会加载到那里的同名文件。
+cur_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) || exit 1
+if [ ! -s "${cur_dir}/lnmp.conf" ] || [ ! -d "${cur_dir}/include" ]; then
+    echo "错误：${cur_dir} 不是 LNMP 源码目录，缺少 lnmp.conf 或 include/。"
+    exit 1
+fi
+cd "${cur_dir}" || exit 1
 action=$1
 # 供 Press_Install 选择本入口的确认摘要。
 Stack='pureftpd'
@@ -21,12 +28,12 @@ case "${action}" in
     ;;
 esac
 
-. lnmp.conf
-. include/main.sh
-. include/verify.sh
-. include/firewall.sh
-. include/init.sh
-. include/end.sh
+. "${cur_dir}/lnmp.conf"
+. "${cur_dir}/include/main.sh"
+. "${cur_dir}/include/verify.sh"
+. "${cur_dir}/include/firewall.sh"
+. "${cur_dir}/include/init.sh"
+. "${cur_dir}/include/end.sh"
 
 Validate_Service_Ports || exit 1
 Get_Dist_Name
@@ -37,9 +44,67 @@ Print_Banner \
     "为现有 LNMP 环境安装 FTP 服务" \
     "用法：./pureftpd.sh"
 
+Pureftpd_Conf='/usr/local/pureftpd/etc/pure-ftpd.conf'
+
+# 从现有配置读出本工具管理的三个端口值，供重装迁移和卸载撤销防火墙规则使用。
+# 输出三行：控制端口、被动端口范围起、被动端口范围止；读不到时输出空行。
+Read_Pureftpd_Ports()
+{
+    local conf="$1" ctl='' pasv_min='' pasv_max=''
+
+    if [ -s "${conf}" ]; then
+        ctl=$(awk '/^Bind[[:space:]]/ { split($2, a, ","); print a[2]; exit }' "${conf}")
+        pasv_min=$(awk '/^PassivePortRange[[:space:]]/ { print $2; exit }' "${conf}")
+        pasv_max=$(awk '/^PassivePortRange[[:space:]]/ { print $3; exit }' "${conf}")
+    fi
+    printf '%s\n%s\n%s\n' "${ctl}" "${pasv_min}" "${pasv_max}"
+}
+
+# 监听端口核对：ss 不可用时跳过，不因缺工具判定安装失败。
+Check_Pureftpd_Listen()
+{
+    local port="$1" i=0
+
+    command -v ss >/dev/null 2>&1 || return 0
+    while [ ${i} -lt 10 ]; do
+        if ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}\$"; then
+            return 0
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# 重装改端口后，旧端口的放行不再对应本服务，必须收回。
+Revoke_Old_Pureftpd_Ports()
+{
+    local old_ctl="$1" old_min="$2" old_max="$3" changed='n'
+
+    if [ -n "${old_ctl}" ] && [ "${old_ctl}" != "${Pureftpd_Port}" ]; then
+        Firewall_Revoke tcp "${old_ctl}"
+        changed='y'
+    fi
+    if [ -n "${old_min}" ] && [ -n "${old_max}" ] \
+       && { [ "${old_min}" != "${Pureftpd_Passive_Min}" ] || [ "${old_max}" != "${Pureftpd_Passive_Max}" ]; }; then
+        Firewall_Revoke tcp "${old_min}-${old_max}"
+        changed='y'
+    fi
+    if [ "${changed}" = 'y' ]; then
+        echo "已收回旧 FTP 端口的防火墙放行。"
+        Firewall_Save
+    fi
+    return 0
+}
+
 Install_Pureftpd()
 {
+    local old_ctl='' old_pasv_min='' old_pasv_max=''
+
     Press_Install
+
+    # 端口在重装时按 lnmp.conf 重写，旧值先记下来，装完把旧放行规则收回。
+    { read -r old_ctl; read -r old_pasv_min; read -r old_pasv_max; } < <(Read_Pureftpd_Ports "${Pureftpd_Conf}")
 
     Echo_Blue "安装依赖软件包..."
     if [ "$PM" = "yum" ]; then
@@ -91,7 +156,7 @@ Install_Pureftpd()
         rm -f /etc/init.d/pureftpd
     fi
     \cp ${cur_dir}/init.d/init.d.pureftpd /etc/init.d/pureftpd
-    \cp ${cur_dir}/init.d/pureftpd.service /etc/systemd/system/pureftpd.service
+    Install_Systemd_Unit "${cur_dir}/init.d/pureftpd.service" /etc/systemd/system/pureftpd.service || exit 1
     chmod +x /etc/init.d/pureftpd
     touch /usr/local/pureftpd/etc/pureftpd.passwd
     touch /usr/local/pureftpd/etc/pureftpd.pdb
@@ -131,8 +196,9 @@ Install_Pureftpd()
 
     if [[ -s /usr/local/pureftpd/sbin/pure-ftpd && -s /usr/local/pureftpd/etc/pure-ftpd.conf && -s /etc/init.d/pureftpd ]]; then
         Echo_Blue "正在启动 Pure-FTPd..."
-        # 根据可用的 systemd unit 或 SysV 脚本启动服务。
-        StartOrStop start pureftpd
+        # 配置和二进制每次安装都重写，必须 restart：对已在运行的服务执行 start
+        # 直接返回成功，进程不会重读配置，监听的仍是旧端口。
+        StartOrStop restart pureftpd
         Pureftpd_Start_Rc=$?
         if [ "${Pureftpd_Start_Rc}" -eq 0 ]; then
             # 使用 systemd 活动状态或 pid 对应进程判断服务是否启动。
@@ -142,6 +208,15 @@ Install_Pureftpd()
                      && kill -0 "$(cat /var/run/pure-ftpd.pid)" 2>/dev/null; }; then
                 Pureftpd_Start_Rc=1
             fi
+        fi
+        # 服务起来了也要确认监听的是本次写入的控制端口。
+        if [ "${Pureftpd_Start_Rc}" -eq 0 ] && ! Check_Pureftpd_Listen "${Pureftpd_Port}"; then
+            Echo_Red "Pure-FTPd 已启动，但没有监听 ${Pureftpd_Port} 端口。"
+            Pureftpd_Start_Rc=1
+        fi
+        # 端口变了才收回旧放行；顺序放在启动之后，失败时旧规则仍在。
+        if [ "${Pureftpd_Start_Rc}" -eq 0 ]; then
+            Revoke_Old_Pureftpd_Ports "${old_ctl}" "${old_pasv_min}" "${old_pasv_max}"
         fi
         if [ "${Pureftpd_Start_Rc}" -eq 0 ]; then
             Print_Banner \
@@ -163,6 +238,12 @@ Uninstall_Pureftpd()
         Echo_Red "未检测到已安装的 Pure-FTPd。"
         exit 1
     fi
+    local ctl='' pasv_min='' pasv_max=''
+
+    # 端口从实际配置解析，卸载后必须收回安装时添加的三组放行，
+    # 否则被动端口整段范围会一直对公网开放。
+    { read -r ctl; read -r pasv_min; read -r pasv_max; } < <(Read_Pureftpd_Ports "${Pureftpd_Conf}")
+
     echo "正在停止 Pure-FTPd..."
     /etc/init.d/pureftpd stop
     echo "正在删除服务配置..."
@@ -170,6 +251,20 @@ Uninstall_Pureftpd()
     echo "正在删除文件..."
     rm -f /etc/init.d/pureftpd
     rm -rf /usr/local/pureftpd
+
+    echo "正在收回 FTP 端口的防火墙放行..."
+    Firewall_Revoke tcp "${Pureftpd_Data_Port}"
+    Firewall_Revoke tcp "${ctl:-${Pureftpd_Port}}"
+    if [ -n "${pasv_min}" ] && [ -n "${pasv_max}" ]; then
+        Firewall_Revoke tcp "${pasv_min}-${pasv_max}"
+    fi
+    # 配置里的值与 lnmp.conf 不一致时，两套都收回，避免遗留。
+    [ "${ctl}" != "${Pureftpd_Port}" ] && Firewall_Revoke tcp "${Pureftpd_Port}"
+    if [ "${pasv_min}" != "${Pureftpd_Passive_Min}" ] || [ "${pasv_max}" != "${Pureftpd_Passive_Max}" ]; then
+        Firewall_Revoke tcp "${Pureftpd_Passive_Min}-${Pureftpd_Passive_Max}"
+    fi
+    Firewall_Save || Echo_Red "防火墙规则保存失败，请执行 lnmp fw sync 复核。"
+
     echo "Pure-FTPd 卸载完成。"
 }
 

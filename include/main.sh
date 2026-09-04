@@ -2090,6 +2090,23 @@ Ensure_Runtime_Directory()
 # Patch_Init_Runtime_Directory <init脚本> <目录> <用户> <组>
 # SysV 和 systemd 生成的兼容服务都可能直接执行 init 脚本，因此把重建逻辑
 # 写进入口；固定标记保证升级或回滚时重复调用不会重复插入。
+# Install_Systemd_Unit <源 unit> <目标路径>
+# 发行版包常把 /etc/systemd/system/<名>.service 建成指向 /usr/lib/systemd/system/ 的
+# 符号链接；直接 cp 会跟随链接改写发行版自带的 unit 文件，把系统里同名服务一并顶掉。
+# 因此先摘掉符号链接再写入，只在 /etc 下留本项目自己的 unit。
+Install_Systemd_Unit()
+{
+    local src="$1" dst="$2"
+
+    [ -s "${src}" ] || { Echo_Red "找不到服务单元模板：${src}"; return 1; }
+    if [ -L "${dst}" ]; then
+        echo "${dst} 是指向 $(readlink -f "${dst}" 2>/dev/null) 的符号链接，先摘除再写入本项目的单元。"
+        rm -f "${dst}" || return 1
+    fi
+    \cp "${src}" "${dst}" || { Echo_Red "写入服务单元失败：${dst}"; return 1; }
+    return 0
+}
+
 # 升级前的搬迁必须整体成功：逐项检查存在性、目标未占用和 mv 返回码，
 # 记录已完成项以便失败时按逆序还原。任何路径都不删除数据。
 LNMP_Moved_Items=()
@@ -2136,6 +2153,32 @@ Rollback_Upgrade_Moves()
         fi
     done
     LNMP_Moved_Items=()
+    return ${rc}
+}
+
+# 回滚前把新实例占用的原路径挪开：新安装可能已经在原位建了目录或写了配置，
+# 直接还原会因目标已存在而失败。隔离目录保留现场，确认无用后可自行删除。
+Quarantine_Upgrade_Targets()
+{
+    local suffix="$1" i entry src aside rc=0
+
+    for (( i=${#LNMP_Moved_Items[@]} - 1; i >= 0; i-- )); do
+        entry="${LNMP_Moved_Items[i]}"
+        src="${entry#*|}"
+        # 隔离目标由本文件的搬迁记录产生，仍逐项排除空值和根目录。
+        case "${src}" in
+        ''|/|/usr|/usr/local|/etc) Echo_Red "拒绝隔离危险路径：${src:-空}"; rc=1; continue ;;
+        esac
+        [ -e "${src}" ] || continue
+        aside="${src}.failed.${suffix}"
+        [ -e "${aside}" ] && rm -rf -- "${aside}"
+        if mv -- "${src}" "${aside}"; then
+            echo "已隔离本次升级新建的：${src} -> ${aside}"
+        else
+            Echo_Red "无法隔离 ${src}，回滚无法继续。"
+            rc=1
+        fi
+    done
     return ${rc}
 }
 
@@ -2285,4 +2328,23 @@ Print_Banner()
         printf '|%*s%s%*s|\n' "${left}" '' "${text}" "${right}" ''
     done
     printf '+%s+\n' "${border}"
+}
+
+# mod_php 未开启 ZTS，只能在 prefork 下运行；线程型 MPM 会让每个 PHP 请求段错误。
+# 存量机器手工改过 MPM 时同样在这里拦下。
+Check_Apache_MPM_For_ModPHP()
+{
+    local httpd='/usr/local/apache/bin/httpd' mpm
+
+    "${httpd}" -M 2>/dev/null | grep -q 'php_module' || return 0
+    mpm=$("${httpd}" -V 2>/dev/null | sed -n 's/^Server MPM: *//p')
+    [ -n "${mpm}" ] || return 0
+    if [ "${mpm}" != 'prefork' ]; then
+        Echo_Red "错误：Apache 当前 MPM 是 ${mpm}，与 mod_php 不兼容。"
+        Echo_Red "本包的 PHP 未开启 ZTS，线程型 MPM 下每个 PHP 请求都会让子进程段错误。"
+        Echo_Yellow "请在 /usr/local/apache/conf/httpd.conf 只启用 mpm_prefork_module，"
+        Echo_Yellow "然后完全停止再启动 Apache（MPM 不能通过 restart 切换）。"
+        return 1
+    fi
+    return 0
 }

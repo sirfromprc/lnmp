@@ -31,6 +31,10 @@ Backup_MariaDB()
         Move_For_Upgrade "${MariaDB_Data_Dir}" "${MariaDB_Data_Dir}${Upgrade_Date}" || Abort_Upgrade_Move
     fi
 
+    # 旧实例已搬走，此后任何退出都要自动放回并重新启动。
+    Arm_DB_Upgrade_Guard "/root/mariadb_all_backup${Upgrade_Date}.sql" \
+        "/usr/local/oldmariadb${Upgrade_Date}" mariadb \
+        "/usr/local/oldmariadb${Upgrade_Date}/bin/mariadb" /usr/local/mariadb
 }
 
 Upgrade_MariaDB()
@@ -157,13 +161,7 @@ Upgrade_MariaDB()
 
         cmake -DCMAKE_INSTALL_PREFIX=/usr/local/mariadb -DMYSQL_UNIX_ADDR=/run/mysqld/mysqld.sock -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_READLINE=1 -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 -DWITHOUT_TOKUDB=1
         if ! Make_Install; then
-            # 编译失败时列出旧程序、服务脚本和备份的人工恢复步骤。
-            Echo_Red "编译失败，升级中止。此时旧数据库已被停止并移走。"
-            Echo_Red "人工恢复："
-            Echo_Red "  1) mv /usr/local/oldmariadb${Upgrade_Date} /usr/local/mariadb"
-            Echo_Red "  2) \cp /usr/local/oldmariadb${Upgrade_Date}/init.d.mariadb.bak.${Upgrade_Date} /etc/init.d/mariadb"
-            Echo_Red "  3) /etc/init.d/mariadb start"
-            Echo_Red "数据备份在 /root/mariadb_all_backup${Upgrade_Date}.sql"
+            Echo_Red "编译失败，升级中止，旧数据库将自动放回并重新启动。"
             exit 1
         fi
     fi
@@ -257,7 +255,7 @@ EOF
     chown -R mariadb:mariadb ${MariaDB_Data_Dir}
     Secure_Initial_DB_Password mariadb mariadb || exit 1
     \cp /usr/local/mariadb/support-files/mysql.server /etc/init.d/mariadb
-    \cp ${cur_dir}/init.d/mariadb.service /etc/systemd/system/mariadb.service
+    Install_Systemd_Unit "${cur_dir}/init.d/mariadb.service" /etc/systemd/system/mariadb.service || exit 1
     chmod 755 /etc/init.d/mariadb
     Rewrite_MariaDB_Initd_Names /etc/init.d/mariadb /usr/local/mariadb/bin
     Patch_Init_Runtime_Directory /etc/init.d/mariadb /run/mysqld mariadb mariadb || exit 1
@@ -271,13 +269,11 @@ EOF
     echo "正在恢复数据库备份..."
     if ! "${client_bin}" --defaults-file="${HOME}/.my.cnf" < /root/mariadb_all_backup${Upgrade_Date}.sql; then
         Echo_Red "备份导入失败，数据未完整恢复。"
-        DB_Upgrade_Abort "/root/mariadb_all_backup${Upgrade_Date}.sql" "/usr/local/oldmariadb${Upgrade_Date}"
         exit 1
     fi
     echo "正在检查并修复数据库..."
     if ! "${upgrade_bin}" --defaults-file="${HOME}/.my.cnf"; then
         Echo_Red "MariaDB 升级程序执行失败。"
-        DB_Upgrade_Abort "/root/mariadb_all_backup${Upgrade_Date}.sql" "/usr/local/oldmariadb${Upgrade_Date}"
         exit 1
     fi
 
@@ -289,12 +285,12 @@ EOF
     # 升级成功需确认服务可连接、数据库列表完整且仍保持本地监听限制。
     if [[ -x "${client_bin}" && -x "${safe_bin}" && -s /etc/my.cnf ]] \
         && Verify_DB_Upgraded "${client_bin}" "${DB_List_Before}" "${DB_Port}"; then
+        Disarm_DB_Upgrade_Guard
         Echo_Green "======== MariaDB 升级完成 ======"
         rm -f "${DB_List_Before}"
     else
         Echo_Red "======== MariaDB 升级失败 ======"
         Echo_Red "MariaDB 升级日志：/root/upgrade_mariadb${Upgrade_Date}.log"
-        DB_Upgrade_Abort "/root/mariadb_all_backup${Upgrade_Date}.sql" "/usr/local/oldmariadb${Upgrade_Date}"
         exit 1
     fi
 }

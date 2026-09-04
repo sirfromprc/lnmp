@@ -261,6 +261,44 @@ Print_Redis_Install_Summary()
     Echo_Yellow "=========================================================================="
 }
 
+# 记录重装前服务是否在运行，构建失败时据此把旧实例重新拉起。
+Redis_Was_Running='n'
+
+# 构建失败时旧二进制和旧配置都还在原位，重新启动即可恢复重装前的服务。
+Restart_Old_Redis_Service()
+{
+    [ "${Redis_Was_Running}" = 'y' ] || return 0
+    if [ ! -s /usr/local/redis/bin/redis-server ]; then
+        Echo_Red "旧 Redis 二进制已不在 /usr/local/redis/bin/redis-server，无法自动恢复服务。"
+        return 1
+    fi
+    echo "正在把重装前的 Redis 服务重新启动..."
+    if StartOrStop start redis && Redis_Service_Active; then
+        Echo_Yellow "已恢复重装前的 Redis 服务，版本与配置均未改变。"
+        return 0
+    fi
+    Echo_Red "重装前的 Redis 服务未能自动恢复，请手工执行：lnmp redis start"
+    return 1
+}
+
+# 编译产物必须是本次要装的版本；旧二进制未被覆盖时版本号仍是旧值。
+Check_Redis_Server_Version()
+{
+    local want out
+    want="${Redis_Stable_Ver#redis-}"
+
+    if ! out=$(/usr/local/redis/bin/redis-server --version 2>&1); then
+        Echo_Red "新装的 redis-server 无法执行：${out}"
+        return 1
+    fi
+    case "${out}" in
+    *"v=${want}"*) return 0 ;;
+    esac
+    Echo_Red "redis-server 版本与本次安装的 ${want} 不符，make install 可能未覆盖旧二进制。"
+    printf '%s\n' "${out}" | sed 's/^/  /'
+    return 1
+}
+
 # 重装前的准备：配置按模板重建会覆盖现有 redis.conf，因此先停服务再备份，
 # 并撤销旧端口的阻断规则。停不掉服务就不动任何文件。
 Prepare_Redis_Rebuild()
@@ -270,6 +308,7 @@ Prepare_Redis_Rebuild()
     [ -s "${conf}" ] && old_port=$(grep -E '^port[[:space:]]+' "${conf}" | head -1 | awk '{ print $2 }')
 
     if Redis_Service_Active; then
+        Redis_Was_Running='y'
         echo "重新编译前先停止现有 Redis 服务..."
         if ! StartOrStop stop redis; then
             [ -n "${old_port}" ] && [ -x /usr/local/redis/bin/redis-cli ] && \
@@ -343,11 +382,26 @@ Install_Redis()
     if [ "${Is_ARM}" = "y" ]; then
         sed -i 's/FINAL_LIBS=-lm/FINAL_LIBS=-lm -latomic/' src/Makefile
     fi
+    # 旧二进制仍在原位，编译失败时不检查返回值会用旧版本配新配置起服务，
+    # 并把结果报成新版本安装成功。
     if [[ "${Is_64bit}" = "y" || "${Is_ARM}" = "y" ]]; then
         make PREFIX=/usr/local/redis install
     else
         make CFLAGS="-march=i686" PREFIX=/usr/local/redis install
     fi
+    if [ $? -ne 0 ]; then
+        cd "${cur_dir}/src" || return 1
+        Echo_Red "Redis 服务端编译或安装失败，未改动服务配置。"
+        Restore_Existing_PHPRedis
+        Restart_Old_Redis_Service
+        return 1
+    fi
+    Check_Redis_Server_Version || {
+        cd "${cur_dir}/src" || return 1
+        Restore_Existing_PHPRedis
+        Restart_Old_Redis_Service
+        return 1
+    }
     ln -sf /usr/local/redis/bin/redis-cli /usr/bin/redis-cli
     mkdir -p /usr/local/redis/etc/
     \cp redis.conf  /usr/local/redis/etc/
@@ -427,7 +481,7 @@ EOF
         Restore_Existing_PHPRedis
         return 1
     fi
-    \cp ${cur_dir}/init.d/redis.service /etc/systemd/system/redis.service
+    Install_Systemd_Unit "${cur_dir}/init.d/redis.service" /etc/systemd/system/redis.service || return 1
     # 启动前检查随 Redis 目录安装，卸载时一并删除；unit 在其缺失时跳过该步。
     \cp ${cur_dir}/tools/redis-preflight.sh /usr/local/redis/bin/redis-preflight
     chmod 755 /usr/local/redis/bin/redis-preflight
@@ -440,7 +494,12 @@ EOF
     Set_Redis_Overcommit
     echo "正在加入开机自启..."
     StartUp redis
-    Restart_PHP
+    # 扩展验收含 PHP 重启，产物或加载失败时会撤回 021-redis.ini。
+    if ! Accept_PHP_Ext redis "${PHP_Path}/conf.d/021-redis.ini" "${zend_ext}"; then
+        Echo_Red "phpredis 扩展验收未通过。"
+        Restore_Existing_PHPRedis
+        return 1
+    fi
     Start_Redis_Service "${Redis_Port}"
     local Redis_Started=$?
 
@@ -455,9 +514,8 @@ EOF
         echo "如需自测：cp conf/redis.php ${Default_Website_Dir}/redis.php"
     fi
 
-    if [ ! -s "${zend_ext}" ] || [ ! -s /usr/local/redis/bin/redis-server ]; then
-        rm -f ${PHP_Path}/conf.d/021-redis.ini
-        Echo_Red "Redis 安装失败！（扩展或服务端二进制未生成）"
+    if [ ! -s /usr/local/redis/bin/redis-server ]; then
+        Echo_Red "Redis 安装失败！（服务端二进制未生成）"
         Restore_Existing_PHPRedis
         return 1
     fi

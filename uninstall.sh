@@ -7,17 +7,24 @@ if [ "$(id -u)" != "0" ]; then
     exit 1
 fi
 
-cur_dir=$(pwd)
+# 源码根目录按脚本自身位置确定：从其它目录以绝对路径启动时，
+# pwd 指向调用者的当前目录，相对路径 source 会加载到那里的同名文件。
+cur_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) || exit 1
+if [ ! -s "${cur_dir}/lnmp.conf" ] || [ ! -d "${cur_dir}/include" ]; then
+    echo "错误：${cur_dir} 不是 LNMP 源码目录，缺少 lnmp.conf 或 include/。"
+    exit 1
+fi
+cd "${cur_dir}" || exit 1
 Stack=$1
 
 LNMP_Ver='2.3'
 
-. lnmp.conf
-. include/main.sh
-. include/verify.sh
-. include/firewall.sh
-. include/openresty.sh
-. include/cleanup.sh
+. "${cur_dir}/lnmp.conf"
+. "${cur_dir}/include/main.sh"
+. "${cur_dir}/include/verify.sh"
+. "${cur_dir}/include/firewall.sh"
+. "${cur_dir}/include/openresty.sh"
+. "${cur_dir}/include/cleanup.sh"
 
 shopt -s extglob
 

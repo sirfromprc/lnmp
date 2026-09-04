@@ -252,22 +252,63 @@ PROFILE_EOF
     chmod 644 /etc/profile.d/lnmp-tgnotice.sh
 }
 
+# 服务是否真的在运行。判定后端与管理命令一致：有 systemd unit 时以 unit
+# 状态为准，否则回落到 init 脚本的 status。
+Service_Running()
+{
+    local service="$1"
+
+    if Use_Systemd_Unit "${service}"; then
+        systemctl is-active --quiet "${service}.service"
+    else
+        [ -x "/etc/init.d/${service}" ] && "/etc/init.d/${service}" status >/dev/null 2>&1
+    fi
+}
+
+# 设为开机启动并启动服务，再确认服务真的处于运行状态。
+# 启动命令返回成功不代表进程还活着：端口被占、动态库缺失、运行期配置错误
+# 都会让服务在启动后立刻退出。
+Start_And_Verify()
+{
+    local service="$1" i=0
+
+    if ! StartUp "${service}"; then
+        Echo_Red "设置 ${service} 开机启动失败。"
+        return 1
+    fi
+    if ! StartOrStop start "${service}"; then
+        Echo_Red "启动 ${service} 失败。"
+        return 1
+    fi
+    # unit 带 Restart= 时状态会短暂停在 activating，重试到 15 秒再判失败。
+    while [ ${i} -lt 15 ]; do
+        Service_Running "${service}" && return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    Echo_Red "${service} 的启动命令返回成功，但服务没有处于运行状态。"
+    Echo_Red "排查：systemctl status ${service}.service 或 journalctl -xeu ${service}.service"
+    return 1
+}
+
 Add_LNMP_Startup()
 {
+    local rc=0
+
     echo "正在设置开机启动并启动 LNMP..."
     Install_LNMP_Command lnmp || return 1
     Set_Tools_Permission || return 1
-    StartUp nginx
-    StartOrStop start nginx
-    Startup_DB || return 1
-    StartUp php-fpm
-    StartOrStop start php-fpm
+    Start_And_Verify nginx || rc=1
+    Startup_DB || rc=1
+    Start_And_Verify php-fpm || rc=1
     if [ "${PHP_Branch}" = "5.2" ]; then
         sed -i 's#/usr/local/php/var/run/php-fpm.pid#/usr/local/php/logs/php-fpm.pid#' /bin/lnmp
         Sync_LNMP_Command_Alias || return 1
     fi
+    # 定时任务装不上不影响已装好的服务，不改变本函数的返回码。
     Install_Health_Timer
     Install_Cutlogs_Timer
+    return ${rc}
 }
 
 # 各安装栈共用数据库启动流程，并按已安装的服务类型启用对应服务。
@@ -276,33 +317,91 @@ Startup_DB()
     if [ "${DB_Kind}" = "none" ]; then
         return 0
     fi
-    StartUp "${DB_Service}"
-    StartOrStop start "${DB_Service}"
+    Start_And_Verify "${DB_Service}"
 }
 
 Add_LNMPA_Startup()
 {
+    local rc=0
+
     echo "正在设置开机启动并启动 LNMPA..."
     Install_LNMP_Command lnmpa || return 1
     Set_Tools_Permission || return 1
-    StartUp nginx
-    StartOrStop start nginx
-    Startup_DB || return 1
-    StartUp httpd
-    StartOrStop start httpd
+    Start_And_Verify nginx || rc=1
+    Startup_DB || rc=1
+    Start_And_Verify httpd || rc=1
     Install_Health_Timer
     Install_Cutlogs_Timer
+    return ${rc}
 }
 
 Add_LAMP_Startup()
 {
+    local rc=0
+
     echo "正在设置开机启动并启动 LAMP..."
     Install_LNMP_Command lamp || return 1
     Set_Tools_Permission || return 1
-    StartUp httpd
-    StartOrStop start httpd
-    Startup_DB || return 1
+    Start_And_Verify httpd || rc=1
+    Startup_DB || rc=1
     Install_Health_Timer
+    return ${rc}
+}
+
+# 最小 HTTP 探测：不依赖 curl/wget，确认 Web 服务在监听并按 HTTP 协议应答。
+Probe_Http_Local()
+{
+    local port="$1" line=''
+
+    # 重定向自左向右生效，写在后面的 2>/dev/null 挡不住打开失败的报错，
+    # 因此整体套一层 { } 再重定向。
+    { exec 3<>"/dev/tcp/127.0.0.1/${port}"; } 2>/dev/null || return 1
+    if ! printf 'HEAD / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' >&3 2>/dev/null; then
+        exec 3<&- 3>&-
+        return 1
+    fi
+    read -r -t 5 line <&3
+    exec 3<&- 3>&-
+    case "${line}" in
+    HTTP/*) return 0 ;;
+    esac
+    return 1
+}
+
+# PHP-FPM 监听 unix socket。socket 文件存在只说明进程建过它，进程退出后文件
+# 仍会留下，因此还要确认内核里这个 socket 处于 LISTEN。
+# bash 不能连接 unix socket（对 socket 文件执行重定向只会得到 ENXIO），
+# 所以用 ss 查监听状态；没有 ss 时退回文件类型检查，不因缺工具判定安装失败。
+Probe_Fpm_Socket()
+{
+    local sock="${1:-/run/php-fpm/php-cgi.sock}"
+
+    [ -S "${sock}" ] || return 1
+    command -v ss >/dev/null 2>&1 || return 0
+    ss -lxH src "${sock}" 2>/dev/null | grep -q LISTEN
+}
+
+# 数据库最小探测：执行一次 SELECT 1。
+# 安装流程在 Init_Install 结尾就清掉了 ~/.my.cnf，因此这里用本次安装的 root
+# 口令临时生成一份私有 option file，探测后立即删除，口令不进命令行。
+Probe_DB_Select1()
+{
+    local bin="$1" opt rc
+
+    [ -x "${bin}" ] || return 1
+    [ -n "${DB_Root_Password}" ] || return 1
+    opt=$(mktemp) || return 1
+    chmod 600 "${opt}"
+    cat >"${opt}"<<EOF
+[client]
+user=root
+password='$(SQL_Escape "${DB_Root_Password}")'
+socket=$(Get_Actual_DB_Socket)
+EOF
+    "${bin}" --defaults-file="${opt}" -e "SELECT 1;" >/dev/null 2>&1
+    rc=$?
+    rm -f "${opt}"
+    return ${rc}
 }
 
 Check_Nginx_Files()
@@ -310,80 +409,132 @@ Check_Nginx_Files()
     isNginx=""
     echo "============================== 检查安装结果 =============================="
     echo "正在检查..."
-    if [[ -s /usr/local/nginx/conf/nginx.conf && -s /usr/local/nginx/sbin/nginx ]]; then
-        # 文件存在不代表可用，配置语法错误会导致 nginx 无法启动。
-        if /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1; then
-            Echo_Green "Nginx：正常"
-            isNginx="ok"
-        else
-            Echo_Red "错误：Nginx 配置检查未通过，执行 /usr/local/nginx/sbin/nginx -t 查看详情。"
-        fi
-    else
+    if [[ ! -s /usr/local/nginx/conf/nginx.conf || ! -s /usr/local/nginx/sbin/nginx ]]; then
         Echo_Red "错误：Nginx 安装失败。"
+        return 1
     fi
+    # 文件存在不代表可用，配置语法错误会导致 nginx 无法启动。
+    if ! /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1; then
+        Echo_Red "错误：Nginx 配置检查未通过，执行 /usr/local/nginx/sbin/nginx -t 查看详情。"
+        return 1
+    fi
+    # 离线语法检查通过也可能因端口被占用等运行期问题起不来，因此确认服务在跑。
+    if ! Service_Running nginx; then
+        Echo_Red "错误：Nginx 未在运行，执行 systemctl status nginx.service 查看详情。"
+        return 1
+    fi
+    if ! Probe_Http_Local 80; then
+        Echo_Red "错误：Nginx 在运行，但 127.0.0.1:80 没有按 HTTP 协议应答。"
+        return 1
+    fi
+    Echo_Green "Nginx：正常"
+    isNginx="ok"
+    return 0
 }
 
 Check_DB_Files()
 {
-    local db_client db_safe
+    local db_client db_safe db_name='MySQL'
 
     isDB=""
     if [ "${DB_Kind}" = "none" ]; then
         Echo_Green "未安装 MySQL/MariaDB。"
         isDB="ok"
-    elif [ "${DB_Kind}" = "mariadb" ]; then
+        return 0
+    fi
+
+    if [ "${DB_Kind}" = "mariadb" ]; then
+        db_name='MariaDB'
         db_client=$(First_Executable "${MySQL_Dir}/bin/mariadb" "${MySQL_Dir}/bin/mysql")
         db_safe=$(First_Executable "${MySQL_Dir}/bin/mariadbd-safe" "${MySQL_Dir}/bin/mysqld_safe")
-        if [ -n "${db_client}" ] && [ -n "${db_safe}" ] && [ -s /etc/my.cnf ]; then
-            MySQL_Bin="${db_client}"
-            Echo_Green "MariaDB：正常"
-            isDB="ok"
-        else
-            Echo_Red "错误：MariaDB 安装失败。"
-        fi
-    elif [[ -s ${MySQL_Dir}/bin/mysql && -s ${MySQL_Dir}/bin/mysqld_safe && -s /etc/my.cnf ]]; then
-        MySQL_Bin="${MySQL_Dir}/bin/mysql"
-        Echo_Green "MySQL：正常"
-        isDB="ok"
     else
-        if [ "${DB_Kind}" = "mariadb" ]; then
-            Echo_Red "错误：MariaDB 安装失败。"
-        else
-            Echo_Red "错误：MySQL 安装失败。"
-        fi
+        db_client=$(First_Executable "${MySQL_Dir}/bin/mysql")
+        db_safe=$(First_Executable "${MySQL_Dir}/bin/mysqld_safe")
     fi
+
+    if [ -z "${db_client}" ] || [ -z "${db_safe}" ] || [ ! -s /etc/my.cnf ]; then
+        Echo_Red "错误：${db_name} 安装失败。"
+        return 1
+    fi
+    MySQL_Bin="${db_client}"
+
+    # 客户端和配置齐全不代表服务起得来，因此确认服务在跑并能执行一次查询。
+    if ! Service_Running "${DB_Service}"; then
+        Echo_Red "错误：${db_name} 未在运行，执行 systemctl status ${DB_Service}.service 查看详情。"
+        return 1
+    fi
+    if ! Probe_DB_Select1 "${MySQL_Bin}"; then
+        Echo_Red "错误：${db_name} 在运行，但用 root 执行 SELECT 1 失败。"
+        Echo_Red "排查：${MySQL_Bin} -u root -p -e \"SELECT 1;\""
+        return 1
+    fi
+    Echo_Green "${db_name}：正常"
+    isDB="ok"
+    return 0
 }
 
 Check_PHP_Files()
 {
     isPHP=""
     if [ "${Stack}" = "lnmp" ]; then
-        if [[ -s /usr/local/php/sbin/php-fpm && -s /usr/local/php/etc/php.ini && -s /usr/local/php/bin/php ]]; then
-            Echo_Green "PHP：正常"
-            Echo_Green "PHP-FPM：正常"
-            isPHP="ok"
-        else
+        if [[ ! -s /usr/local/php/sbin/php-fpm || ! -s /usr/local/php/etc/php.ini || ! -s /usr/local/php/bin/php ]]; then
             Echo_Red "错误：PHP 安装失败。"
+            return 1
         fi
-    else
-        if [[ -s /usr/local/php/bin/php && -s /usr/local/php/etc/php.ini ]]; then
-            Echo_Green "PHP：正常"
-            isPHP="ok"
-        else
-            Echo_Red "错误：PHP 安装失败。"
+        if ! Service_Running php-fpm; then
+            Echo_Red "错误：PHP-FPM 未在运行，执行 systemctl status php-fpm.service 查看详情。"
+            return 1
         fi
+        if ! Probe_Fpm_Socket; then
+            Echo_Red "错误：PHP-FPM 在运行，但 /run/php-fpm/php-cgi.sock 不可连接。"
+            return 1
+        fi
+        Echo_Green "PHP：正常"
+        Echo_Green "PHP-FPM：正常"
+        isPHP="ok"
+        return 0
     fi
+
+    if [[ ! -s /usr/local/php/bin/php || ! -s /usr/local/php/etc/php.ini ]]; then
+        Echo_Red "错误：PHP 安装失败。"
+        return 1
+    fi
+    Echo_Green "PHP：正常"
+    isPHP="ok"
+    return 0
 }
 
 Check_Apache_Files()
 {
     isApache=""
-    if [[ -s /usr/local/apache/bin/httpd && -s /usr/local/apache/modules/${PHP_Apache_Module} && -s /usr/local/apache/conf/httpd.conf ]]; then
-        Echo_Green "Apache：正常"
-        isApache="ok"
-    else
+    if [[ ! -s /usr/local/apache/bin/httpd || ! -s /usr/local/apache/modules/${PHP_Apache_Module} || ! -s /usr/local/apache/conf/httpd.conf ]]; then
         Echo_Red "错误：Apache 安装失败。"
+        return 1
     fi
+    if ! /usr/local/apache/bin/httpd -t >/dev/null 2>&1; then
+        Echo_Red "错误：Apache 配置检查未通过，执行 /usr/local/apache/bin/httpd -t 查看详情。"
+        return 1
+    fi
+    if ! Check_Apache_MPM_For_ModPHP; then
+        return 1
+    fi
+    if ! Service_Running httpd; then
+        Echo_Red "错误：Apache 未在运行，执行 systemctl status httpd.service 查看详情。"
+        return 1
+    fi
+    # LNMPA 里 Apache 在 Nginx 之后，监听 127.0.0.1:88。
+    if [ "${Stack}" = "lamp" ] && ! Probe_Http_Local 80; then
+        Echo_Red "错误：Apache 在运行，但 127.0.0.1:80 没有按 HTTP 协议应答。"
+        return 1
+    fi
+    if [ "${Stack}" = "lnmpa" ] && ! Probe_Http_Local 88; then
+        Echo_Red "错误：Apache 在运行，但 127.0.0.1:88 没有按 HTTP 协议应答。"
+        Echo_Red "Nginx 会把 PHP 请求转到该端口，此时全站 PHP 不可用。"
+        return 1
+    fi
+    Echo_Green "Apache：正常"
+    isApache="ok"
+    return 0
 }
 
 Clean_DB_Src_Dir()

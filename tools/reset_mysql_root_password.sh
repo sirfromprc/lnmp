@@ -162,9 +162,22 @@ Init_Sql="${Work_Dir}/reset.sql"
 Tmp_Sock="${Work_Dir}/reset.sock"
 Tmp_Pid="${Work_Dir}/reset.pid"
 Tmp_Log="${Work_Dir}/reset.log"
-cat > "${Init_Sql}" <<EOF
+# init-file 里语句失败只写服务器错误日志，实例照常运行，因此给临时实例一份
+# 私有错误日志，不去猜 my.cnf 里 log_error 的位置。
+Tmp_Err="${Work_Dir}/error.log"
+# MariaDB 的 root@localhost 通常同时启用 mysql_native_password 和 unix_socket，
+# 后者是 lnmp backup 等本机工具免密连接的依据。ALTER USER ... IDENTIFIED BY 会整体
+# 替换认证方式并丢掉 unix_socket，重置后这些工具会失效；SET PASSWORD 只改口令，
+# 保留其余认证方式。MySQL 没有这一机制，仍用 ALTER USER。
+if [ "${DB_Kind}" = 'mariadb' ]; then
+    cat > "${Init_Sql}" <<EOF
+SET PASSWORD FOR 'root'@'localhost' = PASSWORD('${Sql_Escaped_Password}');
+EOF
+else
+    cat > "${Init_Sql}" <<EOF
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${Sql_Escaped_Password}';
 EOF
+fi
 chmod 600 "${Init_Sql}"
 
 # mysqld 使用数据库服务账号运行，该账号需要读取 init-file 并写入工作目录。
@@ -207,6 +220,7 @@ echo "正在启动临时 ${DB_Name} 实例（仅使用 init-file 和本地 socke
     --skip-networking \
     --socket="${Tmp_Sock}" \
     --pid-file="${Tmp_Pid}" \
+    --log-error="${Tmp_Err}" \
     >"${Tmp_Log}" 2>&1 &
 
 # 通过 ping 轮询临时实例，最长等待 120 秒。
@@ -224,7 +238,7 @@ done
 if [ "${Ready}" != 'y' ]; then
     echo "错误：临时实例未能在 120 秒内就绪，密码未修改。"
     echo "启动日志："
-    sed 's/^/    /' "${Tmp_Log}" 2>/dev/null | tail -n 30
+    cat "${Tmp_Log}" "${Tmp_Err}" 2>/dev/null | sed 's/^/    /' | tail -n 30
     pkill -F "${Tmp_Pid}" >/dev/null 2>&1
     /etc/init.d/${DB_Name} start >/dev/null 2>&1
     exit 1
@@ -236,6 +250,57 @@ if [ ! -s "${Tmp_Pid}" ]; then
     exit 1
 fi
 Tmp_Mysqld_Pid=$(cat "${Tmp_Pid}")
+
+# --- 确认 init-file 里的语句真的执行成功 ---------------------------------
+#
+# init-file 里的单条 SQL 失败只会以 `ERROR: <错误号> <消息>` 写进服务器错误日志，
+# 实例照常启动并响应无需认证的 ping。密码策略拒绝、root@localhost 不存在或认证
+# 方式不兼容都属于这一类，只看 ping 会把它们当成重置成功。
+#
+# 后面的带密码连接是补充检查，不能单独作为判据：MariaDB 的 root@localhost 通常
+# 同时启用 unix_socket，本脚本以 OS root 运行，即使口令没改也能连上。
+Auth_File="${Work_Dir}/auth.cnf"
+( umask 077; cat > "${Auth_File}" <<EOF
+[client]
+user=root
+password='${Sql_Escaped_Password}'
+protocol=socket
+socket=${Tmp_Sock}
+EOF
+) || exit 1
+chmod 600 "${Auth_File}"
+
+Reset_Failed()
+{
+    echo "错误：${1:-新密码无法登录临时实例}，root 密码未被重置。"
+    echo "临时实例的错误日志（含密码的行已整行丢弃）："
+    # 密码可能含正则元字符，不做替换，直接丢掉可能带出密码的整行。
+    grep -Ei 'error|warning|denied' "${Tmp_Err}" "${Tmp_Log}" 2>/dev/null \
+        | grep -F -v -e "${DB_Root_Password}" -e "${Sql_Escaped_Password}" \
+        | tail -n 20 | sed 's/^/    /'
+    echo "常见原因：密码不满足服务器的密码强度策略，或 root@localhost 已被改名、删除、"
+    echo "          改用与本次重置语句不兼容的认证方式。"
+    kill -TERM "${Tmp_Mysqld_Pid}" 2>/dev/null
+    Waited=0
+    while kill -0 "${Tmp_Mysqld_Pid}" 2>/dev/null && [ ${Waited} -lt 60 ]; do
+        sleep 2
+        Waited=$((Waited + 2))
+    done
+    echo "正在恢复 ${DB_Name} 服务..."
+    /etc/init.d/${DB_Name} start >/dev/null 2>&1
+    exit 1
+}
+
+# init-file 的语句错误以顶格的 `ERROR: <错误号>` 记录，与其它日志行格式不同。
+if grep -qE '^ERROR: [0-9]+' "${Tmp_Err}" 2>/dev/null; then
+    Reset_Failed "init-file 里的重置语句执行失败"
+fi
+
+if ! "${DB_Client}" --defaults-file="${Auth_File}" -e "SELECT 1;" >/dev/null 2>&1; then
+    Reset_Failed "新密码无法登录临时实例"
+fi
+rm -f "${Auth_File}"
+echo "重置语句执行成功，新密码已通过临时实例的连接验证。"
 
 # --- 关闭临时实例并恢复正常服务 -----------------------------------------
 echo "正在关闭临时实例..."
