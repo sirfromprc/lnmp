@@ -3272,6 +3272,17 @@ echo -e 'stats settings\r' | nc 127.0.0.1 11211 | grep -E 'maxbytes|maxconns'
 改端口后无须另行配置；但和 Redis 一样，nftables 里阻断的仍是旧端口号，
 改完重启服务后要执行 `lnmp fw sync`。
 
+**PHP 扩展二选一。** `addons.sh install memcached` 在按键确认前先让你选 PHP 侧扩展，
+**回车与无效输入都取默认的 php-memcached**。两者 API 不兼容，按站点代码用的类名选：
+
+| 输入 | 扩展 | PHP 类 | 上游状态 | 安装代价 |
+|---|---|---|---|---|
+| `1` | php-memcache | `Memcache` | PECL 停在 8.2（2023-04-30），PHP 8.5 靠随包补丁编译 | 只编译扩展本身 |
+| `2`（默认） | php-memcached | `Memcached` | 仍在发版 | 另装 SASL 开发包并编译 libmemcached，耗时更长 |
+
+一次只装一个，`005-memcached.ini` 里只写选中的那个；改用另一个重跑本命令即可。
+测试页 `memcached.php` 随选项切换，需 `Enable_Memcached_Test_Page='y'` 才部署。
+
 重跑 `addons.sh install memcached` 是**重新编译安装**：先停服务，把现有
 `/etc/init.d/memcached` 备份为 `memcached.bak.<时间戳>`，再按随包模板重建并写入
 `lnmp.conf` 的 `Memcached_Port`，阻断规则同步迁移，最后 `restart` 服务。

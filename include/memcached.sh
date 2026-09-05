@@ -169,6 +169,10 @@ Print_Memcached_Install_Summary()
 {
     Echo_Yellow "=========================================================================="
     echo "服务端：${Memcached_Ver}"
+    echo "PHP 扩展：${PHP_ZTS%.so}"
+    if [ "${PHP_ZTS}" = "memcached.so" ]; then
+        Echo_Yellow "php-memcached 另需安装 SASL 开发包并编译 ${Libmemcached_Ver} ，耗时长于 php-memcache 。"
+    fi
     echo "监听端口（写入 /etc/init.d/memcached 的 PORT）：${Memcached_Port}"
     echo "监听地址：127.0.0.1，防火墙同时阻断该端口的 TCP 与 UDP 公网访问"
     echo "自测页（Enable_Memcached_Test_Page）：${Enable_Memcached_Test_Page}"
@@ -254,22 +258,25 @@ Prepare_Memcached_Rebuild()
 
 Install_Memcached()
 {
-    ver="1"
+    # ver 同时决定扩展分支和测试页文件名 conf/memcached${ver}.php，编号不可调换。
+    local ver
     echo "请选择要安装的 Memcached PHP 扩展："
-    echo "1：安装 php-memcache"
-    echo "2：安装 php-memcached"
-    read -p "请输入 1 或 2 [默认 1]：" ver
+    echo "1：安装 php-memcache （上游 2023-04-30 后停更， PHP 8.5 需本地补丁）"
+    echo "2：安装 php-memcached （上游活跃，安装时另需编译 libmemcached ）"
+    echo "两者 API 不兼容：php-memcache 用 Memcache 类， php-memcached 用 Memcached 类。"
+    echo "已有站点代码用哪个类，就选哪个。"
+    read -p "请输入 1 或 2 [默认 2]：" ver
 
     if [ "${ver}" = "1" ]; then
-        echo "已选择 php-memcache。"
+        echo "已选择 php-memcache 。"
         PHP_ZTS="memcache.so"
     elif [ "${ver}" = "2" ]; then
-        echo "已选择 php-memcached。"
+        echo "已选择 php-memcached 。"
         PHP_ZTS="memcached.so"
     else
-        ver="1"
-        echo "未输入或输入无效，使用默认项 php-memcache。"
-        PHP_ZTS="memcache.so"
+        ver="2"
+        echo "未输入或输入无效，使用默认项 php-memcached 。"
+        PHP_ZTS="memcached.so"
     fi
 
     echo "====== 正在安装 Memcached ======"
