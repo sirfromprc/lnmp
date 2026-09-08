@@ -15,9 +15,9 @@ cd "$(dirname "$0")/.." || exit 1
 . include/version.sh
 
 # profile.sh 里的版本由菜单选择填充，这里直接取表中全部取值逐一探测。
-MYSQL_VERS='8.0.46 8.4.7'
-MARIADB_VERS='10.11.18 11.4.12 11.8.8'
-PHP_VERS='8.0.30 8.1.34 8.2.33 8.3.33 8.4.24 8.5.9'
+MYSQL_VERS='8.0.46 8.4.10'
+MARIADB_VERS='10.11.19 11.4.13 11.8.9'
+PHP_VERS='8.0.30 8.1.34 8.2.33 8.3.33 8.4.25 8.5.10'
 APACHE_VER='httpd-2.4.68'
 PMA_VER='phpMyAdmin-5.2.3-all-languages'
 
@@ -111,7 +111,7 @@ for v in ${MYSQL_VERS}; do
     probe_mysql mysql源码 "${branch}" "mysql-${v}.tar.gz"
 done
 probe_mysql mysql二进制 8.0 mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz
-probe_mysql mysql二进制 8.4 mysql-8.4.7-linux-glibc2.17-x86_64.tar.xz
+probe_mysql mysql二进制 8.4 mysql-8.4.10-linux-glibc2.17-x86_64.tar.xz
 
 echo
 echo "=== MariaDB（源码 + 二进制）==="
