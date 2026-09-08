@@ -10,11 +10,7 @@ name: CI
 
 on:
   push:
-    branches:
-      # 主开发分支按产品版本命名（v2.3、v2.4），不写死具体版本。
-      - 'v[0-9]+.[0-9]+'
-      - main
-      - master
+    branches: [ main, master ]
   pull_request:
   workflow_dispatch:
 
