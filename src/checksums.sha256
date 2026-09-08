@@ -5,14 +5,14 @@
 98e0a08a0fae37d08dfcca2f5ff6664863097dde4b1d360af2acc8c3542f2a0f  php-8.1.34.tar.bz2
 5362f2a7a0e7168ce722fea0048b1a1d28e0f7cc265c417df670c65670695018  php-8.2.33.tar.bz2
 f9c9f4d0cd7692c6e3da363cd4ca72a826a49ae18f5ed430b6fcae7bc2881e18  php-8.3.33.tar.bz2
-286890447588510df110ede9e9ce09f1eb4f9856630b47fdc40ece70e20373cf  php-8.4.24.tar.bz2
-703c082ad9d2946ac647f3596812300d2c62b360d2f31a999021692a9b39476c  php-8.5.9.tar.bz2
+952ccc1785266b958f4a1dcfc580e08eabbb79f44222d1eff192bcd98d91f6e3  php-8.4.25.tar.bz2
+d79bd4f3a9248e5cb5833766ba0d51cd35dd01b8727f23f30bcdba6fabc51d3e  php-8.5.10.tar.bz2
 
 # ---------------------------------------------------------------------------
 # nginx 与其编译依赖
 # ---------------------------------------------------------------------------
 4261dc90e9e47c1c4041276e9aaa3d48ebe2e664f728e14fa95ae6c67d57a08b  nginx-1.30.4.tar.gz
-a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8  openssl-3.5.7.tar.gz
+a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2  openssl-3.5.8.tar.gz
 4dae6fdcd2bb0bb6c37b5f97c33c2be954da743985369cddac3546e3218bffb8  pcre-8.45.tar.bz2
 e05cb1388eaca3830aded4ccf20044b6e1ac1a61411dcca11b0437c4285c8bc2  nghttp2-1.70.0.tar.xz
 
@@ -51,18 +51,18 @@ ecc80b91bfb4f795b8a80acfa69e1778288ef60649ddd87f30a9c4a57ac5da79  lua-resty-dns-
 # ---------------------------------------------------------------------------
 e0d1a98ae5188c6a4efed74c74ff28115d4b791bc9d591a78e14d20aded67344  mysql-8.0.46.tar.gz
 0fcdb2e88b5bb151118420745070a34621463dd85a50e1eacd7c3aa1b9d1f4a2  mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz
-c0bf33a94cdb908f149aea0797affb1b139262ccf0e0b9787a17246207542e69  mysql-8.4.7.tar.gz
-6386faf7301f3d84fb3fd3e11c87e1759a8868378a08c57aa4414703fa281d1f  mysql-8.4.7-linux-glibc2.17-x86_64.tar.xz
+d57a6730baef14ae118f7f4a6e02845b5b50933758df61fb06e104f27ccc8f96  mysql-8.4.10.tar.gz
+972c1b2b18eb3bf2a8b1fb3df1fa569734ff1bb6d2272d412c3bcf987fe9d502  mysql-8.4.10-linux-glibc2.17-x86_64.tar.xz
 
 # ---------------------------------------------------------------------------
 # MariaDB（源码 + 通用二进制）
 # ---------------------------------------------------------------------------
-a46852c68075be7c31c7b33fee233c5b5a00c8c28117f5204d124e4f2fd56fa8  mariadb-10.11.18.tar.gz
-6766e45500266d8fba2253fcf99da5aad0338cba4bf1f13a0ee03da5407b3d71  mariadb-10.11.18-linux-systemd-x86_64.tar.gz
-5ab7883db519bfcebfdd2aac09bc5544a12ce328f39edd46d0bf01690615ef6c  mariadb-11.4.12.tar.gz
-afb81282f977c599ecbb0390588b0005b304b4e87d64615a2649ecd2bd1dc16f  mariadb-11.4.12-linux-systemd-x86_64.tar.gz
-bd023a4959faf012db7f0ebfc0d276729e67e5443df193163f98d80fdfc524c9  mariadb-11.8.8.tar.gz
-fbd4e8d05946c974b0560c94f01ce4c687291b6528074c2e001fb8f35c0d2762  mariadb-11.8.8-linux-systemd-x86_64.tar.gz
+b8e543ee69d380fb1cfd563226f49e0fe96e4d67e7b7a9045ee514a168ed2066  mariadb-10.11.19.tar.gz
+7efb257927f31f4422f496246b32590d0b7617f3d9dd900e575de761b302d919  mariadb-10.11.19-linux-systemd-x86_64.tar.gz
+1bb254b106d0a7ca871cfa18fa6e18d4b80a7430f9ec9d1571ec4271a13def96  mariadb-11.4.13.tar.gz
+3cebf63914df3154b7cb6d548337eb2be42c773aeb641110446b72e2746cfed7  mariadb-11.4.13-linux-systemd-x86_64.tar.gz
+2e015b7e91004142eda8b3a20d3ceb875cf2ae55e72603e7222cd497d4e56fc6  mariadb-11.8.9.tar.gz
+32f8871a2aa38b36aa418b7f4abc6fc0c6ef1ba5a45798cacb2afa52c8a6113b  mariadb-11.8.9-linux-systemd-x86_64.tar.gz
 fc9f85fc030e233142908241af7a846e60630aa7388de9a5fafb1f3a26840854  boost_1_77_0.tar.bz2
 cc4b893acf645c9d4b698e9a0f08ca8846aa5d6c68275c14c3e7949c24109454  boost_1_84_0.tar.bz2
 
@@ -86,7 +86,7 @@ cc4b893acf645c9d4b698e9a0f08ca8846aa5d6c68275c14c3e7949c24109454  boost_1_84_0.t
 # 内存分配器（可选：SelectMalloc=2 用 jemalloc，=3 用 tcmalloc）
 # ---------------------------------------------------------------------------
 3826bc80232f22ed5c4662f3034f799ca316e819103bdc7bb99018a421706f92  jemalloc-5.3.1.tar.bz2
-d18d919175f9e4d740ace6b52f0f4f91284160c454e91b36ffd6456282a02206  gperftools-2.18.1.tar.gz
+2a28d54af7303f56583c051efd6e011b75a109262d0c763a2a242dff94eb59b2  gperftools-2.18.90.tar.gz
 be30d910e67f58d82e753231f1357f326a1a088acf126b21ff77e60aab19b90b  libunwind-1.8.3.tar.gz
 
 # ---------------------------------------------------------------------------
@@ -105,10 +105,10 @@ c163434eb0da97c8f45c7ad41d979d381f8b81c49402b1b90b063987fb37972e  memcached-3.4.
 # ---------------------------------------------------------------------------
 # 缓存与其他服务
 # ---------------------------------------------------------------------------
-f1baa4b28befd417aa6577ebeedde9e9fc7814cfcc299b2a6d2fd99ef7420a6c  redis-8.10.0.tar.gz
-23e5507e933b15463161d4c5d3921b0c5f340b542d6edd7f6c5e17c34f11a363  memcached-1.6.39.tar.gz
+60166c95ab7aedaa9dfe516de685be0a4dd87be95ded59ba429df14c13f1b663  redis-8.10.1.tar.gz
+d362c64e6d8d5287153501eabf7c85b4a761432fbf53f5d7b085d0bb1653c1dd  memcached-1.6.45.tar.gz
 e22c0bb032fde08f53de9ffbc5a128233041d9f33b5de022c0978a2149885f82  libmemcached-1.0.18.tar.gz
-b05924ad73c6932ba62c9b32f338f0619b90b767162c8b767f3566556187a284  ImageMagick-7.1.2-29.tar.gz
+34d9cc3acddc3e3c429d23af60eda5ceaac477a8b296ddb9469f773f44a80a5f  ImageMagick-7.1.2-31.tar.gz
 # ionCube 当前未接入安装流程。重新启用前需分别补齐并校验各架构文件，
 # x86-64 的哈希不能用于 x86、armv7l 或 aarch64。
 c2bef41f9635c3a87efd65f089c16ca5df9fd02db199d9fdcf12b206b93d41a6  pure-ftpd-1.0.54.tar.bz2

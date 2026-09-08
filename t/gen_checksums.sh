@@ -200,20 +200,20 @@ grab "https://libzip.org/download/${Libzip_Ver}.tar.xz" "${Libzip_Ver}.tar.xz"
 
 echo
 echo "# --- PHP（php.net 官方 releases API 有公布 sha256，逐个交叉核对）---"
-for v in 8.0.30 8.1.34 8.2.33 8.3.33 8.4.24 8.5.9; do
+for v in 8.0.30 8.1.34 8.2.33 8.3.33 8.4.25 8.5.10; do
     grab_upstream php "${v}" "https://www.php.net/distributions/php-${v}.tar.bz2" "php-${v}.tar.bz2"
 done
 
 echo
 echo "# --- MySQL ---"
 grab_mysql 8.0 mysql-8.0.46.tar.gz
-grab_mysql 8.4 mysql-8.4.7.tar.gz
+grab_mysql 8.4 mysql-8.4.10.tar.gz
 grab_mysql 8.0 mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz
-grab_mysql 8.4 mysql-8.4.7-linux-glibc2.17-x86_64.tar.xz
+grab_mysql 8.4 mysql-8.4.10-linux-glibc2.17-x86_64.tar.xz
 
 echo
 echo "# --- MariaDB ---"
-for v in 10.11.18 11.4.12 11.8.8; do
+for v in 10.11.19 11.4.13 11.8.9; do
     grab_upstream mariadb "${v}" \
         "https://downloads.mariadb.org/rest-api/mariadb/${v}/mariadb-${v}.tar.gz" \
         "mariadb-${v}.tar.gz"
