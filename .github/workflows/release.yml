@@ -212,6 +212,8 @@ jobs:
           STAMP: ${{ steps.ver.outputs.stamp }}
           REPO: ${{ github.repository }}
           LEVEL: ${{ inputs.level || 'full' }}
+          # 升级分支的编译验证在上游版本检查里完成，固定 full。
+          AUTO_LEVEL: full
           BASE_DIR: .
           BASE_PKG: ${{ steps.ver.outputs.base_pkg }}
           # 没有升级分支时这三项为空，说明里只描述主分支的包。

@@ -6,10 +6,14 @@
 #   PRODUCT      产品版本，如 v2.3
 #   STAMP        发布日期标识，如 20260908
 #   REPO         owner/repo，用于给出构建证明的验证命令
-#   LEVEL        发布前的编译验证深度，full 或 quick
+#   LEVEL        主分支包的编译验证深度，full 或 quick
+#   AUTO_LEVEL   升级包的编译验证深度，默认 full；该验证在上游版本检查里完成
 #   BASE_DIR     主分支源码目录，BASE_PKG 为其包名
 #   AUTO_DIR     升级分支源码目录，AUTO_PKG 为其包名，AUTO_BRANCH 为分支名
 #                三者留空表示本次没有升级分支，只发主分支的包
+#
+# 两个包的验证深度可以不同：升级包的组件版本是新的，必须过 full；主分支包的组件版本
+# 上次发布已验过，自动发布时只做 Lua 冒烟。说明里按包分别写清楚。
 #
 # 说明的首要职责是让使用者分清两个包：不带日期的是非自动升级包。
 
@@ -19,6 +23,7 @@ Product="${PRODUCT:-}"
 Stamp="${STAMP:-}"
 Repo="${REPO:-}"
 Level="${LEVEL:-full}"
+Auto_Level="${AUTO_LEVEL:-full}"
 Base_Dir="${BASE_DIR:-.}"
 Base_Pkg="${BASE_PKG:-}"
 Auto_Dir="${AUTO_DIR:-}"
@@ -131,15 +136,30 @@ echo "具体版本见包内 \`include/profile.sh\`。"
 echo
 echo "## 发布前已通过"
 echo
-echo "- 静态检查：\`t/lint.sh\`、\`t/consistency.sh\`、编号映射与派发自测"
+echo "两个包共同的静态检查："
+echo
+echo "- \`t/lint.sh\`、\`t/consistency.sh\`、编号映射与派发自测"
 echo "- 升版跨文件同步自测：\`t/test_bump.sh\`"
-echo "- 真编译：Lua 全家桶（编译 + 启动 + 真发请求）"
+echo
+echo "\`${Base_Pkg}.tar.gz\` 的编译验证："
+echo
+echo "- Lua 全家桶（编译 + 启动 + 真发请求）"
 if [ "${Level}" = 'full' ]; then
-    echo "- 真编译：nginx 全模块（含自建 OpenSSL 与 brotli）、PHP 默认分支"
+    echo "- nginx 全模块（含自建 OpenSSL 与 brotli）、PHP 默认分支"
+else
+    echo "- 组件版本与上一次发布相同，nginx 与 PHP 的完整编译在当时已经通过"
 fi
+
 if [ "${Has_Auto}" -eq 1 ]; then
-    echo "- 升级包：上游版本检查流程中已完成 URL 可达性探测与 Lua 全家桶真编译，"
-    echo "  发布前再次回检跨文件一致性与编号映射"
+    echo
+    echo "\`${Auto_Pkg}.tar.gz\` 的编译验证（在上游版本检查流程中完成）："
+    echo
+    echo "- Lua 全家桶（编译 + 启动 + 真发请求）"
+    if [ "${Auto_Level}" = 'full' ]; then
+        echo "- nginx 全模块（含自建 OpenSSL 与 brotli）、PHP 默认分支"
+    fi
+    echo "- 新版本下载地址可达性探测"
+    echo "- 发布前再次回检跨文件一致性与编号映射"
 fi
 echo
 echo "## 校验"
