@@ -46,10 +46,10 @@ expect_db()
 }
 
 expect_db 1 mysql   mysql-8.0.46     Install_MySQL_80     /usr/local/mysql
-expect_db 2 mysql   mysql-8.4.7      Install_MySQL_84     /usr/local/mysql
-expect_db 3 mariadb mariadb-10.11.18 Install_MariaDB_1011 /usr/local/mariadb
-expect_db 4 mariadb mariadb-11.4.12  Install_MariaDB_114  /usr/local/mariadb
-expect_db 5 mariadb mariadb-11.8.8   Install_MariaDB_118  /usr/local/mariadb
+expect_db 2 mysql   mysql-8.4.10      Install_MySQL_84     /usr/local/mysql
+expect_db 3 mariadb mariadb-10.11.19 Install_MariaDB_1011 /usr/local/mariadb
+expect_db 4 mariadb mariadb-11.4.13  Install_MariaDB_114  /usr/local/mariadb
+expect_db 5 mariadb mariadb-11.8.9   Install_MariaDB_118  /usr/local/mariadb
 
 Set_DB_Profile 0
 check "db0.kind" "none" "${DB_Kind}"
@@ -74,8 +74,8 @@ expect_php 1 8.0 php-8.0.30 Install_PHP_80 libphp.so
 expect_php 2 8.1 php-8.1.34 Install_PHP_81 libphp.so
 expect_php 3 8.2 php-8.2.33 Install_PHP_82 libphp.so
 expect_php 4 8.3 php-8.3.33 Install_PHP_83 libphp.so
-expect_php 5 8.4 php-8.4.24 Install_PHP_84 libphp.so
-expect_php 6 8.5 php-8.5.9  Install_PHP_85 libphp.so
+expect_php 5 8.4 php-8.4.25 Install_PHP_84 libphp.so
+expect_php 6 8.5 php-8.5.10  Install_PHP_85 libphp.so
 
 echo
 echo "=== Apache 映射 ==="

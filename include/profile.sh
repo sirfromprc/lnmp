@@ -5,8 +5,8 @@
 
 # 菜单显示文本。下标 0-based，菜单编号 1-based，二者相差 1。
 # 数组长度不匹配时立即停止，避免菜单显示空版本。
-DB_Info=('MySQL 8.0.46' 'MySQL 8.4.7 LTS' 'MariaDB 10.11.18' 'MariaDB 11.4.12 LTS' 'MariaDB 11.8.8 LTS')
-PHP_Info=('PHP 8.0.30' 'PHP 8.1.34' 'PHP 8.2.33' 'PHP 8.3.33' 'PHP 8.4.24' 'PHP 8.5.9')
+DB_Info=('MySQL 8.0.46' 'MySQL 8.4.10 LTS' 'MariaDB 10.11.19' 'MariaDB 11.4.13 LTS' 'MariaDB 11.8.9 LTS')
+PHP_Info=('PHP 8.0.30' 'PHP 8.1.34' 'PHP 8.2.33' 'PHP 8.3.33' 'PHP 8.4.25' 'PHP 8.5.10')
 Apache_Info=('Apache 2.4.68')
 
 DB_Count=5
@@ -33,17 +33,17 @@ Set_DB_Profile()
         DB_Install='Install_MySQL_80'     DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Bin_Glibc='2.28' DB_Needs_Boost='y' DB_Boost_Mode='auto'
         DB_Min_Mem_MB=1024 DB_Note=' (EOL 2026-04)' ;;
-    2)  DB_Kind='mysql'   DB_Branch='8.4'   DB_Ver='mysql-8.4.7'
+    2)  DB_Kind='mysql'   DB_Branch='8.4'   DB_Ver='mysql-8.4.10'
         DB_Install='Install_MySQL_84'     DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Bin_Glibc='2.17' DB_Needs_Boost='y' DB_Boost_Mode='auto'
         DB_Min_Mem_MB=1024 ;;
-    3)  DB_Kind='mariadb' DB_Branch='10.11' DB_Ver='mariadb-10.11.18'
+    3)  DB_Kind='mariadb' DB_Branch='10.11' DB_Ver='mariadb-10.11.19'
         DB_Install='Install_MariaDB_1011' DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Min_Mem_MB=1024 ;;
-    4)  DB_Kind='mariadb' DB_Branch='11.4'  DB_Ver='mariadb-11.4.12'
+    4)  DB_Kind='mariadb' DB_Branch='11.4'  DB_Ver='mariadb-11.4.13'
         DB_Install='Install_MariaDB_114'  DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Min_Mem_MB=1024 ;;
-    5)  DB_Kind='mariadb' DB_Branch='11.8'  DB_Ver='mariadb-11.8.8'
+    5)  DB_Kind='mariadb' DB_Branch='11.8'  DB_Ver='mariadb-11.8.9'
         DB_Install='Install_MariaDB_118'  DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Min_Mem_MB=1024 ;;
     0)  DB_Kind='none' ;;
@@ -102,8 +102,8 @@ Set_PHP_Profile()
     2)  PHP_Branch='8.1' Php_Ver='php-8.1.34' PHP_Install='Install_PHP_81' ;;
     3)  PHP_Branch='8.2' Php_Ver='php-8.2.33' PHP_Install='Install_PHP_82' ;;
     4)  PHP_Branch='8.3' Php_Ver='php-8.3.33' PHP_Install='Install_PHP_83' ;;
-    5)  PHP_Branch='8.4' Php_Ver='php-8.4.24' PHP_Install='Install_PHP_84' ;;
-    6)  PHP_Branch='8.5' Php_Ver='php-8.5.9'  PHP_Install='Install_PHP_85' ;;
+    5)  PHP_Branch='8.4' Php_Ver='php-8.4.25' PHP_Install='Install_PHP_84' ;;
+    6)  PHP_Branch='8.5' Php_Ver='php-8.5.10'  PHP_Install='Install_PHP_85' ;;
     *)  Legacy_Selection_Hint PHP "$1"
         return 1 ;;
     esac
