@@ -1,0 +1,130 @@
+# 手动把自动升级分支的组件版本并入主分支。
+#
+# 自动升级平时只留在 auto-<日期> 分支上，不进主分支。确认某一轮升级可用之后，
+# 用这个工作流把版本相关文件同步过来，主分支下一次发布的包才会带上新组件版本。
+#
+# 同步范围只有版本与校验相关的 6 个文件，不会带入升级分支上的其它改动。
+
+name: 同步组件版本到主分支
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: '要同步的升级分支，留空取日期最新的一个'
+        type: string
+        default: ''
+      dry_run:
+        description: '只看 diff，不提交'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-versions
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: 同步并回检
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: 确定升级分支
+        id: pick
+        env:
+          WANT: ${{ inputs.branch }}
+        run: |
+          set -e
+          git fetch --quiet origin '+refs/heads/auto-*:refs/remotes/origin/auto-*' 2>/dev/null || true
+
+          if [ -n "${WANT}" ]; then
+            case "${WANT}" in
+              auto-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+              *)
+                echo "错误：${WANT} 不是 auto-<8 位日期> 形式。" >&2
+                exit 1
+                ;;
+            esac
+            if ! git rev-parse --verify --quiet "origin/${WANT}" >/dev/null; then
+              echo "错误：分支 ${WANT} 不存在。" >&2
+              exit 1
+            fi
+            branch="${WANT}"
+          else
+            branch=$(git for-each-ref --format='%(refname:strip=3)' 'refs/remotes/origin/auto-*' \
+                       | grep -E '^auto-[0-9]{8}$' | sort | tail -1 || true)
+            if [ -z "${branch}" ]; then
+              echo "错误：没有 auto-<日期> 分支可同步。" >&2
+              exit 1
+            fi
+          fi
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          echo "同步来源：${branch}"
+
+      - name: 取版本相关文件
+        env:
+          BRANCH: ${{ steps.pick.outputs.branch }}
+        run: |
+          set -e
+          git checkout "origin/${BRANCH}" -- \
+              include/version.sh include/profile.sh src/checksums.sha256 \
+              t/probe_urls.sh t/gen_checksums.sh t/test_profile.sh
+          echo "--- 与当前主分支的差异 ---"
+          git --no-pager diff --cached --stat
+
+      - name: 回检
+        run: |
+          set -e
+          bash t/consistency.sh
+          bash t/test_profile.sh
+          # 版本号进主分支后安装流程就会用它下载，地址必须先确认可达。
+          bash t/probe_urls.sh
+
+      - name: 提交并推送
+        if: ${{ !inputs.dry_run }}
+        env:
+          BRANCH: ${{ steps.pick.outputs.branch }}
+          BASE: ${{ github.ref_name }}
+        run: |
+          set -e
+          if git diff --cached --quiet; then
+            echo "主分支的组件版本已与 ${BRANCH} 一致，无需提交。"
+            exit 0
+          fi
+
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git commit -F - <<EOF
+          chore(deps): 同步 ${BRANCH} 的组件版本
+
+          由 .github/workflows/sync-versions.yml 手动触发。
+          已通过：跨文件一致性、编号映射、URL 可达性。
+          EOF
+
+          # 主分支若开启了保护规则，这一步会被拒绝，需要改用本地合并。
+          git push origin "HEAD:refs/heads/${BASE}"
+          echo "已推送到 ${BASE}。"
+
+      - name: 摘要
+        if: always()
+        env:
+          BRANCH: ${{ steps.pick.outputs.branch }}
+        run: |
+          {
+            echo "### 组件版本同步"
+            echo
+            echo "来源分支：\`${BRANCH}\`"
+            if [ '${{ inputs.dry_run }}' = 'true' ]; then
+              echo
+              echo "本次为 dry run，未提交任何内容。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

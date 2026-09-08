@@ -83,6 +83,19 @@ ss -lntup
 
 ### 2.2 获取发布包
 
+每个 Release 提供两个包，脚本源码相同，差别只在组件版本号：
+
+| 包 | 组件版本 | 适用情况 |
+| --- | --- | --- |
+| `lnmp-v2.3.tar.gz` | 维护者手工确认，**不含自动升级** | 默认选它 |
+| `lnmp-v2.3-<日期>.tar.gz` | 每月自动跟进上游 | 需要更新的组件版本时 |
+
+不带日期的包有固定下载地址，始终指向最新一次发布：
+
+```text
+https://github.com/<owner>/<repo>/releases/latest/download/lnmp-v2.3.tar.gz
+```
+
 从项目 Release 页面下载固定版本并按页面公布的 SHA-256 核对。假设已将下载文件保存为
 `/root/lnmp-v2.3.tar.gz`：
 

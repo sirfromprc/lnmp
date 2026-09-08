@@ -1,20 +1,41 @@
 # 发布流程。编译验证失败时不创建 Release。
 #
-# 关于版本号：产品版本固定为 v2.3，不随发布次数递增。
+# 关于版本号：产品版本取自 install.sh 的 LNMP_Ver，由 t/product_version.sh 提取，
+# 工作流内不硬编码。分支名（v2.3、v2.4）不参与取值。
+# 产品版本不随发布次数递增，日期只用于区分发布批次。
 # git tag 必须唯一；同名 tag 指向不同内容会破坏下载文件的稳定校验。
-# 命名规则：
-#   tag        v2.3-20260908       每次发布唯一
-#   release 名 LNMP v2.3 (2026-09-08)
-#   包名       lnmp-v2.3-20260908.tar.gz
-# 产品版本始终为 v2.3，日期用于区分发布批次。
+#
+# 一次发布产出两个包，同属一个 Release：
+#   tag        v2.3-20260908                每次发布唯一
+#   release 名 LNMP v2.3 (20260908)
+#   包         lnmp-v2.3.tar.gz             主分支，组件版本由维护者手工确认
+#              lnmp-v2.3-20260908.tar.gz    最新 auto-<日期> 分支，含自动升级
+#
+# 两个包分开的原因：主分支的源码改动不会覆盖自动升级过的组件版本，
+# 自动升级也不会把未经确认的组件版本带进主分支。
+# 没有 auto-<日期> 分支时只发主分支那一个包。
+#
+# 固定下载地址（不需要移动 tag）：
+#   /releases/latest/download/lnmp-v2.3.tar.gz
 #
 # 默认生成 GitHub 构建证明（attestation），验证方式：
-#   gh attestation verify lnmp-v2.3-YYYYMMDD.tar.gz --repo <owner>/<repo>
+#   gh attestation verify <包名>.tar.gz --repo <owner>/<repo>
 # 配置 GPG_PRIVATE_KEY / GPG_PASSPHRASE 后额外生成 .asc 分离签名。
 
 name: 发布
 
 on:
+  # upstream-check.yml 完成每月升级后调用，实现自动发布。
+  workflow_call:
+    inputs:
+      level:
+        description: '发布前的编译验证深度'
+        type: string
+        default: full
+      prerelease:
+        description: '标记为预发布'
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       level:
@@ -28,7 +49,8 @@ on:
         default: false
   push:
     tags:
-      - 'v2.3-*'
+      # 产品版本不写死，形如 v2.3-20260908 的 tag 都能触发。
+      - 'v[0-9]+.[0-9]+-*'
 
 permissions:
   contents: read
@@ -74,43 +96,74 @@ jobs:
         id: ver
         run: |
           set -e
-          PRODUCT_VER='v2.3'      # 产品版本固定，不随发布递增
+          # 产品版本取自 install.sh，工作流不硬编码，分支名不参与。
+          PRODUCT_VER="$(bash t/product_version.sh --tag)"
           if [ "${{ github.ref_type }}" = 'tag' ]; then
             TAG="${{ github.ref_name }}"
-            STAMP="${TAG#${PRODUCT_VER}-}"
+            case "${TAG}" in
+              "${PRODUCT_VER}-"*) ;;
+              *)
+                echo "错误：tag ${TAG} 与源码的产品版本 ${PRODUCT_VER} 不符。" >&2
+                exit 1
+                ;;
+            esac
+            STAMP="${TAG#"${PRODUCT_VER}"-}"
           else
             STAMP="$(date -u '+%Y%m%d')"
             TAG="${PRODUCT_VER}-${STAMP}"
           fi
-          PKG="lnmp-${PRODUCT_VER}-${STAMP}"
           {
             echo "product=${PRODUCT_VER}"
             echo "tag=${TAG}"
             echo "stamp=${STAMP}"
-            echo "pkg=${PKG}"
+            echo "base_pkg=lnmp-${PRODUCT_VER}"
+            echo "auto_pkg=lnmp-${PRODUCT_VER}-${STAMP}"
           } >> "$GITHUB_OUTPUT"
           echo "将发布 ${TAG}（产品版本 ${PRODUCT_VER}）"
 
-      - name: 打包
+      - name: 查找最新的自动升级分支
+        id: auto
         run: |
           set -e
-          PKG='${{ steps.ver.outputs.pkg }}'
-          mkdir -p dist "/tmp/${PKG}"
-          # 发布包排除 CI 配置、交接文档、待办清单和本地定向测试。
-          # t/ 保留，其中的下载探测脚本可供使用者排查安装问题。
-          tar --exclude-vcs \
-              --exclude='./.github' \
-              --exclude='./.claude' \
-              --exclude='./.upstream' \
-              --exclude='./dist' \
-              --exclude='./tests' \
-              --exclude='./HANDOVER.md' \
-              --exclude='./todo*.md' \
-              --exclude='./src/*.tar.*' \
-              --exclude='./src/*.tgz' \
-              -cf - . | tar -xf - -C "/tmp/${PKG}"
-          tar -czf "dist/${PKG}.tar.gz" -C /tmp "${PKG}"
-          echo "包大小：$(du -h dist/${PKG}.tar.gz | cut -f1)"
+          git fetch --quiet origin '+refs/heads/auto-*:refs/remotes/origin/auto-*' 2>/dev/null || true
+          branch=$(git for-each-ref --format='%(refname:strip=3)' 'refs/remotes/origin/auto-*' \
+                     | grep -E '^auto-[0-9]{8}$' | sort | tail -1 || true)
+          if [ -z "${branch}" ]; then
+            echo "没有 auto-<日期> 分支，本次只发主分支的包。"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "found=true"            >> "$GITHUB_OUTPUT"
+          echo "branch=${branch}"      >> "$GITHUB_OUTPUT"
+          echo "使用升级分支 ${branch}。"
+
+      # 升级分支的真编译在 upstream-check 里已经做过，这里只回检跨文件一致性，
+      # 防止分支推出后主分支又改了映射导致两边对不上。
+      - name: 回检升级分支
+        if: steps.auto.outputs.found == 'true'
+        env:
+          BRANCH: ${{ steps.auto.outputs.branch }}
+        run: |
+          set -e
+          git worktree add --detach /tmp/autotree "origin/${BRANCH}"
+          cd /tmp/autotree
+          bash t/consistency.sh
+          bash t/test_profile.sh
+          echo "升级分支组件版本："
+          bash t/product_version.sh
+
+      - name: 打包
+        env:
+          BASE_PKG: ${{ steps.ver.outputs.base_pkg }}
+          AUTO_PKG: ${{ steps.ver.outputs.auto_pkg }}
+          FOUND: ${{ steps.auto.outputs.found }}
+        run: |
+          set -e
+          bash t/pack.sh . "${BASE_PKG}" dist
+          if [ "${FOUND}" = 'true' ]; then
+            bash t/pack.sh /tmp/autotree "${AUTO_PKG}" dist
+          fi
+          ls -l dist
 
       - name: 生成校验值
         run: |
@@ -154,46 +207,20 @@ jobs:
 
       - name: 生成发布说明
         id: notes
+        env:
+          PRODUCT: ${{ steps.ver.outputs.product }}
+          STAMP: ${{ steps.ver.outputs.stamp }}
+          REPO: ${{ github.repository }}
+          LEVEL: ${{ inputs.level || 'full' }}
+          BASE_DIR: .
+          BASE_PKG: ${{ steps.ver.outputs.base_pkg }}
+          # 没有升级分支时这三项为空，说明里只描述主分支的包。
+          AUTO_DIR: ${{ steps.auto.outputs.found == 'true' && '/tmp/autotree' || '' }}
+          AUTO_PKG: ${{ steps.auto.outputs.found == 'true' && steps.ver.outputs.auto_pkg || '' }}
+          AUTO_BRANCH: ${{ steps.auto.outputs.branch }}
         run: |
           set -e
-          {
-            echo "本次发布的产品版本仍是 **${{ steps.ver.outputs.product }}**，"
-            echo "\`${{ steps.ver.outputs.stamp }}\` 只是这一次发布的日期标识。"
-            echo
-            echo "### 组件版本"
-            echo
-            echo '| 组件 | 版本 |'
-            echo '| --- | --- |'
-            . include/version.sh
-            echo "| nginx | ${Nginx_Ver#nginx-} |"
-            echo "| OpenSSL | ${Openssl_New_Ver#openssl-} |"
-            echo "| OpenResty（可选） | ${OpenResty_Ver#openresty-} |"
-            echo "| Redis | ${Redis_Stable_Ver#redis-} |"
-            echo "| Memcached | ${Memcached_Ver#memcached-} |"
-            echo "| pure-ftpd | ${Pureftpd_Ver#pure-ftpd-} |"
-            echo "| lua-nginx-module | ${LuaNginxModule#lua-nginx-module-} |"
-            echo "| lua-resty-core | ${LuaRestyCore#lua-resty-core-} |"
-            echo
-            echo "PHP / MySQL / MariaDB / Apache / phpMyAdmin 为菜单可选，"
-            echo "具体版本见 \`include/profile.sh\`。"
-            echo
-            echo "### 发布前已通过"
-            echo
-            echo "- 静态检查：\`t/lint.sh\`、\`t/consistency.sh\`、编号映射与派发自测"
-            echo "- 升版跨文件同步自测：\`t/test_bump.sh\`"
-            echo "- 真编译：Lua 全家桶（编译 + 启动 + 真发请求）"
-            if [ "${{ inputs.level || 'full' }}" = 'full' ]; then
-              echo "- 真编译：nginx 全模块（含自建 OpenSSL 与 brotli）、PHP 默认分支"
-            fi
-            echo
-            echo "### 校验"
-            echo
-            echo '```bash'
-            echo "sha256sum -c SHA256SUMS"
-            echo "# 构建证明（无需导入任何公钥）："
-            echo "gh attestation verify ${{ steps.ver.outputs.pkg }}.tar.gz --repo ${{ github.repository }}"
-            echo '```'
-          } > /tmp/notes.md
+          bash t/release_notes.sh > /tmp/notes.md
           cat /tmp/notes.md
 
       - name: 发布

@@ -286,6 +286,8 @@ Upgrade_PHP_8x()
     # configure 的 iconv 探针要能加载 /usr/local/lib 里的 libiconv.so.2。
     Ensure_Libiconv_Ldpath || exit 1
 
+    # PHP_Common_Configure_Opts 输出的是一整串 configure 参数，必须按空格拆分。
+    # shellcheck disable=SC2046
     if [ "${Stack}" = "lnmp" ]; then
         ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd $(PHP_Common_Configure_Opts)
     else

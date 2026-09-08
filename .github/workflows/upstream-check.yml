@@ -1,10 +1,15 @@
-# 每月 8 日检查上游版本，并为 AUTO 类更新创建 PR。
+# 每月 8 日检查上游版本，把 AUTO 类更新推到 auto-<日期> 分支。
 #
 # 流程：
 #   查上游 → 只应用 AUTO 类 → 重算受影响的 sha256 → 一致性回检
-#   → 探测新 URL 是否可达 → 编译并验证 Lua 运行期 → 开 PR
+#   → 探测新 URL 是否可达 → 编译并验证 Lua 运行期 → 推分支 → 回收旧分支
 #
-# 任一步骤失败时不创建 PR，失败信息写入 Actions 摘要。
+# 任一步骤失败时不推分支，失败信息写入 Actions 摘要。
+#
+# 升级结果不合并回主分支：主分支的组件版本由维护者手工确认，
+# 自动升级只活在 auto-<日期> 分支上，发布时两条线各出一个包。
+# 分支每轮从触发时的主分支重建，因此始终等于「最新源码 + 最新组件版本」。
+# 需要把升级结果并入主分支时，手动触发 sync-versions.yml。
 #
 # 默认仅应用 AUTO。COUPLED 涉及配套运行时兼容，需手动触发并检查；
 # MANUAL 涉及稳定分支或大版本切换，仅生成报告。
@@ -23,7 +28,7 @@ on:
         options: [AUTO, 'AUTO,COUPLED']
         default: AUTO
       dry_run:
-        description: '只看报告，不开 PR'
+        description: '只看报告，不推分支'
         type: boolean
         default: false
 
@@ -86,7 +91,7 @@ jobs:
           bash t/consistency.sh
           bash t/probe_urls.sh
 
-          branch="auto/upstream-$(date -u '+%Y%m%d')"
+          branch="auto-$(date -u '+%Y%m%d')"
           echo "has_changes=true"      >> "$GITHUB_OUTPUT"
           echo "branch=${branch}"      >> "$GITHUB_OUTPUT"
 
@@ -106,26 +111,27 @@ jobs:
           retention-days: 7
           include-hidden-files: true
 
-  # Lua 版本断言在运行时触发，创建 PR 前必须完成编译和请求验证。
+  # Lua 版本断言在运行时触发，推分支前必须完成编译和请求验证。
+  # 升级结果会自动发布，因此正式路径跑 full；dry_run 只看报告，用 quick 省时间。
   verify:
     name: 真编译验证
     needs: check
     if: needs.check.outputs.has_changes == 'true'
     uses: ./.github/workflows/build-test.yml
     with:
-      level: quick
+      level: ${{ inputs.dry_run && 'quick' || 'full' }}
       # 待提交的升版结果来自 check job 上传的 artifact。
       artifact: bumped-tree
 
-  pr:
-    name: 开 PR
+  push:
+    name: 推送升级分支
     needs: [check, verify]
     if: needs.check.outputs.has_changes == 'true' && !inputs.dry_run
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
     steps:
+      # 从触发时的主分支重建升级分支，保证它同时含最新源码与最新组件版本。
       - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v7
@@ -133,35 +139,89 @@ jobs:
           name: bumped-tree
           path: .
 
-      - name: 生成 PR
-        uses: peter-evans/create-pull-request@v8
-        with:
-          branch: ${{ needs.check.outputs.branch }}
-          base: ${{ github.event.repository.default_branch }}
-          commit-message: |
-            chore(deps): 上游版本例行升级
+      - name: 提交并推送
+        env:
+          BRANCH: ${{ needs.check.outputs.branch }}
+          BASE: ${{ github.ref_name }}
+        run: |
+          set -e
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
 
-            由 .github/workflows/upstream-check.yml 自动生成。
-            已通过：校验值重算、跨文件一致性、URL 可达性、Lua 全家桶真编译。
-          title: 'chore(deps): 上游版本例行升级'
-          body-path: .upstream/report.md
-          labels: dependencies, automated
-          delete-branch: true
-          add-paths: |
-            include/version.sh
-            include/profile.sh
-            src/checksums.sha256
-            t/probe_urls.sh
-            t/gen_checksums.sh
-            t/test_profile.sh
+          git checkout -B "${BRANCH}"
+          git add include/version.sh include/profile.sh src/checksums.sha256 \
+                  t/probe_urls.sh t/gen_checksums.sh t/test_profile.sh
+
+          if git diff --cached --quiet; then
+            echo "升级结果与 ${BASE} 无差异，不推分支。"
+            exit 0
+          fi
+
+          git commit -F - <<EOF
+          chore(deps): 上游版本例行升级
+
+          基线分支：${BASE}
+          由 .github/workflows/upstream-check.yml 自动生成，不合并回 ${BASE}。
+          已通过：校验值重算、跨文件一致性、URL 可达性、Lua 全家桶真编译。
+          EOF
+
+          # 同一天重跑时覆盖上一次的结果，分支内容始终是本轮的完整升级。
+          git push --force origin "HEAD:refs/heads/${BRANCH}"
+          echo "已推送 ${BRANCH}。"
 
       - name: 提醒
+        env:
+          BRANCH: ${{ needs.check.outputs.branch }}
         run: |
           {
-            echo "### PR 已生成"
+            echo "### 升级分支已推送：\`${BRANCH}\`"
             echo
-            echo "合并前请确认："
+            echo "该分支不会合并回主分支。接下来会自动发布 Release，"
+            echo "从它打出带日期的包，主分支的包保持手工确认的组件版本。"
+            echo
+            echo "需要确认："
             echo "- [ ] 报告里 MANUAL 类的条目是否需要人工处理"
-            echo "- [ ] 若本次含 COUPLED（Lua 全家桶），建议再手动跑一次"
-            echo "      \`Build Test\` 的 full 模式"
+            echo "- [ ] 要把组件版本并入主分支时，手动触发 \`同步组件版本到主分支\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # 升级分支已通过 full 编译，直接发布。dry_run 与无升级时不会走到这里。
+  release:
+    name: 发布
+    needs: [check, verify, push]
+    if: needs.check.outputs.has_changes == 'true' && !inputs.dry_run
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    secrets: inherit
+
+  # 升级分支不合并也就没有天然的回收时机，每轮跑完只留最新一个。
+  # 排在发布之后，避免清理与发布查找升级分支同时进行。
+  cleanup:
+    name: 清理旧的升级分支
+    needs: [check, push, release]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 只保留最新一个升级分支
+        # 默认 shell 不带 pipefail，管道会吞掉脚本返回码，此处显式指定。
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          KEEP_BRANCH: ${{ needs.check.outputs.branch }}
+        run: |
+          echo '### 升级分支清理'  >> "$GITHUB_STEP_SUMMARY"
+          echo '```'               >> "$GITHUB_STEP_SUMMARY"
+          set +e
+          bash t/cleanup_branches.sh 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo '```'               >> "$GITHUB_STEP_SUMMARY"
+          exit "${rc}"
