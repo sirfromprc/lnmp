@@ -105,6 +105,35 @@ subst_probe()
     fi
 }
 
+# gen_checksums.sh 的 PHP/MariaDB 采集列表是 for-loop 里的裸版本号（如
+# "for v in 8.4.24 8.5.9; do"），不是 subst() 匹配的 "prefix-版本" 字面量，
+# 普通全文替换不会命中，需要按 for-loop 所在代码块定位替换。
+subst_gensum_ver()
+{
+    local family="$1" old="$2" new="$3" before after
+    if [ -n "${DRY}" ]; then
+        echo "    [dry] ${GENSUM}: grab_upstream ${family} 列表 ${old} -> ${new}"
+        return 0
+    fi
+    before=$(sha256sum "${GENSUM}" | awk '{print $1}')
+    OLD_VALUE="${old}" NEW_VALUE="${new}" FAMILY="${family}" perl -0777 -pi -e '
+        my $old = quotemeta($ENV{OLD_VALUE});
+        my $new = $ENV{NEW_VALUE};
+        my $fam = quotemeta($ENV{FAMILY});
+        s/(for v in )([^\n]*)(\n\s*grab_upstream $fam )/
+            my ($pre, $list, $post) = ($1, $2, $3);
+            $list =~ s{(?<![\w.])$old(?![\w.])}{$new};
+            $pre . $list . $post
+        /e;
+    ' "${GENSUM}"
+    after=$(sha256sum "${GENSUM}" | awk '{print $1}')
+    if [ "${before}" = "${after}" ]; then
+        echo "    !! ${GENSUM} 的 ${family} 采集列表未替换 ${old}，需手工核对" >&2
+        return 1
+    fi
+    echo "    ${GENSUM}"
+}
+
 VERSION_SH='include/version.sh'
 PROFILE_SH='include/profile.sh'
 PROBE='t/probe_urls.sh'
@@ -131,9 +160,10 @@ while IFS=$'\t' read -r key old new kind extra; do
         # old/new 是裸版本号，如 8.3.33 -> 8.3.34
         # TESTPF 必须同步：t/test_profile.sh 里 expect_php 断言的是完整版本号，
         # 漏掉它会让升版后的常规 CI 因断言旧版本而失败。
-        subst "php-${old}" "php-${new}" "${PROFILE_SH}" "${GENSUM}" "${TESTPF}"
+        subst "php-${old}" "php-${new}" "${PROFILE_SH}" "${TESTPF}"
         subst "PHP ${old}" "PHP ${new}" "${PROFILE_SH}"
         subst_probe php "${old}" "${new}"
+        subst_gensum_ver php "${old}" "${new}"
         ;;
     MySQL_*)
         subst "mysql-${old}" "mysql-${new}" "${PROFILE_SH}" "${GENSUM}" "${TESTPF}"
@@ -142,9 +172,10 @@ while IFS=$'\t' read -r key old new kind extra; do
         # 二进制包 URL 中的 MySQL-8.4/ 为分支号，无需修改
         ;;
     MariaDB_*)
-        subst "mariadb-${old}" "mariadb-${new}" "${PROFILE_SH}" "${GENSUM}" "${TESTPF}"
+        subst "mariadb-${old}" "mariadb-${new}" "${PROFILE_SH}" "${TESTPF}"
         subst "MariaDB ${old}" "MariaDB ${new}" "${PROFILE_SH}"
         subst_probe mariadb "${old}" "${new}"
+        subst_gensum_ver mariadb "${old}" "${new}"
         ;;
     Apache_Ver)
         # 同 PHP：t/test_profile.sh 断言 httpd-<版本>，需一并更新。

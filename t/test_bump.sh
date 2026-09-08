@@ -25,6 +25,31 @@ Fake_Next()
     printf '%s' "$1" | sed 's/[0-9][0-9]*$/77777/'
 }
 
+# 组件在 gen_checksums.sh 采集列表中的文件名前缀
+Gensum_Prefix()
+{
+    case "$1" in
+        PHP_*)      printf 'php-' ;;
+        MySQL_*)    printf 'mysql-' ;;
+        MariaDB_*)  printf 'mariadb-' ;;
+        Apache_Ver) printf 'httpd-' ;;
+        *)          printf '' ;;
+    esac
+}
+
+# 采集列表是否跟上升版：refresh_checksums.sh 按新文件名到 gen_checksums.sh
+# 取下载地址，列表漏改会让升版分支停在重算校验值这一步。
+Gensum_Synced()
+{
+    local work="$1" key="$2" old="$3" new="$4" prefix names
+    prefix=$(Gensum_Prefix "${key}")
+    [ -n "${prefix}" ] || return 0
+    names=$( cd "${work}" && LIST_ONLY=1 bash t/gen_checksums.sh 2>/dev/null |
+             awk '$1 ~ /^https?:\/\// { print $2 }' )
+    printf '%s\n' "${names}" | grep -qE "^${prefix}${new//./\\.}[-.]" || return 1
+    ! printf '%s\n' "${names}" | grep -qE "^${prefix}${old//./\\.}[-.]"
+}
+
 # run_case <说明> <bumps.tsv 的 key> <当前版本> <目标版本>
 run_case()
 {
@@ -48,15 +73,26 @@ run_case()
 
     out=$( cd "${work}" && bash t/test_profile.sh 2>&1 )
     rc=$?
-    if [ ${rc} -eq 0 ]; then
-        printf 'ok   %-30s %s -> %s\n' "${desc}" "${old}" "${new}"
-    else
+    if [ ${rc} -ne 0 ]; then
         printf 'FAIL %-30s %s -> %s\n' "${desc}" "${old}" "${new}"
         printf '%s\n' "${out}" | grep '^FAIL' | sed 's/^/       /'
         echo "       升版后映射表与测试期望值不一致，"
         echo "       检查 t/bump_version.sh 中 ${key} 所属分支的文件清单。"
         fail=1
+        rm -rf "${work}"
+        return 1
     fi
+
+    if ! Gensum_Synced "${work}" "${key}" "${old}" "${new}"; then
+        printf 'FAIL %-30s %s -> %s\n' "${desc}" "${old}" "${new}"
+        echo "       t/gen_checksums.sh 采集列表未同步到新版本，"
+        echo "       t/refresh_checksums.sh 会取不到新文件的下载地址。"
+        fail=1
+        rm -rf "${work}"
+        return 1
+    fi
+
+    printf 'ok   %-30s %s -> %s\n' "${desc}" "${old}" "${new}"
     rm -rf "${work}"
 }
 
