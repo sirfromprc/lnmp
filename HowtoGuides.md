@@ -331,6 +331,7 @@ LNMP_Auto=y bash install.sh nginx </dev/null      # 非交互
 - 编译安装 PCRE 与 Nginx，版本取自 `include/version.sh`，没有版本菜单。
 - 写默认站点 `index.html` 与 `favicon.ico` 到 `Default_Website_Dir`，放行 80、443，
   安装 `/bin/lnmp` 管理命令，设为开机自启并启动。
+- 安装 `lnmp-cutlogs.timer`，日志切割见 [8.7](#87-日志)。
 - 依赖里带 `nftables`：本入口和 `install.sh db` 都会配置防火墙，缺 nft 时端口规则
   写不进去。系统里已有 nft 或 firewalld 时不重复安装；装包这一步失败才回到原来的
   「跳过防火墙配置」提示，需要自行确认 3306 等端口没有暴露在公网。
@@ -379,6 +380,7 @@ unset DB_Root_Password
 - 会移除包管理器装的 mysql/mariadb 相关包。
 - 数据目录非空时按 2.1.1 末尾的规则处理，显式 `LNMP_Move_Existing_DB_Data=yes` 才搬走旧目录。
 - 只对 `DB_Port` 与 `DB_X_Port` 写阻断公网访问的规则，防火墙写失败时整个安装返回非 0。
+- 安装成功后装上 `lnmp-health.timer`，探测目标只含本机已存在的服务 unit。
 
 #### 补装 phpMyAdmin
 
@@ -4074,8 +4076,8 @@ SHA-256。大小核对能发现传输截断和文件缺失，发现不了内容�
 
 日志切割：
 
-安装 Nginx 的栈会自动装上 `/bin/lnmp-cutlogs` 与 `lnmp-cutlogs.timer`，
-每天 00:05 切割一次，无需手工配置定时任务：
+LNMP、LNMPA、LAMP 以及 `install.sh nginx` 都会自动装上 `/bin/lnmp-cutlogs` 与
+`lnmp-cutlogs.timer`，每天 00:05 切割一次，无需手工配置定时任务：
 
 ```bash
 systemctl list-timers lnmp-cutlogs.timer --no-pager
@@ -4084,7 +4086,8 @@ systemctl list-timers lnmp-cutlogs.timer --no-pager
 
 脚本切割前一天的日志，每个日志名同时处理 `<名字>.log` 和 `<名字>.error.log`，
 按年月归档到 `/home/wwwlogs/<年>/<月>/`，文件名为 `<名字>_<日期>.log` 与
-`<名字>.error_<日期>.log`，最后 `nginx -s reload` 重开日志文件。
+`<名字>.error_<日期>.log`，最后按已安装的 Web 服务 `nginx -s reload` 或
+`httpd -k graceful` 重开日志文件。
 超过 `save_days`（默认 30）天的归档自动删除，清空后的年月目录一并移除。
 
 默认处理 `/home/wwwlogs` 下的全部一级日志，`lnmp vhost add` 新建的站点无需登记。

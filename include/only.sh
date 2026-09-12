@@ -62,6 +62,8 @@ Install_Only_Nginx()
     \cp ${cur_dir}/conf/favicon.ico ${Default_Website_Dir}/favicon.ico ||
         Echo_Red "favicon.ico 部署失败，默认站点仍会记录 /favicon.ico 404。"
     Install_Current_LNMP_Command lnmp || return 1
+    # 定时任务装不上不影响已装好的 Nginx，不改变本函数的返回码。
+    Install_Cutlogs_Timer
     Check_Nginx_Files
 }
 
@@ -198,6 +200,8 @@ Install_Only_Database()
     # 密码提示仅输出到终端，不写入安装日志。
     if [ ${rc} -eq 0 ]; then
         Install_Current_LNMP_Command lnmp || return 1
+        # 定时任务装不上不影响已装好的数据库，不改变本函数的返回码。
+        Install_Health_Timer
         Print_DB_Password_Notice
     fi
     return ${rc}

@@ -182,7 +182,8 @@ Install_App_Unit_Tpl()
 
 # 健康检查的定时探测任务。unit 的 Restart= 只处理进程退出，
 # 进程存活但不响应请求的场景由该定时任务发现。
-# 只在完整安装收尾调用：bumpversion 同步管理命令时不应改动定时任务。
+# 只在安装收尾调用：bumpversion 同步管理命令时不应改动定时任务。
+# 探测目标由 lnmp-health 按已存在的 unit 决定，只装数据库的入口同样适用。
 # 定时任务装不上不影响已装好的服务，失败只告警。
 Install_Health_Timer()
 {
@@ -197,8 +198,8 @@ Install_Health_Timer()
 }
 
 # Nginx 访问日志与错误日志的每日切割任务。切割的日志名由脚本自动发现，
-# 新建站点无需登记。只在有 Nginx 的栈调用：切割后要 reload 才会重开日志，
-# Apache 的日志不由该脚本处理。
+# 新建站点无需登记。脚本同时解析 Nginx 与 Apache 配置，切割后按已安装的
+# Web 服务 reload 或 graceful 重开日志，因此含任一 Web 服务的入口都调用。
 Install_Cutlogs_Timer()
 {
     [ -d /etc/systemd/system ] || return 0
@@ -345,6 +346,7 @@ Add_LAMP_Startup()
     Start_And_Verify httpd || rc=1
     Startup_DB || rc=1
     Install_Health_Timer
+    Install_Cutlogs_Timer
     return ${rc}
 }
 
