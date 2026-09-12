@@ -933,6 +933,189 @@ Site_PHP_Off_Block()
 EOF
 }
 
+# 反代后端域名解析用的 DNS。写死公共地址而不是读 /etc/resolv.conf：
+# 后者常指向 127.0.0.53 一类的本地 stub，容器或裁剪过的系统里未必可用。
+Proxy_Resolver='8.8.8.8 8.8.4.4'
+
+# 后端主机名：去掉 scheme、端口和路径。
+Proxy_Backend_Host()
+{
+    printf '%s' "$1" | sed -E 's#^https?://##; s#[:/].*$##'
+}
+
+# IPv4 字面量返回 0，域名返回 1。两者的 proxy_pass 写法不同。
+Proxy_Backend_Is_IP()
+{
+    printf '%s' "$1" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+}
+
+# 后端为域名时确定 Host 头策略并提示解析状态；IP 后端不需要这一步。
+# 非交互执行读 VHOST_PROXY_HOST：n 向后端传递访问者的域名，其余按后端域名。
+Site_Proxy_Backend_Detail()
+{
+    proxy_backend_host="$(Proxy_Backend_Host "${proxy_backend}")"
+    proxy_use_backend_host="n"
+    proxy_backend_resolvable="y"
+
+    Proxy_Backend_Is_IP "${proxy_backend_host}" && return 0
+
+    # 解析状态决定 proxy_pass 的写法：能解析就直连（getaddrinfo 会读 /etc/hosts
+    # 与内网 DNS），解析不到才改用 resolver，避免 nginx 在配置解析阶段就失败。
+    proxy_backend_resolvable="y"
+    if command -v getent >/dev/null 2>&1 \
+       && ! getent hosts "${proxy_backend_host}" >/dev/null 2>&1; then
+        proxy_backend_resolvable="n"
+        Echo_Yellow "后端域名 ${proxy_backend_host} 当前解析不到。"
+        echo "配置仍会写入，域名改由 resolver ${Proxy_Resolver} 在运行时解析；"
+        echo "该 resolver 只查 DNS，不读 /etc/hosts，届时仍解析不到会返回 502。"
+    fi
+
+    if [ ! -t 0 ]; then
+        case "${VHOST_PROXY_HOST:-}" in
+            [nN])
+                proxy_use_backend_host="n"
+                echo "非交互执行，按 VHOST_PROXY_HOST=n 向后端传递访问者的域名。"
+                ;;
+            *)
+                proxy_use_backend_host="y"
+                echo "非交互执行，向后端发送的 Host 头为 ${proxy_backend_host}。"
+                ;;
+        esac
+        return 0
+    fi
+
+    Read_YN proxy_use_backend_host \
+        "发给后端的 Host 头用后端域名 ${proxy_backend_host} 吗? (Y/n，默认 y，选 n 传递访问者的域名) " \
+        y "后端 Host 头开关"
+    if [ "${proxy_use_backend_host}" = "y" ]; then
+        echo "后端将收到 Host: ${proxy_backend_host}。"
+    else
+        echo "后端将收到访问者请求中的域名。"
+    fi
+    return 0
+}
+
+# 反代后端地址：接受 主机:端口，缺少 scheme 时按 http 补全。校验通过后把
+# 规范化结果写回 $1 指定的变量。字符集按 nginx proxy_pass 可接受的范围收紧，
+# 挡住空格、分号和 $，避免输入改变指令边界或引入变量展开。
+Check_Proxy_Backend()
+{
+    # 局部变量统一加前缀：调用方传进来的变量名不能被本函数的局部名遮蔽。
+    local __var="$1" __val="${!1}" __port
+
+    if [ -z "${__val}" ]; then
+        Echo_Red "后端地址不能为空。"
+        return 1
+    fi
+    case "${__val}" in
+        http://*|https://*) ;;
+        *) __val="http://${__val}" ;;
+    esac
+    if ! printf '%s' "${__val}" | grep -Eq \
+         '^https?://[A-Za-z0-9._-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$'; then
+        Echo_Red "后端地址格式不对，示例：127.0.0.1:3000 或 http://127.0.0.1:3000/api/"
+        return 1
+    fi
+    __port=$(printf '%s' "${__val}" | sed -nE 's#^https?://[^/:]+:([0-9]+).*$#\1#p')
+    if [ -n "${__port}" ] && { [ "${__port}" -lt 1 ] || [ "${__port}" -gt 65535 ]; }; then
+        Echo_Red "端口不合法：${__port}"
+        return 1
+    fi
+    printf -v "${__var}" '%s' "${__val}"
+    return 0
+}
+
+# 站点级反向代理，只对关闭 PHP 的站点提供：Nginx 把整站请求转给后端，
+# 不再交给 88 端口的 Apache。非交互执行通过 VHOST_PROXY=<后端地址> 开启。
+Site_Proxy_Menu()
+{
+    enable_proxy="n"
+    proxy_backend=""
+    proxy_backend_host=""
+    proxy_use_backend_host="n"
+    proxy_backend_resolvable="y"
+
+    if [ ! -t 0 ]; then
+        [ -n "${VHOST_PROXY:-}" ] || return 0
+        proxy_backend="${VHOST_PROXY:-}"
+        if ! Check_Proxy_Backend proxy_backend; then
+            proxy_backend=""
+            Echo_Red "非交互执行，VHOST_PROXY 不合法，已放弃建站。"
+            return 1
+        fi
+        enable_proxy="y"
+        echo "非交互执行，按 VHOST_PROXY 配置反向代理：${proxy_backend}"
+        Site_Proxy_Backend_Detail
+        return 0
+    fi
+
+    Read_YN enable_proxy "是否开启反向代理? (y/N，默认 n) " n "反向代理开关"
+    if [ "${enable_proxy}" = "n" ]; then
+        echo "已关闭反向代理。"
+        return 0
+    fi
+
+    while :;do
+        Echo_Yellow "请输入后端地址(示例: 127.0.0.1:3000，默认 http://127.0.0.1:3000): "
+        Read_Input proxy_backend "后端地址"
+        [ -n "${proxy_backend}" ] || proxy_backend="http://127.0.0.1:3000"
+        Check_Proxy_Backend proxy_backend && break
+    done
+    echo "反向代理后端：${proxy_backend}"
+    echo "站点目录仍会创建，用于 /.well-known/ 证书验证，其余请求全部转给后端。"
+    Site_Proxy_Backend_Detail
+    return 0
+}
+
+# Nginx 整站反代块，与 PHP 互斥。不写 .php 返回 404 的规则，.php 由后端处理。
+# IP 后端直接写 proxy_pass；域名后端改用变量加 resolver —— proxy_pass 里直接写
+# 域名时 nginx 在配置解析阶段就要查 DNS，解析不到连 nginx -t 都过不去。
+Site_Proxy_Block()
+{
+    local host_line='$host' upstream
+
+    [ "${proxy_use_backend_host}" = "y" ] && host_line="${proxy_backend_host}"
+
+    printf '%s\n' "# 整站反向代理到 ${proxy_backend}，本地 root 只用于 /.well-known/ 验证。"
+    if [ "${proxy_backend_resolvable}" = "n" ]; then
+        # proxy_pass 用变量时不带 location 匹配剩余部分，URI 由 $request_uri 显式补上。
+        upstream="${proxy_backend%/}"
+        printf '%s\n' "    # 建站时后端域名解析不到，改用变量加 resolver 让它在运行时解析："
+        printf '%s\n' "    # proxy_pass 直接写域名时 nginx 在配置解析阶段就要查 DNS，查不到起不来。"
+        printf '%s\n' "    # 该 resolver 只查 DNS，写在 /etc/hosts 里的域名解析不到，"
+        printf '%s\n' "    # 这类后端请改回 proxy_pass ${proxy_backend%/}\$request_uri 的直连写法。"
+        printf '%s\n' "    # 解析到 IPv6 但本机没有 IPv6 出口时会 502，可在下一行末尾加 ipv6=off。"
+        printf '%s\n' "    resolver ${Proxy_Resolver} valid=30s;"
+        printf '%s\n' "    location / {"
+        printf '%s\n' "        set \$lnmp_upstream \"${upstream}\";"
+        printf '%s\n' "        proxy_pass \$lnmp_upstream\$request_uri;"
+    else
+        printf '%s\n' "    location / {"
+        printf '%s\n' "        proxy_pass ${proxy_backend};"
+    fi
+    case "${proxy_backend}" in
+        https://*)
+            # 后端是 HTTPS，握手要带 SNI，否则共享 IP 的后端取不到正确证书。
+            printf '%s\n' "        proxy_ssl_server_name on;"
+            ;;
+    esac
+    printf '%s\n' "        proxy_http_version    1.1;"
+    printf '%s\n' "        proxy_cache_bypass    \$http_upgrade;"
+    cat <<'EOF'
+        proxy_set_header Upgrade            $http_upgrade;
+        proxy_set_header Connection         "upgrade";
+EOF
+    printf '%s\n' "        proxy_set_header Host               ${host_line};"
+    cat <<'EOF'
+        proxy_set_header X-Real-IP          $remote_addr;
+        proxy_set_header X-Forwarded-For    $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto  $scheme;
+        proxy_set_header X-Forwarded-Host   $host;
+        proxy_set_header X-Forwarded-Port   $server_port;
+    }
+EOF
+}
+
 # Apache 同时拒绝 PHP，防止绕过 Nginx 直接访问 88 端口。
 Site_Apache_PHP_Off_Block()
 {
@@ -1075,6 +1258,11 @@ Add_VHost_Config()
         apache_open_basedir="#php_admin_value open_basedir \"${vhostdir}:/tmp/:/var/tmp/:/proc/\""
         apache_php_off="$(Site_Apache_PHP_Off_Block)"
         apache_dir_index="DirectoryIndex index.html"
+        # 反代站点的请求全部由 Nginx 转给后端，88 端口的 Apache 不再参与，
+        # 但其虚拟主机仍保留，删站与列站按两份配置成对处理。
+        if [ "${enable_proxy}" = "y" ]; then
+            php_block="$(Site_Proxy_Block)"
+        fi
     fi
 
     cat >"/usr/local/nginx/conf/vhost/${domain}.conf"<<EOF
@@ -1286,7 +1474,17 @@ Add_VHost()
 
     Site_PHP_Menu
 
-    Read_YN access_log "是否启用访问日志 [y/N]（默认 n）: " n "访问日志开关"
+    # 反代与本地 PHP 互斥，只在关闭 PHP 的站点提供。
+    enable_proxy="n"
+    proxy_backend=""
+    proxy_backend_host=""
+    proxy_use_backend_host="n"
+    proxy_backend_resolvable="y"
+    if [ "${enable_site_php}" == "n" ]; then
+        Site_Proxy_Menu || return 1
+    fi
+
+    Read_YN access_log "是否启用访问日志 [Y/n]（默认 y）: " y "访问日志开关"
     if [ "${access_log}" == "n" ]; then
         echo "已禁用访问日志。"
         al="access_log off;"
@@ -1403,9 +1601,16 @@ Add_VHost()
     echo "域名：${domain}"
     echo "网站目录：${vhostdir}"
     if [ "${enable_site_php}" == "n" ]; then
-        echo "PHP：未开启（.php 请求一律返回 404）"
+        if [ "${enable_proxy}" == "y" ]; then
+            echo "PHP：未开启（整站反代，.php 由后端处理）"
+        else
+            echo "PHP：未开启（.php 请求一律返回 404）"
+        fi
     else
         echo "PHP：已开启"
+    fi
+    if [ "${enable_proxy}" == "y" ]; then
+        echo "反向代理：${proxy_backend}"
     fi
     if [ "${access_log}" == "y" ]; then
         echo "访问日志：已启用"

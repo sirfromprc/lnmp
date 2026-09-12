@@ -1,76 +1,196 @@
 #!/usr/bin/env bash
-#
-# Nginx 日志切割，安装为 /bin/lnmp-cutlogs，由 lnmp-cutlogs.timer 每天 0 点执行。
-#
-# 日志按年和月归档，例如 /home/wwwlogs/2026/08/default_20260810.log。
-#
-# 可选配置文件 /etc/lnmp/cutlogs.conf 可覆盖下列变量，管理命令同步时
-# 不会改动该文件。
 
-# Nginx 日志目录。
+# 日志目录
 log_files_path="/home/wwwlogs/"
 
-# 需要切割的日志名，每个名字同时处理 `<名字>.log` 和 `<名字>.error.log`。
-# 留空表示自动处理日志目录下的全部一级日志，新建站点无需手工登记；
-# 显式列出时只切割列出的日志。
+# 指定需要切割的日志名，留空：自动从 Nginx/Apache 配置获取所有日志
+# 例如：log_files_name=(default www.example.com abc/123)
 log_files_name=()
 
-# Nginx 可执行文件路径。
+# Nginx 可执行文件路径
 nginx_sbin="/usr/local/nginx/sbin/nginx"
 
-# 日志保留天数。
+# Apache 可执行文件路径（编译安装，非发行版 apache2 包）
+httpd_bin="/usr/local/apache/bin/httpd"
+
+# 日志保留天数
 save_days=30
 
+# 用户配置
 [ -r /etc/lnmp/cutlogs.conf ] && . /etc/lnmp/cutlogs.conf
 
-############################################
-# 以下为日志切割逻辑，无需修改。       #
-############################################
+# 以下内容无需修改
 
-case "${log_files_path}" in
-    */) ;;
-    *) log_files_path="${log_files_path}/" ;;
-esac
-[ -d "${log_files_path}" ] || exit 0
+log_files_path="${log_files_path%/}/"
+[ -d "$log_files_path" ] || exit 0
 
-# 未指定日志名时按现有日志文件推导，去掉 .error 后缀避免重复处理。
-if [ ${#log_files_name[@]} -eq 0 ]; then
-    for src in "${log_files_path}"*.log; do
-        [ -f "${src}" ] || continue
-        name="${src##*/}"
-        name="${name%.log}"
-        name="${name%.error}"
-        case " ${log_files_name[*]} " in
-            *" ${name} "*) continue ;;
+# 获取昨天的日期
+yesterday=$(date -d yesterday +"%Y%m%d")
+
+# 昨天对应的归档目录
+log_files_dir="${log_files_path}$(date -d yesterday +"%Y")/$(date -d yesterday +"%m")"
+
+
+# --------------------------------------------------
+# 获取 Nginx 配置中的日志文件,只处理 log_files_path 目录下的绝对路径日志。
+# access_log 和 error_log 均会处理。
+# --------------------------------------------------
+
+logs=()
+
+if [ -x "$nginx_sbin" ]; then
+    while IFS= read -r file; do
+        [ -n "$file" ] || continue
+
+        # 只保留日志目录下的 .log 文件
+        case "$file" in
+            "${log_files_path}"*.log)
+
+                # 去重
+                case " ${logs[*]} " in
+                    *" ${file} "*) ;;
+                    *) logs+=("$file") ;;
+                esac
+
+                ;;
         esac
-        log_files_name+=("${name}")
+    done < <(
+        "$nginx_sbin" -T 2>/dev/null |
+        awk '
+            $1 == "access_log" || $1 == "error_log" {
+                path = $2
+                sub(/;$/, "", path)
+                if (path ~ /^\// && path ~ /\.log$/)
+                    print path
+            }
+        '
+    )
+fi
+
+# --------------------------------------------------
+# 获取 Apache 配置中的日志文件。Apache 路径习惯带引号，且不带 .log 后缀
+# （access_log/error_log/xxx-access_log），跟 Nginx 命名习惯不一样。
+# --------------------------------------------------
+
+if [ -x "$httpd_bin" ]; then
+    while IFS= read -r file; do
+        [ -n "$file" ] || continue
+
+        case "$file" in
+            "${log_files_path}"*)
+                case " ${logs[*]} " in
+                    *" ${file} "*) ;;
+                    *) logs+=("$file") ;;
+                esac
+                ;;
+        esac
+    done < <(
+        "$httpd_bin" -t -D DUMP_CONFIG 2>/dev/null |
+        awk '
+            $1 == "CustomLog" || $1 == "ErrorLog" {
+                path = $2
+                gsub(/"/, "", path)
+                if (path ~ /^\//)
+                    print path
+            }
+        '
+    )
+fi
+
+# --------------------------------------------------
+# 未指定日志名时，按照 Nginx/Apache 配置自动切割
+# --------------------------------------------------
+
+if [ ${#log_files_name[@]} -eq 0 ]; then
+    [ ${#logs[@]} -gt 0 ] || exit 0
+
+    mkdir -p "$log_files_dir" || exit 1
+
+    for file in "${logs[@]}"; do
+        relative="${file#"$log_files_path"}"
+
+        dir="${relative%/*}"
+
+        if [ "$dir" = "$relative" ]; then
+            dir=""
+        fi
+
+        name="${relative##*/}"
+
+        if [ -n "$dir" ]; then
+            mkdir -p "${log_files_dir}/${dir}" || exit 1
+            target="${log_files_dir}/${dir}/${name%.log}_${yesterday}.log"
+        else
+            target="${log_files_dir}/${name%.log}_${yesterday}.log"
+        fi
+
+        [ -f "$file" ] || continue
+
+        mv "$file" "$target" || exit 1
+    done
+
+else
+
+    mkdir -p "$log_files_dir" || exit 1
+
+    for name in "${log_files_name[@]}"; do
+        logfile="${name##*/}"
+        dir="${name%/*}"
+        [ "$dir" = "$name" ] && dir=""
+
+        if [ -n "$dir" ]; then
+            mkdir -p "${log_files_dir}/${dir}" || exit 1
+            dest="${log_files_dir}/${dir}"
+        else
+            dest="${log_files_dir}"
+        fi
+
+        file="${log_files_path}${name}.log"
+        if [ -f "$file" ]; then
+            mv "$file" "${dest}/${logfile}_${yesterday}.log" || exit 1
+        fi
+
+        file="${log_files_path}${name}.error.log"
+        if [ -f "$file" ]; then
+            mv "$file" "${dest}/${logfile}.error_${yesterday}.log" || exit 1
+        fi
     done
 fi
-[ ${#log_files_name[@]} -eq 0 ] && exit 0
 
-yesterday=$(date -d "yesterday" +"%Y%m%d")
-log_files_dir="${log_files_path}$(date -d "yesterday" +"%Y")/$(date -d "yesterday" +"%m")"
+# --------------------------------------------------
+# 删除超过保留时间的日志
+# --------------------------------------------------
 
-mkdir -p "${log_files_dir}" || exit 1
+find "$log_files_path" \
+    -type f \
+    -name '*.log' \
+    -mtime +"$save_days" \
+    -delete
 
-# 移动前一天的日志到归档目录，访问日志和错误日志一并处理。
-for name in "${log_files_name[@]}"; do
-    logfile="${name##*/}"
-    for suffix in "" ".error"; do
-        src="${log_files_path}${name}${suffix}.log"
-        # 未生成日志的站点无需归档。
-        [ -f "${src}" ] || continue
-        mv "${src}" "${log_files_dir}/${logfile}${suffix}_${yesterday}.log"
-    done
+# --------------------------------------------------
+# 删除归档目录中的空目录,只处理按年份创建的归档目录，不删除日志根目录下的源目录。
+# --------------------------------------------------
+
+for year_dir in "${log_files_path}"[0-9][0-9][0-9][0-9]; do
+    [ -d "$year_dir" ] || continue
+
+    find "$year_dir" \
+        -depth \
+        -type d \
+        -empty \
+        -delete 2>/dev/null
 done
 
-find "${log_files_path}" -mindepth 1 -type f -name '*.log' \
-     -mtime +"${save_days}" -delete
+# --------------------------------------------------
+# 重新打开日志文件
+# --------------------------------------------------
 
-# 只删除已清空的年、月目录，`-empty` 保护仍有内容的目录。
-find "${log_files_path}" -mindepth 1 -type d -empty -delete 2>/dev/null
+if [ -x "$nginx_sbin" ]; then
+    lnmp nginx reload || "$nginx_sbin" -s reload
+fi
 
-# 重新打开日志文件，避免 worker 继续通过旧 inode 写入归档文件。
-# 没有 Nginx 时归档已经完成，不能让退出码把定时任务标成失败。
-[ -x "${nginx_sbin}" ] || exit 0
-"${nginx_sbin}" -s reload
+if [ -x "$httpd_bin" ] && pgrep -f "$httpd_bin" >/dev/null 2>&1; then
+    "$httpd_bin" -k graceful
+fi
+
+exit 0

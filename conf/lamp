@@ -945,6 +945,174 @@ RedirectMatch 404 "\.php(/|$)"
 EOF
 }
 
+# 后端主机名：去掉 scheme、端口和路径。
+Proxy_Backend_Host()
+{
+    printf '%s' "$1" | sed -E 's#^https?://##; s#[:/].*$##'
+}
+
+# IPv4 字面量返回 0，域名返回 1。域名后端要额外决定 Host 头与 TLS 开关。
+Proxy_Backend_Is_IP()
+{
+    printf '%s' "$1" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+}
+
+# 后端为域名时确定 Host 头策略并提示解析状态；IP 后端不需要这一步。
+# 非交互执行读 VHOST_PROXY_HOST：n 向后端传递访问者的域名，其余按后端域名。
+Site_Proxy_Backend_Detail()
+{
+    proxy_backend_host="$(Proxy_Backend_Host "${proxy_backend}")"
+    proxy_use_backend_host="n"
+
+    Proxy_Backend_Is_IP "${proxy_backend_host}" && return 0
+
+    # 解析不到不阻断：内网域名和尚未生效的 DNS 都属正常，mod_proxy 在运行时解析。
+    if command -v getent >/dev/null 2>&1 \
+       && ! getent hosts "${proxy_backend_host}" >/dev/null 2>&1; then
+        Echo_Yellow "后端域名 ${proxy_backend_host} 当前解析不到。"
+        echo "配置仍会写入，域名由 mod_proxy 在运行时解析；届时仍解析不到会返回 502。"
+    fi
+
+    if [ ! -t 0 ]; then
+        case "${VHOST_PROXY_HOST:-}" in
+            [nN])
+                proxy_use_backend_host="n"
+                echo "非交互执行，按 VHOST_PROXY_HOST=n 向后端传递访问者的域名。"
+                ;;
+            *)
+                proxy_use_backend_host="y"
+                echo "非交互执行，向后端发送的 Host 头为 ${proxy_backend_host}。"
+                ;;
+        esac
+        return 0
+    fi
+
+    Read_YN proxy_use_backend_host \
+        "发给后端的 Host 头用后端域名 ${proxy_backend_host} 吗? [Y/n]（默认 y，选 n 传递访问者的域名）: " \
+        y "后端 Host 头开关"
+    if [ "${proxy_use_backend_host}" = "y" ]; then
+        echo "后端将收到 Host: ${proxy_backend_host}。"
+    else
+        echo "后端将收到访问者请求中的域名。"
+    fi
+    return 0
+}
+
+# 反代后端地址：接受 主机:端口，缺少 scheme 时按 http 补全，并补齐末尾斜杠，
+# 使 ProxyPass 的源路径 / 与目标路径成对。校验通过后把规范化结果写回 $1
+# 指定的变量。字符集收紧到 URL 常用字符，挡住空格和引号，避免改变指令边界。
+Check_Proxy_Backend()
+{
+    # 局部变量统一加前缀：调用方传进来的变量名不能被本函数的局部名遮蔽。
+    local __var="$1" __val="${!1}" __port
+
+    if [ -z "${__val}" ]; then
+        Echo_Red "后端地址不能为空。"
+        return 1
+    fi
+    case "${__val}" in
+        http://*|https://*) ;;
+        *) __val="http://${__val}" ;;
+    esac
+    if ! printf '%s' "${__val}" | grep -Eq \
+         '^https?://[A-Za-z0-9._-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$'; then
+        Echo_Red "后端地址格式不对，示例：127.0.0.1:3000 或 http://127.0.0.1:3000/api/"
+        return 1
+    fi
+    __port=$(printf '%s' "${__val}" | sed -nE 's#^https?://[^/:]+:([0-9]+).*$#\1#p')
+    if [ -n "${__port}" ] && { [ "${__port}" -lt 1 ] || [ "${__port}" -gt 65535 ]; }; then
+        Echo_Red "端口不合法：${__port}"
+        return 1
+    fi
+    case "${__val}" in
+        */) ;;
+        *) __val="${__val}/" ;;
+    esac
+    printf -v "${__var}" '%s' "${__val}"
+    return 0
+}
+
+# 站点级反向代理，只对关闭 PHP 的站点提供：整站请求转给后端，本地不解析。
+# 非交互执行通过 VHOST_PROXY=<后端地址> 开启，未设置时不配置反代。
+Site_Proxy_Menu()
+{
+    enable_proxy="n"
+    proxy_backend=""
+    proxy_backend_host=""
+    proxy_use_backend_host="n"
+
+    if [ ! -t 0 ]; then
+        [ -n "${VHOST_PROXY:-}" ] || return 0
+        proxy_backend="${VHOST_PROXY:-}"
+        if ! Check_Proxy_Backend proxy_backend; then
+            proxy_backend=""
+            Echo_Red "非交互执行，VHOST_PROXY 不合法，已放弃建站。"
+            return 1
+        fi
+        enable_proxy="y"
+        echo "非交互执行，按 VHOST_PROXY 配置反向代理：${proxy_backend}"
+        Site_Proxy_Backend_Detail
+        return 0
+    fi
+
+    Read_YN enable_proxy "是否开启反向代理 [y/N]（默认 n）: " n "反向代理开关"
+    if [ "${enable_proxy}" = "n" ]; then
+        echo "已关闭反向代理。"
+        return 0
+    fi
+
+    while :;do
+        Echo_Yellow "后端地址（示例 127.0.0.1:3000，默认 http://127.0.0.1:3000）: "
+        Read_Input proxy_backend "后端地址"
+        [ -n "${proxy_backend}" ] || proxy_backend="http://127.0.0.1:3000"
+        Check_Proxy_Backend proxy_backend && break
+    done
+    echo "反向代理后端：${proxy_backend}"
+    echo "站点目录仍会创建，用于 /.well-known/ 证书验证，其余请求全部转给后端。"
+    Site_Proxy_Backend_Detail
+    return 0
+}
+
+# 整站反代块，与 PHP 互斥，80 与 443 共用。mod_proxy 与 mod_proxy_http 由
+# httpd24-lamp.conf 默认加载。不写 .php 的 404 规则，.php 路径由后端处理。
+Site_Apache_Proxy_Block()
+{
+    local ws_scheme='ws' preserve='On'
+
+    case "${proxy_backend}" in
+        https://*) ws_scheme='wss' ;;
+    esac
+    # On 把访问者请求里的域名传给后端，Off 用 ProxyPass 目标里的主机名。
+    # IP 后端没问过 Host 头，保持 On，与 Nginx 侧的 Host $host 一致。
+    [ "${proxy_use_backend_host}" = "y" ] && preserve='Off'
+
+    printf '%s\n' "# 整站反向代理到 ${proxy_backend}，本地 DocumentRoot 只用于 /.well-known/ 验证。"
+    printf '%s\n' "ProxyRequests Off"
+    printf '%s\n' "ProxyPreserveHost ${preserve}"
+    case "${proxy_backend}" in
+        https://*)
+            # 后端是 HTTPS，代理侧要单独开 TLS；mod_proxy 会自动带 SNI。
+            printf '%s\n' "SSLProxyEngine On"
+            ;;
+    esac
+    cat <<'EOF'
+# 代理请求不落到本地文件系统，DirectoryMatch 与 FilesMatch 拦不住它们，
+# 点开头路径改按 URL 拒绝，否则后端的 /.git/、/.env 会被整站透传出去。
+# 两个分支分别覆盖根下（放行 /.well-known/）和更深层级，与 Nginx 侧的
+# location ~ /\. 取同一范围。
+<LocationMatch "^(/\.(?!well-known/)|.+/\.)">
+    Require all denied
+</LocationMatch>
+ProxyPass /.well-known/ !
+EOF
+    printf '%s\n' "ProxyPass / ${proxy_backend}"
+    printf '%s\n' "ProxyPassReverse / ${proxy_backend}"
+    printf '%s\n' "# WebSocket 需要额外规则，mod_proxy_wstunnel 已加载，按需去掉注释："
+    printf '%s\n' "#RewriteEngine On"
+    printf '%s\n' "#RewriteCond %{HTTP:Upgrade} =websocket [NC]"
+    printf '%s\n' "#RewriteRule ^/?(.*) ${ws_scheme}://${proxy_backend#*://}\$1 [P,L]"
+}
+
 # 拒绝隐藏文件与隐藏目录，ACME 的 .well-known 除外。80 与 443 共用。
 Site_Apache_Hidden_Deny_Block()
 {
@@ -1057,6 +1225,10 @@ Add_VHost_Config()
         apache_open_basedir="#php_admin_value open_basedir \"${vhostdir}:/tmp/:/var/tmp/:/proc/\""
         apache_php_off="$(Site_Apache_PHP_Off_Block)"
         apache_dir_index="DirectoryIndex index.html"
+        # 反代站点的 .php 由后端处理，本地既不解析也不返回 404。
+        if [ "${enable_proxy}" = "y" ]; then
+            apache_php_off="$(Site_Apache_Proxy_Block)"
+        fi
     fi
 
     if ! mkdir -p "${Vhost_Shared_Dir}"; then
@@ -1210,7 +1382,16 @@ Add_VHost()
 
     Site_PHP_Menu
 
-    Read_YN access_log "是否启用访问日志 [y/N]（默认 n）: " n "访问日志开关"
+    # 反代与本地 PHP 互斥，只在关闭 PHP 的站点提供。
+    enable_proxy="n"
+    proxy_backend=""
+    proxy_backend_host=""
+    proxy_use_backend_host="n"
+    if [ "${enable_site_php}" == "n" ]; then
+        Site_Proxy_Menu || return 1
+    fi
+
+    Read_YN access_log "是否启用访问日志 [Y/n]（默认 y）: " y "访问日志开关"
     if [ "${access_log}" == "n" ]; then
         echo "已禁用访问日志。"
         al_name="${domain}"
@@ -1303,9 +1484,16 @@ Add_VHost()
     echo "域名：${domain}"
     echo "网站目录：${vhostdir}"
     if [ "${enable_site_php}" == "n" ]; then
-        echo "PHP：未开启（.php 请求一律返回 404）"
+        if [ "${enable_proxy}" == "y" ]; then
+            echo "PHP：未开启（整站反代，.php 由后端处理）"
+        else
+            echo "PHP：未开启（.php 请求一律返回 404）"
+        fi
     else
         echo "PHP：已开启"
+    fi
+    if [ "${enable_proxy}" == "y" ]; then
+        echo "反向代理：${proxy_backend}"
     fi
     if [ "${access_log}" == "y" ]; then
         echo "访问日志：已启用"

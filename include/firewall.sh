@@ -33,11 +33,37 @@ Firewall_Backend()
 }
 
 
+# 未找到 nft 时用包管理器补装一次。仅供 Firewall_Init 调用，卸载路径不触发。
+Firewall_Install_Nft()
+{
+    echo "未找到 nft，正在安装 nftables..."
+    case "${PM}" in
+    yum)
+        yum -y install nftables >/dev/null 2>&1
+        ;;
+    apt)
+        DEBIAN_FRONTEND=noninteractive Apt_Get --no-install-recommends install -y nftables \
+            >/dev/null 2>&1
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+    command -v nft >/dev/null 2>&1
+}
+
 # 初始化防火墙后端。firewalld 使用现有 zone；nft 使用独立的 inet lnmp
 # 表和链，重建基础规则以避免重复，并保留系统中的其他规则表。
 Firewall_Init()
 {
     Firewall_Backend
+
+    # 独立安装组件的依赖列表之外仍可能缺 nft，补装成功后重新判定后端。
+    if [ "${FW_Backend}" = 'none' ] && Firewall_Install_Nft; then
+        FW_Backend=''
+        Firewall_Backend
+        echo "nftables 已安装。"
+    fi
 
     case "${FW_Backend}" in
     firewalld)

@@ -710,6 +710,7 @@ Cmd_Sync()
     case "${FW_Backend}" in
     none)
         Err "未找到 nft 与 firewall-cmd，无法配置防火墙。"
+        Err "缺少 nftables 时请先安装：apt install nftables 或 yum install nftables。"
         return 1
         ;;
     firewalld)
@@ -851,7 +852,11 @@ Cmd_Status()
 
     Say "防火墙后端：${FW_Backend}"
     if [ "${FW_Backend}" != 'nft' ]; then
-        [ "${FW_Backend}" = 'none' ] && { Err "未找到 nft 与 firewall-cmd。"; return 1; }
+        [ "${FW_Backend}" = 'none' ] && {
+            Err "未找到 nft 与 firewall-cmd。"
+            Err "缺少 nftables 时请先安装：apt install nftables 或 yum install nftables。"
+            return 1
+        }
         Say "firewalld 放行端口：$(firewall-cmd --list-ports 2>/dev/null)"
         return 0
     fi
@@ -975,6 +980,7 @@ Cmd_Reload()
         ;;
     none)
         Err "未找到 nft 与 firewall-cmd。"
+        Err "缺少 nftables 时请先安装：apt install nftables 或 yum install nftables。"
         return 1
         ;;
     esac

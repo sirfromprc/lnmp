@@ -5,7 +5,7 @@ Nginx_Dependent()
     if [ "$PM" = "yum" ]; then
         rpm -e httpd httpd-tools --nodeps
         yum -y remove httpd*
-        for packages in make gcc gcc-c++ gcc-g77 wget crontabs zlib zlib-devel openssl openssl-devel perl patch bzip2 initscripts xz gzip brotli-devel gnupg2;
+        for packages in make gcc gcc-c++ gcc-g77 wget crontabs zlib zlib-devel openssl openssl-devel perl patch bzip2 initscripts xz gzip brotli-devel gnupg2 nftables;
         do yum -y install $packages; done
         if [ "${DISTRO}" = "Fedora" ] || echo "${CentOS_Version}" | grep -Eqi "^9"; then
             dnf install chkconfig -y
@@ -17,7 +17,7 @@ Nginx_Dependent()
         # 仅清理实际已安装的旧 Apache 软件包。
         Deb_Purge_Installed apache2 apache2-bin apache2-data apache2-utils apache2-doc \
                             libapache2-mod-php
-        for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make autoconf automake wget cron openssl libssl-dev zlib1g zlib1g-dev bzip2 xz-utils gzip libbrotli-dev gnupg gpgv;
+        for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make autoconf automake wget cron openssl libssl-dev zlib1g zlib1g-dev bzip2 xz-utils gzip libbrotli-dev gnupg gpgv nftables;
         do Apt_Get --no-install-recommends install -y $packages; done
     fi
 }
@@ -74,7 +74,7 @@ DB_Dependent()
             rpm -e mysql mysql-libs --nodeps
             rpm -e mariadb mariadb-libs --nodeps
         fi
-        for packages in make cmake gcc gcc-c++ gcc-g77 flex bison wget zlib zlib-devel openssl openssl-devel ncurses ncurses-devel libaio-devel rpcgen libtirpc-devel patch cyrus-sasl-devel pkg-config pcre-devel libxml2-devel hostname ncurses-libs numactl-devel libxcrypt gnutls-devel initscripts libxcrypt-compat perl xz gzip;
+        for packages in make cmake gcc gcc-c++ gcc-g77 flex bison wget zlib zlib-devel openssl openssl-devel ncurses ncurses-devel libaio-devel rpcgen libtirpc-devel patch cyrus-sasl-devel pkg-config pcre-devel libxml2-devel hostname ncurses-libs numactl-devel libxcrypt gnutls-devel initscripts libxcrypt-compat perl xz gzip nftables;
         do yum -y install $packages; done
         if echo "${CentOS_Version}" | grep -Eqi "^8" || echo "${RHEL_Version}" | grep -Eqi "^8" || echo "${Rocky_Version}" | grep -Eqi "^8" || echo "${Alma_Version}" | grep -Eqi "^8"; then
             Check_PowerTools
@@ -122,7 +122,7 @@ DB_Dependent()
         [[ $? -ne 0 ]] && Apt_Get update --allow-releaseinfo-change -y
         Deb_Purge_Installed mysql-server mysql-client mysql-common \
                             mariadb-server mariadb-client mariadb-common libmariadbd-dev
-        for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make cmake autoconf automake wget openssl libssl-dev zlib1g zlib1g-dev libncurses5 libncurses5-dev bison libaio-dev libtirpc-dev libsasl2-dev pkg-config libpcre2-dev libxml2-dev libtinfo-dev libnuma-dev gnutls-dev xz-utils gzip;
+        for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make cmake autoconf automake wget openssl libssl-dev zlib1g zlib1g-dev libncurses5 libncurses5-dev bison libaio-dev libtirpc-dev libsasl2-dev pkg-config libpcre2-dev libxml2-dev libtinfo-dev libnuma-dev gnutls-dev xz-utils gzip nftables;
         do Apt_Get --no-install-recommends install -y $packages; done
         # 数据库通用二进制客户端需要 ncurses 5 兼容运行库。
         Deb_Ncurses5_Compat

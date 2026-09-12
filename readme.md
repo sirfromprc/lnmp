@@ -37,6 +37,8 @@ WordPress。Apache 栈及其它发行版的支持边界见 [HowtoGuides.md](Howt
 
 - 组件从上游官方来源下载，并按组件使用 SHA-256、PGP 或软件仓库 GPG 校验。
 - 数据库和缓存默认只监听回环地址；防火墙规则放在独立的 `inet lnmp` 表中。
+  会改防火墙的安装入口（整栈、`install.sh nginx`、`install.sh db`）在缺少 nft 时
+  自动安装 nftables，装不上才降级为跳过并提示自行确认端口暴露情况。
 - 站点默认拒绝 `.user.ini`、`.env`、`.git` 等隐藏文件的 HTTP 与 HTTPS 访问，
   ACME 用的 `/.well-known/` 例外。
 - default 站点在 443 上拒绝未知 SNI 的握手，未匹配的 HTTPS 请求不会落到业务站点
@@ -216,6 +218,9 @@ lnmp app logs example-app
 ```
 
 - `vhost` 管理 Nginx/Apache 站点；删除站点配置时不会删除网站文件。
+- `vhost add` 关闭站点 PHP 后会问是否开启反向代理。开启时按输入的后端地址写好整站
+  代理规则，`.php` 一并交给后端；不开启时 `.php` 请求一律返回 404。站点目录仍会创建，
+  `/.well-known/` 不进代理，反代站点照样能签发证书。
 - `app` 用独立 systemd 服务和账号托管 Node、Go 等后端进程，适合反向代理站点。
 
 ### 3.3 数据库

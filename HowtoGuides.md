@@ -331,6 +331,9 @@ LNMP_Auto=y bash install.sh nginx </dev/null      # 非交互
 - 编译安装 PCRE 与 Nginx，版本取自 `include/version.sh`，没有版本菜单。
 - 写默认站点 `index.html` 与 `favicon.ico` 到 `Default_Website_Dir`，放行 80、443，
   安装 `/bin/lnmp` 管理命令，设为开机自启并启动。
+- 依赖里带 `nftables`：本入口和 `install.sh db` 都会配置防火墙，缺 nft 时端口规则
+  写不进去。系统里已有 nft 或 firewalld 时不重复安装；装包这一步失败才回到原来的
+  「跳过防火墙配置」提示，需要自行确认 3306 等端口没有暴露在公网。
 
 模块开关取 `lnmp.conf`：`Enable_Nginx_Lua`、`Enable_Ngx_Brotli`、`Enable_Ngx_CachePurge`、
 `Enable_Ngx_FancyIndex`、`Nginx_Modules_Options`。Nginx 模块是编译期决定的，装完只能重新
@@ -346,8 +349,9 @@ LNMP_Auto=y bash install.sh nginx </dev/null      # 非交互
 该入口固定装官方 Nginx。OpenResty 没有独立安装入口，只能在整栈安装时选择
 （[2.3 用 OpenResty 替代 nginx](#23-用-openresty-替代-nginx可选)），已装 OpenResty 的机器用 `bash upgrade.sh openresty` 升级。
 
-**在只装了 Nginx 的机器上建站**：`lnmp vhost add` 的 PHP 支持和创建数据库两步都要选 `n`
-（[4.4 建不带 PHP 的站点](#44-建不带-php-的站点)）。选 `y` 会写出引用 php-fpm 套接字的配置，访问返回 502。
+**在只装了 Nginx 的机器上建站**：本机没有 PHP 时 `lnmp vhost add` 会直接关闭站点 PHP
+并说明原因，随后问是否开启反向代理，答 `y` 就把整站转给后端
+（[4.4 建不带 PHP 的站点](#44-建不带-php-的站点)）。创建数据库那一步仍要选 `n`。
 
 **这类机器补不了 PHP**：本项目没有单独的 PHP 安装入口。`install.sh mphp` 要求本机已是
 完整 LNMP（同时存在 `/usr/local/php/sbin/php-fpm`、`/usr/local/php/etc/php-fpm.conf`、
@@ -1007,7 +1011,7 @@ lnmp vhost add
 | 5 | `(默认 other，直接回车使用):` | **`wordpress`** |
 | 6 | `是否开启 PHP? (Y/n，默认 y)` | 回车用默认 `y`（WordPress 要跑 PHP） |
 | 7 | `是否开启 PHP Pathinfo? (y/N，默认 n)` | `n`（WordPress 不需要） |
-| 8 | `是否开启访问日志? (y/N，默认 n)` | `y` |
+| 8 | `是否开启访问日志? (Y/n，默认 y)` | 回车用默认 `y` |
 | 9 | `请输入访问日志文件名(默认: <域名>.log，直接回车使用):` | 回车用默认 |
 | 10 | `是否开启 IPv6? (y/N，默认 n)` | 有 IPv6 就 `y` |
 | 11 | `是否创建同名数据库和 MySQL 用户? (y/N，默认 n)` | **`y`** |
@@ -1019,6 +1023,7 @@ lnmp vhost add
 
 第 5 步之前会先列出已内置的伪静态规则名（`wordpress`、`typecho`、`discuzx` 等），
 第 9 步只在第 8 步选了 `y` 时出现；第 12–14 步只在第 11 步选了 `y` 时出现。
+第 6 步答 `n`（或本机没有 PHP）时，第 7 步换成 `是否开启反向代理?`，见 4.4。
 
 **第 1、2 步会检查域名是否已被占用**：主域名和附加域名都会与现有站点的 `server_name`
 （Apache 栈是 `ServerName` 与 `ServerAlias`）比对，已被声明就列出占用它的配置文件并
@@ -1027,9 +1032,10 @@ lnmp vhost add
 避免写出含重复项的 `server_name`。
 
 **第 6 步只在本机装有 PHP 时出现**：检测不到主 PHP（`/usr/local/php/bin/php-config`
-与 `/etc/init.d/php-fpm`）也没有任何完整安装的附加版本时，站点 PHP 直接关闭并说明原因，
-建出的站点所有 `.php` 请求返回 404。只用 `install.sh nginx` 装了 Nginx 的机器属于这种
-情况，装好 PHP 后重新建站或手工改站点配置即可。
+与 `/etc/init.d/php-fpm`）也没有任何完整安装的附加版本时，站点 PHP 直接关闭并说明原因。
+只用 `install.sh nginx` 装了 Nginx 的机器属于这种情况，装好 PHP 后重新建站或手工改站点
+配置即可。两种情况都紧接着问 `是否开启反向代理? (y/N，默认 n)`，答 `y` 再输入后端地址，
+站点配置直接写好整站反代；答 `n` 则所有 `.php` 请求返回 404。详见 4.4。
 
 **第 16 步之后可能还有一问**：站点目录是本次新建或原本为空时统一设为 755；复用已有的
 非空目录时保留其中文件的权限位，并询问 `是否把目录统一改为 755、普通文件改为 644?`
@@ -1045,6 +1051,7 @@ lnmp vhost add
 | 网站目录 | 网站目录 | 网站目录 |
 | 伪静态开关 [→ 规则名] | — | — |
 | PHP 开关 | PHP 开关 | PHP 开关 |
+| 反向代理 [→ 后端地址 → 域名后端的 Host 头]（PHP 关闭时才问） | 同左 | 同左 |
 | PHP Pathinfo | — | — |
 | 访问日志 [→ 日志文件名] | 访问日志 [→ 日志文件名] | 访问日志 [→ 日志文件名] |
 | IPv6 | IPv6 | — |
@@ -1061,8 +1068,8 @@ lnmp vhost add
 
 **第 6 步选 `n` 时**（纯静态站点，或 Node、Go 等自带后端的站点）：不再问 Pathinfo，
 装了多个 PHP 版本时也不再问选哪个版本；站点配置里不写任何 PHP 执行入口，
-首页候选去掉 `index.php`，`.php` 与 `.php/xxx` 一律返回 404，
-站点目录也不再写 `.user.ini`。详见 4.4。
+首页候选去掉 `index.php`，站点目录也不再写 `.user.ini`。随后问是否开启反向代理：
+不开时 `.php` 与 `.php/xxx` 一律返回 404，开启则整站转给后端。详见 4.4。
 
 > **第 5 步的 `wordpress` 是关键。** 它会引用内置的
 > `/usr/local/nginx/conf/rewrite/wordpress.conf`：
@@ -1133,13 +1140,18 @@ printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
 > 只读取环境变量 `VHOST_PHP`：未设置时开启 PHP，
 > 上面这条命令不用改。要建不带 PHP 的站点见 4.4。
 >
+> 注意：**反向代理开关同样不占一行**。它只在 PHP 关闭时出现，非交互执行读
+> `VHOST_PROXY`：未设置就是不开反代，给了不合法的值直接以非 0 退出，不建站。
+> 后端是域名时多出的 Host 头一问同样不占一行，非交互读 `VHOST_PROXY_HOST`；
+> 交互执行时这一问**要占一行**。
+>
 > 注意：**复用已有非空目录时的两项提问同样不占一行**。目录是新建的或为空时统一设为
 > 755 并把属主改为 `www`；复用非空目录时权限位和属主都保留，需要统一分别设
 > `VHOST_FIX_PERM=y`（目录改 755、普通文件改 644）和 `VHOST_FIX_OWNER=y`
 > （递归改为 `www:www`）。保留属主是为了不破坏 Git/CI 部署账号或其它服务对目录里
 > 文件的归属；此时若 PHP 读不到站点文件，需自行给 `www` 用户授予读取权限。
 
-**LNMPA 与 LAMP 的序列**（按 4.1 的三栏对照表，PHP 开关同样不占一行）：
+**LNMPA 与 LAMP 的序列**（按 4.1 的三栏对照表，PHP 开关和反代开关同样不占一行）：
 
 ```bash
 # LNMPA：域名 → 更多域名(空) → 目录(空) → 访问日志 n → IPv6 n → 邮箱(空)
@@ -1210,14 +1222,143 @@ Nginx 侧那条 404 规则**不能省**：站点目录里一旦出现 `.php` 文
 Apache 侧更是必需项：`.php` 的处理器挂在 `httpd.conf` 全局，站点配置什么都不写
 就等于照常执行 PHP。
 
-**Go / Node 站点的反向代理**需按后端实际监听端口配置；本开关只关闭 PHP 执行入口：
+#### 建站时直接配好反向代理
+
+PHP 关闭后紧接着问：
+
+```
+ 是否开启反向代理? (y/N，默认 n) y
+ 请输入后端地址(示例: 127.0.0.1:3000，默认 http://127.0.0.1:3000): 127.0.0.1:8080
+反向代理后端：http://127.0.0.1:8080
+```
+
+后端地址可以写 `127.0.0.1:3000` 或完整的 `http://127.0.0.1:3000`，
+不带协议时按 `http://` 补全；也接受带路径的 `http://127.0.0.1:3000/api/`。
+只允许字母、数字和 `. - _ : / ~` 这些字符，输入里有空格、`;`、`$` 一律重问——
+这些字符会改变 nginx 指令边界或引入变量展开。端口不在 1–65535 也重问。
+
+**后端写域名时会多问一步 Host 头**，因为两种用法都常见：
+
+```
+ 请输入后端地址(示例: 127.0.0.1:3000，默认 http://127.0.0.1:3000): https://www.b.com
+反向代理后端：https://www.b.com
+ 发给后端的 Host 头用后端域名 www.b.com 吗? (Y/n，默认 y，选 n 传递访问者的域名)
+```
+
+答 `y`（默认）写 `proxy_set_header Host www.b.com`，反代到外部站点必须这样——对方按
+Host 分发虚拟主机，收到访问者的域名基本返回 404 或跳回自己的域名。答 `n` 保持
+`Host $host`，适合反代到自己内网的另一台机器。后端是 IP 时不问这一步，固定
+`Host $host`。非交互执行用 `VHOST_PROXY_HOST=n` 选后者。
+
+后端是 `https://` 时还会写入 `proxy_ssl_server_name on`（LAMP 为 `SSLProxyEngine On`）。
+nginx 默认不发 SNI，共享 IP 的后端会取不到正确证书。
+
+选 `y` 后写出的站点配置（LNMP / LNMPA 相同）：
+
+```nginx
+    # 整站反向代理到 http://127.0.0.1:8080，本地 root 只用于 /.well-known/ 验证。
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version    1.1;
+        proxy_cache_bypass    $http_upgrade;
+        proxy_set_header Upgrade            $http_upgrade;
+        proxy_set_header Connection         "upgrade";
+        proxy_set_header Host               $host;
+        proxy_set_header X-Real-IP          $remote_addr;
+        proxy_set_header X-Forwarded-For    $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto  $scheme;
+        proxy_set_header X-Forwarded-Host   $host;
+        proxy_set_header X-Forwarded-Port   $server_port;
+    }
+```
+
+**域名后端有两种写法，按建站时能不能解析分流**。`proxy_pass` 里直接写域名时，
+nginx 在**配置解析阶段**就要查 DNS，查不到会报
+`host not found in upstream`，连 `nginx -t` 都过不去，建站流程随即撤销配置。
+所以域名当前解析不到时改写成变量加 `resolver`，域名推迟到运行时解析：
+
+```nginx
+    resolver 8.8.8.8 8.8.4.4 valid=30s;
+    location / {
+        set $lnmp_upstream "https://www.b.com";
+        proxy_pass $lnmp_upstream$request_uri;
+        proxy_ssl_server_name on;
+        ...
+    }
+```
+
+`resolver` 必须写在 `location` 之外。用变量时 `proxy_pass` 不会自动带上 location
+匹配的剩余部分，URI 由 `$request_uri` 显式补齐；后端带路径时末尾斜杠会被去掉，
+避免拼出双斜杠。
+
+反过来，域名当时能解析就用直连写法 `proxy_pass https://www.b.com;`。原因是
+`resolver` **只查 DNS，不读 `/etc/hosts`**：内网域名靠 hosts 解析时，套用 resolver
+写法会一路 502。直连写法走 `getaddrinfo`，hosts 与内网 DNS 都认。
+代价是 nginx 只在启动时解析一次并缓存，后端 IP 变化（CDN、云服务）不会跟进；
+需要跟进时按配置里的注释改成 resolver 写法。
+
+LAMP 站点由 Apache 直接代理，写进公共片段 `conf/vhost/shared/<域名>.conf`，
+80 与 443 共用：
+
+```apache
+ProxyRequests Off
+ProxyPreserveHost On
+<LocationMatch "^(/\.(?!well-known/)|.+/\.)">
+    Require all denied
+</LocationMatch>
+ProxyPass /.well-known/ !
+ProxyPass / http://127.0.0.1:8080/
+ProxyPassReverse / http://127.0.0.1:8080/
+```
+
+Apache 不需要 resolver：`mod_proxy` 在运行时解析后端域名，域名解析不到照样能
+`configtest` 通过并启动。Host 头由 `ProxyPreserveHost` 控制，`On` 传访问者的域名，
+`Off` 用 `ProxyPass` 目标里的主机名，因此选“用后端域名”时写 `Off`。
+
+`mod_proxy` 与 `mod_proxy_http` 由随包的 `httpd.conf` 默认加载，不需要另行开启。
+WebSocket 要用 `mod_proxy_wstunnel`，模板里附了一段带实际后端地址的注释规则，
+去掉注释即可生效。
+
+那段 `LocationMatch` 是反代站点专有的：代理请求不落到本地文件系统，站点公共片段里
+按目录和文件名匹配的 `DirectoryMatch` / `FilesMatch` 对它们无效，`/.git/config`、
+`/a/.env` 会被整站透传给后端。改按 URL 拒绝后与 Nginx 侧 `location ~ /\.` 覆盖同一
+范围：任意层级的点开头路径都拒绝，只放行根下的 `/.well-known/`。
+
+三栈共同点：
+
+- **`.php` 不再被拦成 404**，整站请求（含 `.php` 路径）全部交给后端处理。
+  这与不开反代时的行为相反，见下一节。
+- **站点目录仍然创建**，`/.well-known/` 走本地目录不进代理，所以反代站点照样能用
+  `lnmp ssl add` 做 HTTP 验证签发证书。
+- **点开头的路径一律拒绝**（403），根下的 `/.well-known/` 除外，后端的 `.git`、`.env`
+  不会被透传。需要把这类路径交给后端时，Nginx 侧删 `location ~ /\.`，
+  Apache 侧删那段 `LocationMatch`。
+- **HTTPS 自动继承**：Nginx 侧 443 与 80 是同一个 server 块，LAMP 侧两个 VirtualHost
+  Include 同一份公共片段，反代规则都只有一份。
+
+非交互执行用 `VHOST_PROXY` 指定后端地址，未设置就是不开反代；给了不合法的值直接
+放弃建站，不会静默建出一个没有反代的站点：
+
+```bash
+printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' \
+    | VHOST_PHP=n VHOST_PROXY=127.0.0.1:8080 lnmp vhost add
+
+# 后端是域名，且要向后端传递访问者的域名
+printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' \
+    | VHOST_PHP=n VHOST_PROXY=https://backend.example.com VHOST_PROXY_HOST=n lnmp vhost add
+```
+
+后端域名当前解析不到时只提示一句，不阻断建站——内网域名和尚未生效的 DNS 都属正常。
+
+#### 手工改现有站点的反代
 
 > ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
 > `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
 > 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
+建站时没选反代、之后想加的，编辑 `/usr/local/nginx/conf/vhost/<域名>.conf`：
+
 ```nginx
-# /usr/local/nginx/conf/vhost/app.example.com.conf
 location / {
     proxy_pass http://127.0.0.1:3000;
     include proxy.conf;
@@ -1236,10 +1377,10 @@ cp conf/proxy.conf /usr/local/nginx/conf/proxy.conf
 OpenResty 的路径是 `/usr/local/openresty/nginx/conf/`。`./upgrade.sh nginx`
 和 `./upgrade.sh openresty` 也会补齐缺失的这份文件，已有的不覆盖。
 
-整站反代时若需要把 `.php` 路径原样透传给后端，删掉配置里那段带
+手工加反代时若需要把 `.php` 路径原样透传给后端，删掉配置里那段带
 `# 本站点未开启 PHP` 注释的 `location` 即可（正则 location 优先级高于
 `location /`，留着会先被它拦成 404）。删掉后 HTTPS 同样没有这条规则——
-两者共用同一个 server 块。
+两者共用同一个 server 块。建站时选了反代的站点不写这段，不必再删。
 
 模板里静态资源缓存（`.js`、`.css`、图片的 `expires`）两条正则默认是注释状态，
 反代站点不必再删。静态站点需要时就地取消注释即可，HTTP 与 HTTPS 一并生效。
@@ -1252,8 +1393,8 @@ OpenResty 的路径是 `/usr/local/openresty/nginx/conf/`。`./upgrade.sh nginx`
 LAMP 站点的等价规则写在公共片段里，是 `<DirectoryMatch>` 与 `<FilesMatch>` 两段
 `Require all denied`，同样放行 `.well-known`。
 
-反代规则写在 `# 自定义配置--开始` 与 `# 自定义配置--结束` 之间，HTTP 与 HTTPS
-共用同一个 server 块，不需要再为 443 写一遍。
+手工加的反代规则写在 `# 自定义配置--开始` 与 `# 自定义配置--结束` 之间，
+HTTP 与 HTTPS 共用同一个 server 块，不需要再为 443 写一遍。
 选 HTTP 301 跳转时，跳转判断写在 server 级，覆盖本站全部 location（`/.well-known/`
 除外），与自定义的 `location /` 不冲突。
 
@@ -3025,6 +3166,8 @@ SSH 端口是唯一例外：以实际监听为准（`ss` → `netstat` → `sshd
 | 变量 | 作用 | 说明 |
 |---|---|---|
 | `VHOST_PHP=n` | 建站时关闭 PHP | 见 [4.4 建不带 PHP 的站点](#44-建不带-php-的站点) |
+| `VHOST_PROXY=<后端地址>` | 建站时配置整站反向代理，只在 PHP 关闭时生效 | 见 [4.4 建不带 PHP 的站点](#44-建不带-php-的站点) |
+| `VHOST_PROXY_HOST=n` | 后端是域名时，向后端传递访问者的域名而不是后端域名 | 见 [4.4 建不带 PHP 的站点](#44-建不带-php-的站点) |
 | `VHOST_FIX_PERM=y` | 建站复用非空目录时统一权限位 | 未设置时保留原权限位，见 [4.2 非交互创建](#42-非交互创建) |
 | `VHOST_FIX_OWNER=y` | 建站复用非空目录时统一属主为 `www:www` | 未设置时保留原属主，见 [4.2 非交互创建](#42-非交互创建) |
 | `LNMP_Import_Allow_Cross_Db=yes` | 放行跨库导入 | 见 [8.4 数据库管理](#84-数据库管理) |
@@ -3458,8 +3601,10 @@ lnmp app logs <name> # 查看应用日志
 > immutable 属性已由删站流程自动解除。
 >
 > `vhost add` 会问 `是否开启 PHP? (Y/n，默认 y)`。选 `n` 建出的站点不执行 PHP，
-> `.php` 请求一律 404，适合纯静态站点和 Node、Go 等自带后端的站点；
-> 非交互执行用 `VHOST_PHP=n`。详见 4.4。
+> 适合纯静态站点和 Node、Go 等自带后端的站点；非交互执行用 `VHOST_PHP=n`。
+> 关闭 PHP 后紧接着问 `是否开启反向代理? (y/N，默认 n)`：不开时 `.php` 请求一律 404，
+> 开启则按输入的后端地址写好整站反代，`.php` 也交给后端；非交互执行用
+> `VHOST_PROXY=<后端地址>`。详见 4.4。
 
 ### 8.4 数据库管理
 
@@ -3960,7 +4105,7 @@ default 站点的日志是 `/home/wwwlogs/default.log` 和
 `/home/wwwlogs/default.error.log`。访问日志使用 `nginx.conf` 中的 `main` 格式：
 
 ```nginx
-log_format main '$time_iso8601 $status "$request_time" $remote_addr $scheme://$http_host "$request" '
+log_format main '$time_iso8601 $status "$request_time" $remote_addr $request_method $scheme://$http_host$request_uri '
                 '$body_bytes_sent "$http_referer" '
                 '"$http_user_agent" "$http_x_forwarded_for" $remote_user';
 ```
