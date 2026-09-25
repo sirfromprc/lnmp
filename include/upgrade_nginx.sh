@@ -92,6 +92,9 @@ Upgrade_Nginx()
     if ! ./objs/nginx -t -p /usr/local/nginx -c /usr/local/nginx/conf/nginx.conf; then
         Echo_Red "新版 nginx 无法通过现有配置的语法检查，放弃升级。"
         Echo_Red "常见原因：新版本移除了某个指令，或本次编译少了某个模块。"
+        if [ "${Enable_Nginx_Lua}" = 'y' ]; then
+            Echo_Red "升级不修改 nginx.conf；新启用 Lua 时需先在 http 段手工加入 lua_package_path \"/usr/local/nginx/lib/lua/?.lua;;\";"
+        fi
         Echo_Red "线上 nginx 未做任何改动。"
         exit 1
     fi
@@ -166,21 +169,6 @@ Upgrade_Nginx()
     else
         Write_Nginx_Proxy_Conf /usr/local/nginx/conf n y ||
             Echo_Red "补齐反代包含文件失败，可手工 cp conf/proxy.conf 到 /usr/local/nginx/conf/。"
-    fi
-    if [ "${Enable_Nginx_Lua}" = 'y' ]; then
-        if ! grep -q 'lua_package_path "/usr/local/nginx/lib/lua/?.lua";' /usr/local/nginx/conf/nginx.conf; then
-            sed -i "/server_tokens off;/i\    lua_package_path \"/usr/local/nginx/lib/lua/?.lua\";\n" /usr/local/nginx/conf/nginx.conf
-        fi
-        if ! grep -q "content_by_lua 'ngx.say(\"hello world\")';" /usr/local/nginx/conf/nginx.conf; then
-            sed -i "/location \/nginx_status/i\        location /lua\n        {\n            default_type text/html;\n            content_by_lua 'ngx.say\(\"hello world\"\)';\n        }\n" /usr/local/nginx/conf/nginx.conf
-        fi
-        # Lua 配置通过语法检查后才重载；失败时保留当前运行配置并提示处理。
-        if ${nginx_bin} -t; then
-            ${nginx_bin} -s reload
-        else
-            Echo_Red "写入 Lua 配置后 nginx -t 未通过，未 reload。"
-            Echo_Red "nginx 仍以升级后的二进制和旧配置运行，请手工检查 nginx.conf。"
-        fi
     fi
 
     echo "下面显示升级后的 Nginx 版本："

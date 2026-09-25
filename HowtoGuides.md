@@ -3239,6 +3239,13 @@ bash uninstall.sh         # 卸载整套环境
 `upgrade.sh` 的 `m2m` 是 MySQL 转 MariaDB，`phpa` 是 Apache 模式的 PHP，
 `mphp` 是多版本 PHP。数据库升级没有自动回滚，务必先备份并在测试环境验证。
 `upgrade.sh php` 会清空 `/usr/local/php/conf.d/`，升级后所有 PHP 扩展都要重装。
+`upgrade.sh nginx` 只替换二进制，不修改 `nginx.conf`，替换前用新二进制对现有配置执行
+`nginx -t`，不通过则中止且线上不变。升级时新启用 `Enable_Nginx_Lua` 的，先在 http 段手工加入：
+
+```nginx
+lua_package_path "/usr/local/nginx/lib/lua/?.lua;;";
+```
+
 Nginx 模块是编译期决定的，增删模块需要重新编译，见
 [8.2.7 安装本项目未提供的 Nginx 模块](#827-安装本项目未提供的-nginx-模块)。
 
