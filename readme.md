@@ -283,6 +283,9 @@ bash upgrade.sh
 bash install.sh mphp
 ```
 
+- 安装时按本机内存为数据库、PHP-FPM（LNMPA/LAMP 为 Apache prefork）、Redis、Memcached
+  和 OPcache 分配参数，由 `lnmp.conf` 的 `Enable_Auto_Tune`（总开关）、`Tune_Mem_MB`
+  （参与计算的内存）和 `Tune_PHP_Proc_MB`（单个 PHP 进程估算）控制。
 - `addons.sh` 安装或卸载 Redis、Memcached 和 PHP 扩展。Redis 同时监听 TCP 回环端口和
   Unix socket `/run/lnmp-redis/redis.sock`，`www` 加入 `redis` 组以便 PHP 经 socket 连接。扩展装完会用
   `php --ri <模块>` 确认 PHP 真的能加载，加载不了或服务重启失败就撤回本次写入的

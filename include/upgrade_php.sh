@@ -356,7 +356,6 @@ if [ "${Stack}" = "lnmp" ]; then
     chmod +x /etc/init.d/php-fpm
     Ensure_Runtime_Directory /run/php-fpm root root || exit 1
     Patch_Init_Runtime_Directory /etc/init.d/php-fpm /run/php-fpm root root || exit 1
-    LNMP_PHP_Opt
 fi
     if [ "${Stack}" != "lnmp" ]; then
         # 清理旧 PHP 5/7 Apache 模块的 LoadModule 残留。

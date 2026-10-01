@@ -73,7 +73,7 @@ Install_MPHP8x()
 
     echo "正在创建新的 php-fpm 配置文件..."
     Write_PHP_FPM_Conf "${MPHP_Path}/etc/php-fpm.conf" "${MPHP_Path}" \
-        "/run/php-fpm/php-cgi${MPHP_Short_Ver}.sock" || return 1
+        "/run/php-fpm/php-cgi${MPHP_Short_Ver}.sock" mphp || return 1
 
     echo "正在复制 php-fpm init.d 服务脚本..."
     \cp ${cur_dir}/src/${Php_Ver}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm${MPHP_Short_Ver}

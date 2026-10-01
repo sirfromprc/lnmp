@@ -56,6 +56,19 @@ Check_Redis_Socket()
     return 1
 }
 
+# 按 Tune_Plan 设置内存上限。未设上限时缓存持续增长会触发 OOM；
+# 淘汰策略 allkeys-lfu 对应缓存用途，作持久存储时应改为 noeviction。
+Set_Redis_Maxmemory()
+{
+    local conf="$1"
+
+    Tune_Plan || return 0
+    sed -i -E '/^[[:space:]]*maxmemory(-policy)?[[:space:]]/d' "${conf}" || return 1
+    printf '\n# LNMP: 内存上限按本机内存计算。\nmaxmemory %smb\nmaxmemory-policy allkeys-lfu\n' \
+        "${Tune_Redis_MB}" >> "${conf}" || return 1
+    grep -Eq "^maxmemory[[:space:]]+${Tune_Redis_MB}mb\$" "${conf}"
+}
+
 # 服务以 redis 账号运行，程序目录必须可遍历、配置可读、数据目录可写。
 # 安装可能继承调用者的严格 umask，因此这里按目标权限显式修正。
 Normalize_Redis_Perms()
@@ -294,10 +307,11 @@ Print_Redis_Install_Summary()
     echo "监听端口（写入 redis.conf 与 /etc/init.d/redis）：${Redis_Port}"
     echo "监听地址：127.0.0.1，防火墙同时阻断该端口的公网访问"
     echo "Unix socket：${Redis_Socket}（www 加入 redis 组后可连接）"
+    Tune_Plan && echo "内存上限（按内存计算）：maxmemory ${Tune_Redis_MB}mb，淘汰策略 allkeys-lfu"
     echo "自测页（Enable_Redis_Test_Page）：${Enable_Redis_Test_Page}"
     if [ -s /usr/local/redis/bin/redis-server ]; then
         Echo_Yellow "已装过 Redis，本次重新编译安装：先停服务，redis.conf 备份为"
-        Echo_Yellow "redis.conf.bak.<时间戳> 后按模板重建，maxmemory 等改过的项会回到默认值。"
+        Echo_Yellow "redis.conf.bak.<时间戳> 后按模板重建，改过的项回到模板值，maxmemory 按内存重新计算。"
     fi
     Echo_Yellow "改端口：改 lnmp.conf 后重跑，或 Redis_Port=6380 bash addons.sh install redis"
     Echo_Yellow "装后改端口：改 redis.conf 并重启服务，再执行 lnmp fw sync"
@@ -485,6 +499,8 @@ Install_Redis()
     chmod 640 /usr/local/redis/etc/redis.conf
     Set_Redis_Loopback_Bind /usr/local/redis/etc/redis.conf || return 1
     Set_Redis_Unix_Socket /usr/local/redis/etc/redis.conf || return 1
+    Set_Redis_Maxmemory /usr/local/redis/etc/redis.conf ||
+        Echo_Yellow "Redis maxmemory 未写入，内存不设上限。"
     # pidfile 放入 Redis 可写目录，满足降权运行要求。
     sed -i 's#^pidfile .*#pidfile /usr/local/redis/var/redis.pid#g' /usr/local/redis/etc/redis.conf
     cd ../

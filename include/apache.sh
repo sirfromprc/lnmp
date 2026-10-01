@@ -1,5 +1,37 @@
 #!/usr/bin/env bash
 
+# 按 Tune_Plan 改写 httpd-mpm.conf 的 prefork 段。mod_php 每个子进程都含 PHP，
+# 上游默认 MaxRequestWorkers 250 远超小内存机器的承载量。
+# MaxConnectionsPerChild 与 PHP-FPM 的 pm.max_requests 一致，定期回收子进程内存。
+Apache_Prefork_Opt()
+{
+    local conf="${1:-/usr/local/apache/conf/extra/httpd-mpm.conf}" tmp
+
+    Tune_Plan || return 0
+    if [ ! -s "${conf}" ]; then
+        Echo_Yellow "未找到 ${conf}，prefork 进程数保持 Apache 默认值。"
+        return 0
+    fi
+    tmp=$(mktemp "${conf}.XXXXXX") || return 1
+    if ! awk -v start="${Tune_Apache_Start}" -v mins="${Tune_Apache_Min_Spare}" \
+            -v maxs="${Tune_Apache_Max_Spare}" -v workers="${Tune_Apache_Workers}" '
+        /^<IfModule mpm_prefork_module>/ { insec = 1 }
+        insec && /^<\/IfModule>/ { insec = 0 }
+        insec && $1 == "StartServers" { $0 = "    StartServers             " start }
+        insec && $1 == "MinSpareServers" { $0 = "    MinSpareServers          " mins }
+        insec && $1 == "MaxSpareServers" { $0 = "    MaxSpareServers          " maxs }
+        insec && $1 == "MaxRequestWorkers" { $0 = "    MaxRequestWorkers        " workers }
+        insec && $1 == "MaxConnectionsPerChild" { $0 = "    MaxConnectionsPerChild   1024" }
+        { print }
+    ' "${conf}" > "${tmp}"; then
+        rm -f "${tmp}"
+        return 1
+    fi
+    chmod --reference="${conf}" "${tmp}" 2>/dev/null
+    mv -f "${tmp}" "${conf}" || return 1
+    grep -Eq "^[[:space:]]+MaxRequestWorkers[[:space:]]+${Tune_Apache_Workers}\$" "${conf}"
+}
+
 Install_Apache_24()
 {
     Echo_Blue "[+] 正在安装 ${Apache_Ver}..."
@@ -55,6 +87,7 @@ Install_Apache_24()
     fi
     \cp ${cur_dir}/conf/httpd-default.conf /usr/local/apache/conf/extra/httpd-default.conf
     \cp ${cur_dir}/conf/mod_remoteip.conf /usr/local/apache/conf/extra/mod_remoteip.conf
+    Apache_Prefork_Opt || Echo_Yellow "prefork 进程数未能按内存调整，保持 Apache 默认值。"
 
     sed -i "s/ServerAdmin you@example.com/ServerAdmin ${ServerAdmin}/g" /usr/local/apache/conf/httpd.conf
     sed -i "s/webmaster@example.com/${ServerAdmin}/g" /usr/local/apache/conf/extra/httpd-vhosts.conf

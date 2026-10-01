@@ -194,7 +194,7 @@ Upgrade_MPHP8x()
 
     echo "正在创建新的 php-fpm 配置文件..."
     Write_PHP_FPM_Conf "${Cur_MPHP_Path}/etc/php-fpm.conf" "${Cur_MPHP_Path}" \
-        "/run/php-fpm/php-cgi${Cur_MPHP_Big_Ver}.sock" || exit 1
+        "/run/php-fpm/php-cgi${Cur_MPHP_Big_Ver}.sock" mphp || exit 1
 
     echo "正在复制 php-fpm init.d 服务脚本..."
     \cp ${cur_dir}/src/php-${php_version}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm${Cur_MPHP_Big_Ver}

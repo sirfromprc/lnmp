@@ -174,6 +174,7 @@ Print_Memcached_Install_Summary()
         Echo_Yellow "php-memcached 另需安装 SASL 开发包并编译 ${Libmemcached_Ver} ，耗时长于 php-memcache 。"
     fi
     echo "监听端口（写入 /etc/init.d/memcached 的 PORT）：${Memcached_Port}"
+    Tune_Plan && echo "缓存大小（按内存计算，写入 CACHESIZE）：${Tune_Memcached_MB} MB"
     echo "监听地址：127.0.0.1，防火墙同时阻断该端口的 TCP 与 UDP 公网访问"
     echo "自测页（Enable_Memcached_Test_Page）：${Enable_Memcached_Test_Page}"
     if [ -s /usr/local/memcached/bin/memcached ]; then
@@ -332,6 +333,11 @@ EOF
     if ! Check_Conf_Applied /etc/init.d/memcached "^PORT=${Memcached_Port}\$"             "Memcached 端口 ${Memcached_Port}"; then
         Memcached_Abort "Memcached init 脚本端口未写入。"
         return 1
+    fi
+    if Tune_Plan; then
+        sed -i "s/^CACHESIZE=.*/CACHESIZE=${Tune_Memcached_MB}/" /etc/init.d/memcached
+        grep -q "^CACHESIZE=${Tune_Memcached_MB}\$" /etc/init.d/memcached ||
+            Echo_Yellow "Memcached 缓存大小未写入 /etc/init.d/memcached，保持 64MB。"
     fi
     chmod +x /etc/init.d/memcached
 

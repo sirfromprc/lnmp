@@ -27,6 +27,7 @@ LNMP_Ver='2.3'
 # version.sh 提供菜单所需的组件版本常量，必须在选择函数执行前载入。
 . "${cur_dir}/include/version.sh"
 . "${cur_dir}/include/main.sh"
+. "${cur_dir}/include/tune.sh"
 . "${cur_dir}/include/verify.sh"
 . "${cur_dir}/include/firewall.sh"
 . "${cur_dir}/include/profile.sh"
@@ -158,7 +159,6 @@ LNMP_Stack()
 {
     Init_Install || return $?
     Install_PHP
-    LNMP_PHP_Opt
     Install_WebServer || return 1
     Creat_PHP_Tools || return 1
     Add_Firewall_Rules

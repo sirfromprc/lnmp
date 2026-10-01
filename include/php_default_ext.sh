@@ -65,8 +65,9 @@ EOF
 # OPcache 必须使用 zend_extension 指令加载。
 Enable_Opcache_Config()
 {
-    local ext_dir
+    local ext_dir opcache_mb=128
     ext_dir=$(PHP_Ext_Dir)
+    Tune_Plan && opcache_mb="${Tune_Opcache_MB}"
 
     if [ ! -s "${ext_dir}/opcache.so" ]; then
         Echo_Red "opcache.so 不存在，跳过（PHP 编译时未带 --enable-opcache？）"
@@ -80,7 +81,7 @@ Enable_Opcache_Config()
 zend_extension = "${ext_dir}/opcache.so"
 opcache.enable = 1
 opcache.enable_cli = 1
-opcache.memory_consumption = 128
+opcache.memory_consumption = ${opcache_mb}
 opcache.interned_strings_buffer = 8
 opcache.max_accelerated_files = 10000
 opcache.revalidate_freq = 60

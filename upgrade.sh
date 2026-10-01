@@ -22,6 +22,7 @@ Upgrade_Date=$(date +"%Y%m%d%H%M%S")
 . "${cur_dir}/lnmp.conf"
 . "${cur_dir}/include/version.sh"
 . "${cur_dir}/include/main.sh"
+. "${cur_dir}/include/tune.sh"
 . "${cur_dir}/include/verify.sh"
 . "${cur_dir}/include/firewall.sh"
 . "${cur_dir}/include/profile.sh"

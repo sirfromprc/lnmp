@@ -716,6 +716,9 @@ curl http://127.0.0.1:1008/lua
 | `Enable_Ngx_CachePurge` | `y` | 编译缓存清除模块；不使用 Nginx/FastCGI 缓存可关闭 |
 | `Enable_Ngx_FancyIndex` | `n` | 目录美化索引；公开生产站一般保持关闭 |
 | `Enable_Swap` | `y` | 缺少 Swap 时创建 swapfile；它只缓冲突发内存，不是增加 FPM worker 的理由 |
+| `Enable_Auto_Tune` | `y` | 按本机内存写数据库、PHP-FPM、Apache prefork、Redis、Memcached、OPcache 的参数，取值见 6.6；`n` 时用各模板固定值 |
+| `Tune_Mem_MB` | 空 | 参与计算的内存（MB）；空值取 `MemTotal` 与 cgroup 限额的较小者；与其它服务共用机器时填分给本栈的部分 |
+| `Tune_PHP_Proc_MB` | `100` | 单个 PHP 进程高峰内存估算，决定 `pm.max_children` 与 `MaxRequestWorkers`；WooCommerce、页面构建器调大到 150～200 |
 | `Enable_Composer` | `y` | 安装主 PHP 时同时安装 Composer；不需要时设 `n` |
 | `Enable_PHP_Default_Opcache` | `y` | WordPress 必需的主要 PHP 性能层，保持开启 |
 | `Enable_PHP_Default_Igbinary` | `y` | phpredis 紧凑序列化支持；使用 Redis 时建议保留 |
@@ -1880,19 +1883,17 @@ OPcache 已由 `Enable_PHP_Default_Opcache=y` 默认安装，配置在
 
 配置文件`/usr/local/php/etc/php-fpm.conf`，本项目安装时会自动配置，可自行修改。
 
-项目先生成 `pm=dynamic`、`pm.max_children=10`，随后按机器总内存自动改为：
+安装时按 6.6 的预算自动生成（`Enable_Auto_Tune=y`）：
 
-| 总内存 | 项目生成的 `max_children` | 同时生成的 `start/min/max_spare` |
-|---:|---:|---:|
-| `<=1GB` | 10 | 2 / 1 / 6 |
-| `>1GB, <=2GB` | 20 | 10 / 10 / 20 |
-| `>2GB, <=4GB` | 40 | 20 / 20 / 40 |
-| `>4GB, <=8GB` | 60 | 30 / 30 / 60 |
-| `>8GB` | 80 | 40 / 40 / 80 |
+- `pm.max_children` = PHP 份额 ÷ `Tune_PHP_Proc_MB`（默认 100MB），范围 4～300。
+- 内存小于 3GB 用 `pm=ondemand` 并写 `pm.process_idle_timeout=10s`；3GB 及以上用
+  `pm=dynamic`，`start_servers` 与 `min_spare_servers` 取 CPU 核数，`max_spare_servers`
+  取核数的 2 倍，均不超过上限的 1/4 与 1/2。
+- 多版本 PHP 的池固定 `ondemand`，上限为主版本的一半，未使用的版本不常驻进程。
+- `Enable_Auto_Tune=n` 时保持模板值 `dynamic`、`max_children=10`、`2/1/6`。
 
-这是**本项目程序自动行为，但不是本指南的推荐值**。它只看总内存，没有扣除数据库、Redis、
-OPcache、内核页缓存和备份任务；特别是 `start_servers=30/40` 会在低流量 VPS 常驻很多
-空闲 worker。混部 WordPress 应按 6.6 的起点下调。
+生成值是按估算的起点。站点插件较重时，按下面的公式用实测 PSS 校正，或调大
+`Tune_PHP_Proc_MB` 后重装 PHP。
 
 容量公式使用真实高峰数据：
 
@@ -1924,11 +1925,13 @@ journalctl -k --since today | grep -Ei 'oom|out of memory|killed process'
 > `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
 > 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
-MySQL 与 MariaDB 安装都调用项目的 `MySQL_Opt`：按总内存把
-`innodb_buffer_pool_size` 设为 128M（1～2GB）、256M（2～4GB）、512M（4～8GB），
-同时固定 `max_connections=500`，并随内存放大 `sort_buffer_size`、`read_buffer_size` 等
-连接级 buffer。这是程序实际生成值，不代表两种引擎在 WordPress 混部 VPS 上都应保持
-500 个连接。FPM worker 才是主要数据库并发来源，连接级 buffer 会在活跃连接上叠加。
+MySQL 与 MariaDB 的安装和升级都调用项目的 `MySQL_Opt`，按 6.6 的预算只改 `[mysqld]` 段：
+`innodb_buffer_pool_size`、`innodb_log_file_size`（缓冲池的 1/4，MySQL 8.4 再换算为
+`innodb_redo_log_capacity`）、`max_connections`（FPM 或 Apache 进程上限的 1.5 倍加 20，
+范围 40～500；单装数据库保持 500）、`thread_cache_size`、`table_open_cache`、
+`tmp_table_size` 与 `max_heap_table_size`（2GB 以下 16M，以上 32M），并把 MariaDB 的
+`query_cache_size` 设为 0。连接级 buffer（`sort_buffer_size`、`read_buffer_size` 等）保持
+模板的小值；Performance Schema 保持引擎默认，不为省内存关闭。
 
 认证配置也必须按引擎区分。MySQL 8.x 模板不再开启已废弃的
 `mysql_native_password`，新用户使用 MySQL 上游默认认证；不要为了兼容单个旧客户端在服务端
@@ -1969,7 +1972,7 @@ WordPress 核心对两者都支持，常规文章/用户/元数据查询也很�
 | 维度 | MySQL 8.4 LTS | MariaDB 10.11 / 11.4 / 11.8 | 对 WordPress 的意义 |
 |---|---|---|---|
 | 项目默认选择 | `DBSelect=2`，官方通用二进制 | `DBSelect=3/4/5`，官方通用二进制 | x86_64 都优先 `Bin=y`，不要为“优化”源码编译 |
-| 查询缓存 | MySQL 8 已删除 | 仍提供；项目模板会设置并随内存放大 `query_cache_size` | 写入会使相关结果失效并产生同步开销；现代动态站默认关闭更可预测 |
+| 查询缓存 | MySQL 8 已删除 | 仍提供；项目安装时设 `query_cache_size=0` 关闭 | 写入会使相关结果失效并产生同步开销；现代动态站默认关闭更可预测 |
 | 优化器/统计信息 | MySQL 8.4 的 optimizer、histogram 与 EXPLAIN 行为 | 已与 MySQL 分叉，优化器开关、统计信息和执行计划不同 | 慢 SQL 必须在目标引擎上 `EXPLAIN`，不能复制另一引擎的 hint/变量 |
 | redo 配置 | 项目将旧项换成 `innodb_redo_log_capacity` | 保留 MariaDB 自身的 InnoDB redo 参数 | 不要把 MySQL 8.4 的 redo 变量写进 MariaDB，或反向照搬 |
 | 额外协议 | 有 X Protocol，项目通过 `DB_X_Port` 和回环绑定收口 | 没有 MySQL X Protocol | WordPress 不使用 X Protocol；确认无其它客户端依赖时可评估 `mysqlx=OFF` |
@@ -1983,13 +1986,13 @@ MariaDB 备份、监控和故障处理经验时选 MariaDB LTS 同样合理。�
 #### MariaDB 的起始优化
 
 MariaDB 与 MySQL 的 buffer pool **使用同一份整机内存预算**，不因名字不同就多分内存。
-但当前项目会启用并放大 MariaDB query cache；对有后台编辑、评论、电商订单或定时任务的
-WordPress，建议先关闭，再通过真实对照测试决定是否恢复：
+项目安装时已把 MariaDB 的 `query_cache_size` 设为 0。对有后台编辑、评论、电商订单或
+定时任务的 WordPress 保持关闭；需要恢复时先做真实对照测试，确认后再写回：
 
 ```ini
 [mysqld]
-query_cache_type = 0
-query_cache_size = 0
+query_cache_type = 1
+query_cache_size = 64M
 ```
 
 不要只看 `Qcache_hits` 很高就认定有效：还要同时看写入延迟、CPU、锁等待和 HTTP p95。
@@ -2029,17 +2032,17 @@ WordPress 常见的第一收益仍是删除低效插件/查询、补正确索引
 > `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
 > 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
-项目安装的 Redis 默认没有 `maxmemory`，这意味着对象缓存可以一直增长到系统开始回收
-甚至 OOM。只把该实例用于可重建的 WordPress 对象缓存时，应在
-`/usr/local/redis/etc/redis.conf` 设硬上限和淘汰策略：
+项目安装 Redis 时按内存写入 `maxmemory`（内存的 1/16，范围 32MB～4GB）和
+`maxmemory-policy allkeys-lfu`，位于 `/usr/local/redis/etc/redis.conf` 末尾的 LNMP 段：
 
 ```conf
-maxmemory 128mb
+maxmemory 493mb
 maxmemory-policy allkeys-lfu
 ```
 
 `allkeys-lfu` 适合“所有 key 都是缓存”的独立实例。若同一实例还存 session、队列或任何
-不能随时丢的数据，就不能套用这条策略，应拆实例或使用明确 TTL/ACL。缓存专用实例可按
+不能随时丢的数据，就不能套用这条策略，应改为 `noeviction` 并按数据量设上限，或拆实例、
+使用明确 TTL/ACL。缓存专用实例可按
 恢复时间目标决定是否关闭 RDB/AOF；混用实例不得为省 I/O 关闭持久化。
 
 修改前后用真实数据核对：
@@ -2067,6 +2070,32 @@ key 前缀、TTL 和插件行为，再决定扩容；低流量站点甚至可能
 | 3～4GB | 512M | 40～50 | 128～256M | `ondemand` 或 `dynamic`，`max_children=12~20` | 700M～1G |
 | 5～8GB | 1G～1.5G | 60～80 | 256～512M | `dynamic`，`max_children=24~40` | 1G～1.5G |
 | 8GB 以上 | 先给整机 20～30%，再按工作集调 | FPM 总 worker + 20 | 先给 5～10%，按命中/淘汰调 | 用实测高峰 PSS 计算，不固定照抄 80 | 至少 15～20% |
+
+`Enable_Auto_Tune=y`（默认）时安装按同一思路自动计算，各档生成值如下（LNMP 栈、
+同机数据库、`Tune_PHP_Proc_MB=100`）：
+
+| `MemTotal` | 缓冲池 | `max_connections` | Redis `maxmemory` | PHP-FPM | OPcache |
+|---:|---:|---:|---:|---|---:|
+| 960MB | 128M | 40 | 60M | `ondemand`，4 | 64M |
+| 1950MB | 256M | 40 | 121M | `ondemand`，6 | 128M |
+| 3900MB | 512M | 48 | 243M | `dynamic`，19 | 128M |
+| 7900MB | 1G | 86 | 493M | `dynamic`，44 | 256M |
+| 15900MB | 3G | 149 | 993M | `dynamic`，86 | 256M |
+
+计算顺序：系统余量 256MB + 内存的 15%；Redis 与 Memcached 各占内存的 1/16（Memcached
+与 Redis 同时安装时两者都占用）；缓冲池 8GB 以内为内存的 1/8，以上逐步提高到 20%～30%，
+1G 以下按 128M、以上按 1G 取整；数据库另计 256MB 连接与内部结构开销；其余给 PHP。
+LNMPA、LAMP 的 Apache prefork `MaxRequestWorkers` 按 PHP 份额 ÷（估算值 + 16MB）计算，
+范围 6～256。单装数据库（`install.sh db`）时缓冲池取除系统余量外的大部分内存。
+
+计算结果在安装确认摘要中列出。与其它服务共用机器时先设 `Tune_Mem_MB`，例如：
+
+```bash
+Tune_Mem_MB=4096 Tune_PHP_Proc_MB=150 ./install.sh lnmp
+```
+
+`upgrade.sh` 升级数据库或 PHP 时会重建对应配置并按当前内存重算，手工改过的值会被覆盖；
+其余已安装的组件不会自动重算，按上表或 6.3～6.5 手工修改后重启服务。
 
 1GB 机器只能承载轻量站点，编译阶段和插件更新阶段都容易触发内存峰值；优先用数据库
 通用二进制、减少插件、开启页面缓存/CDN，并避免在流量高峰做备份压缩。5GB 以上也不是
@@ -3361,6 +3390,8 @@ lnmp pureftpd restart                 # Pure-FTPd 有 lnmp 子命令
 | `port` | `lnmp.conf` 的 `Redis_Port` | 默认 6379 |
 | `unixsocket` | `/run/lnmp-redis/redis.sock` | 目录由 unit 的 `RuntimeDirectory` 或 SysV 脚本创建，路径不要移出该目录 |
 | `unixsocketperm` | `770` | `redis` 组可读写，`www` 已加入该组 |
+| `maxmemory` | 内存的 1/16（32MB～4GB） | `Enable_Auto_Tune=n` 时不写，内存不设上限 |
+| `maxmemory-policy` | `allkeys-lfu` | 缓存用途；存放不可丢数据时改为 `noeviction` |
 | `daemonize` | `no` | unit 用 `Type=simple` 直接跟踪主进程 |
 | `dir` | `/usr/local/redis/var` | 固定数据目录 |
 | `logfile` | `/usr/local/redis/var/redis.log` | Redis 自身错误写这里，不进 journal |
@@ -3382,9 +3413,9 @@ lnmp pureftpd restart                 # Pure-FTPd 有 lnmp 子命令
 常用的自定义项：
 
 ```bash
-# 内存上限与淘汰策略，容量取值依据见 6.5
+# 内存上限与淘汰策略，安装时已按内存写入，容量取值依据见 6.5
 maxmemory 512mb
-maxmemory-policy allkeys-lru
+maxmemory-policy allkeys-lfu
 
 # 纯缓存用途可关闭持久化，减少磁盘写入；缓存丢失后由应用重建
 save ""

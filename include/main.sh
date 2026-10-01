@@ -1505,6 +1505,7 @@ Print_APP_Ver()
         echo "${TCMalloc_Ver}"
     fi
     [ "${DB_Kind}" != "none" ] && echo "启用 InnoDB：${InstallInnodb}"
+    Tune_Print_Summary
     echo "lnmp.conf 配置信息："
     echo "下载来源：仅限上游官方来源"
     echo "完整性校验：${Enable_Download_Checksum}"
@@ -1606,6 +1607,7 @@ Print_DB_Only_Summary()
     fi
     echo "数据目录：${DB_Data_Dir}"
     echo "启用 InnoDB：${InstallInnodb}"
+    Tune_Print_Summary
     echo "完整性校验：${Enable_Download_Checksum}"
     echo "数据库端口（防火墙将阻止公网访问）：${DB_Port} / ${DB_X_Port}"
     ssh_ports=$(Get_Actual_SSH_Port | paste -sd ' ' -)

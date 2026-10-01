@@ -2,6 +2,8 @@
 
 Install_Opcache()
 {
+    local opcache_mb=128
+    Tune_Plan && opcache_mb="${Tune_Opcache_MB}"
 
     echo "====== 正在安装 Zend OPcache ======"
     Press_Start || return 1
@@ -16,7 +18,7 @@ Install_Opcache()
         cat >${PHP_Path}/conf.d/004-opcache.ini<<EOF
 [Zend Opcache]
 zend_extension="opcache.so"
-opcache.memory_consumption=128
+opcache.memory_consumption=${opcache_mb}
 opcache.interned_strings_buffer=8
 opcache.max_accelerated_files=4000
 opcache.revalidate_freq=60

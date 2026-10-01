@@ -206,17 +206,31 @@ Ln_PHP_Bin()
 
 # PHP-FPM pool 配置。安装、多版本安装与两条升级路径共用同一份，
 # 避免四条路径的进程回收和超时参数出现漂移。
-# 参数：目标配置文件 安装前缀 socket 路径
+# 参数：目标配置文件 安装前缀 socket 路径 [mphp]
+# 进程数取自 Tune_Plan；多版本 PHP 固定 ondemand，未使用的版本不常驻进程。
 Write_PHP_FPM_Conf()
 {
-    local conf="$1" prefix="$2" sock="$3"
+    local conf="$1" prefix="$2" sock="$3" role="${4:-main}" pm_block
 
     if [ -z "${conf}" ] || [ -z "${prefix}" ] || [ -z "${sock}" ]; then
         Echo_Red "生成 php-fpm.conf 缺少参数。"
         return 1
     fi
+    printf -v pm_block 'pm = dynamic\npm.max_children = 10\npm.start_servers = 2\npm.min_spare_servers = 1\npm.max_spare_servers = 6'
+    if Tune_Plan; then
+        if [ "${role}" = "mphp" ]; then
+            printf -v pm_block 'pm = ondemand\npm.max_children = %s\npm.process_idle_timeout = 10s' \
+                "${Tune_MPHP_Children}"
+        elif [ "${Tune_FPM_PM}" = "ondemand" ]; then
+            printf -v pm_block 'pm = ondemand\npm.max_children = %s\npm.process_idle_timeout = 10s' \
+                "${Tune_FPM_Children}"
+        else
+            printf -v pm_block 'pm = dynamic\npm.max_children = %s\npm.start_servers = %s\npm.min_spare_servers = %s\npm.max_spare_servers = %s' \
+                "${Tune_FPM_Children}" "${Tune_FPM_Start}" "${Tune_FPM_Min_Spare}" "${Tune_FPM_Max_Spare}"
+        fi
+    fi
     # socket 的访问边界来自 owner/group/mode；listen.allowed_clients 只对
-    # TCP 监听生效，不写入。pm.process_idle_timeout 只对 pm=ondemand 生效，同样不写。
+    # TCP 监听生效，不写入。
     if ! cat >"${conf}"<<EOF
 [global]
 pid = ${prefix}/var/run/php-fpm.pid
@@ -231,11 +245,7 @@ listen.group = www
 listen.mode = 0660
 user = www
 group = www
-pm = dynamic
-pm.max_children = 10
-pm.start_servers = 2
-pm.min_spare_servers = 1
-pm.max_spare_servers = 6
+${pm_block}
 pm.max_requests = 1024
 ; 硬超时高于 php.ini 的 max_execution_time(300)：让脚本先按 PHP 的限制超时
 ; 返回，而不是在正常执行中途被 FPM 杀掉连接。
@@ -438,32 +448,6 @@ Install_PHP_82() { Install_PHP_8x; }
 Install_PHP_83() { Install_PHP_8x; }
 Install_PHP_84() { Install_PHP_8x; }
 Install_PHP_85() { Install_PHP_8x; }
-
-LNMP_PHP_Opt()
-{
-    if [[ ${MemTotal} -gt 1024 && ${MemTotal} -le 2048 ]]; then
-        sed -i "s#pm.max_children.*#pm.max_children = 20#" /usr/local/php/etc/php-fpm.conf
-        sed -i "s#pm.start_servers.*#pm.start_servers = 10#" /usr/local/php/etc/php-fpm.conf
-        sed -i "s#pm.min_spare_servers.*#pm.min_spare_servers = 10#" /usr/local/php/etc/php-fpm.conf
-        sed -i "s#pm.max_spare_servers.*#pm.max_spare_servers = 20#" /usr/local/php/etc/php-fpm.conf
-    elif [[ ${MemTotal} -gt 2048 && ${MemTotal} -le 4096 ]]; then
-        sed -i "s#pm.max_children.*#pm.max_children = 40#" /usr/local/php/etc/php-fpm.conf
-        sed -i "s#pm.start_servers.*#pm.start_servers = 20#" /usr/local/php/etc/php-fpm.conf
-        sed -i "s#pm.min_spare_servers.*#pm.min_spare_servers = 20#" /usr/local/php/etc/php-fpm.conf
-        sed -i "s#pm.max_spare_servers.*#pm.max_spare_servers = 40#" /usr/local/php/etc/php-fpm.conf
-    elif [[ ${MemTotal} -gt 4096 && ${MemTotal} -le 8192 ]]; then
-        sed -i "s#pm.max_children.*#pm.max_children = 60#" /usr/local/php/etc/php-fpm.conf
-        sed -i "s#pm.start_servers.*#pm.start_servers = 30#" /usr/local/php/etc/php-fpm.conf
-        sed -i "s#pm.min_spare_servers.*#pm.min_spare_servers = 30#" /usr/local/php/etc/php-fpm.conf
-        sed -i "s#pm.max_spare_servers.*#pm.max_spare_servers = 60#" /usr/local/php/etc/php-fpm.conf
-    elif [[ ${MemTotal} -gt 8192 ]]; then
-        sed -i "s#pm.max_children.*#pm.max_children = 80#" /usr/local/php/etc/php-fpm.conf
-        sed -i "s#pm.start_servers.*#pm.start_servers = 40#" /usr/local/php/etc/php-fpm.conf
-        sed -i "s#pm.min_spare_servers.*#pm.min_spare_servers = 40#" /usr/local/php/etc/php-fpm.conf
-        sed -i "s#pm.max_spare_servers.*#pm.max_spare_servers = 80#" /usr/local/php/etc/php-fpm.conf
-    fi
-}
-
 
 Creat_PHP_Tools()
 {
