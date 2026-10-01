@@ -283,7 +283,8 @@ bash upgrade.sh
 bash install.sh mphp
 ```
 
-- `addons.sh` 安装或卸载 Redis、Memcached 和 PHP 扩展。扩展装完会用
+- `addons.sh` 安装或卸载 Redis、Memcached 和 PHP 扩展。Redis 同时监听 TCP 回环端口和
+  Unix socket `/run/lnmp-redis/redis.sock`，`www` 加入 `redis` 组以便 PHP 经 socket 连接。扩展装完会用
   `php --ri <模块>` 确认 PHP 真的能加载，加载不了或服务重启失败就撤回本次写入的
   `conf.d` 配置并返回非零。
 - `pureftpd.sh` 管理 Pure-FTPd 安装。

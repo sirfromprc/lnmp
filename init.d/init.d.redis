@@ -24,6 +24,7 @@ REDIS_CLI=/usr/local/redis/bin/redis-cli
 PIDFILE=/usr/local/redis/var/redis.pid
 CONF="/usr/local/redis/etc/redis.conf"
 RUNAS=redis
+SOCKDIR=/run/lnmp-redis
 # 兼容入口必须后台运行：redis.conf 按 systemd 前台模式配置，这里在命令行显式覆盖，
 # 并固定 pid 文件位置，保证本脚本的状态判断与实际进程一致。
 DAEMON_OPTS="--daemonize yes --pidfile ${PIDFILE}"
@@ -74,6 +75,9 @@ case "$1" in
             echo "正在删除失效的 pid 文件 $PIDFILE"
             rm -f "$PIDFILE"
         fi
+        # Unix socket 目录与 systemd RuntimeDirectory 保持同一属主和权限。
+        mkdir -p "$SOCKDIR" && chmod 750 "$SOCKDIR"
+        id -u "${RUNAS}" >/dev/null 2>&1 && chown "${RUNAS}:${RUNAS}" "$SOCKDIR"
         echo -n "正在启动 Redis 服务..."
         Redis_Exec
         rc=$?

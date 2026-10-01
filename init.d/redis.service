@@ -32,6 +32,10 @@ TimeoutStopSec=90
 Restart=on-failure
 RestartSec=3
 PrivateTmp=true
+# Unix socket 目录：redis 组成员（www）可进入，停止后由 systemd 清理；
+# 不用 redis，避免与发行版 redis-server.service 共用目录而被对方停止时删除。
+RuntimeDirectory=lnmp-redis
+RuntimeDirectoryMode=0750
 
 # 限制 Redis 访问不需要的系统资源。
 NoNewPrivileges=true

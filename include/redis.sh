@@ -14,6 +14,48 @@ Set_Redis_Loopback_Bind()
         'Redis 回环监听地址' || return 1
 }
 
+# 本机 PHP 经 Unix socket 连接，免去 TCP 栈开销；TCP 回环监听同时保留。
+# 目录 /run/lnmp-redis 由 systemd RuntimeDirectory 或 SysV 脚本在启动前创建。
+Redis_Socket='/run/lnmp-redis/redis.sock'
+
+Set_Redis_Unix_Socket()
+{
+    local conf="$1"
+
+    sed -i -E '/^[[:space:]]*unixsocket(perm)?[[:space:]]/d' "${conf}" || return 1
+    printf '\n# LNMP: 本机 PHP 经 Unix socket 连接，redis 组成员可读写。\nunixsocket %s\nunixsocketperm 770\n' \
+        "${Redis_Socket}" >> "${conf}" || return 1
+    Check_Conf_Applied "${conf}" "^unixsocket[[:space:]]+${Redis_Socket}\$" 'Redis Unix socket' || return 1
+    Check_Conf_Applied "${conf}" '^unixsocketperm[[:space:]]+770$' 'Redis Unix socket 权限' || return 1
+}
+
+# PHP 运行账号 www 需属于 redis 组才能连接 socket；PHP 重启后新组生效。
+Grant_Redis_Socket_Access()
+{
+    id -u www >/dev/null 2>&1 || return 0
+    id -nG www 2>/dev/null | tr ' ' '\n' | grep -qx redis && return 0
+    if ! usermod -aG redis www; then
+        Echo_Yellow "未能把 www 加入 redis 组，PHP 只能经 TCP 连接 Redis。"
+        Echo_Yellow "手工处理：usermod -aG redis www，然后重启 PHP。"
+        return 1
+    fi
+    return 0
+}
+
+# 以 www 身份经 socket 应答才算可用；失败只提示，TCP 连接不受影响。
+Check_Redis_Socket()
+{
+    local out=''
+
+    command -v runuser >/dev/null 2>&1 || return 0
+    id -u www >/dev/null 2>&1 || return 0
+    out=$(timeout 5 runuser -u www -- /usr/local/redis/bin/redis-cli -s "${Redis_Socket}" ping 2>&1)
+    [ "${out}" = 'PONG' ] && return 0
+    Echo_Yellow "www 账号无法经 ${Redis_Socket} 连接 Redis：${out}"
+    Echo_Yellow "排查：ls -ld /run/lnmp-redis ${Redis_Socket}；id www"
+    return 1
+}
+
 # 服务以 redis 账号运行，程序目录必须可遍历、配置可读、数据目录可写。
 # 安装可能继承调用者的严格 umask，因此这里按目标权限显式修正。
 Normalize_Redis_Perms()
@@ -251,6 +293,7 @@ Print_Redis_Install_Summary()
     echo "服务端：${Redis_Stable_Ver}；PHP 扩展：${PHPRedis_Ver}"
     echo "监听端口（写入 redis.conf 与 /etc/init.d/redis）：${Redis_Port}"
     echo "监听地址：127.0.0.1，防火墙同时阻断该端口的公网访问"
+    echo "Unix socket：${Redis_Socket}（www 加入 redis 组后可连接）"
     echo "自测页（Enable_Redis_Test_Page）：${Enable_Redis_Test_Page}"
     if [ -s /usr/local/redis/bin/redis-server ]; then
         Echo_Yellow "已装过 Redis，本次重新编译安装：先停服务，redis.conf 备份为"
@@ -441,6 +484,7 @@ Install_Redis()
     chown root:redis /usr/local/redis/etc/redis.conf
     chmod 640 /usr/local/redis/etc/redis.conf
     Set_Redis_Loopback_Bind /usr/local/redis/etc/redis.conf || return 1
+    Set_Redis_Unix_Socket /usr/local/redis/etc/redis.conf || return 1
     # pidfile 放入 Redis 可写目录，满足降权运行要求。
     sed -i 's#^pidfile .*#pidfile /usr/local/redis/var/redis.pid#g' /usr/local/redis/etc/redis.conf
     cd ../
@@ -487,6 +531,7 @@ EOF
     chmod 755 /usr/local/redis/bin/redis-preflight
     chmod +x /etc/init.d/redis
     Normalize_Redis_Perms
+    Grant_Redis_Socket_Access
     if ! Check_Redis_Runtime_Access; then
         Restore_Existing_PHPRedis
         return 1
@@ -502,6 +547,7 @@ EOF
     fi
     Start_Redis_Service "${Redis_Port}"
     local Redis_Started=$?
+    [ "${Redis_Started}" -eq 0 ] && Check_Redis_Socket
 
     # 测试页无鉴权、暴露 Redis 版本且会写入缓存，因此默认不部署。
     if [ "${Enable_Redis_Test_Page}" = "y" ]; then
@@ -550,6 +596,7 @@ Uninstall_Redis()
     echo "正在删除 Redis 文件..."
     rm -rf /usr/local/redis
     rm -rf /etc/init.d/redis
+    rm -rf /run/lnmp-redis
     rm -f /usr/bin/redis-cli
     # 该 sysctl 文件由安装 Redis 时创建，卸载后一并删除；运行中的内核值不回改，
     # 避免影响其它正在运行的服务，重启后恢复系统默认。

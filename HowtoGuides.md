@@ -914,6 +914,9 @@ redis-cli ping
 
 redis-cli config get dir
 # /usr/local/redis/var
+
+redis-cli -s /run/lnmp-redis/redis.sock ping
+# PONG
 ```
 
 Redis 的安全默认值（本包已配好，不要随意放开）：
@@ -922,6 +925,25 @@ Redis 的安全默认值（本包已配好，不要随意放开）：
 - nftables 里 `tcp dport 6379 drop`
 - 数据目录 `/usr/local/redis/var`，日志 `/usr/local/redis/var/redis.log`
 - 以专用低权限账号 `redis` 运行（不是 root）
+- Unix socket `/run/lnmp-redis/redis.sock`，权限 770；`www` 加入 `redis` 组后可连接，TCP 同时保留
+
+本机 PHP 推荐经 socket 连接，WordPress redis-cache 插件写法：
+
+```php
+define( 'WP_REDIS_SCHEME', 'unix' );
+define( 'WP_REDIS_PATH', '/run/lnmp-redis/redis.sock' );
+```
+
+socket 连接失败时排查：
+
+```bash
+ls -ld /run/lnmp-redis /run/lnmp-redis/redis.sock
+# drwxr-x--- redis redis ... /run/lnmp-redis
+# srwxrwx--- redis redis ... /run/lnmp-redis/redis.sock
+id www
+# groups 中应含 redis；不含时执行 usermod -aG redis www 后重启 PHP
+runuser -u www -- redis-cli -s /run/lnmp-redis/redis.sock ping
+```
 
 > **回环监听是必要条件，不是充分条件。**
 >
@@ -1554,9 +1576,9 @@ ${SALT}
 
 \$table_prefix = 'wp_';
 
-/* Redis 对象缓存（redis-cache 插件读取这些常量） */
-define( 'WP_REDIS_HOST', '127.0.0.1' );
-define( 'WP_REDIS_PORT', 6379 );
+/* Redis 对象缓存（redis-cache 插件读取这些常量），经 Unix socket 连接 */
+define( 'WP_REDIS_SCHEME', 'unix' );
+define( 'WP_REDIS_PATH', '/run/lnmp-redis/redis.sock' );
 define( 'WP_REDIS_DATABASE', 0 );
 define( 'WP_REDIS_PREFIX', 'wpdemo:' );
 
@@ -3337,6 +3359,8 @@ lnmp pureftpd restart                 # Pure-FTPd 有 lnmp 子命令
 |---|---|---|
 | `bind` | `127.0.0.1 -::1` | 只监听回环，同时 nftables 阻断 `Redis_Port` |
 | `port` | `lnmp.conf` 的 `Redis_Port` | 默认 6379 |
+| `unixsocket` | `/run/lnmp-redis/redis.sock` | 目录由 unit 的 `RuntimeDirectory` 或 SysV 脚本创建，路径不要移出该目录 |
+| `unixsocketperm` | `770` | `redis` 组可读写，`www` 已加入该组 |
 | `daemonize` | `no` | unit 用 `Type=simple` 直接跟踪主进程 |
 | `dir` | `/usr/local/redis/var` | 固定数据目录 |
 | `logfile` | `/usr/local/redis/var/redis.log` | Redis 自身错误写这里，不进 journal |
