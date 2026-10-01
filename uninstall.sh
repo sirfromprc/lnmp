@@ -142,6 +142,7 @@ Common_Uninstall_Targets()
         /etc/systemd/system/lnmp-health.service
         /etc/systemd/system/lnmp-cutlogs.timer
         /etc/systemd/system/lnmp-cutlogs.service
+        /etc/logrotate.d/lnmp
         /etc/systemd/system/lnmp-perm.timer
         /etc/systemd/system/lnmp-perm.service
         /etc/cron.d/lnmp-backup

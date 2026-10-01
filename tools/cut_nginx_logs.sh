@@ -124,7 +124,8 @@ if [ ${#log_files_name[@]} -eq 0 ]; then
             target="${log_files_dir}/${name%.log}_${yesterday}.log"
         fi
 
-        [ -f "$file" ] || continue
+        # 空文件不归档，避免每天为无访问的站点生成空归档。
+        [ -s "$file" ] || continue
 
         mv "$file" "$target" || exit 1
     done
@@ -146,12 +147,12 @@ else
         fi
 
         file="${log_files_path}${name}.log"
-        if [ -f "$file" ]; then
+        if [ -s "$file" ]; then
             mv "$file" "${dest}/${logfile}_${yesterday}.log" || exit 1
         fi
 
         file="${log_files_path}${name}.error.log"
-        if [ -f "$file" ]; then
+        if [ -s "$file" ]; then
             mv "$file" "${dest}/${logfile}.error_${yesterday}.log" || exit 1
         fi
     done

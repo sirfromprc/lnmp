@@ -1151,6 +1151,112 @@ Download_Files()
 # Check_Conf_Applied <文件> <期望匹配的正则> <说明>
 # 配置模板改动可能使 sed 未命中却仍返回成功，因此写入后验证目标值，
 # 防止服务监听端口与防火墙放行端口不一致。
+# 服务与工具日志交给系统 logrotate 轮转；/home/wwwlogs 下的 Web 日志由 lnmp-cutlogs
+# 按日期归档，不在此列。路径带通配与 missingok，未安装的组件不报错；
+# 目录属主非 root 的日志用 su 降权处理。重复调用按当前安装状态重写。
+Install_Logrotate_Conf()
+{
+    local conf="${1:-/etc/logrotate.d/lnmp}" mycnf="${2:-/etc/my.cnf}"
+    local datadir='' db_user='' db_group='' tmp
+
+    if ! command -v logrotate >/dev/null 2>&1; then
+        Echo_Yellow "未安装 logrotate，Redis、PHP-FPM、数据库错误日志与 /var/log/lnmp 不会轮转。"
+        Echo_Yellow "安装后重跑本次安装，或执行：apt-get install logrotate"
+        return 0
+    fi
+    if [ -s "${mycnf}" ]; then
+        datadir=$(awk '/^\[/ { s = ($0 ~ /^\[mysqld\][[:space:]]*$/); next }
+            s && /^datadir[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, ""); sub(/[[:space:]]+$/, ""); print; exit }' "${mycnf}")
+    fi
+    if [ -n "${datadir}" ] && [ -d "${datadir}" ]; then
+        db_user=$(stat -c %U "${datadir}" 2>/dev/null)
+        db_group=$(stat -c %G "${datadir}" 2>/dev/null)
+    fi
+
+    tmp=$(mktemp) || return 1
+    {
+        cat <<'EOF'
+# 由 LNMP 安装生成，重新安装组件时覆盖。/home/wwwlogs 由 lnmp-cutlogs 处理。
+/usr/local/php/var/log/php-fpm.log /usr/local/php[0-9]*/var/log/php-fpm.log {
+    weekly
+    maxsize 10M
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    sharedscripts
+    postrotate
+        for pid in /usr/local/php/var/run/php-fpm.pid /usr/local/php[0-9]*/var/run/php-fpm.pid; do
+            [ -s "$pid" ] && kill -USR1 "$(cat "$pid")" 2>/dev/null
+        done
+        true
+    endscript
+}
+
+/var/log/lnmp/*.log {
+    weekly
+    maxsize 10M
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+}
+EOF
+        # Redis 每写一行都重新打开日志文件，轮转后无需通知。
+        if id -u redis >/dev/null 2>&1; then
+            cat <<'EOF'
+
+/usr/local/redis/var/redis.log {
+    su redis redis
+    weekly
+    maxsize 10M
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+}
+EOF
+        fi
+        # 数据库错误日志用 copytruncate，不需要数据库账号或信号。
+        if [ -n "${db_user}" ] && [ -n "${db_group}" ]; then
+            cat <<EOF
+
+"${datadir%/}/*.err" {
+    su ${db_user} ${db_group}
+    copytruncate
+    weekly
+    maxsize 10M
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+}
+EOF
+        fi
+    } > "${tmp}" || { rm -f "${tmp}"; return 1; }
+
+    if ! logrotate -d "${tmp}" >/dev/null 2>&1; then
+        Echo_Yellow "生成的 logrotate 配置未通过检查，未写入 ${conf}："
+        logrotate -d "${tmp}" 2>&1 | grep -i 'error' | head -5
+        rm -f "${tmp}"
+        return 1
+    fi
+    if ! install -m 0644 "${tmp}" "${conf}"; then
+        rm -f "${tmp}"
+        Echo_Yellow "写入 ${conf} 失败，服务日志不会轮转。"
+        return 1
+    fi
+    rm -f "${tmp}"
+    if ! systemctl is-enabled logrotate.timer >/dev/null 2>&1 && [ ! -x /etc/cron.daily/logrotate ]; then
+        Echo_Yellow "已写入 ${conf}，但未发现 logrotate.timer 或 /etc/cron.daily/logrotate，需自行安排每日执行。"
+    fi
+    return 0
+}
+
 Check_Conf_Applied()
 {
     local file="$1" pattern="$2" what="$3"

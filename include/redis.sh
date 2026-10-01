@@ -553,6 +553,7 @@ EOF
         return 1
     fi
     Set_Redis_Overcommit
+    Install_Logrotate_Conf
     echo "正在加入开机自启..."
     StartUp redis
     # 扩展验收含 PHP 重启，产物或加载失败时会撤回 021-redis.ini。

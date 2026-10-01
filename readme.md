@@ -319,6 +319,8 @@ lnmp perm init
   自启）时只告警，不自动拉起。该重启直接调 `systemctl` ，不经过 `lnmp` 命令。
 - LNMP、LNMPA、LAMP 以及 `install.sh nginx` 会自动安装 `lnmp-cutlogs.timer`，每天
   切割并归档 `/home/wwwlogs` 下的日志，保留天数等可在 `/etc/lnmp/cutlogs.conf` 覆盖。
+- PHP-FPM、Redis、数据库错误日志与 `/var/log/lnmp` 下的工具日志由系统 logrotate 按
+  `/etc/logrotate.d/lnmp` 每周轮转，超过上限时提前轮转，保留 4 份。
 - `perm` 核对服务所需目录和文件权限；默认只报告，不自动递归修改权限。
 - 有意调整某条权限后，可用 `lnmp perm ignore <条目ID>` 单独忽略，使用
   `lnmp perm unignore <条目ID>` 恢复检查。

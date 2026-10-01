@@ -262,11 +262,13 @@ Remove_Health_Schedule()
     return 0
 }
 
-# 清理日志切割定时任务，不动已归档的日志。
+# 清理日志切割定时任务与 logrotate 配置，不动已归档的日志。
 Remove_Cutlogs_Schedule()
 {
     local timer='/etc/systemd/system/lnmp-cutlogs.timer'
     local service='/etc/systemd/system/lnmp-cutlogs.service'
+
+    rm -f /etc/logrotate.d/lnmp
 
     if [ -e "${timer}" ] && command -v systemctl >/dev/null 2>&1; then
         systemctl disable --now lnmp-cutlogs.timer >/dev/null 2>&1

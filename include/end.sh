@@ -309,6 +309,7 @@ Add_LNMP_Startup()
     # 定时任务装不上不影响已装好的服务，不改变本函数的返回码。
     Install_Health_Timer
     Install_Cutlogs_Timer
+    Install_Logrotate_Conf
     return ${rc}
 }
 
@@ -333,6 +334,7 @@ Add_LNMPA_Startup()
     Start_And_Verify httpd || rc=1
     Install_Health_Timer
     Install_Cutlogs_Timer
+    Install_Logrotate_Conf
     return ${rc}
 }
 
@@ -347,6 +349,7 @@ Add_LAMP_Startup()
     Startup_DB || rc=1
     Install_Health_Timer
     Install_Cutlogs_Timer
+    Install_Logrotate_Conf
     return ${rc}
 }
 

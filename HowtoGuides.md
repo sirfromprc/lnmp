@@ -4134,6 +4134,7 @@ SHA-256。大小核对能发现传输截断和文件缺失，发现不了内容�
 | MySQL 错误日志 | `/usr/local/mysql/var/<主机名>.err` |
 | MariaDB 错误日志 | `/usr/local/mariadb/var/mariadb.err` |
 | Redis 日志 | `/usr/local/redis/var/redis.log` |
+| 健康检查、备份、权限检查日志 | `/var/log/lnmp/health.log`、`backup.log`、`perm.log` |
 | 安装日志 | `/root/lnmp-install.log` |
 
 日志切割：
@@ -4163,8 +4164,42 @@ log_files_name=(default www.example.com)
 EOF
 ```
 
-LAMP 栈不安装该定时任务：切割后需要 `nginx -s reload` 才会重开日志句柄，
-Apache 的日志不由该脚本处理。
+日志名从 `nginx -T` 与 `httpd -t -D DUMP_CONFIG` 中位于 `/home/wwwlogs` 的
+`access_log`/`error_log`/`CustomLog`/`ErrorLog` 取得，LAMP 栈同样安装该定时任务。
+
+空日志文件不归档，无访问的站点不会每天产生空归档。
+
+服务日志轮转：
+
+`/home/wwwlogs` 以外的日志由系统 logrotate 处理，安装时写入 `/etc/logrotate.d/lnmp`
+（三个栈、`install.sh nginx`、`install.sh db` 与 `addons.sh install redis` 都会按当前
+安装状态重写）。规则均为每周轮转、单个超过上限时提前轮转、保留 4 份、压缩、空文件不轮转：
+
+| 日志 | 提前轮转上限 | 轮转方式 |
+|---|---:|---|
+| PHP-FPM（含多版本 `/usr/local/php*/var/log/php-fpm.log`） | 10M | 改名后向各 FPM 主进程发 `USR1` 重开日志 |
+| Redis | 10M | 以 `redis` 身份改名；Redis 每次写入都重新打开日志，无需通知 |
+| MySQL/MariaDB 错误日志（`/etc/my.cnf` 的 `datadir` 下 `*.err`） | 10M | 以数据目录属主身份 `copytruncate`，不需要数据库账号 |
+| `/var/log/lnmp/*.log` | 10M | 改名；工具下次写入时重新创建 |
+
+执行时间由系统 `logrotate.timer` 决定（Debian 默认每天一次）。查看与手工执行：
+
+```bash
+cat /etc/logrotate.d/lnmp
+logrotate -d /etc/logrotate.d/lnmp          # 只检查，不轮转
+logrotate -f /etc/logrotate.d/lnmp          # 立即强制轮转一次
+ls -l /usr/local/php/var/log/               # php-fpm.log.1 为上一份
+```
+
+改轮转周期或保留份数时直接编辑 `/etc/logrotate.d/lnmp`；重装上述组件会按模板重写该文件。
+未安装 logrotate 时安装过程会提示，补装后重跑对应安装入口即可生成：
+
+```bash
+apt-get install logrotate
+```
+
+数据库 binlog 不在此列，由 `expire_logs_days`（MariaDB）或
+`binlog_expire_logs_seconds`（MySQL）按 10 天清理。
 
 default 站点的日志是 `/home/wwwlogs/default.log` 和
 `/home/wwwlogs/default.error.log`。访问日志使用 `nginx.conf` 中的 `main` 格式：

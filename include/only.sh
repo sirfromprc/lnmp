@@ -64,6 +64,7 @@ Install_Only_Nginx()
     Install_Current_LNMP_Command lnmp || return 1
     # 定时任务装不上不影响已装好的 Nginx，不改变本函数的返回码。
     Install_Cutlogs_Timer
+    Install_Logrotate_Conf
     Check_Nginx_Files
 }
 
@@ -202,6 +203,7 @@ Install_Only_Database()
         Install_Current_LNMP_Command lnmp || return 1
         # 定时任务装不上不影响已装好的数据库，不改变本函数的返回码。
         Install_Health_Timer
+        Install_Logrotate_Conf
         Print_DB_Password_Notice
     fi
     return ${rc}
