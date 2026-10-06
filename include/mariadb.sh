@@ -218,7 +218,7 @@ Check_MariaDB_Data_Dir()
     fi
 }
 
-# MariaDB 10.11、11.4 和 11.8 使用相同的编译参数与目录布局。
+# MariaDB 10.11、11.4、11.8 和 12.3 使用相同的编译参数与目录布局。
 Install_MariaDB_1011()
 {
     local install_db
@@ -280,7 +280,6 @@ server-id   = 1
 expire_logs_days = 10
 
 default_storage_engine = InnoDB
-#innodb_file_per_table = 1
 #innodb_data_home_dir = ${MariaDB_Data_Dir}
 #innodb_data_file_path = ibdata1:10M:autoextend
 #innodb_log_group_home_dir = ${MariaDB_Data_Dir}
@@ -345,6 +344,11 @@ Install_MariaDB_114()
 }
 
 Install_MariaDB_118()
+{
+    Install_MariaDB_1011
+}
+
+Install_MariaDB_123()
 {
     Install_MariaDB_1011
 }

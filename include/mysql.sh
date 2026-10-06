@@ -164,7 +164,7 @@ Check_MySQL_Data_Dir()
     fi
 }
 
-Install_MySQL_80()
+Install_MySQL_8x()
 {
     rm -f /etc/my.cnf
     if [ "${Bin}" = "y" ]; then
@@ -281,119 +281,6 @@ EOF
     MySQL_Sec_Setting || return 1
 }
 
-Install_MySQL_84()
-{
-    rm -f /etc/my.cnf
-    if [ "${Bin}" = "y" ]; then
-        Echo_Blue "[+] 正在使用官方通用二进制包安装 ${Mysql_Ver}..."
-        Install_DB_Bin_Tarball "${DB_Bin_Tarball}" /usr/local/mysql
-    else
-        Echo_Blue "[+] 正在使用源码安装 ${Mysql_Ver}..."
-        Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
-        Install_Boost
-        # Boost 准备完成后返回 MySQL 源码目录继续构建。
-        cd "${cur_dir}/src/${Mysql_Ver}" || exit 1
-        mkdir build && cd build || return 1
-        cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
-        Make_Install || exit 1
-    fi
-
-    groupadd mysql
-    useradd -s /sbin/nologin -M -g mysql mysql
-    cat > /etc/my.cnf<<EOF
-[client]
-#password   = your_password
-port        = ${DB_Port}
-socket      = /run/mysqld/mysqld.sock
-
-[mysqld]
-port        = ${DB_Port}
-socket      = /run/mysqld/mysqld.sock
-# 仅监听回环地址，防止防火墙失效时数据库直接暴露到公网。
-# 远程访问应绑定具体地址，并按来源 IP 配置防火墙和账号 Host 权限。
-bind-address = 127.0.0.1
-# X Protocol 使用独立监听地址；loose- 前缀兼容已关闭 X Plugin 的配置。
-loose-mysqlx-bind-address = 127.0.0.1
-loose-mysqlx-port = ${DB_X_Port}
-datadir = ${MySQL_Data_Dir}
-skip-external-locking
-key_buffer_size = 16M
-max_allowed_packet = 1M
-table_open_cache = 64
-sort_buffer_size = 512K
-net_buffer_length = 8K
-read_buffer_size = 256K
-read_rnd_buffer_size = 512K
-myisam_sort_buffer_size = 8M
-thread_cache_size = 8
-tmp_table_size = 16M
-performance_schema_max_table_instances = 500
-
-explicit_defaults_for_timestamp = true
-#skip-networking
-max_connections = 500
-max_connect_errors = 100
-open_files_limit = 65535
-log-bin=mysql-bin
-binlog_format=mixed
-server-id   = 1
-binlog_expire_logs_seconds = 864000
-early-plugin-load = ""
-
-default_storage_engine = InnoDB
-innodb_file_per_table = 1
-innodb_data_home_dir = ${MySQL_Data_Dir}
-innodb_data_file_path = ibdata1:10M:autoextend
-innodb_log_group_home_dir = ${MySQL_Data_Dir}
-innodb_buffer_pool_size = 16M
-innodb_log_file_size = 5M
-innodb_log_buffer_size = 8M
-innodb_flush_log_at_trx_commit = 1
-innodb_lock_wait_timeout = 50
-
-[mysqldump]
-quick
-max_allowed_packet = 16M
-
-[mysql]
-no-auto-rehash
-
-[myisamchk]
-key_buffer_size = 20M
-sort_buffer_size = 20M
-read_buffer_size = 2M
-write_buffer_size = 2M
-
-[mysqlhotcopy]
-interactive-timeout
-
-${MySQLMAOpt}
-EOF
-
-    MySQL_Opt
-    # MySQL 8.4 及以上转换弃用配置，8.0 保持原配置。
-    MySQL_Deprecated_Opt
-    Check_MySQL_Data_Dir || return 1
-    chown -R mysql:mysql /usr/local/mysql
-    # 数据目录初始化失败时停止，避免继续执行无效的启动和安全设置。
-    if ! /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql; then
-        Echo_Red "MySQL 数据目录初始化失败：${MySQL_Data_Dir}"
-        Echo_Red "请根据上面 mysqld 的报错处理后重新安装。"
-        return 1
-    fi
-    chown -R mysql:mysql ${MySQL_Data_Dir}
-    Secure_Initial_DB_Password mysql mysql || return 1
-    \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
-    Install_Systemd_Unit "${cur_dir}/init.d/mysql.service" /etc/systemd/system/mysql.service || exit 1
-    chmod 755 /etc/init.d/mysql
-    Patch_Init_Runtime_Directory /etc/init.d/mysql /run/mysqld mysql mysql || return 1
-    cat > /etc/ld.so.conf.d/mysql.conf<<EOF
-    /usr/local/mysql/lib
-    /usr/local/lib
-EOF
-    ldconfig
-    ln -sfn /usr/local/mysql/lib/mysql /usr/lib/mysql
-    ln -sfn /usr/local/mysql/include/mysql /usr/include/mysql
-
-    MySQL_Sec_Setting || return 1
-}
+# 8.0 与 8.4 的编译参数、my.cnf 模板和初始化流程相同，版本差异由 MySQL_Deprecated_Opt 处理。
+Install_MySQL_80() { Install_MySQL_8x; }
+Install_MySQL_84() { Install_MySQL_8x; }

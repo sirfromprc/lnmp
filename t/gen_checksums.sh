@@ -213,7 +213,7 @@ grab_mysql 8.4 mysql-8.4.7-linux-glibc2.17-x86_64.tar.xz
 
 echo
 echo "# --- MariaDB ---"
-for v in 10.11.18 11.4.12 11.8.8; do
+for v in 10.11.18 11.4.12 11.8.8 12.3.3; do
     grab_upstream mariadb "${v}" \
         "https://downloads.mariadb.org/rest-api/mariadb/${v}/mariadb-${v}.tar.gz" \
         "mariadb-${v}.tar.gz"

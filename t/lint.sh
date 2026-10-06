@@ -80,7 +80,7 @@ expect_empty C2  "无残留旧版本标识" \
     '(mysql-5\.|mariadb-5\.5|mariadb-10\.[4-6]\.|php-5\.|php-7\.)' -g '*.sh'
 
 expect_empty C3a "DB_Info 下标未越界" \
-    '\$\{DB_Info\[(?:[5-9]|[1-9][0-9]+)\]' -g '*.sh'
+    '\$\{DB_Info\[(?:[6-9]|[1-9][0-9]+)\]' -g '*.sh'
 
 expect_empty C3b "PHP_Info 下标未越界" \
     '\$\{PHP_Info\[(?:[6-9]|[1-9][0-9]+)\]' -g '*.sh'

@@ -44,6 +44,23 @@ Install_Multiplephp()
 }
 
 
+# 入口已确认安装目录事先不存在，失败时删除本次写入的文件，重试无需手工清理。
+MPHP_Install_Abort()
+{
+    case "${MPHP_Short_Ver}" in
+        [0-9]*.[0-9]*) ;;
+        *) return 1 ;;
+    esac
+    Clean_Src_Dir "${Php_Ver}"
+    # 路径须以分支号结尾，避免误删主 PHP。
+    if [ -n "${MPHP_Path}" ] && [ "${MPHP_Path%"${MPHP_Short_Ver}"}" != "${MPHP_Path}" ]; then
+        rm -rf "${MPHP_Path}"
+    fi
+    rm -f "/etc/init.d/php-fpm${MPHP_Short_Ver}"
+    Echo_Red "${Php_Ver} 安装失败，详情请查看 /root/install-mphp${MPHP_Short_Ver}.log。"
+    return 1
+}
+
 Install_MPHP8x()
 {
 
@@ -60,32 +77,41 @@ Install_MPHP8x()
     # shellcheck disable=SC2046
     ./configure --prefix=${MPHP_Path} --with-config-file-path=${MPHP_Path}/etc --with-config-file-scan-dir=${MPHP_Path}/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd $(PHP_Common_Configure_Opts)
 
-    PHP_Make_Install || exit 1
+    PHP_Make_Install || { MPHP_Install_Abort; return 1; }
 
     echo "正在复制新的 PHP 配置文件..."
     mkdir -p ${MPHP_Path}/{etc,conf.d}
     \cp php.ini-production ${MPHP_Path}/etc/php.ini
 
     echo "正在修改 php.ini..."
-    PHP_Ini_Tune "${MPHP_Path}/etc/php.ini" || exit 1
+    PHP_Ini_Tune "${MPHP_Path}/etc/php.ini" || { MPHP_Install_Abort; return 1; }
 
-    cd "${cur_dir}/src" || return 1
+    cd "${cur_dir}/src" || { MPHP_Install_Abort; return 1; }
 
     echo "正在创建新的 php-fpm 配置文件..."
     Write_PHP_FPM_Conf "${MPHP_Path}/etc/php-fpm.conf" "${MPHP_Path}" \
-        "/run/php-fpm/php-cgi${MPHP_Short_Ver}.sock" mphp || return 1
+        "/run/php-fpm/php-cgi${MPHP_Short_Ver}.sock" mphp || { MPHP_Install_Abort; return 1; }
+
+    # 注册服务与 Nginx 片段前校验产物，失败时不留启动项。
+    if [ ! -s "${MPHP_Path}/sbin/php-fpm" ] || [ ! -s "${MPHP_Path}/etc/php.ini" ] || [ ! -s "${MPHP_Path}/bin/php" ]; then
+        MPHP_Install_Abort
+        return 1
+    fi
 
     echo "正在复制 php-fpm init.d 服务脚本..."
-    \cp ${cur_dir}/src/${Php_Ver}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm${MPHP_Short_Ver}
+    \cp ${cur_dir}/src/${Php_Ver}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm${MPHP_Short_Ver} \
+        || { MPHP_Install_Abort; return 1; }
     chmod +x /etc/init.d/php-fpm${MPHP_Short_Ver}
     sed -i "s@# Provides:          php-fpm@# Provides:          php-fpm${MPHP_Short_Ver}@g" /etc/init.d/php-fpm${MPHP_Short_Ver}
-    Ensure_Runtime_Directory /run/php-fpm root root || return 1
-    Patch_Init_Runtime_Directory /etc/init.d/php-fpm${MPHP_Short_Ver} /run/php-fpm root root || return 1
+    Ensure_Runtime_Directory /run/php-fpm root root || { MPHP_Install_Abort; return 1; }
+    Patch_Init_Runtime_Directory /etc/init.d/php-fpm${MPHP_Short_Ver} /run/php-fpm root root \
+        || { MPHP_Install_Abort; return 1; }
 
     # 模板 unit 由所有版本共用，%i 取版本号。装上后多版本 PHP 与主 php-fpm
     # 共享同一套自动重启策略，状态也与 systemctl 一致。
     if [ -d /etc/systemd/system ]; then
-        Install_Systemd_Unit "${cur_dir}/init.d/php-fpm@.service" /etc/systemd/system/php-fpm@.service || return 1
+        Install_Systemd_Unit "${cur_dir}/init.d/php-fpm@.service" /etc/systemd/system/php-fpm@.service \
+            || { MPHP_Install_Abort; return 1; }
         chmod 644 /etc/systemd/system/php-fpm@.service
     fi
 
@@ -99,14 +125,9 @@ Install_MPHP8x()
 
     Clean_Src_Dir "${Php_Ver}"
 
-    if [ -s ${MPHP_Path}/sbin/php-fpm ] && [ -s ${MPHP_Path}/etc/php.ini ] && [ -s ${MPHP_Path}/bin/php ]; then
-        echo "==========================================="
-        Echo_Green "${Php_Ver} 安装成功。"
-        echo "==========================================="
-    else
-        rm -rf ${MPHP_Path}
-        Echo_Red "${Php_Ver} 安装失败，详情请查看 /root/install-mphp${MPHP_Short_Ver}.log。"
-    fi
+    echo "==========================================="
+    Echo_Green "${Php_Ver} 安装成功。"
+    echo "==========================================="
 }
 
 # profile.sh 通过对应入口安装各 PHP 分支。

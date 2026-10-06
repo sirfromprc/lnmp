@@ -50,6 +50,7 @@ expect_db 2 mysql   mysql-8.4.7      Install_MySQL_84     /usr/local/mysql
 expect_db 3 mariadb mariadb-10.11.18 Install_MariaDB_1011 /usr/local/mariadb
 expect_db 4 mariadb mariadb-11.4.12  Install_MariaDB_114  /usr/local/mariadb
 expect_db 5 mariadb mariadb-11.8.8   Install_MariaDB_118  /usr/local/mariadb
+expect_db 6 mariadb mariadb-12.3.3   Install_MariaDB_123  /usr/local/mariadb
 
 Set_DB_Profile 0
 check "db0.kind" "none" "${DB_Kind}"
@@ -89,8 +90,8 @@ fi
 
 echo
 echo "=== 旧编号必须被拒绝（重编号后最易踩的坑） ==="
-# 旧 DB 编号 6..13 与旧 PHP 编号 7..16 在新表中已越界
-for n in 6 11 12 13 99 -1 abc ''; do
+# 旧 DB 编号 7..13 与旧 PHP 编号 7..16 在新表中已越界
+for n in 7 11 12 13 99 -1 abc ''; do
     if Set_DB_Profile "${n}" 2>/dev/null; then
         echo "FAIL Set_DB_Profile('${n}') 应当失败却返回成功"
         fail=1

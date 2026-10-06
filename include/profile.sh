@@ -5,11 +5,11 @@
 
 # 菜单显示文本。下标 0-based，菜单编号 1-based，二者相差 1。
 # 数组长度不匹配时立即停止，避免菜单显示空版本。
-DB_Info=('MySQL 8.0.46' 'MySQL 8.4.7 LTS' 'MariaDB 10.11.18' 'MariaDB 11.4.12 LTS' 'MariaDB 11.8.8 LTS')
+DB_Info=('MySQL 8.0.46' 'MySQL 8.4.7 LTS' 'MariaDB 10.11.18' 'MariaDB 11.4.12 LTS' 'MariaDB 11.8.8 LTS' 'MariaDB 12.3.3 LTS')
 PHP_Info=('PHP 8.0.30' 'PHP 8.1.34' 'PHP 8.2.33' 'PHP 8.3.33' 'PHP 8.4.24' 'PHP 8.5.9')
 Apache_Info=('Apache 2.4.68')
 
-DB_Count=5
+DB_Count=6
 PHP_Count=6
 Apache_Count=1
 
@@ -45,6 +45,9 @@ Set_DB_Profile()
         DB_Bin_Default='auto' DB_Min_Mem_MB=1024 ;;
     5)  DB_Kind='mariadb' DB_Branch='11.8'  DB_Ver='mariadb-11.8.8'
         DB_Install='Install_MariaDB_118'  DB_Bin_Archs='x86_64'
+        DB_Bin_Default='auto' DB_Min_Mem_MB=1024 ;;
+    6)  DB_Kind='mariadb' DB_Branch='12.3'  DB_Ver='mariadb-12.3.3'
+        DB_Install='Install_MariaDB_123'  DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Min_Mem_MB=1024 ;;
     0)  DB_Kind='none' ;;
     *)  Legacy_Selection_Hint DB "$1"
@@ -129,7 +132,7 @@ Legacy_Selection_Hint()
 
     if [ "${kind}" = "DB" ] && [ "${val}" -gt "${DB_Count}" ]; then
         Echo_Red "DBSelect=${val} 属于 2.3 之前的编号，已失效。"
-        Echo_Red "新编号：1=MySQL8.0  2=MySQL8.4(默认)  3=MariaDB10.11  4=MariaDB11.4  5=MariaDB11.8  0=不安装"
+        Echo_Red "新编号：1=MySQL8.0  2=MySQL8.4(默认)  3=MariaDB10.11  4=MariaDB11.4  5=MariaDB11.8  6=MariaDB12.3  0=不安装"
     elif [ "${kind}" = "PHP" ] && [ "${val}" -gt "${PHP_Count}" ]; then
         Echo_Red "PHPSelect=${val} 属于 2.3 之前的编号，已失效。"
         Echo_Red "新编号：1=PHP8.0  2=PHP8.1  3=PHP8.2  4=PHP8.3(默认)  5=PHP8.4  6=PHP8.5"

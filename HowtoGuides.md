@@ -481,7 +481,7 @@ unset DB_Root_Password
 | 变量 | 值 | 含义 |
 |---|---|---|
 | `LNMP_Auto` | `y` | 跳过安装前的所有交互确认（检查 lnmp.conf、SSH 端口提示、最终摘要确认） |
-| `DBSelect` | `1`～`5` | 1=MySQL8.0 **2=MySQL8.4(默认)** 3=MariaDB10.11 4=MariaDB11.4 5=MariaDB11.8 |
+| `DBSelect` | `1`～`6` | 1=MySQL8.0 **2=MySQL8.4(默认)** 3=MariaDB10.11 4=MariaDB11.4 5=MariaDB11.8 6=MariaDB12.3 |
 | `Bin` | `y`/`n` | `y`=下载官方通用二进制（快，几分钟）；`n`=源码编译（慢，30-60 分钟） |
 | `PHPSelect` | `1`～`6` | 1=8.0 2=8.1 3=8.2 **4=8.3(默认)** 5=8.4 6=8.5 |
 | `SelectMalloc` | `1`～`3` | 1=不装 2=Jemalloc 3=TCMalloc |
@@ -798,7 +798,7 @@ CheckMirror=n Bin=y bash install.sh lnmp
 | `LNMP_Auto` | `y` | 跳过确认；自动化必须同时固定其余选择并保存退出码 |
 | `WebSelect` | `1` Nginx；`2` OpenResty | WordPress 常规站选 Nginx；确实使用 Lua/OpenResty 生态再选 2 |
 | `ORMode` | `1` 官方包；`2` 源码 | Debian 13 上游仓库当前没有 trixie 包，选 2 |
-| `DBSelect` | `0` 不装；`1` MySQL 8.0；`2` MySQL 8.4；`3` MariaDB 10.11；`4` 11.4；`5` 11.8 | 新部署优先 MySQL 8.4 LTS 或经过应用验证的 MariaDB LTS；不要新装已 EOL 的 MySQL 8.0 |
+| `DBSelect` | `0` 不装；`1` MySQL 8.0；`2` MySQL 8.4；`3` MariaDB 10.11；`4` 11.4；`5` 11.8；`6` 12.3 | 新部署优先 MySQL 8.4 LTS 或经过应用验证的 MariaDB LTS；不要新装已 EOL 的 MySQL 8.0 |
 | `Bin` | `y` 通用二进制；`n` 源码 | x86_64 默认 `y`；只有确实需要定制构建才选 `n` |
 | `DB_Root_Password` | 字符串或留空 | 自动化应从受限 secret 注入；留空会随机生成到 root-only 文件 |
 | `InstallInnodb` | `y` / `n` | WordPress 必须 `y` |
@@ -1969,9 +1969,9 @@ WordPress 核心对两者都支持，常规文章/用户/元数据查询也很�
 插件 SQL、索引、磁盘延迟、buffer pool 是否容纳热数据和页面/对象缓存决定，不能脱离数据
 与并发宣称“MariaDB 一定更快”或“MySQL 一定更稳”。本项目中的实际差异如下：
 
-| 维度 | MySQL 8.4 LTS | MariaDB 10.11 / 11.4 / 11.8 | 对 WordPress 的意义 |
+| 维度 | MySQL 8.4 LTS | MariaDB 10.11 / 11.4 / 11.8 / 12.3 | 对 WordPress 的意义 |
 |---|---|---|---|
-| 项目默认选择 | `DBSelect=2`，官方通用二进制 | `DBSelect=3/4/5`，官方通用二进制 | x86_64 都优先 `Bin=y`，不要为“优化”源码编译 |
+| 项目默认选择 | `DBSelect=2`，官方通用二进制 | `DBSelect=3/4/5/6`，官方通用二进制 | x86_64 都优先 `Bin=y`，不要为“优化”源码编译 |
 | 查询缓存 | MySQL 8 已删除 | 仍提供；项目安装时设 `query_cache_size=0` 关闭 | 写入会使相关结果失效并产生同步开销；现代动态站默认关闭更可预测 |
 | 优化器/统计信息 | MySQL 8.4 的 optimizer、histogram 与 EXPLAIN 行为 | 已与 MySQL 分叉，优化器开关、统计信息和执行计划不同 | 慢 SQL 必须在目标引擎上 `EXPLAIN`，不能复制另一引擎的 hint/变量 |
 | redo 配置 | 项目将旧项换成 `innodb_redo_log_capacity` | 保留 MariaDB 自身的 InnoDB redo 参数 | 不要把 MySQL 8.4 的 redo 变量写进 MariaDB，或反向照搬 |

@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.." || exit 1
 
 # profile.sh 里的版本由菜单选择填充，这里直接取表中全部取值逐一探测。
 MYSQL_VERS='8.0.46 8.4.7'
-MARIADB_VERS='10.11.18 11.4.12 11.8.8'
+MARIADB_VERS='10.11.18 11.4.12 11.8.8 12.3.3'
 PHP_VERS='8.0.30 8.1.34 8.2.33 8.3.33 8.4.24 8.5.9'
 APACHE_VER='httpd-2.4.68'
 PMA_VER='phpMyAdmin-5.2.3-all-languages'

@@ -377,14 +377,14 @@ check_mysql()
 }
 
 # ---------------------------------------------------------------------------
-# 6. MariaDB：通过官方 REST API 分别跟踪三个 LTS 系列
+# 6. MariaDB：通过官方 REST API 分别跟踪四个 LTS 系列
 # ---------------------------------------------------------------------------
 check_mariadb()
 {
     want mariadb || return 0
     log "检查 MariaDB..."
     local series cur latest
-    for series in 10.11 11.4 11.8; do
+    for series in 10.11 11.4 11.8 12.3; do
         cur=$(grep -oE "MariaDB ${series//./\\.}\.[0-9]+" include/profile.sh | head -1)
         cur="${cur#MariaDB }"
         [ -z "${cur}" ] && continue

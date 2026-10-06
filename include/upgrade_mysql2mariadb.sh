@@ -67,7 +67,7 @@ Upgrade_MySQL2MariaDB()
     mariadb_version=""
     echo "当前 MySQL 版本：${cur_mysql_version}"
     echo "可在 https://downloads.mariadb.org/ 查看可用版本号。"
-    Echo_Yellow "请输入目标 MariaDB 版本（10.11.x / 11.4.x / 11.8.x）。"
+    Echo_Yellow "请输入目标 MariaDB 版本（10.11.x / 11.4.x / 11.8.x / 12.3.x）。"
     read -p "版本号（例如 11.8.8）：" mariadb_version
     if [ "${mariadb_version}" = "" ]; then
         echo "错误：必须输入 MariaDB 版本号！"
@@ -78,11 +78,11 @@ Upgrade_MySQL2MariaDB()
     # 停止或移动 MySQL 前校验目标 MariaDB 分支，避免无效版本影响现有实例。
     mariadb_short_version=$(echo "${mariadb_version}" | cut -d. -f1-2)
     case "${mariadb_short_version}" in
-    10.11|11.4|11.8)
+    10.11|11.4|11.8|12.3)
         ;;
     *)
         Echo_Red "不支持迁移到 MariaDB ${mariadb_version}。"
-        Echo_Red "本包只保留 10.11 / 11.4 / 11.8 三条 LTS 线，与安装侧一致。"
+        Echo_Red "本包只保留 10.11 / 11.4 / 11.8 / 12.3 四条 LTS 线，与安装侧一致。"
         Echo_Red "数据库未做任何改动。"
         exit 1
         ;;
@@ -223,7 +223,6 @@ server-id	= 1
 expire_logs_days = 10
 
 default_storage_engine = InnoDB
-#innodb_file_per_table = 1
 #innodb_data_home_dir = ${MariaDB_Data_Dir}
 #innodb_data_file_path = ibdata1:10M:autoextend
 #innodb_log_group_home_dir = ${MariaDB_Data_Dir}
