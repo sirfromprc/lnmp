@@ -278,7 +278,7 @@ EOF
 
     /etc/init.d/mariadb stop
     TempMycnf_Clean
-    cd ${cur_dir} && rm -rf ${cur_dir}/src/mariadb-${mariadb_version}
+    cd "${cur_dir}" && rm -rf "${cur_dir}/src/mariadb-${mariadb_version}"
 
     lnmp start
     # 升级成功需确认服务可连接、数据库列表完整且仍保持本地监听限制。

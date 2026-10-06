@@ -408,7 +408,7 @@ Install_Redis()
     # 扩展包与服务端同属一次安装，先把 phpredis 取齐再动系统，
     # 避免服务端装完后扩展下载失败，留下未启用的服务和防火墙规则。
     if [ -s ${PHPRedis_Ver} ]; then
-        rm -rf ${PHPRedis_Ver}
+        rm -rf "${PHPRedis_Ver}"
     fi
     Download_Files https://pecl.php.net/get/${PHPRedis_Ver}.tgz ${PHPRedis_Ver}.tgz
     Require_File "${PHPRedis_Ver}.tgz" "pecl redis"

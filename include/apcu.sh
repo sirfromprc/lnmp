@@ -20,8 +20,7 @@ Install_Apcu()
     Tar_Cd ${PHPNewApcu_Ver}.tgz ${PHPNewApcu_Ver}
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config
-    make
-    make install
+    Make_Install || return 1
 
 
     cd ..

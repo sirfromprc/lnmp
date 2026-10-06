@@ -23,7 +23,7 @@ Install_PHP_Exif()
     fi
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config
-    make && make install
+    Make_Install || return 1
     cd - || return 1
     rm -rf php-${Cur_PHP_Version}
 

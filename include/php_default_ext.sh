@@ -40,7 +40,15 @@ Build_Pecl_Ext()
 
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config "$@"
-    make && make install
+    # 构建失败时扩展目录可能残留旧 .so，不能按产物存在判定成功。
+    if ! Make_Install; then
+        cd "${cur_dir}/src" || return 1
+        Clean_Src_Dir "${pkg}"
+        Echo_Red "${pkg} 编译失败，跳过"
+        printf -v PHP_Default_Ext_Failed '%s %s(编译失败)' \
+            "${PHP_Default_Ext_Failed}" "${pkg}"
+        return 1
+    fi
 
     cd "${cur_dir}/src" || return 1
     Clean_Src_Dir "${pkg}"

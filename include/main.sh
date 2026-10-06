@@ -1767,7 +1767,7 @@ Print_Pureftpd_Only_Summary()
 Print_Sys_Info()
 {
     echo "LNMP 版本：${LNMP_Ver}"
-    eval echo "${DISTRO} \${${DISTRO}_Version}"
+    echo "${DISTRO} ${DISTRO_Version}"
     cat /etc/issue
     cat /etc/*-release
     uname -a
@@ -2059,6 +2059,7 @@ Make_TempMycnf()
         cp -p ~/.my.cnf ~/.my.cnf.lnmp-bak
     fi
     ( umask 077; cat >~/.my.cnf<<EOF
+# lnmp-temp-mycnf
 [client]
 user=root
 password='$(SQL_Escape "$1")'
@@ -2068,22 +2069,81 @@ EOF
     chmod 600 ~/.my.cnf
 }
 
+# 强制通过 TCP 校验口令：root@localhost 使用 unix_socket 认证时，
+# socket 连接对任意口令都会成功，结果不能反映口令是否正确。
+# 返回值：0 口令正确；1 口令错误；2 无法通过 TCP 连接。
+Check_DB_Password_TCP()
+{
+    local port err rc
+
+    Check_DB
+    [ "${Is_MySQL}" = "None" ] && return 2
+    port=$(Get_Actual_DB_Port)
+    err=$("${MySQL_Bin}" --defaults-file="${HOME}/.my.cnf" \
+        --protocol=TCP --host=127.0.0.1 --port="${port}" \
+        --connect-timeout=5 -e 'SELECT 1' 2>&1 >/dev/null)
+    rc=$?
+    [ ${rc} -eq 0 ] && return 0
+    case "${err}" in
+    *"ERROR 1045"*|*"Access denied"*) return 1 ;;
+    esac
+    return 2
+}
+
+# 认证失败最多重试 3 次；EOF 与连接失败立即退出，退出前清理临时客户端配置。
+# 通过后由 EXIT trap 兜底清理，覆盖调用方后续的中途退出。
 Verify_DB_Password()
 {
+    local tries=0 out rc
+
     Check_DB
-    status=1
-    while [ $status -eq 1 ]; do
-        read -s -p "请输入当前数据库 root 密码（输入不回显）: " DB_Root_Password
+    while :; do
+        if ! read -r -s -p "请输入当前数据库 root 密码（输入不回显）: " DB_Root_Password; then
+            echo
+            TempMycnf_Clean
+            Echo_Red "读取数据库 root 密码时遇到 EOF —— 标准输入已经没有内容了，已中止。"
+            exit 1
+        fi
+        echo
         Make_TempMycnf "${DB_Root_Password}"
-        Do_Query ""
-        status=$?
+        Check_DB_Password_TCP
+        rc=$?
+        if [ ${rc} -eq 2 ]; then
+            # TCP 不可用时退回 socket 连接，该结果不能证明口令正确。
+            if out=$(Do_Query "" 2>&1); then
+                Echo_Yellow "数据库未监听 127.0.0.1，已改用 socket 连接校验；socket 认证下该结果不代表口令正确。"
+                rc=0
+            else
+                case "${out}" in
+                *"ERROR 1045"*|*"ERROR 1698"*) rc=1 ;;
+                *)
+                    TempMycnf_Clean
+                    Echo_Red "无法连接数据库，请确认数据库服务已启动后重试："
+                    printf '%s\n' "${out}" | sed 's/^/  /' | head -n 5
+                    exit 1
+                    ;;
+                esac
+            fi
+        fi
+        [ ${rc} -eq 0 ] && break
+        tries=$((tries + 1))
+        if [ "${tries}" -ge 3 ]; then
+            TempMycnf_Clean
+            Echo_Red "数据库 root 密码连续 ${tries} 次验证失败，已中止。"
+            exit 1
+        fi
+        Echo_Red "数据库 root 密码错误（${tries}/3），请重新输入。"
     done
+    trap 'TempMycnf_Clean' EXIT
     echo "数据库 root 密码验证通过。"
 }
 
+# 只删除带标记的临时配置，可重复调用，不影响已恢复或原有的 ~/.my.cnf。
 TempMycnf_Clean()
 {
-    rm -f ~/.my.cnf
+    if [ -f ~/.my.cnf ] && grep -qx '# lnmp-temp-mycnf' ~/.my.cnf; then
+        rm -f ~/.my.cnf
+    fi
     # 存在备份时恢复原客户端配置。
     if [ -e ~/.my.cnf.lnmp-bak ]; then
         mv -f ~/.my.cnf.lnmp-bak ~/.my.cnf

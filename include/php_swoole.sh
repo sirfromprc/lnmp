@@ -21,9 +21,9 @@ Install_PHP_Swoole()
     Tar_Cd ${PHPSwoole_Ver}.tgz ${PHPSwoole_Ver}
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config --enable-openssl --enable-http2 --enable-swoole-json
-    make && make install
+    Make_Install || return 1
     cd - || return 1
-    rm -rf ${PHPSwoole_Ver}
+    rm -rf "${PHPSwoole_Ver}"
 
     cat >${PHP_Path}/conf.d/009-swoole.ini<<EOF
 extension = "swoole.so"

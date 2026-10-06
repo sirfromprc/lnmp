@@ -21,7 +21,7 @@ Install_PHP_Fileinfo()
     Tar_Cd php-${Cur_PHP_Version}.tar.bz2 php-${Cur_PHP_Version}/ext/fileinfo
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config
-    make && make install
+    Make_Install || return 1
     cd - || return 1
     rm -rf php-${Cur_PHP_Version}
 

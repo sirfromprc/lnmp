@@ -36,7 +36,11 @@ Upgrade_Multiplephp()
 
     while :; do
         MPHP_Select=""
-        read -p "请选择要升级的多版本 PHP 序号：" MPHP_Select
+        if ! read -r -p "请选择要升级的多版本 PHP 序号：" MPHP_Select; then
+            echo
+            Echo_Red "读取多版本 PHP 序号时遇到 EOF —— 标准输入已经没有内容了，已中止。"
+            exit 1
+        fi
         if [ "${MPHP_Select}" = "" ]; then
             Echo_Red "错误：请输入数字！"
             continue
@@ -211,7 +215,7 @@ Upgrade_MPHP8x()
 
     lnmp start
 
-    rm -rf ${cur_dir}/src/php-${php_version}
+    rm -rf "${cur_dir}/src/php-${php_version}"
 
     if [ ! -s ${Cur_MPHP_Path}/sbin/php-fpm ] || [ ! -s ${Cur_MPHP_Path}/etc/php.ini ] || [ ! -s ${Cur_MPHP_Path}/bin/php ]; then
         Echo_Red "PHP ${php_version} 升级失败，详情请查看 /root/upgrade_mphp${Upgrade_Date}.log。"

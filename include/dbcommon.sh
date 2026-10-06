@@ -423,16 +423,18 @@ Arm_DB_Upgrade_Guard()
     DB_Upgrade_Guard_Post="${6:-}"
     DB_Upgrade_Guard_Active='y'
     # INT/TERM 的处理函数返回后脚本会继续往下走，因此这两个信号显式退出。
-    trap 'DB_Upgrade_Guard_Fire' EXIT
-    trap 'DB_Upgrade_Guard_Fire; exit 130' INT
-    trap 'DB_Upgrade_Guard_Fire; exit 143' TERM
+    # 回滚需要读取临时客户端配置，因此清理排在回滚之后。
+    trap 'DB_Upgrade_Guard_Fire; TempMycnf_Clean' EXIT
+    trap 'DB_Upgrade_Guard_Fire; TempMycnf_Clean; exit 130' INT
+    trap 'DB_Upgrade_Guard_Fire; TempMycnf_Clean; exit 143' TERM
 }
 
 # 升级确认成功后解除，之后的正常退出不再触发回滚。
 Disarm_DB_Upgrade_Guard()
 {
     DB_Upgrade_Guard_Active='n'
-    trap - EXIT INT TERM
+    trap - INT TERM
+    trap 'TempMycnf_Clean' EXIT
 }
 
 DB_Upgrade_Guard_Fire()

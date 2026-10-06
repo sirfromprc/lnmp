@@ -1151,7 +1151,7 @@ Install_Openssl_New()
                     exit 1
                 fi
             fi
-            [[ -d "${Openssl_New_Ver}" ]] && rm -rf ${Openssl_New_Ver}
+            [[ -d "${Openssl_New_Ver}" ]] && rm -rf "${Openssl_New_Ver}"
             Tar_Cd ${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}
             ./config -fPIC --prefix=/usr/local/openssl3 --openssldir=/usr/local/openssl3
             make depend
@@ -1171,7 +1171,7 @@ Install_Nghttp2()
         cd "${cur_dir}/src" || return 1
         Download_Files https://github.com/nghttp2/nghttp2/releases/download/v${Nghttp2_Ver#nghttp2-}/${Nghttp2_Ver}.tar.xz ${Nghttp2_Ver}.tar.xz
         Require_File "${Nghttp2_Ver}.tar.xz" "nghttp2"
-        [[ -d "${Nghttp2_Ver}" ]] && rm -rf ${Nghttp2_Ver}
+        [[ -d "${Nghttp2_Ver}" ]] && rm -rf "${Nghttp2_Ver}"
         Tar_Cd ${Nghttp2_Ver}.tar.xz ${Nghttp2_Ver}
         ./configure --prefix=/usr/local/nghttp2
         Make_Install || exit 1

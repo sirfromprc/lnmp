@@ -300,7 +300,7 @@ EOF
     echo "正在停止 MariaDB..."
     /etc/init.d/mariadb stop
     TempMycnf_Clean
-    cd ${cur_dir} && rm -rf ${cur_dir}/src/mariadb-${mariadb_version}
+    cd "${cur_dir}" && rm -rf "${cur_dir}/src/mariadb-${mariadb_version}"
 
     # 同时更新当前 DB_SERVICE 配置和旧版管理脚本中的 MySQL 服务路径。
     sed -i 's#^DB_SERVICE=mysql$#DB_SERVICE=mariadb#' /bin/lnmp

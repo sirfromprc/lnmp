@@ -3353,7 +3353,7 @@ Add_DNS_SSL_Select_Menu()
     echo "2: 使用 ZeroSSL 签发 SSL 证书（DNS 验证）"
     while :;do
         Echo_Yellow "请选择 [1-2]："
-        read dns_ssl_choice
+        Read_Input dns_ssl_choice "证书来源选项"
         if [[ "${dns_ssl_choice}" =~ ^(1|2)$ ]]; then
             if [ "${dns_ssl_choice}" = "2" ] && ! Check_ZeroSSL_Endpoint; then
                 Read_YN use_le "是否改用 Let's Encrypt 签发 [Y/n]（默认 y）: " y "改用 Let's Encrypt"

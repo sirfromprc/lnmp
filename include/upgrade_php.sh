@@ -241,7 +241,7 @@ Check_PHP_Upgrade_Files()
         Echo_Red "======== PHP 升级失败 ======"
         Echo_Red "PHP 升级日志：/root/upgrade_a_php${Upgrade_Date}.log"
     }
-    rm -rf ${cur_dir}/src/php-${php_version}
+    rm -rf "${cur_dir}/src/php-${php_version}"
 
     if [ "${Stack}" = "lnmp" ]; then
         if [[ ! -s /usr/local/php/sbin/php-fpm || ! -s /etc/init.d/php-fpm || ! -s /usr/local/php/etc/php.ini || ! -s /usr/local/php/bin/php ]]; then

@@ -69,6 +69,9 @@ Upgrade_OpenResty()
 # 通过系统包管理器升级 OpenResty。
 Upgrade_OpenResty_Pkg()
 {
+    Print_Banner "即将通过 ${PM} 升级 openresty 软件包并重启 nginx"
+    Press_Start || return 1
+
     if [ "${PM}" = "apt" ]; then
         Apt_Get update -y
 
@@ -104,6 +107,8 @@ Upgrade_OpenResty_Source()
         return 1
     fi
     Check_Version_String "${ver}" "OpenResty 版本号" || return 1
+    Print_Banner "即将把 OpenResty 升级到 ${ver}"
+    Press_Start || return 1
 
     tarball="openresty-${ver}.tar.gz"
     url="https://openresty.org/download/${tarball}"

@@ -550,6 +550,12 @@ bash upgrade.sh openresty
 
 会**按当初的安装方式自动分流**（包装的走 apt 升级、源码装的走重新编译），
 无需记录初始安装方式。升级后先执行 `nginx -t`，配置检查通过后才重载服务。
+两种方式在升级前都要按键确认；无终端时需设置 `LNMP_Auto=y`，否则以非 0 退出且不做改动：
+
+```bash
+LNMP_Auto=y bash upgrade.sh openresty </dev/null                   # 官方包安装
+printf '1.31.1.1\n' | LNMP_Auto=y bash upgrade.sh openresty         # 源码安装，标准输入给出版本号
+```
 
 ### 2.3.1 OpenResty 自定义编译模块与 Lua 库
 
