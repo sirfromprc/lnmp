@@ -18,7 +18,7 @@ Pcre_Ver='pcre-8.45'
 
 Libzip_Ver='libzip-1.3.2'
 
-Openssl_New_Ver='openssl-3.5.7'
+Openssl_New_Ver='openssl-3.5.9'
 
 # --- MySQL 源码编译依赖的 Boost 校验版本 ---
 # 这两个变量仅供下载探测和校验清单维护脚本使用。
@@ -28,14 +28,14 @@ Boost_Ver='boost_1_77_0'
 Boost_New_Ver='boost_1_84_0'
 
 # --- 内存分配器（可选）---
-Jemalloc_Ver='jemalloc-5.3.1'
-TCMalloc_Ver='gperftools-2.18.1'
+Jemalloc_Ver='jemalloc-5.4.0'
+TCMalloc_Ver='gperftools-2.18.91'
 Libunwind_Ver='libunwind-1.8.3'
 
 # --- nginx 本体 ---
 # nginx.org 只保留每个分支的近期点版本。
 # 1.30 是 stable 分支（次版本号为偶数），1.31 是 mainline，此处跟 stable。
-Nginx_Ver='nginx-1.30.4'
+Nginx_Ver='nginx-1.30.5'
 Nghttp2_Ver='nghttp2-1.70.0'
 
 # --- OpenResty（与 nginx 官方版互斥，见 include/openresty.sh）---
@@ -95,14 +95,14 @@ Pureftpd_Ver='pure-ftpd-1.0.54'
 #   Mysql_Ver / Mariadb_Ver / Php_Ver / Apache_Ver / PhpMyAdmin_Ver
 
 # --- 图像处理 ---
-ImageMagick_Ver='ImageMagick-7.1.2-29'
+ImageMagick_Ver='ImageMagick-7.1.2-32'
 Imagick_Ver='imagick-3.8.1'
 
 # --- 缓存 ---
 ZendOpcache_Ver='zendopcache-7.0.5'
-Redis_Stable_Ver='redis-8.10.0'
+Redis_Stable_Ver='redis-8.10.2'
 PHPRedis_Ver='redis-6.3.0'
-Memcached_Ver='memcached-1.6.39'
+Memcached_Ver='memcached-1.6.45'
 Libmemcached_Ver='libmemcached-1.0.18'
 PHPMemcached_Ver='memcached-2.2.0'
 PHP7Memcached_Ver='memcached-3.1.5'
@@ -116,7 +116,7 @@ PHPOldApcu_Ver='apcu-4.0.11'
 PHPNewApcu_Ver='apcu-5.1.28'
 PHPApcu_Bc_Ver='apcu_bc-1.0.5'
 PHPSodium_Ver='libsodium-2.0.23'
-PHPSwoole_Ver='swoole-6.2.2'
+PHPSwoole_Ver='swoole-6.2.3'
 # igbinary：phpredis 的序列化后端，必须先于 phpredis 编译。
 # 3.2.17 目前只有 RC，故取最后一个正式版。
 PHPIgbinary_Ver='igbinary-3.2.16'
