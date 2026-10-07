@@ -172,11 +172,14 @@ PHP_with_Intl()
 # 前缀、SAPI 和 mysqlnd 由各路径自行追加，其余集中在此，避免增删扩展时漏改。
 PHP_Common_Configure_Opts()
 {
+    local opcache=''
+    # PHP 8.5 移除 --enable-opcache，OPcache 始终编入；按当前目录的 configure 是否支持判断。
+    grep -qxF '# Check whether --enable-opcache was given.' configure 2>/dev/null && opcache='--enable-opcache'
     echo "--with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local \
 --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath \
 --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring \
 --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash \
---enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache \
+--enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} ${opcache} \
 --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}"
 }
 
@@ -251,8 +254,12 @@ pm.max_requests = 1024
 ; 返回，而不是在正常执行中途被 FPM 杀掉连接。
 ; FPM 的配置解析器只认 ; 作注释，# 会被当成配置项，导致 FPM 无法启动。
 request_terminate_timeout = 310
-request_slowlog_timeout = 0
-slowlog = var/log/slow.log
+request_slowlog_timeout = 5s
+slowlog = ${prefix}/var/log/slow.log
+; 状态页经独立 socket 由隐藏 pool 处理，worker 全部占满时仍可查询。
+pm.status_listen = ${sock%.sock}-status.sock
+pm.status_path = /fpm-status
+ping.path = /fpm-ping
 EOF
     then
         Echo_Red "写入 ${conf} 失败。"
@@ -439,6 +446,7 @@ if [ "${Stack}" = "lnmp" ]; then
     chmod +x /etc/init.d/php-fpm
     Ensure_Runtime_Directory /run/php-fpm root root || return 1
     Patch_Init_Runtime_Directory /etc/init.d/php-fpm /run/php-fpm root root || return 1
+    Patch_Init_Systemd_Redirect /etc/init.d/php-fpm php-fpm || return 1
 fi
 }
 

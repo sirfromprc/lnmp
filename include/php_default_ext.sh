@@ -68,34 +68,45 @@ EOF
     fi
 }
 
-# 启用 OPcache。PHP 8.x 构建时已包含该扩展，
-# 但默认不加载，必须在 conf.d 写 zend_extension 才生效。
-# OPcache 必须使用 zend_extension 指令加载。
+# 写入 PHP_Path 下的 OPcache 配置，主版本、多版本、升级与 addons 共用。
+# 8.4 及以下为共享扩展，需 zend_extension 加载；8.5 起静态编入，无 opcache.so。
+# JIT 不写入：8.0~8.3 默认 jit_buffer_size=0，8.4 起默认 jit=disable。
 Enable_Opcache_Config()
 {
-    local ext_dir opcache_mb=128
+    local ext_dir load='' opcache_mb=128 interned=32 ini="${PHP_Path}/conf.d/004-opcache.ini"
     ext_dir=$(PHP_Ext_Dir)
     Tune_Plan && opcache_mb="${Tune_Opcache_MB}"
+    # interned strings 缓冲占用 memory_consumption，小内存档减半。
+    [ "${opcache_mb}" -lt 128 ] && interned=16
 
-    if [ ! -s "${ext_dir}/opcache.so" ]; then
-        Echo_Red "opcache.so 不存在，跳过（PHP 编译时未带 --enable-opcache？）"
+    if [ -n "${ext_dir}" ] && [ -s "${ext_dir}/opcache.so" ]; then
+        load="zend_extension = \"${ext_dir}/opcache.so\""
+    elif ! "${PHP_Path}/bin/php" -n -m 2>/dev/null | grep -qx 'Zend OPcache'; then
+        Echo_Red "${PHP_Path} 未包含 OPcache，跳过（opcache.so 不存在且未静态编入）"
         printf -v PHP_Default_Ext_Failed '%s opcache(未编译)' \
             "${PHP_Default_Ext_Failed}"
         return 1
     fi
 
-    cat >${PHP_Path}/conf.d/004-opcache.ini<<EOF
-[Zend Opcache]
-zend_extension = "${ext_dir}/opcache.so"
+    mkdir -p "${PHP_Path}/conf.d" || return 1
+    if ! { echo '[Zend Opcache]'
+           [ -z "${load}" ] || printf '%s\n' "${load}"
+           cat <<EOF
 opcache.enable = 1
-opcache.enable_cli = 1
+opcache.enable_cli = 0
 opcache.memory_consumption = ${opcache_mb}
-opcache.interned_strings_buffer = 8
-opcache.max_accelerated_files = 10000
+opcache.interned_strings_buffer = ${interned}
+opcache.max_accelerated_files = 20000
 opcache.revalidate_freq = 60
 opcache.save_comments = 1
-opcache.fast_shutdown = 0
 EOF
+         } >"${ini}"
+    then
+        Echo_Red "写入 ${ini} 失败"
+        printf -v PHP_Default_Ext_Failed '%s opcache(写入失败)' \
+            "${PHP_Default_Ext_Failed}"
+        return 1
+    fi
     Echo_Green "opcache 已启用"
     return 0
 }

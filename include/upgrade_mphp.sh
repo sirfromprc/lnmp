@@ -181,6 +181,7 @@ Upgrade_MPHP8x()
         if [ -s "${Cur_MPHP_Path}/init.d.php-fpm.bak.${Upgrade_Date}" ]; then
             \cp "${Cur_MPHP_Path}/init.d.php-fpm.bak.${Upgrade_Date}" /etc/init.d/php-fpm${Cur_MPHP_Big_Ver}
             chmod +x /etc/init.d/php-fpm${Cur_MPHP_Big_Ver}
+            Patch_Init_Systemd_Redirect "/etc/init.d/php-fpm${Cur_MPHP_Big_Ver}" "php-fpm@${Cur_MPHP_Big_Ver}"
         fi
         lnmp start
         Echo_Red "已恢复。请检查站点是否正常。"
@@ -211,6 +212,10 @@ Upgrade_MPHP8x()
     # 配置 PHP 扩展及运行参数。
     echo "正在修改 php.ini..."
     PHP_Ini_Tune "${Cur_MPHP_Path}/etc/php.ini" || exit 1
+    # OPcache 写入失败只告警，与主版本升级一致。
+    if [ "${Enable_PHP_Default_Opcache}" = 'y' ]; then
+        PHP_Path="${Cur_MPHP_Path}" Enable_Opcache_Config
+    fi
 
     cd "${cur_dir}/src" || return 1
 
@@ -224,6 +229,7 @@ Upgrade_MPHP8x()
     sed -i "s@# Provides:          php-fpm@# Provides:          php-fpm${Cur_MPHP_Big_Ver}@g" /etc/init.d/php-fpm${Cur_MPHP_Big_Ver}
     Ensure_Runtime_Directory /run/php-fpm root root || exit 1
     Patch_Init_Runtime_Directory /etc/init.d/php-fpm${Cur_MPHP_Big_Ver} /run/php-fpm root root || exit 1
+    Patch_Init_Systemd_Redirect "/etc/init.d/php-fpm${Cur_MPHP_Big_Ver}" "php-fpm@${Cur_MPHP_Big_Ver}" || exit 1
     # 已安装的模板 unit 随升级刷新为当前模板。
     if [ -f /etc/systemd/system/php-fpm@.service ]; then
         Install_Systemd_Unit "${cur_dir}/init.d/php-fpm@.service" /etc/systemd/system/php-fpm@.service || exit 1

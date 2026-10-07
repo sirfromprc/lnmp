@@ -650,6 +650,31 @@ check_v18()
     fi
 }
 
+# ---------------------------------------------------------------------------
+# V19 OPcache 参数只允许由 Enable_Opcache_Config 写入
+#
+# 主版本安装、多版本安装、两条升级路径与 addons 各写一份时，参数与加载方式
+# 会分叉（8.5 起无 opcache.so，旧实现按 .so 判定后静默跳过）。
+# ---------------------------------------------------------------------------
+check_v19()
+{
+    local f missing='' extra
+
+    for f in include/php_default_ext.sh include/multiplephp.sh \
+             include/upgrade_php.sh include/upgrade_mphp.sh include/opcache.sh; do
+        [ -f "${f}" ] || { missing="${missing} ${f}(缺失)"; continue; }
+        grep -q 'Enable_Opcache_Config' "${f}" || missing="${missing} ${f}"
+    done
+    extra=$(grep -l 'opcache\.memory_consumption' include/*.sh 2>/dev/null \
+        | grep -v '^include/php_default_ext\.sh$' | tr '\n' ' ')
+
+    if [ -z "${missing}" ] && [ -z "${extra}" ]; then
+        ok V19 "OPcache 配置由 Enable_Opcache_Config 统一写入"
+    else
+        bad V19 "未调用 Enable_Opcache_Config：${missing:-无}；自写 OPcache 参数：${extra:-无}"
+    fi
+}
+
 echo "=== 跨文件一致性检查 ==="
 check_v1
 check_v2
@@ -669,6 +694,7 @@ check_v15
 check_v16
 check_v17
 check_v18
+check_v19
 
 echo
 echo "通过 ${pass} 项，失败 ${fail} 项。"

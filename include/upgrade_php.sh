@@ -71,6 +71,7 @@ Rollback_PHP()
         if [ -s "/usr/local/php/init.d.php-fpm.bak.${Upgrade_Date}" ]; then
             \cp "/usr/local/php/init.d.php-fpm.bak.${Upgrade_Date}" /etc/init.d/php-fpm
             chmod +x /etc/init.d/php-fpm
+            Patch_Init_Systemd_Redirect /etc/init.d/php-fpm php-fpm
         fi
     else
         [ -s "/usr/local/apache/modules/libphp.so.bak.${Upgrade_Date}" ] && \
@@ -360,6 +361,7 @@ if [ "${Stack}" = "lnmp" ]; then
     chmod +x /etc/init.d/php-fpm
     Ensure_Runtime_Directory /run/php-fpm root root || exit 1
     Patch_Init_Runtime_Directory /etc/init.d/php-fpm /run/php-fpm root root || exit 1
+    Patch_Init_Systemd_Redirect /etc/init.d/php-fpm php-fpm || exit 1
     # 已安装的 unit 随升级刷新为当前模板。
     if [ -f /etc/systemd/system/php-fpm.service ]; then
         Install_Systemd_Unit "${cur_dir}/init.d/php-fpm.service" /etc/systemd/system/php-fpm.service || exit 1

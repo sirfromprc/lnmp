@@ -1856,11 +1856,28 @@ php -r '$r=new Redis(); $r->connect("127.0.0.1",6379);
 | `max_input_vars` | 1000 | 菜单/复杂表单确认发生截断后再升到 2000～3000 |
 | `max_execution_time` | 300 是项目值，普通页面应远低于此值 | 长任务移到队列/CLI；不要靠继续加超时掩盖慢请求 |
 
-OPcache 已由 `Enable_PHP_Default_Opcache=y` 默认安装，配置在
-`/usr/local/php/conf.d/004-opcache.ini`，项目值为 128M、10000 个脚本。容量判断必须读取
-**FPM 进程池**的 `opcache_get_status(false)`；直接运行 `php -r` 看到的是独立 CLI 进程，
+OPcache 已由 `Enable_PHP_Default_Opcache=y` 默认安装，主版本与多版本 PHP 的安装、升级都写
+`<PHP 目录>/conf.d/004-opcache.ini`，`addons.sh install opcache` 写同一份内容：
+
+| 参数 | 项目值 | 说明 |
+|---|---:|---|
+| `opcache.memory_consumption` | 按内存 64/128/256M | 取 `Tune_Opcache_MB`（见 6.6），`Enable_Auto_Tune=n` 时 128M |
+| `opcache.interned_strings_buffer` | 32（64M 档为 16） | 占用 `memory_consumption`，不是额外内存 |
+| `opcache.max_accelerated_files` | 20000 | PHP 实际取不小于该值的质数 32531 |
+| `opcache.revalidate_freq` | 60 | 文件修改最长 60 秒后生效；WordPress 更新插件时会主动失效缓存 |
+| `opcache.enable_cli` | 0 | CLI 每个进程独立缓存，开启无收益 |
+| JIT | 不写入 | 8.0～8.3 默认 `jit_buffer_size=0`，8.4 起默认 `jit=disable` |
+
+PHP 8.5 起 OPcache 始终编入，不再有 `opcache.so`，该文件不含 `zend_extension` 行；8.4 及以下含
+`zend_extension = ".../opcache.so"`。删除该文件后 8.5 仍按内置默认值（128M、10000 个脚本）启用 OPcache。
+
+容量判断必须读取 **FPM 进程池**的 `opcache_get_status(false)`；直接运行 `php -r` 看到的是独立 CLI 进程，
 默认还关闭 CLI OPcache，不能代表网站。可临时建立只允许回环访问的状态端点读取
 `memory_usage` 与 `opcache_statistics`，检查完立即删除，不要把 OPcache 状态公开到公网。
+
+在 FPM 里读取经 `PHP_ADMIN_VALUE` 设置的项（如 `open_basedir`）时，参数要用变量：
+`$k = 'open_basedir'; echo ini_get($k);`。该项会变为 `PHP_INI_SYSTEM`，OPcache 优化器把
+`ini_get('open_basedir')` 这类字面量调用折叠成脚本首次编译时的值，读到的可能是其它站点的设置。
 
 只有 `free_memory` 长期接近 0 或 `hash_restarts` 增长时才扩大到 192M/256M 或增加
 `opcache.max_accelerated_files`。手工更新 WordPress 的环境保持
@@ -1876,6 +1893,38 @@ OPcache 已由 `Enable_PHP_Default_Opcache=y` 默认安装，配置在
 
 以上 PHP-FPM 命令只适用于 LNMP。LNMPA/LAMP 把 PHP 加载到 Apache 进程中，应改为
 `/usr/local/apache/bin/httpd -t && lnmp httpd reload`。
+
+#### PHP-FPM 慢日志与状态页（LNMP）
+
+每个 FPM 实例（主版本与多版本）默认：
+
+- 单个请求超过 5 秒，把调用栈写入 `<PHP 目录>/var/log/slow.log`，随 `/etc/logrotate.d/lnmp` 轮转。
+- 状态页 `/fpm-status` 与 `/fpm-ping` 经独立 socket `/run/php-fpm/php-cgi[版本]-status.sock` 由隐藏 pool 处理，
+  worker 全部占满时仍能查询。Nginx/OpenResty 的 1008 内部 server（只监听 127.0.0.1）转发主 PHP 的状态页。
+
+```bash
+curl -s http://127.0.0.1:1008/fpm-ping                  # pong
+curl -s 'http://127.0.0.1:1008/fpm-status?full'         # 每个 worker 的状态、当前请求与耗时
+tail -n 50 /usr/local/php/var/log/slow.log              # 慢请求调用栈
+tail -n 50 /usr/local/php8.4/var/log/slow.log           # 多版本 PHP
+```
+
+多版本 PHP 的状态页需要时在 `nginx.conf` 的 1008 server 内加一段，例如 8.4：
+
+```nginx
+location ~ ^/fpm84-(status|ping)$ {
+    allow 127.0.0.1;
+    deny all;
+    include fastcgi.conf;
+    fastcgi_param SCRIPT_NAME /fpm-$1;
+    fastcgi_pass unix:/run/php-fpm/php-cgi8.4-status.sock;
+}
+```
+
+执行超时保持 `max_execution_time=300`、`request_terminate_timeout=310`、`fastcgi_read_timeout 300`，
+用于后台导入与插件更新等长请求。慢日志用于定位卡住的请求，不缩短超时。
+在此之前安装的机器，配置在 PHP 升级时更新；`nginx.conf` 的 1008 入口需按上文手工添加主 PHP 的一段
+（socket 为 `/run/php-fpm/php-cgi-status.sock`）。
 
 `disable_functions` 是降低插件误用风险的补充措施，不是安全边界。WordPress 核心不需要
 `exec`/`system`/`shell_exec`，保持项目默认；某个插件确实需要时，先确认它调用的准确
@@ -2821,6 +2870,25 @@ lnmp pureftpd start
 - **单组件命令不处理多版本 PHP。** 只有 `lnmp start` / `stop` / `reload` 会遍历
   `/etc/init.d/php-fpm<版本>`。要单独控制某个版本，用
   `systemctl restart php-fpm@8.2`（模板 unit 已安装时）或 `/etc/init.d/php-fpm8.2 restart`。
+- PHP 自带的 init 脚本与 systemd unit 共用 pid 文件和 socket。新安装与升级后的
+  `/etc/init.d/php-fpm`、`/etc/init.d/php-fpm<版本>` 在 systemd 运行且 unit 存在时，把
+  `start|stop|restart|reload|status` 转交 `php-fpm.service`、`php-fpm@<版本>.service`；`configtest`、`force-quit`
+  仍直接执行。因此 `/etc/init.d/php-fpm8.2 restart`、`service php-fpm8.2 restart` 与 `systemctl restart php-fpm@8.2`
+  效果相同。未经升级的旧脚本没有这段转交，直接执行会让进程脱离 unit（unit 显示 inactive，健康检查随后拉起第二份并争用
+  socket）。检查与补丁（在源码目录执行）：
+
+  ```bash
+  head -n 3 /etc/init.d/php-fpm8.2                 # 第二行应为 # LNMP systemd redirect
+  bash -c '. include/main.sh
+    Patch_Init_Systemd_Redirect /etc/init.d/php-fpm php-fpm
+    for v in 8.2 8.3 8.4; do
+      [ -f "/etc/init.d/php-fpm$v" ] && Patch_Init_Systemd_Redirect "/etc/init.d/php-fpm$v" "php-fpm@$v"
+    done'
+  # unit 为 inactive 而 master 仍在运行时已脱管，先按 pid 文件结束它，例如 8.2：
+  systemctl is-active php-fpm@8.2 || kill -QUIT "$(cat /usr/local/php8.2/var/run/php-fpm.pid)"
+  systemctl reset-failed
+  lnmp restart
+  ```
 - 主 PHP 与各版本共用 `/run/php-fpm`，unit 设 `RuntimeDirectoryPreserve=yes`，单独停止某个版本不影响其他版本的 socket。
   旧版本安装的 unit 缺少该设置，`upgrade.sh php` / `upgrade.sh mphp` 会刷新；不升级时可在源码目录手工更新：
 
@@ -4543,10 +4611,25 @@ bash tools/remove_open_basedir_restriction.sh
 ```
 
 脚本按 vhost 里的 `root` 找到使用该目录的站点，只改这些站点：把它们 include 的
-`enable-php*.conf` 换成同名的 `-nobasedir` 版本（该版本 include 的是不带
-`PHP_ADMIN_VALUE` 的 `fastcgi-nobasedir.conf`），再删除站点目录里的 `.user.ini`。
+`enable-php*.conf` 换成同名的 `-nobasedir` 版本（该版本 include 的
+`fastcgi-nobasedir.conf` 把 `PHP_ADMIN_VALUE` 设为 `"open_basedir="`），再删除站点目录里的 `.user.ini`。
 全局 `fastcgi.conf` 不改动，**其它站点的 FastCGI 层兜底保持有效**。
 执行前会列出将要修改的配置文件并要求确认，`nginx -t` 不通过时回滚。
+
+PHP-FPM worker 在请求结束后不还原经 FastCGI 传入的 `PHP_ADMIN_VALUE` 与 `PHP_VALUE`，
+不传该参数的请求沿用同一 worker 上一个请求的值。因此 `fastcgi-nobasedir.conf` 必须显式清空
+`open_basedir`，否则与其它站点共用 pool 时会随机继承其它站点的目录。旧版本工具生成的
+`fastcgi-nobasedir.conf` 不含该行，对任一已解除的站点重新执行一次脚本即可覆盖：
+
+```bash
+bash tools/remove_open_basedir_restriction.sh
+# 输入已解除限制的网站根目录；站点配置已是 -nobasedir 版本时不再改动，只重新生成片段并 reload
+grep PHP_ADMIN_VALUE /usr/local/nginx/conf/fastcgi-nobasedir.conf
+# 应输出 fastcgi_param PHP_ADMIN_VALUE "open_basedir=";
+```
+
+站点配置中自定义的 `fastcgi_param PHP_VALUE` 同样会串到同一 pool 的其它站点，
+需要这类参数的站点应使用独立的 PHP 版本或 pool。
 
 恢复：把站点配置里的 `enable-php*-nobasedir.conf` 改回原文件名，重新写入
 `.user.ini` 后执行 `lnmp nginx reload`。

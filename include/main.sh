@@ -1159,9 +1159,17 @@ Install_Logrotate_Conf()
     local conf="${1:-/etc/logrotate.d/lnmp}" mycnf="${2:-/etc/my.cnf}"
     local datadir='' db_user='' db_group='' tmp
 
+    # 依赖安装失败或单组件入口未经依赖安装时可能缺 logrotate，补装一次。
     if ! command -v logrotate >/dev/null 2>&1; then
-        Echo_Yellow "未安装 logrotate，Redis、PHP-FPM、数据库错误日志与 /var/log/lnmp 不会轮转。"
-        Echo_Yellow "安装后重跑本次安装，或执行：apt-get install logrotate"
+        echo "未找到 logrotate，正在安装..."
+        case "${PM}" in
+        yum) yum -y install logrotate >/dev/null 2>&1 ;;
+        apt) DEBIAN_FRONTEND=noninteractive Apt_Get --no-install-recommends install -y logrotate >/dev/null 2>&1 ;;
+        esac
+    fi
+    if ! command -v logrotate >/dev/null 2>&1; then
+        Echo_Yellow "logrotate 安装失败，Redis、PHP-FPM、数据库错误日志与 /var/log/lnmp 不会轮转。"
+        Echo_Yellow "手工安装后重跑本次安装：apt-get install logrotate 或 yum install logrotate"
         return 0
     fi
     if [ -s "${mycnf}" ]; then
@@ -1177,7 +1185,7 @@ Install_Logrotate_Conf()
     {
         cat <<'EOF'
 # 由 LNMP 安装生成，重新安装组件时覆盖。/home/wwwlogs 由 lnmp-cutlogs 处理。
-/usr/local/php/var/log/php-fpm.log /usr/local/php[0-9]*/var/log/php-fpm.log {
+/usr/local/php/var/log/php-fpm.log /usr/local/php[0-9]*/var/log/php-fpm.log /usr/local/php/var/log/slow.log /usr/local/php[0-9]*/var/log/slow.log {
     weekly
     maxsize 10M
     rotate 4
@@ -2411,6 +2419,38 @@ Patch_Init_Runtime_Directory()
             '    exit 1' \
             'fi' \
             "install -d -o '${owner}' -g '${group}' -m 0755 '${dir}' || exit 1"
+        cat
+    } < "${initd}" > "${tmp}" ||
+       ! chmod --reference="${initd}" "${tmp}" ||
+       ! chown --reference="${initd}" "${tmp}" ||
+       ! mv -f "${tmp}" "${initd}"; then
+        rm -f "${tmp}"
+        return 1
+    fi
+    return 0
+}
+
+# Patch_Init_Systemd_Redirect <init 脚本> <unit 名>
+# PHP 自带的 init 脚本与 systemd unit 共用 pid 文件和 socket。systemd 运行且 unit 存在时，
+# 启停类动作转交 systemctl，避免进程脱离 unit 或与之争用 socket；
+# 含 service 命令经 systemd-sysv-generator 生成的同名 unit。configtest、force-quit 仍直接执行。
+Patch_Init_Systemd_Redirect()
+{
+    local initd="$1" unit="$2" tmp
+
+    [ -f "${initd}" ] && [ -n "${unit}" ] || return 1
+    grep -q '^# LNMP systemd redirect$' "${initd}" && return 0
+    tmp=$(mktemp "${initd}.lnmp.XXXXXX") || return 1
+    if ! {
+        IFS= read -r first || exit 1
+        printf '%s\n' "${first}"
+        printf '%s\n' \
+            '# LNMP systemd redirect' \
+            "if [ -d /run/systemd/system ] && systemctl cat '${unit}.service' >/dev/null 2>&1; then" \
+            '    case "$1" in' \
+            "    start|stop|restart|reload|status) exec systemctl --no-pager \"\$1\" '${unit}.service' ;;" \
+            '    esac' \
+            'fi'
         cat
     } < "${initd}" > "${tmp}" ||
        ! chmod --reference="${initd}" "${tmp}" ||

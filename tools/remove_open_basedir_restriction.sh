@@ -44,18 +44,22 @@ Find_Site_Confs()
     done
 }
 
-# 生成不带 PHP_ADMIN_VALUE 的 FastCGI 参数文件。
-# 全局 fastcgi.conf 保持不变，其它站点的兜底不受影响。
+# 生成显式清空 open_basedir 的 FastCGI 参数文件。
+# FPM worker 不还原上一个请求传入的 PHP_ADMIN_VALUE，省略该参数会继承同池其它站点的值。
+# 全局 fastcgi.conf 保持不变，其它站点的兜底不受影响；重复执行时覆盖旧文件。
 Ensure_Nobasedir_Fastcgi()
 {
     local src="${Nginx_Conf_Dir}/fastcgi.conf"
-    local dst="${Nginx_Conf_Dir}/fastcgi-nobasedir.conf"
+    local dst="${Nginx_Conf_Dir}/fastcgi-nobasedir.conf" tmp
 
-    if ! sed '/^[[:space:]]*fastcgi_param[[:space:]]\+PHP_ADMIN_VALUE/d' "${src}" >"${dst}"; then
+    tmp=$(mktemp "${dst}.XXXXXXXX") || { Echo_Red "生成 ${dst} 失败。"; return 1; }
+    if ! { sed '/^[[:space:]]*fastcgi_param[[:space:]]\+PHP_ADMIN_VALUE/d' "${src}" &&
+           printf '%s\n' 'fastcgi_param PHP_ADMIN_VALUE "open_basedir=";'; } >"${tmp}" ||
+       ! chmod 644 "${tmp}" || ! mv -f "${tmp}" "${dst}"; then
+        rm -f "${tmp}"
         Echo_Red "生成 ${dst} 失败。"
         return 1
     fi
-    chmod 644 "${dst}"
     return 0
 }
 

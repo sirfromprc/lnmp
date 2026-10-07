@@ -292,7 +292,8 @@ bash install.sh mphp
   `conf.d` 配置并返回非零。
 - `pureftpd.sh` 管理 Pure-FTPd 安装。
 - `upgrade.sh` 按菜单升级组件；升级前先完成备份和恢复演练。
-- `install.sh mphp` 为 LNMP 模式增加一个 PHP 版本。
+- `install.sh mphp` 为 LNMP 模式增加一个 PHP 版本，OPcache 参数与主 PHP 相同（`Enable_PHP_Default_Opcache`
+  控制）。systemd 下各版本由 `php-fpm@<版本>` 管理，`/etc/init.d/php-fpm<版本>` 的启停动作转交该 unit。
 
 卸载入口为 `bash uninstall.sh`。它要求输入完整的 `uninstall-lnmp`、
 `uninstall-lnmpa` 或 `uninstall-lamp`，并会移动数据库目录。执行前必须另外备份网站、
@@ -319,8 +320,10 @@ lnmp perm init
   自启）时只告警，不自动拉起。该重启直接调 `systemctl` ，不经过 `lnmp` 命令。
 - LNMP、LNMPA、LAMP 以及 `install.sh nginx` 会自动安装 `lnmp-cutlogs.timer`，每天
   切割并归档 `/home/wwwlogs` 下的日志，保留天数等可在 `/etc/lnmp/cutlogs.conf` 覆盖。
-- PHP-FPM、Redis、数据库错误日志与 `/var/log/lnmp` 下的工具日志由系统 logrotate 按
-  `/etc/logrotate.d/lnmp` 每周轮转，超过上限时提前轮转，保留 4 份。
+- PHP-FPM（含慢日志）、Redis、数据库错误日志与 `/var/log/lnmp` 下的工具日志由系统 logrotate 按
+  `/etc/logrotate.d/lnmp` 每周轮转，超过上限时提前轮转，保留 4 份。未安装 logrotate 时安装流程自动补装。
+- PHP-FPM 每个实例记录超过 5 秒的请求调用栈到 `<PHP 目录>/var/log/slow.log`；主 PHP 的状态页经
+  `http://127.0.0.1:1008/fpm-status` 与 `/fpm-ping` 本机访问，worker 占满时仍可查询。
 - `perm` 核对服务所需目录和文件权限；默认只报告，不自动递归修改权限。
 - 有意调整某条权限后，可用 `lnmp perm ignore <条目ID>` 单独忽略，使用
   `lnmp perm unignore <条目ID>` 恢复检查。

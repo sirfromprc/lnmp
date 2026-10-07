@@ -85,6 +85,10 @@ Install_MPHP8x()
 
     echo "正在修改 php.ini..."
     PHP_Ini_Tune "${MPHP_Path}/etc/php.ini" || { MPHP_Install_Abort; return 1; }
+    # OPcache 写入失败只告警，与主版本默认扩展一致。
+    if [ "${Enable_PHP_Default_Opcache}" = 'y' ]; then
+        PHP_Path="${MPHP_Path}" Enable_Opcache_Config
+    fi
 
     cd "${cur_dir}/src" || { MPHP_Install_Abort; return 1; }
 
@@ -105,6 +109,8 @@ Install_MPHP8x()
     sed -i "s@# Provides:          php-fpm@# Provides:          php-fpm${MPHP_Short_Ver}@g" /etc/init.d/php-fpm${MPHP_Short_Ver}
     Ensure_Runtime_Directory /run/php-fpm root root || { MPHP_Install_Abort; return 1; }
     Patch_Init_Runtime_Directory /etc/init.d/php-fpm${MPHP_Short_Ver} /run/php-fpm root root \
+        || { MPHP_Install_Abort; return 1; }
+    Patch_Init_Systemd_Redirect "/etc/init.d/php-fpm${MPHP_Short_Ver}" "php-fpm@${MPHP_Short_Ver}" \
         || { MPHP_Install_Abort; return 1; }
 
     # 模板 unit 由所有版本共用，%i 取版本号。装上后多版本 PHP 与主 php-fpm

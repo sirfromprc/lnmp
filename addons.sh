@@ -27,6 +27,7 @@ action2=$2
 . "${cur_dir}/include/init.sh"
 . "${cur_dir}/include/version.sh"
 . "${cur_dir}/include/memcached.sh"
+. "${cur_dir}/include/php_default_ext.sh"
 . "${cur_dir}/include/opcache.sh"
 . "${cur_dir}/include/redis.sh"
 . "${cur_dir}/include/imageMagick.sh"
@@ -98,6 +99,12 @@ Restart_PHP()
     else
         echo "正在重启 php-fpm......"
         service="${PHPFPM_Initd##*/}"
+        # 多版本 PHP 由模板实例管理时经 SysV 脚本重启，实例会脱离 systemd。
+        case "${service}" in
+        php-fpm?*)
+            Use_Systemd_Unit "php-fpm@${service#php-fpm}" && service="php-fpm@${service#php-fpm}"
+            ;;
+        esac
     fi
 
     StartOrStop restart "${service}"
