@@ -17,6 +17,8 @@ Type=forking
 PIDFile=/usr/local/php%i/var/run/php-fpm.pid
 RuntimeDirectory=php-fpm
 RuntimeDirectoryMode=0755
+# /run/php-fpm 由主版本与多版本 PHP 共用，停止时保留目录，避免删除其他版本的 socket。
+RuntimeDirectoryPreserve=yes
 # LNMP perm hooks
 ExecStartPre=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook pre php-fpm'
 ExecStopPost=-/bin/sh -c 'test -x /bin/lnmp-perm || exit 0; exec /bin/lnmp-perm hook post php-fpm'

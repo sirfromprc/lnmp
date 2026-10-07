@@ -66,6 +66,7 @@ Nginx_Dir="${LNMP_HEALTH_NGINX_DIR:-/usr/local/nginx}"
 Apache_Dir="${LNMP_HEALTH_APACHE_DIR:-/usr/local/apache}"
 Php_Dir="${LNMP_HEALTH_PHP_DIR:-/usr/local/php}"
 Redis_Dir="${LNMP_HEALTH_REDIS_DIR:-/usr/local/redis}"
+Fpm_Run_Dir="${LNMP_HEALTH_FPM_RUN_DIR:-/run/php-fpm}"
 My_Cnf="${LNMP_HEALTH_MYCNF:-/etc/my.cnf}"
 
 # ---------------------------------------------------------------------------
@@ -497,19 +498,19 @@ Probe_Http()
 }
 
 # PHP-FPM 探针。协议层无法直接发起 FastCGI 请求，改为核对 socket 存在、
-# master 进程存活且已派生 worker；worker 全部卡死的场景由 Web 探针的
+# master 进程存活且已派生 worker（ondemand 不核对 worker 数）；worker 全部卡死的场景由 Web 探针的
 # 502/504 间接反映。
 Probe_Fpm()
 {
-    local svc="$1" ver='' sock pid workers
+    local svc="$1" ver='' sock pid workers pm
 
     case "${svc}" in
         php-fpm@*) ver="${svc#php-fpm@}" ;;
     esac
     if [ -n "${ver}" ]; then
-        sock="/run/php-fpm/php-cgi${ver}.sock"
+        sock="${Fpm_Run_Dir}/php-cgi${ver}.sock"
     else
-        sock="/run/php-fpm/php-cgi.sock"
+        sock="${Fpm_Run_Dir}/php-cgi.sock"
     fi
 
     if [ ! -S "${sock}" ]; then
@@ -525,6 +526,11 @@ Probe_Fpm()
         printf -v Probe_Detail 'master 进程 %s 已消失' "${pid}"
         return 1
     }
+
+    # ondemand 空闲时 worker 为 0 属正常，不作为故障依据。
+    pm=$(awk -F= '/^[[:space:]]*pm[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' \
+        "${Php_Dir}${ver}/etc/php-fpm.conf" 2>/dev/null)
+    [ "${pm}" = "ondemand" ] && return 0
 
     workers=$(pgrep -P "${pid}" 2>/dev/null | wc -l)
     if [ "${workers}" -eq 0 ]; then

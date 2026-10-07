@@ -2821,6 +2821,25 @@ lnmp pureftpd start
 - **单组件命令不处理多版本 PHP。** 只有 `lnmp start` / `stop` / `reload` 会遍历
   `/etc/init.d/php-fpm<版本>`。要单独控制某个版本，用
   `systemctl restart php-fpm@8.2`（模板 unit 已安装时）或 `/etc/init.d/php-fpm8.2 restart`。
+- 主 PHP 与各版本共用 `/run/php-fpm`，unit 设 `RuntimeDirectoryPreserve=yes`，单独停止某个版本不影响其他版本的 socket。
+  旧版本安装的 unit 缺少该设置，`upgrade.sh php` / `upgrade.sh mphp` 会刷新；不升级时可在源码目录手工更新：
+
+  ```bash
+  systemctl show -p RuntimeDirectoryPreserve php-fpm php-fpm@8.2   # 应为 yes
+  cp init.d/php-fpm.service /etc/systemd/system/php-fpm.service
+  cp init.d/php-fpm@.service /etc/systemd/system/php-fpm@.service  # 已装多版本 PHP 时
+  systemctl daemon-reload
+  ```
+- 模板 unit 已安装时，多版本 PHP 只应以 `php-fpm@<版本>` 开机启动。旧版本 `upgrade.sh mphp` 会额外注册
+  SysV 启动项 `php-fpm<版本>`，开机后与模板实例争用 socket，`lnmp stop` 也停不掉它。检查与清理：
+
+  ```bash
+  systemctl is-enabled php-fpm8.2.service          # enabled 即受影响，正常为 disabled
+  update-rc.d -f php-fpm8.2 remove                 # 只撤销启动项，保留 /etc/init.d/php-fpm8.2
+  systemctl kill --signal=SIGQUIT php-fpm8.2.service
+  systemctl reset-failed php-fpm@8.2
+  systemctl restart php-fpm@8.2
+  ```
 - `pureftpd` 可以单独控制，但不被整体命令纳管。
 - LNMP 模式下，除 `status` 外的动作会打印明确的成功或失败结果并附退出码；数据库启动
   失败时额外输出诊断信息。
@@ -2982,6 +3001,9 @@ tail -20 /var/log/lnmp/health.log
 `lnmp start` / `stop` 纳管，见 [8.2](#82-lnmp-命令不纳管的服务与自定义)。Redis 探针
 直接用 bash 的 `/dev/tcp` 发 inline 命令，不调 `redis-cli`，端口从
 `/usr/local/redis/etc/redis.conf` 读取，改端口后无须另行配置。
+
+PHP-FPM 探针核对 `/run/php-fpm/php-cgi[版本].sock` 存在、master 进程存活；`pm = dynamic` / `static`
+还要求至少一个 worker，`pm = ondemand`（多版本 PHP 与 3GB 以下内存的主 PHP）空闲时 worker 为 0 属正常，不核对。
 
 Web 探针同样走 `/dev/tcp`，不依赖 `curl`。Nginx 探的是主配置内置的
 `127.0.0.1:1008/nginx_status`，该 `server` 已关闭访问日志，每分钟一次的探测不写任何

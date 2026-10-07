@@ -2,6 +2,22 @@
 # 多版本 PHP 升级。2.3 起仅支持 PHP 8.0+。
 # 已安装版本由统一映射表识别，升级仅允许在相同 PHP 8.x 分支内进行。
 
+# 模板 unit 已安装时与 multiplephp.sh 一致注册 php-fpm@<版本>，撤销 SysV 启动项，
+# 并按 cgroup 结束其残留进程：两者共用 socket 与 pid 文件，pid 文件丢失后 SysV 脚本无法停止。
+# 未安装模板 unit 时保持 SysV 注册。
+MPHP_Register_StartUp()
+{
+    local ver="$1"
+
+    if Use_Systemd_Unit "php-fpm@${ver}"; then
+        Remove_StartUp "php-fpm${ver}"
+        systemctl kill --signal=SIGQUIT "php-fpm${ver}.service" >/dev/null 2>&1
+        StartUp "php-fpm@${ver}"
+    else
+        StartUp "php-fpm${ver}"
+    fi
+}
+
 Upgrade_Multiplephp()
 {
     Get_Dist_Name
@@ -146,7 +162,8 @@ Upgrade_MPHP8x()
     fi
 
     Staged_PHP="${MPHP_Stage}${Cur_MPHP_Path}"
-    Smoke_Out=$("${Staged_PHP}/bin/php" -v 2>&1 | head -n1)
+    # -n 不加载 ini：暂存版本按线上路径编译，线上 conf.d 的启动警告会排在版本行之前。
+    Smoke_Out=$("${Staged_PHP}/bin/php" -n -v 2>&1 | head -n1)
     if ! echo "${Smoke_Out}" | grep -q "PHP ${php_version}"; then
         Echo_Red "新构建的 PHP 冒烟测试未通过：期望 ${php_version}，实际 '${Smoke_Out}'"
         Echo_Red "**现有的多版本 PHP 未做任何改动。**"
@@ -170,6 +187,7 @@ Upgrade_MPHP8x()
     }
 
     lnmp stop
+    MPHP_Register_StartUp "${Cur_MPHP_Big_Ver}"
     Echo_Blue "正在备份旧的多版本 PHP..."
     if ! mv "${Cur_MPHP_Path}" "${MPHP_Backup}"; then
         Echo_Red "备份原 ${Cur_MPHP_Path} 失败，放弃升级。"
@@ -206,8 +224,11 @@ Upgrade_MPHP8x()
     sed -i "s@# Provides:          php-fpm@# Provides:          php-fpm${Cur_MPHP_Big_Ver}@g" /etc/init.d/php-fpm${Cur_MPHP_Big_Ver}
     Ensure_Runtime_Directory /run/php-fpm root root || exit 1
     Patch_Init_Runtime_Directory /etc/init.d/php-fpm${Cur_MPHP_Big_Ver} /run/php-fpm root root || exit 1
-
-    StartUp php-fpm${Cur_MPHP_Big_Ver}
+    # 已安装的模板 unit 随升级刷新为当前模板。
+    if [ -f /etc/systemd/system/php-fpm@.service ]; then
+        Install_Systemd_Unit "${cur_dir}/init.d/php-fpm@.service" /etc/systemd/system/php-fpm@.service || exit 1
+        Systemd_Is_Running && systemctl daemon-reload >/dev/null 2>&1
+    fi
 
     \cp ${cur_dir}/conf/enable-php${Cur_MPHP_Big_Ver}.conf /usr/local/nginx/conf/enable-php${Cur_MPHP_Big_Ver}.conf
 

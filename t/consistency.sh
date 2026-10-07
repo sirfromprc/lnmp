@@ -465,6 +465,16 @@ check_v15()
             || missing="${missing} ${unit}-forking无PIDFile"
     done
 
+    # /run/php-fpm 由主版本与多版本共用，任一单元停止不得删除该目录
+    for unit in php-fpm php-fpm@; do
+        grep -q '^RuntimeDirectoryPreserve=yes$' "init.d/${unit}.service" 2>/dev/null \
+            || missing="${missing} ${unit}-无RuntimeDirectoryPreserve"
+    done
+    grep -q 'Install_Systemd_Unit "${cur_dir}/init.d/php-fpm.service"' include/upgrade_php.sh \
+        || missing="${missing} upgrade_php未刷新unit"
+    grep -q 'Install_Systemd_Unit "${cur_dir}/init.d/php-fpm@.service"' include/upgrade_mphp.sh \
+        || missing="${missing} upgrade_mphp未刷新unit"
+
     for unit in mysql mariadb; do
         grep -q '^Restart=no$' "init.d/${unit}.service" 2>/dev/null \
             || missing="${missing} ${unit}-应保持Restart=no"

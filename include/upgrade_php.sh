@@ -90,13 +90,14 @@ Report_PHP_Ext_After_Upgrade()
 {
     # Enable_Opcache_Config 与本函数都按 PHP_Path 取路径，升级流程未设置该变量。
     local PHP_Path='/usr/local/php'
-    local old_conf="${PHP_Old_Dir}/conf.d" f base name lost=''
+    local old_conf="${PHP_Old_Dir}/conf.d" f base name lost='' builtin
 
     if [ "${Enable_PHP_Default_Opcache}" = 'y' ]; then
         Enable_Opcache_Config
     fi
 
     [ -d "${old_conf}" ] || return 0
+    builtin=$("${PHP_Path}/bin/php" -n -m 2>/dev/null)
 
     for f in "${old_conf}"/*.ini; do
         [ -f "${f}" ] || continue
@@ -106,6 +107,8 @@ Report_PHP_Ext_After_Upgrade()
         # 文件名形如 009-swoole.ini，去掉三位序号和后缀取扩展名。
         name=${base%.ini}
         name=${name#*-}
+        # 新版本已内置的扩展（如编译时启用的 exif）无需重装。
+        printf '%s\n' "${builtin}" | grep -qixF "${name}" && continue
         lost="${lost} ${name}"
     done
 
@@ -125,7 +128,8 @@ Smoke_Test_PHP()
         Echo_Red "暂存目录里没有可执行的 php：${root}/usr/local/php/bin/php"
         return 1
     fi
-    out=$("${root}/usr/local/php/bin/php" -v 2>&1 | head -n1)
+    # -n 不加载 ini：暂存版本按线上路径编译，线上 conf.d 的启动警告会排在版本行之前。
+    out=$("${root}/usr/local/php/bin/php" -n -v 2>&1 | head -n1)
     if ! echo "${out}" | grep -q "PHP ${php_version}"; then
         Echo_Red "新构建的 PHP 版本不符：期望 ${php_version}，实际 '${out}'"
         return 1
@@ -356,6 +360,11 @@ if [ "${Stack}" = "lnmp" ]; then
     chmod +x /etc/init.d/php-fpm
     Ensure_Runtime_Directory /run/php-fpm root root || exit 1
     Patch_Init_Runtime_Directory /etc/init.d/php-fpm /run/php-fpm root root || exit 1
+    # 已安装的 unit 随升级刷新为当前模板。
+    if [ -f /etc/systemd/system/php-fpm.service ]; then
+        Install_Systemd_Unit "${cur_dir}/init.d/php-fpm.service" /etc/systemd/system/php-fpm.service || exit 1
+        Systemd_Is_Running && systemctl daemon-reload >/dev/null 2>&1
+    fi
 fi
     if [ "${Stack}" != "lnmp" ]; then
         # 清理旧 PHP 5/7 Apache 模块的 LoadModule 残留。
