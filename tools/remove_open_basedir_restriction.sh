@@ -115,6 +115,9 @@ fi
 echo "将解除以下站点的 open_basedir 限制："
 printf '%s\n' "${site_confs}" | sed 's/^/  /'
 echo "全局 ${Nginx_Conf_Dir}/fastcgi.conf 不会改动，其它站点的兜底保持有效。"
+echo "收益：该站点的文件操作不再逐次做 open_basedir 检查；减少的耗时取决于站点文件操作次数与本机系统调用成本。"
+echo "风险：该站点的 PHP 可读写 www 用户能访问的其它站点目录与系统文件，仅适用于可信站点。"
+echo "同一 PHP 进程池中仍有站点设置 open_basedir 时，该站点的 realpath 缓存仍不可用。"
 Echo_Yellow "确认继续? (y/N，默认 n) "
 if ! read -r answer || { [ "${answer}" != "y" ] && [ "${answer}" != "Y" ]; }; then
     echo "已取消，未做任何修改。"
