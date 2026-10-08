@@ -117,6 +117,17 @@ gh_tags()
 # gh_latest <owner/repo> <ERE>
 gh_latest() { gh_tags "$1" "$2" | tail -1; }
 
+# gh_latest_release <owner/repo> <ERE>：排除 GitHub release 标为 prerelease 的 tag。
+# 用于预发布 tag 与正式版同格式的仓库（如 gperftools-2.18.91）。
+gh_latest_release()
+{
+    local pre
+    pre=$(gh_api "https://api.github.com/repos/$1/releases?per_page=100" \
+        | tr -d '\n' | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"[^{}]*"prerelease"[[:space:]]*:[[:space:]]*true' \
+        | sed -E 's/^"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/; s/^v//') || return 1
+    gh_tags "$1" "$2" | grep -vxF -e "${pre:-//}" | tail -1
+}
+
 # url_alive <URL>：读取首字节以判断文件是否存在。
 # 不用 HEAD：cdn.mysql.com、files.phpmyadmin.net 等对 HEAD 返回 403/405。
 url_alive() { ${CURL} -r 0-0 -o /dev/null "$1" 2>/dev/null; }
@@ -354,7 +365,7 @@ check_mysql()
         best="${cur##*.}"; n=$((best+1)); miss=0
         case "${br}" in
             8.0) glibc='2.28' ;;
-            8.4) glibc='2.17' ;;
+            8.4) glibc='2.28' ;;
         esac
         while [ ${miss} -lt 3 ]; do
             source="https://cdn.mysql.com/Downloads/MySQL-${br}/mysql-${br}.${n}.tar.gz"
@@ -470,7 +481,7 @@ check_misc()
         fi
     fi
     if want gperftools; then
-        latest=$(gh_latest gperftools/gperftools '^gperftools-[0-9]+\.[0-9]+(\.[0-9]+)?$')
+        latest=$(gh_latest_release gperftools/gperftools '^gperftools-[0-9]+\.[0-9]+(\.[0-9]+)?$')
         if require_value 'gperftools tag' "${latest}"; then
             latest="${latest#gperftools-}"
             propose TCMalloc_Ver "${TCMalloc_Ver}" "gperftools-${latest}" AUTO ""
@@ -549,10 +560,10 @@ cat >> "${REPORT}" <<'EOF'
 | `NgxBrotli_Commit` | a71f9312… | 上游只有一个 2021 年的 rc tag，固定到具体 commit 才能保证 sha256 稳定 |
 | `NgxCachePurge_Ver` | 2.3 | 原仓库停更于此，用户指定 |
 | `Libmemcached_Ver` | 1.0.18 | 上游停更，且需要打 gcc7 补丁 |
-| `Curl_Ver` | 7.62.0 | 仅编译期依赖的特定路径使用，升级需人工确认调用点 |
-| `Freetype_New_Ver` | freetype-2.13.0 | 本包使用 SourceForge 归档命名，迁移到新上游发布源需人工评估 |
-| `Libiconv_Ver` / `Libzip_Ver` | 1.17 / 1.3.2 | 保持现有编译基线；升级需覆盖旧 PHP/数据库组合 |
-| `APR_Ver` / `APR_Util_Ver` | 1.7.6 / 1.6.4 | 仅 Apache 路径使用，按当前归档固定；Apache 组合需一并验证 |
+| `Curl_Ver` | 8.22.0 | 仅 CentOS ARM 的 PHP curl 路径使用，升级需人工确认编译参数 |
+| `Freetype_New_Ver` | freetype-2.14.3 | 使用 SourceForge 归档命名；升级后需验证 PHP GD 的 TTF 渲染 |
+| `Libiconv_Ver` / `Libzip_Ver` | 1.19 / 1.3.2 | libiconv 升级需验证 PHP iconv；libzip 1.4 起只支持 CMake，仅 EL7 系路径使用，保持 1.3.2 |
+| `APR_Ver` / `APR_Util_Ver` | 1.7.6 / 1.6.5 | 仅 Apache 路径使用，升级需随 Apache 一并编译验证 |
 | `Boost_Ver` / `Boost_New_Ver` | 1.77.0 / 1.84.0 | 只服务校验清单；安装版本由 MySQL 源码动态解析 |
 | `NgxBrotli_Ver` | 随 commit | 由 `NgxBrotli_Commit` 派生，不是独立上游版本 |
 | `NgxDevelKit` / `NgxFancyIndex_Ver` | 0.3.4 / 0.6.0 | nginx 第三方模块，升级需随 nginx 全模块编译验证 |

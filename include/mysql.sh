@@ -201,7 +201,7 @@ loose-mysqlx-port = ${DB_X_Port}
 datadir = ${MySQL_Data_Dir}
 skip-external-locking
 key_buffer_size = 16M
-max_allowed_packet = 1M
+max_allowed_packet = 64M
 table_open_cache = 64
 sort_buffer_size = 512K
 net_buffer_length = 8K
@@ -236,7 +236,7 @@ innodb_lock_wait_timeout = 50
 
 [mysqldump]
 quick
-max_allowed_packet = 16M
+max_allowed_packet = 64M
 
 [mysql]
 no-auto-rehash

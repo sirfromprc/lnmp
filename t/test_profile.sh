@@ -46,10 +46,10 @@ expect_db()
 }
 
 expect_db 1 mysql   mysql-8.0.46     Install_MySQL_80     /usr/local/mysql
-expect_db 2 mysql   mysql-8.4.7      Install_MySQL_84     /usr/local/mysql
-expect_db 3 mariadb mariadb-10.11.18 Install_MariaDB_1011 /usr/local/mariadb
-expect_db 4 mariadb mariadb-11.4.12  Install_MariaDB_114  /usr/local/mariadb
-expect_db 5 mariadb mariadb-11.8.8   Install_MariaDB_118  /usr/local/mariadb
+expect_db 2 mysql   mysql-8.4.11      Install_MySQL_84     /usr/local/mysql
+expect_db 3 mariadb mariadb-10.11.19 Install_MariaDB_1011 /usr/local/mariadb
+expect_db 4 mariadb mariadb-11.4.13  Install_MariaDB_114  /usr/local/mariadb
+expect_db 5 mariadb mariadb-11.8.9   Install_MariaDB_118  /usr/local/mariadb
 expect_db 6 mariadb mariadb-12.3.3   Install_MariaDB_123  /usr/local/mariadb
 
 Set_DB_Profile 0
@@ -73,16 +73,45 @@ expect_php()
 
 expect_php 1 8.0 php-8.0.30 Install_PHP_80 libphp.so
 expect_php 2 8.1 php-8.1.34 Install_PHP_81 libphp.so
-expect_php 3 8.2 php-8.2.33 Install_PHP_82 libphp.so
-expect_php 4 8.3 php-8.3.33 Install_PHP_83 libphp.so
-expect_php 5 8.4 php-8.4.24 Install_PHP_84 libphp.so
-expect_php 6 8.5 php-8.5.9  Install_PHP_85 libphp.so
+expect_php 3 8.2 php-8.2.34 Install_PHP_82 libphp.so
+expect_php 4 8.3 php-8.3.35 Install_PHP_83 libphp.so
+expect_php 5 8.4 php-8.4.26 Install_PHP_84 libphp.so
+expect_php 6 8.5 php-8.5.11  Install_PHP_85 libphp.so
+
+# 已停止支持与临近停止支持的分支须在菜单标注
+for pair in '1: (EOL)' '2: (EOL)' '3: (EOL 2026-12)' '4:' '5:' '6:'; do
+    Set_PHP_Profile "${pair%%:*}"
+    check "PHP_Note(${pair%%:*})" "${pair#*:}" "${PHP_Note}"
+done
+
+echo
+echo "=== 数据库通用二进制可用性 ==="
+# bin_ok <编号> <架构> <glibc>：输出 y/n
+bin_ok()
+{
+    Set_DB_Profile "$1"
+    DB_ARCH="$2"
+    Test_Glibc="$3"
+    Get_Glibc_Version() { echo "${Test_Glibc}"; }
+    DB_Bin_Available && echo y || echo n
+}
+check 'mysql8.4 x86_64 glibc2.36' y "$(bin_ok 2 x86_64 2.36)"
+check 'mysql8.4 aarch64 glibc2.36' y "$(bin_ok 2 aarch64 2.36)"
+check 'mysql8.0 aarch64 glibc2.28' y "$(bin_ok 1 aarch64 2.28)"
+check 'mysql8.4 x86_64 glibc2.27' n "$(bin_ok 2 x86_64 2.27)"
+check 'mysql8.4 glibc 未知'       n "$(bin_ok 2 x86_64 '')"
+check 'mysql8.4 i686'             n "$(bin_ok 2 i686 2.36)"
+check 'mariadb11.8 aarch64'       n "$(bin_ok 5 aarch64 2.36)"
+check 'mariadb11.8 x86_64'        y "$(bin_ok 5 x86_64 2.36)"
+Set_DB_Profile 2; DB_ARCH=x86_64; Get_Glibc_Version() { echo 2.27; }; DB_Bin_Available
+check 'glibc 不足时给出原因' '系统 glibc 2.27 低于官方二进制包要求的 2.28' "${DB_Bin_Reason}"
+unset -f Get_Glibc_Version
 
 echo
 echo "=== Apache 映射 ==="
 if Set_Apache_Profile 1; then
     check "apache1.branch"  "2.4"              "${Apache_Branch}"
-    check "apache1.ver"     "httpd-2.4.68"     "${Apache_Ver}"
+    check "apache1.ver"     "httpd-2.4.69"     "${Apache_Ver}"
     check "apache1.install" "Install_Apache_24" "${Apache_Install}"
 else
     echo "FAIL Set_Apache_Profile 1 返回非零"; fail=1

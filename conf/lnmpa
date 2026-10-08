@@ -1288,8 +1288,14 @@ server {
         deny all;
     }
 
-    # 可按需禁止指定目录执行 PHP。
-    #location ~ /(wp-content|uploads|wp-includes|images)/.*\.php$ { deny all; }
+    # WordPress 上传目录只存媒体，拒绝其中的 PHP（含 .php/ 形式的 PATH_INFO）；
+    # wp-config.php 及其编辑器副本、备份不对外提供。须排在 PHP 正则之前。
+    location ~* /wp-content/uploads/.*\.php(/|$) {
+        deny all;
+    }
+    location ~* /wp-config[^/]*$ {
+        deny all;
+    }
 
     ${php_block}
 
@@ -2962,7 +2968,7 @@ Export_Database()
     }
     echo "正在导出数据库 ${database_name} ..."
     ${MySQL_Dump_Bin} --defaults-file="${HOME}/.my.cnf" \
-        --single-transaction --quick --routines --triggers --events \
+        --max-allowed-packet=1G --single-transaction --quick --routines --triggers --events \
         --default-character-set=utf8mb4 \
         "${database_name}" | gzip -c > "${tmp_file}"
     # 一次性保存 PIPESTATUS，确保导出和压缩任一失败都能被识别。
@@ -3051,7 +3057,7 @@ Import_Database()
     # 按文件内容识别压缩格式，未压缩的 SQL 文件也可直接导入。
     if gzip -t "${in_file}" 2>/dev/null; then
         gzip -dc "${in_file}" | ${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" \
-            --default-character-set=utf8mb4 "${database_name}"
+            --max-allowed-packet=1G --default-character-set=utf8mb4 "${database_name}"
         pipe_st=("${PIPESTATUS[@]}")
         gz_rc=${pipe_st[0]}
         mysql_rc=${pipe_st[1]}
@@ -3060,7 +3066,7 @@ Import_Database()
         [ "${mysql_rc}" -ne 0 ] && rc=1
     else
         ${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" \
-            --default-character-set=utf8mb4 "${database_name}" < "${in_file}"
+            --max-allowed-packet=1G --default-character-set=utf8mb4 "${database_name}" < "${in_file}"
         rc=$?
     fi
     if [ "${rc}" -ne 0 ]; then

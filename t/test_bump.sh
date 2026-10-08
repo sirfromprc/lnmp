@@ -98,7 +98,9 @@ run_case()
 
 run_collision_case()
 {
-    local work same='8.3.33' next='8.3.77777'
+    local work same mdb next='8.3.77777'
+    same=$(grep -oE 'php-8\.3\.[0-9]+' include/profile.sh | head -1); same="${same#php-}"
+    mdb=$(grep -oE 'mariadb-10\.11\.[0-9]+' include/profile.sh | head -1); mdb="${mdb#mariadb-}"
     work=$(mktemp -d) || { fail=1; return 1; }
     mkdir -p "${work}/include" "${work}/t" "${work}/.upstream"
     cp include/main.sh include/version.sh include/profile.sh include/verify.sh "${work}/include/"
@@ -106,14 +108,14 @@ run_collision_case()
     cp lnmp.conf "${work}/"
 
     # 人为让 MariaDB 与 PHP 使用同一个三段版本号，再只升级 PHP。
-    perl -pi -e "s/10\\.11\\.18/${same}/g" "${work}/include/profile.sh" \
+    perl -pi -e "s/\\Q${mdb}\\E/${same}/g" "${work}/include/profile.sh" \
         "${work}/t/probe_urls.sh" "${work}/t/gen_checksums.sh" "${work}/t/test_profile.sh"
     printf 'PHP_8.3\t%s\t%s\tAUTO\n' "${same}" "${next}" > "${work}/.upstream/bumps.tsv"
 
     if ( cd "${work}" && bash t/bump_version.sh --kinds AUTO ) >/dev/null 2>&1 &&
        grep -q "MARIADB_VERS='${same}" "${work}/t/probe_urls.sh" &&
        grep -q "PHP_VERS=.*${next}" "${work}/t/probe_urls.sh" &&
-       grep -q $'^PHP_8.3\t8.3.33\t8.3.77777$' "${work}/.upstream/changed.tsv"; then
+       grep -q "^PHP_8.3"$'\t'"${same}"$'\t'"${next}\$" "${work}/.upstream/changed.tsv"; then
         printf 'ok   %-30s %s\n' '组件版本号碰撞隔离' '只修改 PHP'
     else
         printf 'FAIL %-30s %s\n' '组件版本号碰撞隔离' 'MariaDB 被误改或 changed.tsv 缺少组件键'
@@ -218,19 +220,21 @@ EOF
 
 run_untrusted_value_case()
 {
-    local work marker payload
+    local work marker payload cur
     work=$(mktemp -d) || { fail=1; return 1; }
     marker="${work}/perl-injection-ran"
     mkdir -p "${work}/include" "${work}/t" "${work}/.upstream"
     cp include/version.sh "${work}/include/"
     cp t/bump_version.sh "${work}/t/"
+    cur=$(sed -n "s/^Redis_Stable_Ver='\\(.*\\)'$/\\1/p" include/version.sh)
     printf -v payload 'x/e;system("touch %s");#' "${marker}"
-    printf 'Redis_Stable_Ver\tredis-8.10.0\t%s\tAUTO\n' "${payload}" \
+    printf 'Redis_Stable_Ver\t%s\t%s\tAUTO\n' "${cur}" "${payload}" \
         > "${work}/.upstream/bumps.tsv"
 
-    if ! ( cd "${work}" && bash t/bump_version.sh --kinds AUTO ) >/dev/null 2>&1 &&
+    if [ -n "${cur}" ] &&
+       ! ( cd "${work}" && bash t/bump_version.sh --kinds AUTO ) >/dev/null 2>&1 &&
        [ ! -e "${marker}" ] &&
-       grep -qF "Redis_Stable_Ver='redis-8.10.0'" "${work}/include/version.sh"; then
+       grep -qF "Redis_Stable_Ver='${cur}'" "${work}/include/version.sh"; then
         printf 'ok   %-30s %s\n' '非法上游值拒绝执行' '返回非零且文件未改动'
     else
         printf 'FAIL %-30s %s\n' '非法上游值拒绝执行' '输入未被拒绝、触发命令或改写了版本文件'

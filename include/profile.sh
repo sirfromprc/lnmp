@@ -5,9 +5,9 @@
 
 # 菜单显示文本。下标 0-based，菜单编号 1-based，二者相差 1。
 # 数组长度不匹配时立即停止，避免菜单显示空版本。
-DB_Info=('MySQL 8.0.46' 'MySQL 8.4.7 LTS' 'MariaDB 10.11.18' 'MariaDB 11.4.12 LTS' 'MariaDB 11.8.8 LTS' 'MariaDB 12.3.3 LTS')
-PHP_Info=('PHP 8.0.30' 'PHP 8.1.34' 'PHP 8.2.33' 'PHP 8.3.33' 'PHP 8.4.24' 'PHP 8.5.9')
-Apache_Info=('Apache 2.4.68')
+DB_Info=('MySQL 8.0.46' 'MySQL 8.4.11 LTS' 'MariaDB 10.11.19' 'MariaDB 11.4.13 LTS' 'MariaDB 11.8.9 LTS' 'MariaDB 12.3.3 LTS')
+PHP_Info=('PHP 8.0.30' 'PHP 8.1.34' 'PHP 8.2.34' 'PHP 8.3.35' 'PHP 8.4.26' 'PHP 8.5.11')
+Apache_Info=('Apache 2.4.69')
 
 DB_Count=6
 PHP_Count=6
@@ -26,24 +26,23 @@ Set_DB_Profile()
     DB_Kind='' DB_Branch='' DB_Ver='' DB_Install='' DB_Bin_Archs='' DB_Bin_Default='' DB_Bin_Glibc='' DB_Needs_Boost='n' DB_Boost_Mode='' DB_Min_Mem_MB=0 DB_Service='' DB_Data_Dir='' DB_Note=''
 
     case "$1" in
-    # DB_Bin_Archs 仅列出上游提供且可验证完整性的通用二进制架构。
-    # 当前所列 MySQL 和 MariaDB 版本仅对 x86_64 启用该路径，其他架构
-    # 自动使用源码编译。
+    # DB_Bin_Archs 仅列出上游提供且可验证完整性的通用二进制架构，其他架构
+    # 或系统 glibc 低于 DB_Bin_Glibc 时使用源码编译。MySQL 8.4.11 起只提供 glibc 2.28 包。
     1)  DB_Kind='mysql'   DB_Branch='8.0'   DB_Ver='mysql-8.0.46'
-        DB_Install='Install_MySQL_80'     DB_Bin_Archs='x86_64'
+        DB_Install='Install_MySQL_80'     DB_Bin_Archs='x86_64 aarch64'
         DB_Bin_Default='auto' DB_Bin_Glibc='2.28' DB_Needs_Boost='y' DB_Boost_Mode='auto'
         DB_Min_Mem_MB=1024 DB_Note=' (EOL 2026-04)' ;;
-    2)  DB_Kind='mysql'   DB_Branch='8.4'   DB_Ver='mysql-8.4.7'
-        DB_Install='Install_MySQL_84'     DB_Bin_Archs='x86_64'
-        DB_Bin_Default='auto' DB_Bin_Glibc='2.17' DB_Needs_Boost='y' DB_Boost_Mode='auto'
+    2)  DB_Kind='mysql'   DB_Branch='8.4'   DB_Ver='mysql-8.4.11'
+        DB_Install='Install_MySQL_84'     DB_Bin_Archs='x86_64 aarch64'
+        DB_Bin_Default='auto' DB_Bin_Glibc='2.28' DB_Needs_Boost='y' DB_Boost_Mode='auto'
         DB_Min_Mem_MB=1024 ;;
-    3)  DB_Kind='mariadb' DB_Branch='10.11' DB_Ver='mariadb-10.11.18'
+    3)  DB_Kind='mariadb' DB_Branch='10.11' DB_Ver='mariadb-10.11.19'
         DB_Install='Install_MariaDB_1011' DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Min_Mem_MB=1024 ;;
-    4)  DB_Kind='mariadb' DB_Branch='11.4'  DB_Ver='mariadb-11.4.12'
+    4)  DB_Kind='mariadb' DB_Branch='11.4'  DB_Ver='mariadb-11.4.13'
         DB_Install='Install_MariaDB_114'  DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Min_Mem_MB=1024 ;;
-    5)  DB_Kind='mariadb' DB_Branch='11.8'  DB_Ver='mariadb-11.8.8'
+    5)  DB_Kind='mariadb' DB_Branch='11.8'  DB_Ver='mariadb-11.8.9'
         DB_Install='Install_MariaDB_118'  DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Min_Mem_MB=1024 ;;
     6)  DB_Kind='mariadb' DB_Branch='12.3'  DB_Ver='mariadb-12.3.3'
@@ -83,7 +82,7 @@ Set_DB_Profile()
 # Set_PHP_Profile <编号>
 # 产出：
 #   PHP_Branch          主版本号（如 8.3），用于拼接路径与配置文件名
-#   Php_Ver             完整版本标识（如 php-8.3.33）
+#   Php_Ver             完整版本标识（如 php-8.3.35）
 #   PHP_Install         主 PHP 安装函数名
 #   MPHP_Install        多版本 PHP 安装函数名
 #   MPHP_Path           多版本 PHP 安装路径
@@ -102,11 +101,13 @@ Set_PHP_Profile()
     case "$1" in
     1)  PHP_Branch='8.0' Php_Ver='php-8.0.30' PHP_Install='Install_PHP_80'
         PHP_Note=' (EOL)' ;;
-    2)  PHP_Branch='8.1' Php_Ver='php-8.1.34' PHP_Install='Install_PHP_81' ;;
-    3)  PHP_Branch='8.2' Php_Ver='php-8.2.33' PHP_Install='Install_PHP_82' ;;
-    4)  PHP_Branch='8.3' Php_Ver='php-8.3.33' PHP_Install='Install_PHP_83' ;;
-    5)  PHP_Branch='8.4' Php_Ver='php-8.4.24' PHP_Install='Install_PHP_84' ;;
-    6)  PHP_Branch='8.5' Php_Ver='php-8.5.9'  PHP_Install='Install_PHP_85' ;;
+    2)  PHP_Branch='8.1' Php_Ver='php-8.1.34' PHP_Install='Install_PHP_81'
+        PHP_Note=' (EOL)' ;;
+    3)  PHP_Branch='8.2' Php_Ver='php-8.2.34' PHP_Install='Install_PHP_82'
+        PHP_Note=' (EOL 2026-12)' ;;
+    4)  PHP_Branch='8.3' Php_Ver='php-8.3.35' PHP_Install='Install_PHP_83' ;;
+    5)  PHP_Branch='8.4' Php_Ver='php-8.4.26' PHP_Install='Install_PHP_84' ;;
+    6)  PHP_Branch='8.5' Php_Ver='php-8.5.11'  PHP_Install='Install_PHP_85' ;;
     *)  Legacy_Selection_Hint PHP "$1"
         return 1 ;;
     esac
@@ -146,7 +147,7 @@ Set_Apache_Profile()
     Apache_Branch='' Apache_Ver='' Apache_Install=''
 
     case "$1" in
-    1) Apache_Branch='2.4' Apache_Ver='httpd-2.4.68' Apache_Install='Install_Apache_24' ;;
+    1) Apache_Branch='2.4' Apache_Ver='httpd-2.4.69' Apache_Install='Install_Apache_24' ;;
     *) return 1 ;;
     esac
 
@@ -174,13 +175,25 @@ Dispatch()
 }
 
 # 判断当前架构是否有可验证的官方通用二进制包；不可用时应使用源码编译。
+# 架构不在列表或系统 glibc 低于二进制包要求时不可用，原因写入 DB_Bin_Reason。
 DB_Bin_Available()
 {
+    local have
+    DB_Bin_Reason=''
     [ -z "${DB_Bin_Archs}" ] && return 1
     case " ${DB_Bin_Archs} " in
-        *" ${DB_ARCH} "*) return 0 ;;
+        *" ${DB_ARCH} "*) ;;
         *) return 1 ;;
     esac
+    case "${DB_Bin_Glibc}" in
+        ""|auto) return 0 ;;
+    esac
+    have=$(Get_Glibc_Version)
+    if [ -z "${have}" ] || ! Version_GE "${have}" "${DB_Bin_Glibc}"; then
+        DB_Bin_Reason="系统 glibc ${have:-未知} 低于官方二进制包要求的 ${DB_Bin_Glibc}"
+        return 1
+    fi
+    return 0
 }
 
 # 根据映射表生成数据库和 PHP 菜单。菜单显示后由调用方重新设置最终选项。
@@ -220,6 +233,7 @@ Select_DB_Bin()
     if [ -z "${DB_Bin_Default}" ] || ! DB_Bin_Available; then
         [ -z "${DB_Bin_Default}" ] && echo "将安装 ${DB_Ver}。"
         [ -n "${DB_Bin_Default}" ] && echo "当前平台没有可用通用二进制包，将从源码编译 ${DB_Ver}。"
+        [ -n "${DB_Bin_Reason}" ] && Echo_Yellow "原因：${DB_Bin_Reason}。源码编译需要 4GB 以上内存并耗时数小时，可改选 MariaDB 或升级系统。"
         Bin="n"
         return 0
     fi

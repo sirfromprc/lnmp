@@ -33,6 +33,45 @@ Build_ImageMagick_Lib()
         cd ../
         Clean_Src_Dir "${ImageMagick_Ver}"
     fi
+    Write_ImageMagick_Policy || Echo_Yellow "ImageMagick 资源策略未写入，保持上游默认（不限内存）。"
+    return 0
+}
+
+# 按 Tune_Plan 写 ImageMagick 资源策略。默认策略不限内存与磁盘，多个 PHP worker
+# 同时处理大图时可占满内存。临时文件放 /var/tmp：Debian 13 的 /tmp 为 tmpfs，map 与磁盘缓存放在
+# 那里仍占内存。文件含 LNMP 标记时重写；首次写入前备份为 policy.xml.orig；
+# 无标记且已有备份视为使用者自行修改，不覆盖。
+Write_ImageMagick_Policy()
+{
+    local dir="${Magick_Etc_Dir:-/usr/local/imagemagick/etc/ImageMagick-7}" policy tmp
+
+    policy="${dir}/policy.xml"
+    Tune_Plan || return 0
+    [ -d "${dir}" ] || return 0
+    if [ -f "${policy}" ] && ! grep -q 'LNMP: ' "${policy}"; then
+        if [ -e "${policy}.orig" ]; then
+            Echo_Yellow "${policy} 已被修改，未写入资源策略。"
+            return 0
+        fi
+        cp -p "${policy}" "${policy}.orig" || return 1
+    fi
+    tmp=$(mktemp "${policy}.XXXXXX") || return 1
+    if ! printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+        "<!-- LNMP: 按 ${Tune_Mem} MB / ${Tune_Cores} 核生成。原文件见 policy.xml.orig。 -->" \
+        '<policymap>' \
+        "  <policy domain=\"resource\" name=\"memory\" value=\"${Tune_Magick_Mem_MB}MiB\"/>" \
+        "  <policy domain=\"resource\" name=\"map\" value=\"${Tune_Magick_Map_MB}MiB\"/>" \
+        '  <policy domain="resource" name="disk" value="2GiB"/>' \
+        '  <policy domain="resource" name="temporary-path" value="/var/tmp"/>' \
+        "  <policy domain=\"resource\" name=\"thread\" value=\"${Tune_Magick_Threads}\"/>" \
+        '  <policy domain="resource" name="width" value="16KP"/>' \
+        '  <policy domain="resource" name="height" value="16KP"/>' \
+        '</policymap>' > "${tmp}"; then
+        rm -f "${tmp}"
+        return 1
+    fi
+    chmod 644 "${tmp}" && mv -f "${tmp}" "${policy}" || { rm -f "${tmp}"; return 1; }
+    echo "ImageMagick 资源策略：memory ${Tune_Magick_Mem_MB}MiB，map ${Tune_Magick_Map_MB}MiB，临时目录 /var/tmp，thread ${Tune_Magick_Threads}（${policy}）"
 }
 
 Install_ImageMagic()

@@ -4,7 +4,7 @@ Backup_MySQL2()
 {
     echo "正在备份全部数据库..."
     echo "数据库较大时，备份所需时间会更长。"
-    /usr/local/mysql/bin/mysqldump --defaults-file="${HOME}/.my.cnf" --all-databases > /root/mysql_all_backup${Upgrade_Date}.sql
+    /usr/local/mysql/bin/mysqldump --defaults-file="${HOME}/.my.cnf" --max-allowed-packet=1G --all-databases > /root/mysql_all_backup${Upgrade_Date}.sql
     if [ $? -eq 0 ]; then
         echo "MySQL 数据库备份成功。";
     else
@@ -201,7 +201,7 @@ log_error = ${MariaDB_Data_Dir}/mariadb.err
 pid-file = ${MariaDB_Data_Dir}/mariadb.pid
 skip-external-locking
 key_buffer_size = 16M
-max_allowed_packet = 1M
+max_allowed_packet = 64M
 table_open_cache = 64
 sort_buffer_size = 512K
 net_buffer_length = 8K
@@ -234,7 +234,7 @@ default_storage_engine = InnoDB
 
 [mysqldump]
 quick
-max_allowed_packet = 16M
+max_allowed_packet = 64M
 
 [mysql]
 no-auto-rehash
@@ -282,7 +282,7 @@ EOF
     safe_bin=$(First_Executable /usr/local/mariadb/bin/mariadbd-safe /usr/local/mariadb/bin/mysqld_safe) || exit 1
     echo "正在导入数据库备份..."
     # 跨引擎导入不完整时立即中止，并保留原 MySQL 实例用于恢复。
-    if ! "${client_bin}" --defaults-file="${HOME}/.my.cnf" < /root/mysql_all_backup${Upgrade_Date}.sql; then
+    if ! "${client_bin}" --defaults-file="${HOME}/.my.cnf" --max-allowed-packet=1G < /root/mysql_all_backup${Upgrade_Date}.sql; then
         Echo_Red "备份导入失败，数据未完整迁移到 MariaDB。"
         exit 1
     fi

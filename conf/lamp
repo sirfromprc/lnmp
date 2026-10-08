@@ -1113,7 +1113,7 @@ EOF
     printf '%s\n' "#RewriteRule ^/?(.*) ${ws_scheme}://${proxy_backend#*://}\$1 [P,L]"
 }
 
-# 拒绝隐藏文件与隐藏目录，ACME 的 .well-known 除外。80 与 443 共用。
+# 拒绝隐藏文件与隐藏目录（ACME 的 .well-known 除外）及 WordPress 敏感路径。80 与 443 共用。
 Site_Apache_Hidden_Deny_Block()
 {
     cat <<'EOF'
@@ -1124,6 +1124,11 @@ Site_Apache_Hidden_Deny_Block()
 <FilesMatch "^\.(?!well-known)">
     Require all denied
 </FilesMatch>
+# WordPress 上传目录只存媒体，拒绝其中的 PHP（含 .php/ 形式的 PATH_INFO）；
+# wp-config.php 及其编辑器副本、备份不对外提供。按 URL 匹配，反代站点同样生效。
+<LocationMatch "(?i)(/wp-content/uploads/.*\.php(/|$)|/wp-config[^/]*$)">
+    Require all denied
+</LocationMatch>
 EOF
 }
 
@@ -2828,7 +2833,7 @@ Export_Database()
     }
     echo "正在导出数据库 ${database_name} ..."
     ${MySQL_Dump_Bin} --defaults-file="${HOME}/.my.cnf" \
-        --single-transaction --quick --routines --triggers --events \
+        --max-allowed-packet=1G --single-transaction --quick --routines --triggers --events \
         --default-character-set=utf8mb4 \
         "${database_name}" | gzip -c > "${tmp_file}"
     # 一次性保存 PIPESTATUS，确保导出和压缩任一失败都能被识别。
@@ -2917,7 +2922,7 @@ Import_Database()
     # 按文件内容识别压缩格式，未压缩的 SQL 文件也可直接导入。
     if gzip -t "${in_file}" 2>/dev/null; then
         gzip -dc "${in_file}" | ${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" \
-            --default-character-set=utf8mb4 "${database_name}"
+            --max-allowed-packet=1G --default-character-set=utf8mb4 "${database_name}"
         pipe_st=("${PIPESTATUS[@]}")
         gz_rc=${pipe_st[0]}
         mysql_rc=${pipe_st[1]}
@@ -2926,7 +2931,7 @@ Import_Database()
         [ "${mysql_rc}" -ne 0 ] && rc=1
     else
         ${MySQL_Bin} --defaults-file="${HOME}/.my.cnf" \
-            --default-character-set=utf8mb4 "${database_name}" < "${in_file}"
+            --max-allowed-packet=1G --default-character-set=utf8mb4 "${database_name}" < "${in_file}"
         rc=$?
     fi
     if [ "${rc}" -ne 0 ]; then

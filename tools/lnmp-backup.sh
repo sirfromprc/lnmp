@@ -330,7 +330,7 @@ Dump_Db()
 {
     local db="$1" out="$2" part="$2.part" rc_dump rc_gzip pipe_st
     "${MySQL_Dump}" --defaults-file="${MySQL_Option_File}" \
-        --single-transaction --quick --routines --triggers --events \
+        --max-allowed-packet=1G --single-transaction --quick --routines --triggers --events \
         --default-character-set=utf8mb4 "${db}" 2>>"${Log_File}" \
         | gzip -c > "${part}"
     # PIPESTATUS 必须一次性保存；后续赋值会重置该数组，导致管道退出码失真。
@@ -1176,7 +1176,7 @@ Cmd_Restore()
         Say "5 秒后开始，Ctrl+C 取消..."
         sleep 5
         gzip -dc "${payload}" | "${mysql_bin}" --defaults-file="${MySQL_Option_File}" \
-            --default-character-set=utf8mb4 "${name}"
+            --max-allowed-packet=1G --default-character-set=utf8mb4 "${name}"
         pipe_st=("${PIPESTATUS[@]}")
         gz_rc=${pipe_st[0]}; mysql_rc=${pipe_st[1]}
         if [ "${gz_rc}" -ne 0 ] || [ "${mysql_rc}" -ne 0 ]; then
@@ -1280,7 +1280,7 @@ Cmd_Test()
         -e "CREATE DATABASE \`${tmpdb}\`;" || { Err "无法创建临时库 ${tmpdb}。"; return 1; }
 
     gzip -dc "${payload}" | "${mysql_bin}" --defaults-file="${MySQL_Option_File}" \
-        --default-character-set=utf8mb4 "${tmpdb}"
+        --max-allowed-packet=1G --default-character-set=utf8mb4 "${tmpdb}"
     pipe_st=("${PIPESTATUS[@]}")
     gz_rc=${pipe_st[0]}; mysql_rc=${pipe_st[1]}
     rc=0

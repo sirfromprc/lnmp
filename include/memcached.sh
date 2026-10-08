@@ -404,6 +404,7 @@ EOF
         Clear_PHPMemcached_Backup
         Echo_Green "====== Memcached 安装完成 ======"
         Echo_Green "Memcached 安装成功。"
+        Tune_Advise_PHP_Pools
         return 0
     fi
     [ "${svc_ok}" -eq 1 ] && Echo_Green "memcached 服务端已安装并在运行。"

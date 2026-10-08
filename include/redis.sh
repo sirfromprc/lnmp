@@ -56,17 +56,75 @@ Check_Redis_Socket()
     return 1
 }
 
-# 按 Tune_Plan 设置内存上限。未设上限时缓存持续增长会触发 OOM；
-# 淘汰策略 allkeys-lfu 对应缓存用途，作持久存储时应改为 noeviction。
+# cache 模式不加载旧数据：save "" 只停止写入，启动时仍会读取已有的 RDB 与 AOF，
+# 恢复过期缓存。重装或切换用途时在服务停止状态下调用，遗留文件改名保留，不删除。
+Move_Redis_Stale_Data()
+{
+    local conf="$1" dir dbf aof f stamp moved=''
+
+    [ "${Redis_Mode:-cache}" = "cache" ] || return 0
+    dir=$(awk '$1 == "dir" && !n++ { print $2 }' "${conf}")
+    dbf=$(awk '$1 == "dbfilename" && !n++ { print $2 }' "${conf}")
+    aof=$(awk '$1 == "appenddirname" && !n++ { gsub(/"/, "", $2); print $2 }' "${conf}")
+    [ -n "${dir}" ] && [ -d "${dir}" ] || return 0
+    stamp=$(date +%Y%m%d%H%M%S)
+    for f in "${dir}/${dbf:-dump.rdb}" "${dir}/${aof:-appendonlydir}"; do
+        [ -e "${f}" ] || continue
+        mv "${f}" "${f}.lnmp-bak-${stamp}" || return 1
+        moved="${moved} ${f}.lnmp-bak-${stamp}"
+    done
+    [ -z "${moved}" ] || Echo_Yellow "Redis_Mode=cache 启动时不加载旧数据，原持久化文件已改名保留：${moved# }"
+    return 0
+}
+
+# Redis_Mode 只接受 cache 与 persistent。
+Check_Redis_Mode()
+{
+    case "${Redis_Mode:-cache}" in
+    cache|persistent) return 0 ;;
+    esac
+    Echo_Red "lnmp.conf 的 Redis_Mode=${Redis_Mode} 无效，只能是 cache 或 persistent。"
+    return 1
+}
+
+# 淘汰策略：cache 用 allkeys-lfu，persistent 用 noeviction（满时拒绝写入，不丢数据）。
+Redis_Mode_Policy()
+{
+    if [ "${Redis_Mode:-cache}" = "persistent" ]; then
+        echo noeviction
+    else
+        echo allkeys-lfu
+    fi
+}
+
+# 按 Tune_Plan 设置内存上限。未设上限时缓存持续增长会触发 OOM。
 Set_Redis_Maxmemory()
+{
+    local conf="$1" policy
+
+    Tune_Plan || return 0
+    policy=$(Redis_Mode_Policy)
+    sed -i -E '/^[[:space:]]*maxmemory(-policy)?[[:space:]]/d' "${conf}" || return 1
+    printf '\n# LNMP: 内存上限按本机内存计算。\nmaxmemory %smb\nmaxmemory-policy %s\n' \
+        "${Tune_Redis_MB}" "${policy}" >> "${conf}" || return 1
+    grep -Eq "^maxmemory[[:space:]]+${Tune_Redis_MB}mb\$" "${conf}"
+}
+
+# 按 Redis_Mode 写持久化。cache 关闭 RDB 与 AOF：对象缓存重启后由应用回源重建，
+# 避免定期 fork 与磁盘写入，也避免快照失败后 stop-writes-on-bgsave-error 拒绝写入。
+# persistent 保留默认 RDB 规则并开启 AOF（每秒刷盘）。
+Set_Redis_Persistence()
 {
     local conf="$1"
 
-    Tune_Plan || return 0
-    sed -i -E '/^[[:space:]]*maxmemory(-policy)?[[:space:]]/d' "${conf}" || return 1
-    printf '\n# LNMP: 内存上限按本机内存计算。\nmaxmemory %smb\nmaxmemory-policy allkeys-lfu\n' \
-        "${Tune_Redis_MB}" >> "${conf}" || return 1
-    grep -Eq "^maxmemory[[:space:]]+${Tune_Redis_MB}mb\$" "${conf}"
+    sed -i -E '/^[[:space:]]*(save|appendonly|appendfsync)[[:space:]]/d' "${conf}" || return 1
+    if [ "${Redis_Mode:-cache}" = "persistent" ]; then
+        printf '\n# LNMP: Redis_Mode=persistent，RDB 默认规则加 AOF。\nappendonly yes\nappendfsync everysec\n' >> "${conf}" || return 1
+        grep -Eq '^appendonly[[:space:]]+yes$' "${conf}"
+    else
+        printf '\n# LNMP: Redis_Mode=cache，不做持久化。\nsave ""\nappendonly no\n' >> "${conf}" || return 1
+        grep -Eq '^save[[:space:]]+""$' "${conf}"
+    fi
 }
 
 # 服务以 redis 账号运行，程序目录必须可遍历、配置可读、数据目录可写。
@@ -307,7 +365,12 @@ Print_Redis_Install_Summary()
     echo "监听端口（写入 redis.conf 与 /etc/init.d/redis）：${Redis_Port}"
     echo "监听地址：127.0.0.1，防火墙同时阻断该端口的公网访问"
     echo "Unix socket：${Redis_Socket}（www 加入 redis 组后可连接）"
-    Tune_Plan && echo "内存上限（按内存计算）：maxmemory ${Tune_Redis_MB}mb，淘汰策略 allkeys-lfu"
+    Tune_Plan && echo "内存上限（按内存计算）：maxmemory ${Tune_Redis_MB}mb，淘汰策略 $(Redis_Mode_Policy)"
+    if [ "${Redis_Mode:-cache}" = "persistent" ]; then
+        echo "用途（Redis_Mode）：persistent，RDB 快照加 AOF，内存满时拒绝写入"
+    else
+        echo "用途（Redis_Mode）：cache，不做持久化，重启后缓存清空并由应用重建"
+    fi
     echo "自测页（Enable_Redis_Test_Page）：${Enable_Redis_Test_Page}"
     if [ -s /usr/local/redis/bin/redis-server ]; then
         Echo_Yellow "已装过 Redis，本次重新编译安装：先停服务，redis.conf 备份为"
@@ -398,6 +461,7 @@ Install_Redis()
 {
     echo "====== 正在安装 Redis ======"
     echo "正在安装稳定版 ${Redis_Stable_Ver}..."
+    Check_Redis_Mode || return 1
     Print_Redis_Install_Summary
     Press_Start || return 1
 
@@ -501,6 +565,8 @@ Install_Redis()
     Set_Redis_Unix_Socket /usr/local/redis/etc/redis.conf || return 1
     Set_Redis_Maxmemory /usr/local/redis/etc/redis.conf ||
         Echo_Yellow "Redis maxmemory 未写入，内存不设上限。"
+    Set_Redis_Persistence /usr/local/redis/etc/redis.conf || return 1
+    Move_Redis_Stale_Data /usr/local/redis/etc/redis.conf || return 1
     # pidfile 放入 Redis 可写目录，满足降权运行要求。
     sed -i 's#^pidfile .*#pidfile /usr/local/redis/var/redis.pid#g' /usr/local/redis/etc/redis.conf
     cd ../

@@ -216,6 +216,7 @@ Upgrade_MPHP8x()
     if [ "${Enable_PHP_Default_Opcache}" = 'y' ]; then
         PHP_Path="${Cur_MPHP_Path}" Enable_Opcache_Config
     fi
+    Carry_PHP_Ext "${MPHP_Backup}" "${Cur_MPHP_Path}"
 
     cd "${cur_dir}/src" || return 1
 

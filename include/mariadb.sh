@@ -257,7 +257,7 @@ log_error = ${MariaDB_Data_Dir}/mariadb.err
 pid-file = ${MariaDB_Data_Dir}/mariadb.pid
 skip-external-locking
 key_buffer_size = 16M
-max_allowed_packet = 1M
+max_allowed_packet = 64M
 table_open_cache = 64
 sort_buffer_size = 512K
 net_buffer_length = 8K
@@ -291,7 +291,7 @@ default_storage_engine = InnoDB
 
 [mysqldump]
 quick
-max_allowed_packet = 16M
+max_allowed_packet = 64M
 
 [mysql]
 no-auto-rehash

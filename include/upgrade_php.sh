@@ -84,41 +84,68 @@ Rollback_PHP()
     Echo_Red "已恢复升级前的 PHP。请检查站点是否正常。"
 }
 
-# 新 PHP 来自暂存目录，conf.d 是空的，旧版本的扩展 .so 与新版本 ABI 不兼容，
-# 不能直接把旧 ini 搬过来。这里只重建不需要编译的 OPcache，其余扩展列出名字
-# 供使用者用 addons.sh 重装，避免升级后扩展静默消失。
+# 把旧 PHP 的附加扩展带到新 PHP。参数：旧安装目录 新安装目录。
+# 同分支点版本升级的扩展 API 编号不变，旧 .so 可直接沿用：复制 .so 与 ini 后用新 PHP
+# 确认能加载且无启动警告；API 不同或加载失败的扩展撤回 ini 并列出名字供重装。
+# 旧目录的 php-config 仍报告原安装路径，扩展目录按 API 编号在旧目录下重新定位。
+Carry_PHP_Ext()
+{
+    local old="$1" new="$2" f base name so old_api new_dir old_ext lost='' carried='' builtin
+
+    [ -d "${old}/conf.d" ] || return 0
+    new_dir=$("${new}/bin/php-config" --extension-dir 2>/dev/null)
+    old_api=$("${old}/bin/php-config" --extension-dir 2>/dev/null)
+    old_api=${old_api##*/}
+    old_ext="${old}/lib/php/extensions/${old_api}"
+    builtin=$("${new}/bin/php" -n -m 2>/dev/null)
+
+    for f in "${old}/conf.d"/*.ini; do
+        [ -f "${f}" ] || continue
+        base=${f##*/}
+        # 新 conf.d 已有同名 ini 时跳过，例如刚重建的 opcache。
+        [ -s "${new}/conf.d/${base}" ] && continue
+        # 文件名形如 009-swoole.ini，去掉序号和后缀取扩展名。
+        name=${base%.ini}
+        name=${name#*-}
+        # 新版本已内置的扩展（如编译时启用的 exif）无需处理。
+        printf '%s\n' "${builtin}" | grep -qixF "${name}" && continue
+        if [ -n "${old_api}" ] && [ -n "${new_dir}" ] && [ "${old_api}" = "${new_dir##*/}" ] && [ -d "${old_ext}" ]; then
+            # PHP 8.5 的 OPcache 静态编入，新版本可能尚无扩展目录。
+            mkdir -p "${new_dir}" || { lost="${lost} ${name}"; continue; }
+            for so in $(sed -n -E 's/^[[:space:]]*(zend_)?extension[[:space:]]*=[[:space:]]*"?([^"[:space:];]+)"?.*/\2/p' "${f}"); do
+                so=${so##*/}
+                [ -f "${old_ext}/${so}" ] && [ ! -e "${new_dir}/${so}" ] && cp -p "${old_ext}/${so}" "${new_dir}/"
+            done
+            cp -p "${f}" "${new}/conf.d/${base}"
+            if "${new}/bin/php" --ri "${name}" >/dev/null 2>&1 &&
+               ! "${new}/bin/php" -m 2>&1 | grep -qiE '^(PHP )?(Warning|Fatal)'; then
+                carried="${carried} ${name}"
+                continue
+            fi
+            rm -f "${new}/conf.d/${base}"
+        fi
+        lost="${lost} ${name}"
+    done
+
+    [ -z "${carried}" ] || Echo_Green "已沿用旧版本的 PHP 扩展（扩展 API ${old_api} 未变）：${carried# }"
+    if [ -n "${lost}" ]; then
+        Echo_Yellow "升级后以下 PHP 扩展需要重装（扩展 API 已变或无法加载）："
+        Echo_Yellow "  ${lost# }"
+        Echo_Yellow "重装：bash addons.sh install <名字>；旧配置保留在 ${old}/conf.d"
+    fi
+    return 0
+}
+
+# 重建 OPcache 配置并沿用其余扩展，在启动新 PHP 之前调用。
 Report_PHP_Ext_After_Upgrade()
 {
-    # Enable_Opcache_Config 与本函数都按 PHP_Path 取路径，升级流程未设置该变量。
+    # Enable_Opcache_Config 按 PHP_Path 取路径，升级流程未设置该变量。
     local PHP_Path='/usr/local/php'
-    local old_conf="${PHP_Old_Dir}/conf.d" f base name lost='' builtin
 
     if [ "${Enable_PHP_Default_Opcache}" = 'y' ]; then
         Enable_Opcache_Config
     fi
-
-    [ -d "${old_conf}" ] || return 0
-    builtin=$("${PHP_Path}/bin/php" -n -m 2>/dev/null)
-
-    for f in "${old_conf}"/*.ini; do
-        [ -f "${f}" ] || continue
-        base=${f##*/}
-        # 新 conf.d 已有同名 ini 时无需提示，例如刚重建的 opcache。
-        [ -s "${PHP_Path}/conf.d/${base}" ] && continue
-        # 文件名形如 009-swoole.ini，去掉三位序号和后缀取扩展名。
-        name=${base%.ini}
-        name=${name#*-}
-        # 新版本已内置的扩展（如编译时启用的 exif）无需重装。
-        printf '%s\n' "${builtin}" | grep -qixF "${name}" && continue
-        lost="${lost} ${name}"
-    done
-
-    [ -n "${lost}" ] || return 0
-
-    Echo_Yellow "升级后以下 PHP 扩展需要重装（新版本扩展目录已变，旧 .so 不可用）："
-    Echo_Yellow "  ${lost# }"
-    Echo_Yellow "重装：bash addons.sh install <名字>；旧配置保留在 ${old_conf}"
-    return 0
+    Carry_PHP_Ext "${PHP_Old_Dir}" "${PHP_Path}"
 }
 
 # 确认暂存目录中的 PHP 可执行且版本正确。
@@ -373,6 +400,7 @@ fi
         sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
         sed -i '/^LoadModule php7_module/d' /usr/local/apache/conf/httpd.conf
     fi
+    Report_PHP_Ext_After_Upgrade
     lnmp start
 
     if ! Check_PHP_Upgrade_Files; then
@@ -380,7 +408,6 @@ fi
         Rollback_PHP
         return 1
     fi
-    Report_PHP_Ext_After_Upgrade
     Echo_Green "旧版本保留在 ${PHP_Old_Dir}，确认无误后可自行删除。"
     return 0
 }

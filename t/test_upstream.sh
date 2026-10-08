@@ -16,9 +16,9 @@ cat > "${work}/bin/curl" <<'STUB'
 url="${!#}"
 case "${UPSTREAM_STUB_MODE:-ok}:${url}" in
 error:*mysql*) exit 7 ;;
-*:*/mysql-8.4.8.tar.gz|*:*/mysql-8.4.8-linux-glibc2.17-x86_64.tar.xz)
+*:*/mysql-${M84_NEXT}.tar.gz|*:*/mysql-${M84_NEXT}-linux-glibc2.28-x86_64.tar.xz)
     printf '206'; exit 0 ;;
-*:*/mysql-8.0.47.tar.gz)
+*:*/mysql-${M80_NEXT}.tar.gz)
     printf '206'; exit 0 ;;
 *:*/mysql-*)
     printf '404'; exit 0 ;;
@@ -27,9 +27,14 @@ exit 7
 STUB
 chmod +x "${work}/bin/curl"
 
+# 下一个点版本：8.4 源码与二进制都存在，8.0 只有源码
+m84=$(grep -oE 'mysql-8\.4\.[0-9]+' include/profile.sh | head -1); m84="${m84#mysql-}"
+m80=$(grep -oE 'mysql-8\.0\.[0-9]+' include/profile.sh | head -1); m80="${m80#mysql-}"
+export M84_NEXT="8.4.$(( ${m84##*.} + 1 ))" M80_NEXT="8.0.$(( ${m80##*.} + 1 ))"
+
 if PATH="${work}/bin:${PATH}" OUT_DIR="${work}/out" \
    bash t/check_upstream.sh mysql >/dev/null 2>&1; then
-    if grep -q $'^MySQL_8.4\t8.4.7\t8.4.8\tAUTO$' "${work}/out/bumps.tsv" &&
+    if grep -q "^MySQL_8.4"$'\t'"${m84}"$'\t'"${M84_NEXT}"$'\tAUTO$' "${work}/out/bumps.tsv" &&
        ! grep -q '^MySQL_8.0' "${work}/out/bumps.tsv"; then
         ok 'MySQL 只有源码、没有二进制时不提议升级'
     else
@@ -117,7 +122,7 @@ for key in APR_Ver APR_Util_Ver Freetype_New_Ver Libiconv_Ver Libzip_Ver \
 done
 [ ${fail} -eq 0 ] && ok '原未覆盖版本变量均已列入 PINNED'
 
-if grep -q "gh_latest gperftools/gperftools '\^gperftools-" t/check_upstream.sh &&
+if grep -q "gh_latest_release gperftools/gperftools '\^gperftools-" t/check_upstream.sh &&
    grep -q 'latest="${latest#gperftools-}"' t/check_upstream.sh; then
     ok 'gperftools 使用实际 tag 前缀取数'
 else
@@ -135,6 +140,27 @@ if grep -Fq "lua-resty-core '^0\\.1\\.[0-9]+([A-Za-z]+[0-9]*)?$'" t/check_upstre
     ok '上游候选值有统一字符校验且 resty-core tag 完整锚定'
 else
     bad '上游候选值校验或 resty-core tag 尾锚缺失'
+fi
+
+mkdir -p "${work}/bin2" "${work}/out2"
+cat > "${work}/bin2/curl" <<'STUB'
+#!/usr/bin/env bash
+case "${!#}" in
+*/gperftools/gperftools/tags*)
+    printf '[{"name":"gperftools-2.18.91"},{"name":"gperftools-2.18.90"},{"name":"gperftools-2.18.1"}]' ;;
+*/gperftools/gperftools/releases*)
+    printf '[{"author":{"id":1},"tag_name":"gperftools-2.18.91","name":"x","draft":false,"prerelease":true},\n'
+    printf '{"author":{"id":1},"tag_name":"gperftools-2.18.90","name":"x","draft":false,"prerelease":true},\n'
+    printf '{"author":{"id":1},"tag_name":"gperftools-2.18.1","name":"x","draft":false,"prerelease":false}]' ;;
+*) exit 7 ;;
+esac
+STUB
+chmod +x "${work}/bin2/curl"
+PATH="${work}/bin2:${PATH}" OUT_DIR="${work}/out2" bash t/check_upstream.sh gperftools >/dev/null 2>&1
+if ! grep -q '^TCMalloc_Ver' "${work}/out2/bumps.tsv" 2>/dev/null; then
+    ok 'gperftools 排除 prerelease，不提议 2.18.91'
+else
+    bad "gperftools 提议了 prerelease：$(grep '^TCMalloc_Ver' "${work}/out2/bumps.tsv")"
 fi
 
 exit ${fail}

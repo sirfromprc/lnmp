@@ -995,6 +995,12 @@ Get_RHEL_Version()
     fi
 }
 
+# 输出系统 glibc 版本号，非 glibc 系统输出空。
+Get_Glibc_Version()
+{
+    getconf GNU_LIBC_VERSION 2>/dev/null | awk '$1 == "glibc" { print $2 }'
+}
+
 Get_OS_Bit()
 {
     if [[ `getconf WORD_BIT` = '32' && `getconf LONG_BIT` = '64' ]] ; then

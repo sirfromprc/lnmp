@@ -1002,9 +1002,9 @@ Install_Curl()
         Require_File "${Curl_Ver}.tar.bz2" "curl"
         Tar_Cd ${Curl_Ver}.tar.bz2 ${Curl_Ver}
         if [ -s /usr/local/openssl/bin/openssl ] || /usr/local/openssl/bin/openssl version | grep -Eqi 'OpenSSL 1.0.2'; then
-            ./configure --prefix=/usr/local/curl --enable-ares --without-nss --with-zlib --with-ssl=/usr/local/openssl
+            ./configure --prefix=/usr/local/curl --enable-ares --without-libpsl --with-zlib --with-ssl=/usr/local/openssl
         else
-            ./configure --prefix=/usr/local/curl --enable-ares --without-nss --with-zlib --with-ssl
+            ./configure --prefix=/usr/local/curl --enable-ares --without-libpsl --with-zlib --with-ssl
         fi
         Make_Install || exit 1
         cd "${cur_dir}/src/" || return 1

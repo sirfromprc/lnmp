@@ -56,10 +56,39 @@ Tune_Has_PHP()
     [ -x /usr/local/php/bin/php ]
 }
 
+# 附加 PHP 实例是否有站点在用：站点配置引用其 enable-php 片段或 socket。
+# Tune_Assume_MPHP 为正在安装的实例目录，按即将投入使用计入。
+Tune_MPHP_Active()
+{
+    local d="$1" ver="${1##*/php}"
+
+    [ -n "${Tune_Assume_MPHP:-}" ] && [ "${d}" = "${Tune_Assume_MPHP}" ] && return 0
+    grep -rqsE "^[^#]*(enable-php${ver//./\\.}\\.conf|php-cgi${ver//./\\.}\\.sock)" \
+        "${Tune_Vhost_Dir:-/usr/local/nginx/conf/vhost}" 2>/dev/null
+}
+
+# 统计在用的附加组件：有站点使用的附加 PHP 实例、其中及主 PHP 启用 APCu 的数量、Memcached。
+# 没有站点使用的附加实例为 ondemand 空闲状态，不计入。Tune_Local 默认 /usr/local，测试可指向临时目录。
+Tune_Detect_Extras()
+{
+    local base="${Tune_Local:-/usr/local}" d
+
+    Tune_MPHP_Count=0
+    Tune_APCu_Count=0
+    Tune_Has_Memcached=n
+    [ -f "${base}/php/conf.d/009-apcu.ini" ] && Tune_APCu_Count=1
+    for d in "${base}"/php[0-9]*.[0-9]*; do
+        [ -x "${d}/sbin/php-fpm" ] && Tune_MPHP_Active "${d}" || continue
+        Tune_MPHP_Count=$((Tune_MPHP_Count + 1))
+        [ -f "${d}/conf.d/009-apcu.ini" ] && Tune_APCu_Count=$((Tune_APCu_Count + 1))
+    done
+    [ -x "${base}/memcached/bin/memcached" ] && Tune_Has_Memcached=y
+}
+
 # 计算全部 Tune_* 值。Enable_Auto_Tune=n 时返回 1，调用方保持模板值。
 Tune_Plan()
 {
-    local mem cores reserve avail proc pool_raw db_overhead=256 conn_base
+    local mem cores reserve avail proc pool_raw db_overhead=256 conn_base php_total
 
     [ "${Enable_Auto_Tune:-y}" = "y" ] || return 1
 
@@ -84,9 +113,14 @@ Tune_Plan()
     Tune_Redis_MB=$(Tune_Clamp 32 4096 $((mem / 16)))
     Tune_Memcached_MB=$(Tune_Clamp 64 1024 $((mem / 16)))
 
+    # 已安装的附加组件：Memcached 缓存、每个 APCu 32M、每个附加 PHP 实例一份 OPcache。
+    Tune_Detect_Extras
+    Tune_Extra_MB=$((Tune_APCu_Count * 32 + Tune_MPHP_Count * Tune_Opcache_MB))
+    [ "${Tune_Has_Memcached}" = y ] && Tune_Extra_MB=$((Tune_Extra_MB + Tune_Memcached_MB))
+
     Tune_DB_MB=0
     Tune_Pool_MB=0
-    avail=$((mem - reserve - Tune_Redis_MB - Tune_Opcache_MB))
+    avail=$((mem - reserve - Tune_Redis_MB - Tune_Opcache_MB - Tune_Extra_MB))
     if Tune_Has_DB; then
         if Tune_Has_PHP; then
             # 8GB 以内约 1/8，之上逐步提高到 20%～30%。
@@ -112,7 +146,9 @@ Tune_Plan()
     fi
 
     # PHP-FPM：3GB 以下用 ondemand，空闲时不常驻；常驻进程数按核数，不随上限放大。
-    Tune_FPM_Children=$(Tune_Clamp 4 300 $((Tune_PHP_MB / proc)))
+    # 全部 PHP 实例共享 PHP 份额：主实例 2 份，每个附加实例 1 份。
+    php_total=$((Tune_PHP_MB / proc))
+    Tune_FPM_Children=$(Tune_Clamp 4 300 $((Tune_MPHP_Count > 0 ? php_total * 2 / (Tune_MPHP_Count + 2) : php_total)))
     if [ "${mem}" -lt 3072 ]; then
         Tune_FPM_PM='ondemand'
     else
@@ -121,8 +157,8 @@ Tune_Plan()
     Tune_FPM_Min_Spare=$(Tune_Clamp 1 $((Tune_FPM_Children / 4 > 1 ? Tune_FPM_Children / 4 : 1)) "${cores}")
     Tune_FPM_Max_Spare=$(Tune_Clamp $((Tune_FPM_Min_Spare + 1)) $((Tune_FPM_Children / 2 > Tune_FPM_Min_Spare + 1 ? Tune_FPM_Children / 2 : Tune_FPM_Min_Spare + 1)) $((cores * 2)))
     Tune_FPM_Start="${Tune_FPM_Min_Spare}"
-    # 多版本 PHP 多为少量站点使用，按需拉起，上限取主版本的一半。
-    Tune_MPHP_Children=$(Tune_Clamp 2 150 $((Tune_FPM_Children / 2)))
+    # 多版本 PHP 按需拉起；未安装附加实例时按将新增一个计算。
+    Tune_MPHP_Children=$(Tune_Clamp 2 150 $((php_total / (Tune_MPHP_Count > 0 ? Tune_MPHP_Count + 2 : 3))))
 
     # Apache prefork + mod_php：每个子进程含 Apache 自身开销，按 PHP 估算值加 16MB。
     # 上限 256 不超过 prefork 默认 ServerLimit，无需另设。
@@ -132,11 +168,16 @@ Tune_Plan()
     Tune_Apache_Start="${Tune_Apache_Min_Spare}"
 
     Tune_Log_MB=$(Tune_Clamp 48 1024 $((Tune_Pool_MB / 4)))
-    # 每个 PHP 进程最多占一个连接；另留一半给多版本 PHP，再加 20 个给计划任务与管理工具。
+    # ImageMagick 像素缓存：memory 为匿名内存上限，超出部分映射到 /var/tmp 下的文件（map，可回收的文件页），
+    # 再超出才用磁盘像素缓存；线程数限制避免多 worker 争抢 CPU。
+    Tune_Magick_Mem_MB=$(Tune_Clamp 256 1024 $((mem / 8)))
+    Tune_Magick_Map_MB=$(Tune_Clamp 768 2048 $((Tune_Magick_Mem_MB * 3)))
+    Tune_Magick_Threads=$((cores > 1 ? 2 : 1))
+    # 每个 PHP 进程最多占一个连接：按全部 PHP 实例合计上限另留一半余量，再加 20 个给计划任务与管理工具。
     if [ "${Stack:-}" = "lnmpa" ] || [ "${Stack:-}" = "lamp" ]; then
         conn_base="${Tune_Apache_Workers}"
     else
-        conn_base="${Tune_FPM_Children}"
+        conn_base=$(Tune_Clamp 4 300 "${php_total}")
     fi
     Tune_Max_Conn=$(Tune_Clamp 40 500 $((conn_base * 3 / 2 + 20)))
     # 单装数据库时客户端来自其它主机，连接数无法按本机进程推算，保持模板值。
@@ -169,6 +210,42 @@ Tune_Print_Summary()
         fi
     fi
     echo "  另装 Redis 时 maxmemory ${Tune_Redis_MB}M；另装 Memcached 时缓存 ${Tune_Memcached_MB}M"
+    if [ "${Tune_Extra_MB}" -gt 0 ]; then
+        echo "  已扣除附加组件 ${Tune_Extra_MB}M：附加 PHP ${Tune_MPHP_Count} 个，APCu ${Tune_APCu_Count} 个，Memcached $([ "${Tune_Has_Memcached}" = y ] && echo "${Tune_Memcached_MB}M" || echo 未装)"
+    fi
+}
+
+# 已写入的 PHP-FPM 上限高于当前预算份额时，列出文件、当前值与建议值，不自动改写。
+# 在安装附加 PHP、Memcached、APCu 后调用。
+Tune_Advise_PHP_Pools()
+{
+    local base="${Tune_Local:-/usr/local}" d conf cur want found=n
+
+    Tune_Plan || return 0
+    [ "${Tune_PHP_MB}" -gt 0 ] || return 0
+    for d in "${base}/php" "${base}"/php[0-9]*.[0-9]*; do
+        conf="${d}/etc/php-fpm.conf"
+        [ -f "${conf}" ] || continue
+        # 无站点使用的附加实例按需拉起，不占预算，不列出。
+        [ "${d}" = "${base}/php" ] || Tune_MPHP_Active "${d}" || continue
+        cur=$(awk -F= '/^pm\.max_children[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' "${conf}")
+        case "${cur}" in ''|*[!0-9]*) continue ;; esac
+        if [ "${d}" = "${base}/php" ]; then
+            want="${Tune_FPM_Children}"
+        else
+            want="${Tune_MPHP_Children}"
+        fi
+        [ "${cur}" -gt "${want}" ] || continue
+        if [ "${found}" = n ]; then
+            Echo_Yellow "PHP 可用内存 ${Tune_PHP_MB}M 由 $((Tune_MPHP_Count + 1)) 个 PHP 实例共享（已扣除附加组件 ${Tune_Extra_MB}M），以下上限高于份额："
+            found=y
+        fi
+        echo "  ${conf}：pm.max_children 当前 ${cur}，建议 ${want}"
+    done
+    if [ "${found}" = y ]; then
+        echo "  多个站点同时繁忙时可能耗尽内存。按建议值修改后执行 lnmp restart；访问量低的实例可保持现值。"
+    fi
+    return 0
 }
 
 # 在 my.cnf 的 [mysqld] 段内设置参数，不影响 [myisamchk] 等同名项。

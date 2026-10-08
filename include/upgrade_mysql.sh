@@ -4,7 +4,7 @@ Backup_MySQL()
 {
     echo "正在备份全部数据库..."
     echo "数据库较大时，备份所需时间会更长。"
-    /usr/local/mysql/bin/mysqldump --defaults-file="${HOME}/.my.cnf" --all-databases > /root/mysql_all_backup${Upgrade_Date}.sql
+    /usr/local/mysql/bin/mysqldump --defaults-file="${HOME}/.my.cnf" --max-allowed-packet=1G --all-databases > /root/mysql_all_backup${Upgrade_Date}.sql
     if [ $? -eq 0 ]; then
         echo "MySQL 数据库备份成功。";
     else
@@ -74,7 +74,7 @@ loose-mysqlx-port = ${DB_X_Port}
 datadir = ${MySQL_Data_Dir}
 skip-external-locking
 key_buffer_size = 16M
-max_allowed_packet = 1M
+max_allowed_packet = 64M
 table_open_cache = 64
 sort_buffer_size = 512K
 net_buffer_length = 8K
@@ -108,7 +108,7 @@ innodb_lock_wait_timeout = 50
 
 [mysqldump]
 quick
-max_allowed_packet = 16M
+max_allowed_packet = 64M
 
 [mysql]
 no-auto-rehash
@@ -150,7 +150,7 @@ Upgrade_MySQL84()
         Echo_Blue "正在使用官方通用二进制包升级 MySQL ${mysql_version}..."
         Tar_Cd ${mysql_src}
         mkdir /usr/local/mysql
-        mv mysql-${mysql_version}-linux-glibc2.17-${DB_ARCH}/* /usr/local/mysql/
+        mv mysql-${mysql_version}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}/* /usr/local/mysql/
     else
         Echo_Blue "正在使用源码升级 MySQL ${mysql_version}..."
         Tar_Cd ${mysql_src} mysql-${mysql_version}
@@ -184,7 +184,7 @@ loose-mysqlx-port = ${DB_X_Port}
 datadir = ${MySQL_Data_Dir}
 skip-external-locking
 key_buffer_size = 16M
-max_allowed_packet = 1M
+max_allowed_packet = 64M
 table_open_cache = 64
 sort_buffer_size = 512K
 net_buffer_length = 8K
@@ -218,7 +218,7 @@ innodb_lock_wait_timeout = 50
 
 [mysqldump]
 quick
-max_allowed_packet = 16M
+max_allowed_packet = 64M
 
 [mysql]
 no-auto-rehash
@@ -268,7 +268,7 @@ Restore_Start_MySQL()
     /etc/init.d/mysql start
 
     echo "正在恢复数据库备份..."
-    if ! /usr/local/mysql/bin/mysql --defaults-file="${HOME}/.my.cnf" < /root/mysql_all_backup${Upgrade_Date}.sql; then
+    if ! /usr/local/mysql/bin/mysql --defaults-file="${HOME}/.my.cnf" --max-allowed-packet=1G < /root/mysql_all_backup${Upgrade_Date}.sql; then
         Echo_Red "备份导入失败，数据未完整恢复。"
         exit 1
     fi
@@ -276,6 +276,8 @@ Restore_Start_MySQL()
     MySQL_Ver_Com=$(Version_Compare 8.0.16 ${mysql_version})
     if [ "${MySQL_Ver_Com}" != "1" ]; then
         /etc/init.d/mysql stop
+        # systemd 停止服务时按 RuntimeDirectory 删除 /run/mysqld，手工启动前须重建，否则无法创建 socket 锁文件。
+        Ensure_Runtime_Directory /run/mysqld mysql mysql || exit 1
         echo "正在升级 MySQL 系统表..."
         /usr/local/mysql/bin/mysqld --user=mysql --upgrade=FORCE &
         mysqld_pid=$!
@@ -323,6 +325,7 @@ Restore_Start_MySQL()
 
 Upgrade_MySQL()
 {
+    local glibc_ver
     Check_DB
     if [ "${Is_MySQL}" = "n" ]; then
         Echo_Red "当前数据库是 MariaDB，不能运行 MySQL 升级脚本。"
@@ -357,7 +360,11 @@ Upgrade_MySQL()
         exit 1
     fi
 
-    if [[ "${DB_ARCH}" = "x86_64" || "${DB_ARCH}" = "aarch64" ]]; then
+    glibc_ver=$(Get_Glibc_Version)
+    if [[ "${DB_ARCH}" = "x86_64" || "${DB_ARCH}" = "aarch64" ]] && ! Version_GE "${glibc_ver}" 2.28; then
+        Echo_Yellow "系统 glibc ${glibc_ver:-未知} 低于官方二进制包要求的 2.28，将使用源码编译（需要 4GB 以上内存，耗时数小时）。"
+        Bin="n"
+    elif [[ "${DB_ARCH}" = "x86_64" || "${DB_ARCH}" = "aarch64" ]]; then
         read -p "是否使用官方通用二进制包 [Y/n]（默认 y，推荐）：" Bin
         case "${Bin}" in
         [yY][eE][sS]|[yY])
@@ -410,14 +417,11 @@ Upgrade_MySQL()
     echo "============================ 检查文件 ============================"
     cd "${cur_dir}/src" || return 1
 
-    if [[ "${Bin}" = "y" && "${mysql_short_version}" = "8.0" ]]; then
+    # 8.0 与 8.4 均使用 glibc 2.28 通用二进制包。
+    if [ "${Bin}" = "y" ]; then
         mysql8_glibc_ver="2.28"
         mysql_src="mysql-${mysql_version}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz"
-    elif [[ "${Bin}" = "y" && "${mysql_short_version}" = "8.4" ]]; then
-        mysql8_glibc_ver="2.17"
-        mysql_src="mysql-${mysql_version}-linux-glibc2.17-${DB_ARCH}.tar.xz"
     else
-
         mysql_src="mysql-${mysql_version}.tar.gz"
     fi
     # MySQL 未提供机器可读的官方校验文件，因此使用静态 SHA256 清单。

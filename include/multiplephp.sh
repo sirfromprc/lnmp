@@ -93,6 +93,8 @@ Install_MPHP8x()
     cd "${cur_dir}/src" || { MPHP_Install_Abort; return 1; }
 
     echo "正在创建新的 php-fpm 配置文件..."
+    # 新实例尚未被站点引用，按即将投入使用计算份额。
+    Tune_Assume_MPHP="${MPHP_Path}"
     Write_PHP_FPM_Conf "${MPHP_Path}/etc/php-fpm.conf" "${MPHP_Path}" \
         "/run/php-fpm/php-cgi${MPHP_Short_Ver}.sock" mphp || { MPHP_Install_Abort; return 1; }
 
@@ -134,6 +136,8 @@ Install_MPHP8x()
     echo "==========================================="
     Echo_Green "${Php_Ver} 安装成功。"
     echo "==========================================="
+    Tune_Advise_PHP_Pools
+    return 0
 }
 
 # profile.sh 通过对应入口安装各 PHP 分支。

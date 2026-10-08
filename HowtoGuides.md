@@ -44,7 +44,7 @@
 |---|---|---|
 | 权限 | **root 用户** | `install.sh` 开头检查 `id -u`，非 root 立即退出；脚本需要写系统目录、服务和防火墙 |
 | 系统 | Debian 12 / 13，Ubuntu 18.04+，EL 8+ | 主要验证目标是 Debian 系 |
-| 架构 | x86_64 为主线 | 当前项目只为 x86_64 通用数据库包提供完整自动校验路径；其他架构回退源码编译，上游是否另有包不等于本项目可安全安装 |
+| 架构 | x86_64 为主线 | MySQL 通用二进制支持 x86_64 与 aarch64，MariaDB 仅 x86_64；其他架构回退源码编译。MySQL 二进制要求 glibc 2.28 以上，低于时安装前提示并回退源码编译 |
 | 内存 | **≥ 2G** | 编译 nginx（含 Lua/Brotli/OpenSSL）与 PHP 很吃内存。过小内存编译可能会失败 |
 | 磁盘 | 通用二进制安装 ≥ 10G；数据库源码编译 ≥ 15G | 源码编译目录峰值已超过 7G，还要给安装目录、日志、数据和备份留空间 |
 | 机器状态 | **必须是干净机器** | 安装会卸载系统自带的 nginx/php/apache/mysql 并接管防火墙 |
@@ -421,7 +421,8 @@ bash upgrade.sh {nginx|openresty|mysql|mariadb|m2m|php|phpa|phpmyadmin|mphp}
 
 `addons.sh` 装的都是 PHP 扩展或需要 PHP 的服务，缺少 PHP 时会直接中止。
 `upgrade.sh` 的 `m2m` 是 MySQL 转 MariaDB，`phpa` 是 Apache 模式的 PHP，`mphp` 是多版本 PHP；
-数据库升级没有自动回滚，`upgrade.sh php` 会清空 `/usr/local/php/conf.d/`，升级后扩展要重装。
+数据库升级没有自动回滚。`upgrade.sh php` 与 `upgrade.sh mphp` 在同一分支内升级（如 8.5.9 → 8.5.11）时
+扩展 API 不变，自动沿用旧版本的附加扩展；跨分支升级时列出需要重装的扩展。
 这些入口的完整说明见 [8.1.19 不属于 lnmp 命令的入口](#8119-不属于-lnmp-命令的入口)。
 
 **升级到新版本时的完整性校验**：`upgrade.sh` 各目标的校验依据不同，只有 MySQL 需要事先手工写入校验值，
@@ -440,12 +441,12 @@ MySQL 官方只把校验值印在下载页上，没有可自动获取的校验�
 提示写入方法，到 <https://dev.mysql.com/downloads/mysql/> 核对该版本的 SHA256 后追加一行再重试：
 
 ```bash
-echo '<sha256>  mysql-8.4.8.tar.gz' >> src/checksums.sha256                          # 源码编译
-echo '<sha256>  mysql-8.4.8-linux-glibc2.17-x86_64.tar.xz' >> src/checksums.sha256   # 官方通用二进制
+echo '<sha256>  mysql-8.4.12.tar.gz' >> src/checksums.sha256                         # 源码编译
+echo '<sha256>  mysql-8.4.12-linux-glibc2.28-x86_64.tar.xz' >> src/checksums.sha256  # 官方通用二进制
 ```
 
-写哪一行取决于升级时是否选官方通用二进制，两种包的校验值不同；8.0 的二进制包文件名是
-`glibc2.28`，8.4 是 `glibc2.17`。源码编译所需的 Boost 版本由 MySQL 源码里的 `cmake/boost.cmake`
+写哪一行取决于升级时是否选官方通用二进制，两种包的校验值不同；8.0 与 8.4 的二进制包文件名
+均为 `glibc2.28`（8.4.11 起上游不再提供 `glibc2.17`），ARM 服务器把 `x86_64` 换成 `aarch64`。源码编译所需的 Boost 版本由 MySQL 源码里的 `cmake/boost.cmake`
 决定，校验值从 archives.boost.io 的 `.json` 自动获取，不用手工写。
 
 nginx 与 OpenResty 的验签公钥随包分发在 `conf/nginx-signing-keys.asc` 和
@@ -805,7 +806,7 @@ CheckMirror=n Bin=y bash install.sh lnmp
 | `WebSelect` | `1` Nginx；`2` OpenResty | WordPress 常规站选 Nginx；确实使用 Lua/OpenResty 生态再选 2 |
 | `ORMode` | `1` 官方包；`2` 源码 | Debian 13 上游仓库当前没有 trixie 包，选 2 |
 | `DBSelect` | `0` 不装；`1` MySQL 8.0；`2` MySQL 8.4；`3` MariaDB 10.11；`4` 11.4；`5` 11.8；`6` 12.3 | 新部署优先 MySQL 8.4 LTS 或经过应用验证的 MariaDB LTS；不要新装已 EOL 的 MySQL 8.0 |
-| `Bin` | `y` 通用二进制；`n` 源码 | x86_64 默认 `y`；只有确实需要定制构建才选 `n` |
+| `Bin` | `y` 通用二进制；`n` 源码 | x86_64 默认 `y`，MySQL 在 aarch64 也默认 `y`；只有确实需要定制构建才选 `n` |
 | `DB_Root_Password` | 字符串或留空 | 自动化应从受限 secret 注入；留空会随机生成到 root-only 文件 |
 | `InstallInnodb` | `y` / `n` | WordPress 必须 `y` |
 | `PHPSelect` | `1`～`6` 对应 PHP 8.0～8.5 | 新站优先仍在上游安全支持期且插件已兼容的 8.3/8.4；不要仅因“版本最新”跳过兼容测试 |
@@ -1498,7 +1499,7 @@ lnmp app del myapp             # 取消托管；询问是否删除专属账号�
 ```bash
 cd /tmp
 # 固定版本，不使用浮动的 latest，确保不同主机和时间使用相同内容
-WP_VER=7.0.3
+WP_VER=7.1.3
 curl -fsSL -o wordpress.tar.gz     "https://wordpress.org/wordpress-${WP_VER}.tar.gz"
 curl -fsSL -o wordpress.tar.gz.sha1 "https://wordpress.org/wordpress-${WP_VER}.tar.gz.sha1"
 
@@ -1944,7 +1945,10 @@ location ~ ^/fpm84-(status|ping)$ {
 - 内存小于 3GB 用 `pm=ondemand` 并写 `pm.process_idle_timeout=10s`；3GB 及以上用
   `pm=dynamic`，`start_servers` 与 `min_spare_servers` 取 CPU 核数，`max_spare_servers`
   取核数的 2 倍，均不超过上限的 1/4 与 1/2。
-- 多版本 PHP 的池固定 `ondemand`，上限为主版本的一半，未使用的版本不常驻进程。
+- 多版本 PHP 的池固定 `ondemand`，未使用的版本不常驻进程。有站点在用的附加实例（站点配置
+  引用了 `enable-php<版本>.conf` 或对应 socket）与主实例共享 PHP 份额：主实例 2 份、每个在用
+  附加实例 1 份，上限之和不超过份额；没有站点使用的附加实例不计入。装附加 PHP 时按即将投入
+  使用计算，若主实例现有上限高于份额，安装结束时列出文件、当前值和建议值，不自动改写。
 - `Enable_Auto_Tune=n` 时保持模板值 `dynamic`、`max_children=10`、`2/1/6`。
 
 生成值是按估算的起点。站点插件较重时，按下面的公式用实测 PSS 校正，或调大
@@ -2018,6 +2022,33 @@ mysql -NBe "SHOW GLOBAL STATUS WHERE Variable_name IN ('Max_used_connections','T
 buffer pool 命中率只能说明读工作集，不能单独证明要占用更多整机内存。慢站点优先开短时
 慢查询日志并用 `EXPLAIN` 修查询/索引，不用增加 buffer 掩盖插件产生的低效 SQL。
 
+#### 单个 SQL 包上限 max_allowed_packet
+
+安装与升级写入的 `[mysqld]`、`[mysqldump]` 均为 `max_allowed_packet = 64M`（MySQL 8.4
+服务端默认值；MariaDB 默认 16M）。它是单条 SQL 或单行数据的上限，连接缓冲从
+`net_buffer_length` 起步按需增长，不按连接数预分配；增长后保留到该连接断开。
+WordPress 默认每个请求一个非持久连接，请求结束即释放；持久连接会一直持有大包写入时的缓冲。超过上限时服务端报
+`Got a packet bigger than 'max_allowed_packet' bytes`，常见于迁移导入扩展 INSERT、
+页面构建器保存大段序列化元数据。
+
+`lnmp database export/import`、`lnmp-backup.sh` 与数据库升级的导出导入都显式传
+`--max-allowed-packet=1G`，实际上限由服务端决定。MySQL 8.4 与 MariaDB 11.8 的客户端默认值已足够，
+其它版本的客户端可能更低，手工导入时建议同样传入：
+
+```bash
+mysql --max-allowed-packet=1G 库名 < dump.sql
+```
+
+旧版本安装的实例仍是 1M，按下面方法调整，无需重装：
+
+```bash
+mysql -NBe "SHOW VARIABLES LIKE 'max_allowed_packet';"
+sed -i 's/^max_allowed_packet = 1M$/max_allowed_packet = 64M/' /etc/my.cnf
+mysql -e "SET GLOBAL max_allowed_packet = 67108864;"   # 立即对新连接生效，重启后以 my.cnf 为准
+```
+
+确有单行超过 64M 的数据时再提高，上限 1G；更大的文件应放文件系统而不是数据库。
+
 #### MySQL 8.4 与 MariaDB 的选择
 
 WordPress 核心对两者都支持，常规文章/用户/元数据查询也很接近。真实站点的差异通常先由
@@ -2087,18 +2118,51 @@ WordPress 常见的第一收益仍是删除低效插件/查询、补正确索引
 > `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
 > 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
-项目安装 Redis 时按内存写入 `maxmemory`（内存的 1/16，范围 32MB～4GB）和
-`maxmemory-policy allkeys-lfu`，位于 `/usr/local/redis/etc/redis.conf` 末尾的 LNMP 段：
+项目安装 Redis 时按内存写入 `maxmemory`（内存的 1/16，范围 32MB～4GB），并按
+`lnmp.conf` 的 `Redis_Mode` 写淘汰策略与持久化，位于 `/usr/local/redis/etc/redis.conf` 末尾的 LNMP 段：
+
+| `Redis_Mode` | 用途 | 淘汰策略 | 持久化 |
+|---|---|---|---|
+| `cache`（默认） | WordPress 对象缓存等可重建数据 | `allkeys-lfu` | `save ""`、`appendonly no` |
+| `persistent` | session、队列等不可丢数据 | `noeviction` | 默认 RDB 规则加 `appendonly yes`、`appendfsync everysec` |
 
 ```conf
+# Redis_Mode=cache（8GB 机器）
 maxmemory 493mb
 maxmemory-policy allkeys-lfu
+save ""
+appendonly no
 ```
 
-`allkeys-lfu` 适合“所有 key 都是缓存”的独立实例。若同一实例还存 session、队列或任何
-不能随时丢的数据，就不能套用这条策略，应改为 `noeviction` 并按数据量设上限，或拆实例、
-使用明确 TTL/ACL。缓存专用实例可按
-恢复时间目标决定是否关闭 RDB/AOF；混用实例不得为省 I/O 关闭持久化。
+`cache` 不做持久化：重启后缓存为空，页面首次访问回源数据库重建，之后恢复命中；
+同时没有定期 fork 与磁盘写入，也不会因快照失败触发 `stop-writes-on-bgsave-error` 拒绝写入。
+`persistent` 内存满时拒绝写入并返回错误，不丢已有数据，`maxmemory` 需按数据量设置。
+同一实例既做缓存又存 session 时按 `persistent` 安装，或拆成两个实例；
+key 前缀与 database 编号不能隔离淘汰策略。
+
+安装时指定：
+
+```bash
+Redis_Mode=persistent bash addons.sh install redis
+```
+
+已安装的实例改用途时，重新执行 `Redis_Mode=<用途> bash addons.sh install redis` 最省事。
+手工切换时先停服务再改 LNMP 段：改为 `cache` 时必须把数据目录的 `dump.rdb` 与
+`appendonlydir` 移走，`save ""` 只停止写入，启动时仍会加载已有快照，恢复过期缓存。
+
+```bash
+systemctl stop redis
+# 按上表修改 /usr/local/redis/etc/redis.conf 末尾的 LNMP 段
+mv /usr/local/redis/var/dump.rdb /usr/local/redis/var/dump.rdb.bak   # 仅切换到 cache 时
+systemctl start redis
+redis-cli config get save; redis-cli config get appendonly; redis-cli config get maxmemory-policy
+```
+
+重装时 cache 模式会自动把遗留的持久化文件改名为 `*.lnmp-bak-<时间>` 保留。
+
+Debian 13 实测（WordPress + redis-cache 插件）：cache 模式重启后键数为 0，首个页面请求 0.082s，
+热缓存后约 0.06s；PHP `session.save_handler=redis` 写入的 session 在 cache 模式重启后丢失、
+persistent 模式保留。
 
 修改前后用真实数据核对：
 
@@ -2137,8 +2201,9 @@ key 前缀、TTL 和插件行为，再决定扩容；低流量站点甚至可能
 | 7900MB | 1G | 86 | 493M | `dynamic`，44 | 256M |
 | 15900MB | 3G | 149 | 993M | `dynamic`，86 | 256M |
 
-计算顺序：系统余量 256MB + 内存的 15%；Redis 与 Memcached 各占内存的 1/16（Memcached
-与 Redis 同时安装时两者都占用）；缓冲池 8GB 以内为内存的 1/8，以上逐步提高到 20%～30%，
+计算顺序：系统余量 256MB + 内存的 15%；Redis 份额内存的 1/16 总是预留；再扣除已安装的
+附加组件：Memcached 缓存（内存的 1/16）、主 PHP 与在用附加实例中每个启用 APCu 的 32M、
+每个在用附加实例一份 OPcache；缓冲池 8GB 以内为内存的 1/8，以上逐步提高到 20%～30%，
 1G 以下按 128M、以上按 1G 取整；数据库另计 256MB 连接与内部结构开销；其余给 PHP。
 LNMPA、LAMP 的 Apache prefork `MaxRequestWorkers` 按 PHP 份额 ÷（估算值 + 16MB）计算，
 范围 6～256。单装数据库（`install.sh db`）时缓冲池取除系统余量外的大部分内存。
@@ -2151,6 +2216,67 @@ Tune_Mem_MB=4096 Tune_PHP_Proc_MB=150 ./install.sh lnmp
 
 `upgrade.sh` 升级数据库或 PHP 时会重建对应配置并按当前内存重算，手工改过的值会被覆盖；
 其余已安装的组件不会自动重算，按上表或 6.3～6.5 手工修改后重启服务。
+
+后装附加组件时的取值（2 核，MySQL 8.4，`Tune_PHP_Proc_MB=100`）：
+
+| 内存 | 情形 | PHP 份额 | 主 PHP 上限 | 附加 PHP 上限 |
+|---|---|---:|---:|---:|
+| 2048MB | 无附加组件 | 717M | 7 | — |
+| 2048MB | 1 个在用附加 PHP | 589M | 4 | 2 |
+| 2048MB | Memcached | 589M | 5 | — |
+| 4096MB | 无附加组件 | 1946M | 19 | — |
+| 4096MB | 1 个在用附加 PHP | 1690M | 10 | 5 |
+| 4096MB | Memcached | 1690M | 16 | — |
+| 8192MB | 无附加组件 | 4660M | 46 | — |
+| 8192MB | 1 个在用附加 PHP | 4404M | 29 | 14 |
+| 8192MB | Memcached | 4148M | 41 | — |
+
+安装 Memcached、APCu 或附加 PHP 后，已写入的 `pm.max_children` 高于上表份额时会列出，例如：
+
+```text
+PHP 可用内存 4404M 由 2 个 PHP 实例共享（已扣除附加组件 256M），以下上限高于份额：
+  /usr/local/php/etc/php-fpm.conf：pm.max_children 当前 46，建议 29
+```
+
+按建议值修改后执行 `lnmp restart`。只有一个站点繁忙、附加实例很少使用时可保持现值；
+缓存容量与 Redis `maxmemory` 是上限，空闲时的实际 RSS 低于该值。
+
+Debian 13 实测两个 WordPress 站点分别用主 PHP 8.5（上限 16）与附加 PHP 8.3（上限 8）同时压满 60 秒：
+两组 worker 的 PSS 峰值合计 477MB（PHP 份额 2482MB），单个 worker 平均约 19MB；数据库连接峰值 25；
+附加实例空闲 15 秒后 worker 全部回收。100MB 估算值按插件较重的站点高峰取值，实测站点远低于此。
+
+ImageMagick 的像素缓存不计入 PHP `memory_limit`。上游默认策略不限内存与磁盘，项目构建的
+Q16-HDRI 版本每像素 16 字节；WordPress 生成各尺寸时会复制图像，像素缓存同时存在多份。
+安装时按内存写入 `/usr/local/imagemagick/etc/ImageMagick-7/policy.xml`，原文件备份为 `policy.xml.orig`：
+
+| 内存 | memory | map | disk | 临时目录 | 单边像素上限 |
+|---|---|---|---|---|---|
+| 2GB 及以下 | 256MiB | 768MiB | 2GiB | `/var/tmp` | 16000 |
+| 4GB | 512MiB | 1536MiB | 2GiB | `/var/tmp` | 16000 |
+| 8GB 及以上 | 1GiB | 2GiB | 2GiB | `/var/tmp` | 16000 |
+
+memory 是匿名内存上限，超出部分映射到临时目录下的文件（map，可回收的文件页），再超出才用
+磁盘像素缓存。临时目录固定为 `/var/tmp`：Debian 13 的 `/tmp` 是 tmpfs，放在那里仍占内存。
+PHP 的 Imagick 扩展默认 `imagick.set_single_thread=1`，在 PHP 中始终单线程，策略里的 thread
+（单核 1、多核 2）只约束命令行等其它调用方。
+
+Debian 13 实测经 REST API 上传，WordPress 默认 7 个尺寸、EXIF 旋转：
+
+| memory / map | 12MP JPEG 耗时 / worker 峰值 RSS | 24MP JPEG 耗时 / worker 峰值 RSS |
+|---|---|---|
+| 256MiB / 256MiB | 8.5s / 412MB | 90s / 406MB |
+| 256MiB / 768MiB（2GB 档） | 8.4s / 528MB | 12.2s / 965MB |
+| 512MiB / 512MiB | 8.6s / 544MB | 11.6s / 991MB |
+| 736MiB / 2GiB（6GB 测试机） | 8.1s / 560MB | 11.9s / 980MB |
+
+map 过小时 24MP 落到磁盘像素缓存，耗时成倍增加；峰值 RSS 含映射文件页，内存紧张时可回收。
+PNG、WebP 同样生成全部尺寸；PDF 在未安装 Ghostscript 时只上传不生成预览。核对生效值：
+
+```bash
+/usr/local/imagemagick/bin/magick -list resource
+```
+
+文件含 `LNMP:` 标记时重装 ImageMagick 会按当前内存重写；删除标记后不再覆盖。
 
 1GB 机器只能承载轻量站点，编译阶段和插件更新阶段都容易触发内存峰值；优先用数据库
 通用二进制、减少插件、开启页面缓存/CDN，并避免在流量高峰做备份压缩。5GB 以上也不是
@@ -2206,8 +2332,10 @@ WP-CLI 应以站点文件所属的受限账号运行；本文示例路径需按�
    时启用并检查 `fstrim.timer`，不要在未知后端强制连续 discard。
 3. **Swap 只做保险**：项目在缺少 Swap 时可能创建 `/var/swapfile`，并只在 swappiness=0
    时改到 10。对 1～2GB VPS 保留 Swap，但持续换页代表应用内存分配错误。
-4. **按实际并发设置文件描述符**：项目已把 `nofile` 和 `fs.file-max` 写到 65535，Nginx
-   `worker_connections` 也很高。实际并发未逼近限制时，改成几十万没有收益。
+4. **按实际并发设置文件描述符**：项目已把 `nofile` 和 `fs.file-max` 写到 65535。Nginx
+   `worker_connections` 默认 10240：该值在启动时按 worker 预分配，51200 时每个 worker
+   约占 22MB，10240 约 5MB。实际并发未逼近限制时调高没有收益；旧版本安装的 51200
+   可在 `nginx.conf` 改为 10240 后 `lnmp nginx reload`。
 5. **网络只按证据调**：先用 `ss -s`、丢包/RTT 和云厂商带宽上限定位。BBR 只对特定
    高带宽高时延或丢包链路有帮助，不是 WordPress 延迟通用解法；开启前确认内核模块、
    qdisc 和对照测试，不把页面慢查询归因于拥塞算法。
@@ -2216,9 +2344,12 @@ WP-CLI 应以站点文件所属的受限账号运行；本文示例路径需按�
 7. **观察而非定时清缓存**：不要建立 `drop_caches` cron，也不要为了“释放内存”重启
    MySQL/Redis/PHP。Linux page cache 是可回收内存，判断压力看 `MemAvailable`、PSI、Swap
    和 OOM 记录。
-8. **虚拟化现实**：`worker_processes auto` 已按可见 CPU 工作；VPS 不要启用
-   `worker_cpu_affinity auto` 绑核，超卖和 CPU quota 下可能造成负载倾斜。可在
-   `/usr/local/nginx/conf/nginx.conf` 注释该行，压测确认后保留结果。
+8. **虚拟化现实**：`worker_processes auto` 取在线 CPU 数，不读取 cgroup CPU 配额
+   （`cat /sys/fs/cgroup/cpu.max` 首项非 `max` 时为配额，配额核数 = 首项 / 次项），
+   配额小于可见核数时手工写成配额核数。`worker_cpu_affinity` 默认关闭（Nginx 官方默认），
+   超卖和 CPU quota 下绑核可能造成负载倾斜；独占 CPU 的机器可在
+   `/usr/local/nginx/conf/nginx.conf` 取消注释 `worker_cpu_affinity auto;`，压测确认后保留。
+   旧版本安装的配置仍是启用状态，共享 VPS 可注释该行后 `lnmp nginx reload`。
 
 Debian 12 与 13 的主要差异不需要两套“调优参数”。Debian 13 的依赖更现代，项目已经
 处理 `libaio1t64`、ncurses 兼容和 OpenResty trixie 仓库缺失；不要为兼容旧教程手工安装
@@ -3354,7 +3485,7 @@ bash addons.sh                    # 不带参数进菜单，编号与上面的�
 - `apcu` — 进程内的本地内存缓存，从 PECL 编译。适合单机小对象缓存，
   跨进程共享要用 Redis 或 Memcached
 - `imagemagick` — 装 ImageMagick 与 PHP 的 imagick 扩展。
-  **主安装已默认提供 imagick**（`Enable_PHP_Default_Imagick=y`）
+  **主安装已默认提供 imagick**（`Enable_PHP_Default_Imagick=y`）。按内存写资源策略，见 6.6
 - `ioncube` — **当前版本未接入**。执行后只打印说明并返回 1，不做任何改动。
   原因是尚未按架构补齐 `src/checksums.sha256` 的校验条目，不是安全判定。
   确需使用时到官方站点取包自行安装
@@ -3385,7 +3516,10 @@ bash uninstall.sh         # 卸载整套环境
 
 `upgrade.sh` 的 `m2m` 是 MySQL 转 MariaDB，`phpa` 是 Apache 模式的 PHP，
 `mphp` 是多版本 PHP。数据库升级没有自动回滚，务必先备份并在测试环境验证。
-`upgrade.sh php` 会清空 `/usr/local/php/conf.d/`，升级后所有 PHP 扩展都要重装。
+`upgrade.sh php` 与 `upgrade.sh mphp` 以新目录替换旧安装，`conf.d` 从空开始，OPcache 自动重建。
+其余附加扩展：同一分支的点版本升级扩展 API 编号不变（如 8.5.9 与 8.5.11 均为 `20250925`），
+旧 `.so` 与 ini 复制到新版本并确认能加载且无启动警告后沿用；跨分支升级或加载失败的扩展撤回 ini，
+在升级结束时列出，按提示 `bash addons.sh install <名字>` 重装，旧配置保留在备份目录的 `conf.d`。
 `upgrade.sh nginx` 只替换二进制，不修改 `nginx.conf`，替换前用新二进制对现有配置执行
 `nginx -t`，不通过则中止且线上不变。升级时新启用 `Enable_Nginx_Lua` 的，先在 http 段手工加入：
 
@@ -3487,7 +3621,8 @@ lnmp pureftpd restart                 # Pure-FTPd 有 lnmp 子命令
 | `unixsocket` | `/run/lnmp-redis/redis.sock` | 目录由 unit 的 `RuntimeDirectory` 或 SysV 脚本创建，路径不要移出该目录 |
 | `unixsocketperm` | `770` | `redis` 组可读写，`www` 已加入该组 |
 | `maxmemory` | 内存的 1/16（32MB～4GB） | `Enable_Auto_Tune=n` 时不写，内存不设上限 |
-| `maxmemory-policy` | `allkeys-lfu` | 缓存用途；存放不可丢数据时改为 `noeviction` |
+| `maxmemory-policy` | `cache`：`allkeys-lfu`；`persistent`：`noeviction` | 由 `Redis_Mode` 决定，见 6.5 |
+| `save` / `appendonly` | `cache`：`""` / `no`；`persistent`：默认规则 / `yes` | 由 `Redis_Mode` 决定 |
 | `daemonize` | `no` | unit 用 `Type=simple` 直接跟踪主进程 |
 | `dir` | `/usr/local/redis/var` | 固定数据目录 |
 | `logfile` | `/usr/local/redis/var/redis.log` | Redis 自身错误写这里，不进 journal |
@@ -3513,7 +3648,7 @@ lnmp pureftpd restart                 # Pure-FTPd 有 lnmp 子命令
 maxmemory 512mb
 maxmemory-policy allkeys-lfu
 
-# 纯缓存用途可关闭持久化，减少磁盘写入；缓存丢失后由应用重建
+# 持久化由 Redis_Mode 决定（默认 cache 不持久化），改用途见 6.5
 save ""
 appendonly no
 ```
@@ -5071,26 +5206,66 @@ WordPress 自动更新是否可写与本指南的 root-owned 发布模型存在�
 > `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
 > 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
-禁止 PHP 在上传目录执行（WordPress 被上传 webshell 的常见路径）：
+`lnmp vhost add` 新建的站点默认带下面两条规则（LNMP、LNMPA 写在 Nginx 站点配置，
+LAMP 写在 Apache 站点的公共片段，HTTP 与 HTTPS 共用）。只按路径匹配，与建站时选的
+伪静态无关，非 WordPress 站点不受影响：
 
 ```nginx
-location ~* ^/wp-content/uploads/.*\.(php|php5|phtml)$ {
+# 上传目录只存媒体，拒绝其中的 PHP（含 /x.php/foo 形式的 PATH_INFO）
+location ~* /wp-content/uploads/.*\.php(/|$) {
+    deny all;
+}
+# wp-config.php 及 .bak、~、.old 等副本不对外提供
+location ~* /wp-config[^/]*$ {
     deny all;
 }
 ```
 
-> 注意：**该规则必须放在 `include enable-php.conf;` 之前。**
+LAMP 的等价写法：
+
+```apache
+<LocationMatch "(?i)(/wp-content/uploads/.*\.php(/|$)|/wp-config[^/]*$)">
+    Require all denied
+</LocationMatch>
+```
+
+> 注意：**Nginx 规则必须放在 `include enable-php.conf;` 之前。**
+> 正则 location 按出现顺序匹配，`enable-php.conf` 的 `location ~ [^/]\.php(/|$)` 能匹配
+> uploads 下的 `.php`，规则放在 server 块末尾时不生效。旧版本建的站点没有这两条，
+> 按上面写法加到 `/usr/local/nginx/conf/vhost/<域名>.conf` 的该 include 之前。
 >
-> nginx 对正则 location 是**按配置里出现的顺序**匹配，用**第一个**匹配上的。
-> `enable-php.conf` 里的 `location ~ [^/]\.php(/|$)` 能匹配任何 `.php`，
-> 包括 uploads 下的。因此，将上述配置追加到 server 块**末尾**时，
-> 该规则不会被匹配，上传的 webshell 仍会交给 PHP-FPM 执行。
->
-> `lnmp vhost add` 生成的配置里，`include enable-php.conf;` 在 server 块中部，
-> 编辑 `/usr/local/nginx/conf/vhost/<域名>.conf` 时，将上述规则置于该 include 之前。
->
-> 建站时选了不开启 PHP 的站点没有这一行，取而代之的是一段返回 404 的
-> `location ~ [^/]\.php(/|$)`，站内任何 `.php` 都不会执行，不需要再加本规则（见 4.4）。
+> 规则只覆盖 `wp-content/uploads` 与 `wp-config*`，插件目录下的合法脚本不受影响。
+> 其它备份文件（`.sql`、`.zip`、整站打包）不要放在站点目录下，
+> 放到 `/root` 或 `lnmp-backup.sh` 的备份目录；隐藏文件规则不能保护非隐藏的备份文件。
+
+### 10.4 更新 PHP 依赖的 FreeType 与 libiconv
+
+FreeType（`/usr/local/freetype`）与 libiconv（`/usr/local/lib`）只在完整安装时编译，`upgrade.sh php`
+不会重编。PHP 的 GD 与 iconv 动态链接这两个库；新版 soname 不变（`libfreetype.so.6`、`libiconv.so.2`），
+原位覆盖后重启 PHP 即生效，不需要重编 PHP。FreeType 2.13.0 及更早版本受 CVE-2025-27363
+（解析字体文件时越界写）影响，旧安装应更新到 `include/version.sh` 中的版本。
+
+```bash
+cd <代码目录>/src
+wget https://downloads.sourceforge.net/freetype/freetype-2.14.3.tar.xz
+grep ' freetype-2.14.3.tar.xz$' checksums.sha256 | sha256sum -c -
+tar Jxf freetype-2.14.3.tar.xz && cd freetype-2.14.3
+./configure --prefix=/usr/local/freetype --enable-freetype-config
+make -j"$(nproc)" && make install && ldconfig
+/usr/local/freetype/bin/freetype-config --ftversion    # 应输出 2.14.3
+
+cd <代码目录>/src
+wget https://ftp.gnu.org/gnu/libiconv/libiconv-1.19.tar.gz
+grep ' libiconv-1.19.tar.gz$' checksums.sha256 | sha256sum -c -
+tar zxf libiconv-1.19.tar.gz && cd libiconv-1.19
+./configure --enable-static
+make -j"$(nproc)" && make install && ldconfig
+
+lnmp restart                  # LNMPA 用 lnmpa restart，LAMP 用 lamp restart
+/usr/local/php/bin/php -r 'echo ICONV_VERSION, PHP_EOL;'    # 应输出 1.19
+```
+
+多版本 PHP 共用这两个库，重启后同样生效。
 
 修改后应验证实际请求结果；`nginx -t` 通过不代表规则已经生效：
 
@@ -5115,7 +5290,7 @@ unset SITE DOMAIN TEST_FILE HTTP_CODE
 ```
 
 实测确认：规则插在 `include enable-php.conf;` 之前时返回 **403**；
-放在末尾时返回 **200 并执行**。
+放在末尾时返回 **200 并执行**。`enable-php-pathinfo.conf` 站点同样返回 403。
 
 [返回顶部](#top)
 

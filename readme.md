@@ -41,6 +41,7 @@ WordPress。Apache 栈及其它发行版的支持边界见 [HowtoGuides.md](Howt
   自动安装 nftables，装不上才降级为跳过并提示自行确认端口暴露情况。
 - 站点默认拒绝 `.user.ini`、`.env`、`.git` 等隐藏文件的 HTTP 与 HTTPS 访问，
   ACME 用的 `/.well-known/` 例外。
+- 站点默认拒绝 `wp-content/uploads` 下的 PHP 请求，以及 `wp-config.php` 及其副本的访问。
 - default 站点在 443 上拒绝未知 SNI 的握手，未匹配的 HTTPS 请求不会落到业务站点
   （LAMP 除外，Apache 无等价指令）。
 - PHP 站点的 `open_basedir` 在站点对外可访问之前写入；Composer 通过包装脚本获得
@@ -285,11 +286,14 @@ bash install.sh mphp
 
 - 安装时按本机内存为数据库、PHP-FPM（LNMPA/LAMP 为 Apache prefork）、Redis、Memcached
   和 OPcache 分配参数，由 `lnmp.conf` 的 `Enable_Auto_Tune`（总开关）、`Tune_Mem_MB`
-  （参与计算的内存）和 `Tune_PHP_Proc_MB`（单个 PHP 进程估算）控制。
+  （参与计算的内存）和 `Tune_PHP_Proc_MB`（单个 PHP 进程估算）控制。已安装的 Memcached、APCu
+  与有站点在用的附加 PHP 实例从 PHP 份额中扣除，这些附加实例与主实例共享 PHP 份额。
 - `addons.sh` 安装或卸载 Redis、Memcached 和 PHP 扩展。Redis 同时监听 TCP 回环端口和
   Unix socket `/run/lnmp-redis/redis.sock`，`www` 加入 `redis` 组以便 PHP 经 socket 连接。扩展装完会用
   `php --ri <模块>` 确认 PHP 真的能加载，加载不了或服务重启失败就撤回本次写入的
   `conf.d` 配置并返回非零。
+- `Redis_Mode`：`cache`（默认，对象缓存，不持久化，内存满时淘汰）或 `persistent`（session、
+  队列等，RDB 加 AOF，内存满时拒绝写入）。
 - `pureftpd.sh` 管理 Pure-FTPd 安装。
 - `upgrade.sh` 按菜单升级组件；升级前先完成备份和恢复演练。
 - `install.sh mphp` 为 LNMP 模式增加一个 PHP 版本，OPcache 参数与主 PHP 相同（`Enable_PHP_Default_Opcache`
