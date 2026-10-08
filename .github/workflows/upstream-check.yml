@@ -8,7 +8,8 @@
 #
 # 升级结果不合并回主分支：主分支的组件版本由维护者手工确认，
 # 自动升级只活在 auto-<日期> 分支上，发布时两条线各出一个包。
-# 分支每轮从触发时的主分支重建，因此始终等于「最新源码 + 最新组件版本」。
+# 分支每轮从触发时的主分支重建，本轮自动发布的升级包等于「最新源码 + 最新组件版本」。
+# 手动运行发布只出主分支包，不复用已有升级分支。
 # 需要把升级结果并入主分支时，手动触发 sync-versions.yml。
 #
 # 默认仅应用 AUTO。COUPLED 涉及配套运行时兼容，需手动触发并检查；
@@ -130,6 +131,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      branch: ${{ steps.commit.outputs.branch }}
     steps:
       # 从触发时的主分支重建升级分支，保证它同时含最新源码与最新组件版本。
       - uses: actions/checkout@v5
@@ -140,6 +143,7 @@ jobs:
           path: .
 
       - name: 提交并推送
+        id: commit
         env:
           BRANCH: ${{ needs.check.outputs.branch }}
           BASE: ${{ github.ref_name }}
@@ -167,6 +171,7 @@ jobs:
 
           # 同一天重跑时覆盖上一次的结果，分支内容始终是本轮的完整升级。
           git push --force origin "HEAD:refs/heads/${BRANCH}"
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
           echo "已推送 ${BRANCH}。"
 
       - name: 提醒
@@ -193,6 +198,8 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       level: quick
+      # 未推送时为空，release.yml 只发主分支包。
+      auto_branch: ${{ needs.push.outputs.branch }}
     permissions:
       contents: write
       id-token: write

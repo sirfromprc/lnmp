@@ -9,11 +9,12 @@
 #   tag        v2.3-20260908                每次发布唯一
 #   release 名 LNMP v2.3 (20260908)
 #   包         lnmp-v2.3.tar.gz             主分支，组件版本由维护者手工确认
-#              lnmp-v2.3-20260908.tar.gz    最新 auto-<日期> 分支，含自动升级
+#              lnmp-v2.3-20260908.tar.gz    本轮 auto-<日期> 分支，含自动升级
 #
 # 两个包分开的原因：主分支的源码改动不会覆盖自动升级过的组件版本，
 # 自动升级也不会把未经确认的组件版本带进主分支。
-# 没有 auto-<日期> 分支时只发主分支那一个包。
+# 升级包只在 upstream-check.yml 调用时打出，此时升级分支刚从同一主分支重建；
+# 手动运行与 tag 触发只发主分支包，避免已有升级分支的旧源码进入新发布。
 #
 # 固定下载地址（不需要移动 tag）：
 #   /releases/latest/download/lnmp-v2.3.tar.gz
@@ -36,6 +37,10 @@ on:
         description: '标记为预发布'
         type: boolean
         default: false
+      auto_branch:
+        description: '本轮推送的 auto-<日期> 分支；留空只发主分支包'
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       level:
@@ -121,21 +126,28 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "将发布 ${TAG}（产品版本 ${PRODUCT_VER}）"
 
-      - name: 查找最新的自动升级分支
+      - name: 确定升级分支
         id: auto
+        env:
+          BRANCH: ${{ inputs.auto_branch }}
         run: |
           set -e
-          git fetch --quiet origin '+refs/heads/auto-*:refs/remotes/origin/auto-*' 2>/dev/null || true
-          branch=$(git for-each-ref --format='%(refname:strip=3)' 'refs/remotes/origin/auto-*' \
-                     | grep -E '^auto-[0-9]{8}$' | sort | tail -1 || true)
-          if [ -z "${branch}" ]; then
-            echo "没有 auto-<日期> 分支，本次只发主分支的包。"
+          if [ -z "${BRANCH}" ]; then
+            echo "非上游版本检查调用，本次只发主分支的包。"
             echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          case "${BRANCH}" in
+            auto-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+            *)
+              echo "错误：升级分支名 ${BRANCH} 不合法。" >&2
+              exit 1
+              ;;
+          esac
+          git fetch --quiet origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
           echo "found=true"            >> "$GITHUB_OUTPUT"
-          echo "branch=${branch}"      >> "$GITHUB_OUTPUT"
-          echo "使用升级分支 ${branch}。"
+          echo "branch=${BRANCH}"      >> "$GITHUB_OUTPUT"
+          echo "使用升级分支 ${BRANCH}。"
 
       # 升级分支的真编译在 upstream-check 里已经做过，这里只回检跨文件一致性，
       # 防止分支推出后主分支又改了映射导致两边对不上。
