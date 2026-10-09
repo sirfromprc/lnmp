@@ -693,6 +693,21 @@ Check_Firewall_Result()
     return 1
 }
 
+# 默认 PHP 扩展失败不中止安装，结束时重复列出，避免编译期提示被后续输出淹没。
+# 扩展属可选组件，不改变安装返回码。
+Check_PHP_Ext_Result()
+{
+    [ -n "${PHP_Default_Ext_Failed}" ] || return 0
+
+    echo
+    Echo_Red "════════════════ 部分 PHP 扩展未安装 ════════════════"
+    Echo_Red "未装成功：${PHP_Default_Ext_Failed# }"
+    Echo_Yellow "其余组件不受影响，编译详情见 /root/lnmp-install.log。"
+    Echo_Yellow "opcache、Redis、imageMagick 可用 ./addons.sh install 重试。"
+    Echo_Red "══════════════════════════════════════════════════"
+    return 0
+}
+
 # 数据库文件存在仅表示组件已安装，不能证明安全初始化已经完成。
 # 任一初始化步骤失败时返回非零，并提示核对账号、测试库和远程授权。
 Check_DB_Init_Result()
@@ -721,6 +736,7 @@ Check_LNMP_Install()
         Print_Sucess_Info
         # 组件齐全后仍需分别检查防火墙和数据库初始化，两项均通过才返回成功。
         local rc=0
+        Check_PHP_Ext_Result
         Check_Firewall_Result || rc=1
         Check_DB_Init_Result || rc=1
         return ${rc}
@@ -738,6 +754,7 @@ Check_LNMPA_Install()
     if [[ "${isNginx}" = "ok" && "${isDB}" = "ok" && "${isPHP}" = "ok" && "${isApache}" = "ok" ]]; then
         Print_Sucess_Info
         local rc=0
+        Check_PHP_Ext_Result
         Check_Firewall_Result || rc=1
         Check_DB_Init_Result || rc=1
         return ${rc}
@@ -754,6 +771,7 @@ Check_LAMP_Install()
     if [[ "${isApache}" = "ok" && "${isDB}" = "ok" && "${isPHP}" = "ok" ]]; then
         Print_Sucess_Info
         local rc=0
+        Check_PHP_Ext_Result
         Check_Firewall_Result || rc=1
         Check_DB_Init_Result || rc=1
         return ${rc}

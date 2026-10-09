@@ -21,7 +21,7 @@ PHP_Ext_Dir()
 Build_Pecl_Ext()
 {
     local pkg="$1" so="$2" ini="$3"; shift 3
-    local ext_dir
+    local ext_dir patch_file="${cur_dir}/src/patch/${pkg}-php85.patch"
 
     Echo_Blue "[+] 正在安装 PHP 扩展 ${pkg}... "
     cd "${cur_dir}/src" || return 1
@@ -37,6 +37,17 @@ Build_Pecl_Ext()
 
     Clean_Src_Dir "${pkg}"
     Tar_Cd ${pkg}.tgz ${pkg}
+
+    # 上游尚未发布正式版的 PHP 8.5 兼容修正，补丁按 <包名>-php85.patch 命名。
+    if [ -s "${patch_file}" ] && \
+       ! patch -p1 --forward --no-backup-if-mismatch < "${patch_file}"; then
+        cd "${cur_dir}/src" || return 1
+        Clean_Src_Dir "${pkg}"
+        Echo_Red "${pkg} 打补丁失败，跳过"
+        printf -v PHP_Default_Ext_Failed '%s %s(补丁失败)' \
+            "${PHP_Default_Ext_Failed}" "${pkg}"
+        return 1
+    fi
 
     ${PHP_Path}/bin/phpize
     ./configure --with-php-config=${PHP_Path}/bin/php-config "$@"
@@ -165,7 +176,7 @@ Install_PHP_Default_Ext()
     echo
     if [ -n "${PHP_Default_Ext_Failed}" ]; then
         Echo_Red "以下默认扩展未装成功：${PHP_Default_Ext_Failed}"
-        Echo_Red "LNMP 其余部分不受影响，可稍后用 ./addons.sh install 单独重试。"
+        Echo_Red "LNMP 其余部分不受影响，opcache、Redis、imageMagick 可用 ./addons.sh install 重试。"
     else
         Echo_Green "PHP 默认扩展全部安装完成。"
     fi

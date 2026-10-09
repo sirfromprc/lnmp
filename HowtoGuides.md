@@ -4807,9 +4807,20 @@ bash tools/reset_mysql_root_password.sh
 
 ### 9.8 程序提示函数被禁用
 
-本包默认在 `php.ini` 的 `disable_functions` 里禁用了 exec 系列函数。
-某些程序（如需要调用外部命令的采集、缩略图或队列组件）会因此报
+本包默认在 `php.ini` 的 `disable_functions` 里禁用了 exec 系列函数和 `putenv`。
+某些程序（如需要调用外部命令的采集、缩略图或队列组件，或用 `putenv` 设置环境变量的组件）会因此报
 `Call to undefined function` 或 `has been disabled for security reasons`。
+禁用 `putenv` 是为了阻止通过 `LD_PRELOAD` 加 `mail()` 绕过 exec 限制；`mail()` 本身可用。
+禁用范围的取舍见 `codetradeoffs.md` 19.28。
+
+查看当前禁用列表：
+
+```bash
+grep '^disable_functions' /usr/local/php/etc/php.ini
+```
+
+`putenv` 在本版加入，此前安装的 PHP 在下次 PHP 升级时更新列表；需要立即生效时，在上面这一行末尾追加
+`,putenv` 后执行 `systemctl restart php-fpm`。
 
 回到源码目录执行，按菜单选择解禁范围：
 
@@ -5130,7 +5141,7 @@ systemctl list-timers 'apt-daily*' 'dnf-automatic*' --all  # 下次触发时间
 | MySQL / MariaDB | 无匿名用户；root 只能从 localhost 登录；无 test 库；**`bind-address = 127.0.0.1`**；socket 位于 `/run/mysqld/` | MySQL 另把 X Protocol 绑定回环且不默认启用 `mysql_native_password`；MariaDB 没有 X Protocol，使用自身认证逻辑 |
 | Redis | 只监听回环；以专用低权限账号运行 | 回环是必要条件但不是充分条件；认证、跨机访问和多站点隔离见“安装 Redis”一章 |
 | Memcached | 只监听回环；以专用低权限账号运行 | 协议本身不提供可靠的租户隔离，不要对公网开放；互不信任的站点应拆分实例和系统账号 |
-| PHP | `disable_functions` 禁用 exec 系列（含 `pcntl_exec`）；FPM socket 位于 `/run/php-fpm/` 且为 0660；每站点 `open_basedir` 隔离 | `open_basedir` 限制文件路径访问，**不提供**操作系统级租户隔离：多站点共用 `www` 账号时没有内核层面的边界 |
+| PHP | `disable_functions` 禁用 exec 系列（含 `pcntl_exec`）与 `putenv`；FPM socket 位于 `/run/php-fpm/` 且为 0660；每站点 `open_basedir` 隔离 | `open_basedir` 限制文件路径访问，**不提供**操作系统级租户隔离：多站点共用 `www` 账号时没有内核层面的边界 |
 | Apache（LAMP/LNMPA） | 只把末尾 `.php` 交给 mod_php；根目录默认拒绝；站点使用 `SymLinksIfOwnerMatch` | 已在 Debian 13 两种栈实测；其它发行版部署前仍需复验模块与目录边界 |
 | Pure-FTPd | 新安装默认 `TLS 2`，拒绝明文登录 | 客户端选择显式 FTPS；既有部署需直接核对运行配置，不会被源码更新自动改写 |
 | phpinfo / phpMyAdmin / 演示页 | **默认全部不部署** | 需在 `lnmp.conf` 显式开启 |

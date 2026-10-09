@@ -118,5 +118,5 @@ PHPApcu_Bc_Ver='apcu_bc-1.0.5'
 PHPSodium_Ver='libsodium-2.0.23'
 PHPSwoole_Ver='swoole-6.2.3'
 # igbinary：phpredis 的序列化后端，必须先于 phpredis 编译。
-# 3.2.17 目前只有 RC，故取最后一个正式版。
+# 3.2.17 目前只有 RC，故取最后一个正式版；PHP 8.5 兼容由 src/patch/igbinary-3.2.16-php85.patch 提供。
 PHPIgbinary_Ver='igbinary-3.2.16'

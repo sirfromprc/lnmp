@@ -289,8 +289,9 @@ PHP_Ini_Tune()
     # 关闭 X-Powered-By 响应头，避免对外暴露 PHP 版本号。
     sed -i 's/^expose_php =.*/expose_php = Off/g' "${ini}"
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' "${ini}"
-    # 禁用命令执行类函数。pcntl_exec 属执行类，pcntl_fork/signal/wait 不禁用。
-    sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,stream_socket_server,pcntl_exec/g' "${ini}"
+    # 禁用命令执行类函数。pcntl_exec 属执行类，pcntl_fork/signal/wait 不禁用；
+    # putenv 可设置 LD_PRELOAD，使 mail() 启动的 sendmail 子进程加载任意共享库。
+    sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,stream_socket_server,pcntl_exec,putenv/g' "${ini}"
 
     return 0
 }
