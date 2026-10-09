@@ -3,8 +3,8 @@
 # LNMP 服务健康检查工具，通过 `lnmp health <子命令>` 使用。
 # 安装路径为 /bin/lnmp-health，lnmp、lnmpa 和 lamp 管理命令共用该工具。
 #
-#   lnmp health check          执行一轮探测，由 lnmp-health.timer 调用
-#   lnmp health status         显示各服务探测结果、失败计数与熔断状态
+#   lnmp health check          执行一轮探测，由 lnmp-health.timer 调用；每 6 小时检查一次站点证书到期
+#   lnmp health status         显示各服务探测结果、失败计数、熔断状态与证书剩余有效期
 #   lnmp health reset [服务]   清除失败计数与熔断标记，不带参数清除全部
 #   lnmp health init           安装定时探测任务
 #   lnmp health uninit         移除定时探测任务
@@ -57,6 +57,8 @@ Nginx_Status_Code=''
 Notify_Quiet_Sec=3600
 # 全部服务正常时的日志摘要间隔，用于确认检查任务确实在跑。
 Summary_Interval_Sec=86400
+# 证书到期检查间隔，需短于 7 天短期证书的告警窗口（约 8 小时）。
+Cert_Check_Interval_Sec=21600
 
 # 状态文件仅 root 可读。
 umask 077
@@ -706,6 +708,136 @@ Probe()
 }
 
 # ---------------------------------------------------------------------------
+# 证书到期检查
+# ---------------------------------------------------------------------------
+# 输出站点配置引用的证书路径。含变量的路径无法静态解析，跳过。
+Cert_Paths()
+{
+    local f
+    {
+        for f in "${Nginx_Dir}"/conf/vhost/*.conf; do
+            [ -s "${f}" ] || continue
+            awk -v base="${Nginx_Dir}/conf/" '
+                $1 == "ssl_certificate" {
+                    v = $2; sub(/;$/, "", v); gsub(/"/, "", v)
+                    if (v == "" || index(v, "$")) next
+                    if (substr(v, 1, 1) != "/") v = base v
+                    print v
+                }' "${f}"
+        done
+        for f in "${Apache_Dir}"/conf/vhost/*.conf; do
+            [ -s "${f}" ] || continue
+            awk -v base="${Apache_Dir}/" '
+                $1 == "SSLCertificateFile" {
+                    v = $2; gsub(/"/, "", v)
+                    if (v == "" || index(v, "$")) next
+                    if (substr(v, 1, 1) != "/") v = base v
+                    print v
+                }' "${f}"
+        done
+    } | sort -u
+}
+
+# 输出“剩余秒数 有效期秒数”，证书不可解析时返回 1。
+Cert_Times()
+{
+    local cert="$1" start end s e
+    start=$(openssl x509 -noout -startdate -in "${cert}" 2>/dev/null) || return 1
+    end=$(openssl x509 -noout -enddate -in "${cert}" 2>/dev/null) || return 1
+    s=$(date -d "${start#notBefore=}" +%s 2>/dev/null) || return 1
+    e=$(date -d "${end#notAfter=}" +%s 2>/dev/null) || return 1
+    printf '%s %s' "$((e - $(date +%s)))" "$((e - s))"
+}
+
+# 告警阈值须低于 acme.sh 的正常续期点，否则每个续期周期都会误报。
+# 常规证书在剩余约 1/3 时续期，取有效期的 1/7；7 天短期证书在剩余约 16 小时续期，取 1/20。
+Cert_Warn_Sec()
+{
+    local life="$1"
+    if [ "${life}" -le $((10 * 86400)) ]; then
+        printf '%s' $((life / 20))
+    else
+        printf '%s' $((life / 7))
+    fi
+}
+
+Fmt_Left()
+{
+    if [ "$1" -ge 86400 ]; then
+        printf '%s 天' $(($1 / 86400))
+    else
+        printf '%s 小时' $(($1 / 3600))
+    fi
+}
+
+# 每行输出“OK|WARN<TAB>证书：说明”。不可读或不可解析的证书按 WARN 处理。
+Cert_Scan()
+{
+    local cert times left life
+    while IFS= read -r cert; do
+        [ -n "${cert}" ] || continue
+        if [ ! -r "${cert}" ] || ! times=$(Cert_Times "${cert}"); then
+            printf 'WARN\t%s：文件缺失或无法解析\n' "${cert}"
+            continue
+        fi
+        left="${times% *}"
+        life="${times#* }"
+        if [ "${left}" -le 0 ]; then
+            printf 'WARN\t%s：已过期\n' "${cert}"
+        elif [ "${left}" -lt "$(Cert_Warn_Sec "${life}")" ]; then
+            printf 'WARN\t%s：剩余 %s，已过续期时间\n' "${cert}" "$(Fmt_Left "${left}")"
+        else
+            printf 'OK\t%s：剩余 %s\n' "${cert}" "$(Fmt_Left "${left}")"
+        fi
+    done <<EOF
+$(Cert_Paths)
+EOF
+}
+
+# 定时调用时按 Cert_Check_Interval_Sec 间隔检查，终端执行时每次检查。
+Check_Certs()
+{
+    local tty="$1" now last lines
+    command -v openssl >/dev/null 2>&1 || return 0
+    now=$(date +%s)
+    last=$(Read_State "Cert_Ts")
+    case "${last}" in
+        ''|*[!0-9]*) last=0 ;;
+    esac
+    [ -n "${tty}" ] || [ $((now - last)) -ge "${Cert_Check_Interval_Sec}" ] || return 0
+    Write_State "Cert_Ts" "${now}"
+
+    lines=$(Cert_Scan | awk -F'\t' '$1 == "WARN" { print $2 }')
+    if [ -z "${lines}" ]; then
+        [ -n "${tty}" ] && Ok "证书：无即将到期的证书"
+        return 0
+    fi
+    Log WARN "证书异常：${lines//$'\n'/；}"
+    [ -n "${tty}" ] && Warn "证书异常：
+${lines}"
+    Notify_Throttled "cert" "LNMP 健康检查：证书即将到期或不可用
+${lines}
+排查：crontab -l | grep acme.sh；/usr/local/acme.sh/acme.sh --list"
+    return 0
+}
+
+Cert_Status()
+{
+    local tag line
+    command -v openssl >/dev/null 2>&1 || return 0
+    while IFS=$'\t' read -r tag line; do
+        [ -n "${line}" ] || continue
+        if [ "${tag}" = "OK" ]; then
+            Ok "证书 ${line}"
+        else
+            Warn "证书 ${line}"
+        fi
+    done <<EOF
+$(Cert_Scan)
+EOF
+}
+
+# ---------------------------------------------------------------------------
 # 熔断与动作
 # ---------------------------------------------------------------------------
 # 保留熔断窗口内的重启时间戳，返回窗口内的重启次数。
@@ -851,6 +983,7 @@ Cmd_Check()
         fi
     done
 
+    Check_Certs "${tty}"
     Log_Periodic_Summary "${ok_count}" "${fail_count}" "${down_count}"
     if [ -n "${tty}" ]; then
         Say ""
@@ -897,6 +1030,8 @@ Cmd_Status()
             Ok "${svc}：${detail}"
         fi
     done
+
+    Cert_Status
 
     [ -s "${State_File}" ] || return 0
     Say ""

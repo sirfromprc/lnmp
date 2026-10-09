@@ -2118,7 +2118,7 @@ WordPress 常见的第一收益仍是删除低效插件/查询、补正确索引
 > `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
 > 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
-项目安装 Redis 时按内存写入 `maxmemory`（内存的 1/16，范围 32MB～4GB），并按
+项目安装 Redis 时按内存写入 `maxmemory`（内存的 1/16，范围 32MB～4GB；`Enable_Auto_Tune=n` 时固定 256MB），并按
 `lnmp.conf` 的 `Redis_Mode` 写淘汰策略与持久化，位于 `/usr/local/redis/etc/redis.conf` 末尾的 LNMP 段：
 
 | `Redis_Mode` | 用途 | 淘汰策略 | 持久化 |
@@ -2413,14 +2413,15 @@ acme.sh 只会反复打印 `Could not get nonce`，重试约 5 分钟后才失�
 >   （可用 `NO_ARI=1` 关闭，**不要关**。）
 > - cron 每 6 小时执行一次，触发频率远高于需要。
 >
-> **建议**：除 cron 任务外，应独立监控证书到期时间。
+> `lnmp health` 已检查站点证书的剩余有效期，低于告警线时通过 `lnmp tgnotice` 告警，
+> 见 [8.1.12](#8112-health-健康检查)。另需从外部确认线上实际返回的证书时：
 >
 > ```bash
 > echo | openssl s_client -connect wp.example.com:443 -servername wp.example.com 2>/dev/null \
 >   | openssl x509 -noout -enddate
 > ```
 >
-> 做成定时任务，剩余天数低于阈值就告警。续期链路可能因为别的原因断掉
+> 续期链路可能因为别的原因断掉
 > （80 端口被防火墙挡了、DNS 变更、磁盘满），那些和有效期长短无关。
 >
 > 如果外围脚本硬编码了“90 天”有效期，需要同步复查。acme.sh 自身不受影响。
@@ -2843,7 +2844,7 @@ systemctl start httpd
 
 **服务控制** — 详见 [8.1.3](#813-整体服务控制) 至 [8.1.5](#815-单组件控制)
 
-- `lnmp status` — 显示已纳管服务的状态与 phpMyAdmin 访问路径
+- `lnmp status` — 显示已安装服务（含多版本 PHP、Redis、Memcached、Pure-FTPd）的状态与 phpMyAdmin 访问路径
 - `lnmp start` — 启动已纳管的服务
 - `lnmp stop` — 停止已纳管的服务
 - `lnmp restart` — 先 stop 再 start
@@ -2854,12 +2855,13 @@ systemctl start httpd
 - `lnmp php-fpm <动作>` — 单独控制 php-fpm（仅 LNMP）
 - `lnmp mysql <动作>` / `lnmp mariadb <动作>` — 单独控制数据库，用实际安装的那个
 - `lnmp pureftpd <动作>` — 单独控制 Pure-FTPd
+- `lnmp redis <动作>` / `lnmp memcached <动作>` — 单独控制 Redis、Memcached
 
 **站点与应用** — 详见 [8.1.6](#816-vhost-站点管理) 至 [8.1.7](#817-app-应用托管)
 
 - `lnmp vhost add` — 新增站点（交互）
 - `lnmp vhost list` — 列出所有站点
-- `lnmp vhost del` — 删除站点，保留网站文件（交互）
+- `lnmp vhost del [域名]` — 删除站点，保留网站文件；不带域名时交互输入
 - `lnmp app add` — 登记一个 Node、Go 等自带后端的应用（交互）
 - `lnmp app list` — 已托管应用及运行状态
 - `lnmp app start|stop|restart|status <应用名>` — 控制单个应用
@@ -2882,7 +2884,7 @@ systemctl start httpd
 
 **运维与安全** — 详见 [8.1.11](#8111-崩溃自动拉起) 至 [8.1.17](#8117-fw-防火墙对齐)
 
-- `lnmp health check|status` — 立即探测一轮 / 查看各服务探测结果与失败计数
+- `lnmp health check|status` — 立即探测一轮 / 查看各服务探测结果、失败计数与证书剩余有效期
 - `lnmp health reset [服务]` — 清除失败计数与熔断标记
 - `lnmp health init|uninit` — 安装 / 移除每分钟探测的 timer
 - `lnmp perm check [服务名]` — 核对权限基线
@@ -2901,8 +2903,8 @@ systemctl start httpd
 - `lnmp fw allow|block|unblock {tcp|udp} <端口>` — 维护 `/etc/lnmp/fw.conf` 的自定义条目
 - `lnmp fw reload|purge` — 重新加载已持久化的规则 / 清除本包写入的全部防火墙内容
 
-单组件命令的 `<动作>` 为 `start|stop|restart|reload|status`。不带参数或参数无法识别时，
-命令打印全部用法并返回 1。
+单组件命令的 `<动作>` 为 `start|stop|restart|reload|status`。不带动作时打印该组件的用法并返回 1；
+组件名无法识别时打印全部用法并返回 1。
 
 [↑ 命令目录](#cmd-index) · [返回顶部](#top)
 
@@ -2925,8 +2927,8 @@ lnmp reload
 | LAMP | Apache → 数据库 |
 
 **不在纳管范围内**：Redis、Memcached、Pure-FTPd、phpMyAdmin。前三者有各自的 unit
-和 init 脚本，需要单独起停，详见 [8.2](#82-lnmp-命令不纳管的服务与自定义)；Pure-FTPd
-虽然有 `lnmp pureftpd` 子命令，但 `lnmp start` / `lnmp stop` 不会带上它。
+和 init 脚本，用 `lnmp redis|memcached|pureftpd <动作>` 单独起停，详见
+[8.2](#82-lnmp-命令不纳管的服务与自定义)；`lnmp start` / `lnmp stop` 不会带上它们。
 
 **服务名每次执行时重新探测。** 数据库取 MariaDB 优先、否则 MySQL；组件是否存在按
 systemd unit 或 `/etc/init.d` 脚本判断。因此主安装之后再单独装的组件，下一次执行
@@ -2948,8 +2950,9 @@ systemd unit 或 `/etc/init.d` 脚本判断。因此主安装之后再单独装�
 
 重启期间 unit 状态为 `activating` 时不判定为异常，避免误报。
 
-**`lnmp status`** 除服务状态外，还会显示安装时随机生成的 phpMyAdmin 访问路径；访问被
-禁用时显示“访问已禁用（程序和配置仍保留）”。
+**`lnmp status`** 依次显示 Web、PHP-FPM、多版本 PHP（LNMP）、数据库的状态，再显示已安装的
+Redis、Memcached、Pure-FTPd，未安装的组件不输出。之后显示安装时随机生成的 phpMyAdmin 访问路径；
+访问被禁用时显示“访问已禁用（程序和配置仍保留）”。
 
 [↑ 命令目录](#cmd-index) · [返回顶部](#top)
 
@@ -2990,10 +2993,21 @@ lnmp mysql restart               # 或 lnmp mariadb restart，按实际安装的
 lnmp php-fpm reload              # 仅 LNMP
 lnmp httpd status                # 仅 LNMPA / LAMP
 lnmp pureftpd start
+lnmp redis restart
+lnmp memcached status
 ```
 
-动作为 `start|stop|restart|reload|status`。这些动作优先走 systemd；其它动作直接交给
-`/etc/init.d/<服务>` 处理，能否执行取决于该脚本本身。
+动作为 `start|stop|restart|reload|status`。这些动作优先走 systemd；其它动作（如 `configtest`）
+直接交给 `/etc/init.d/<服务>` 处理，能否执行取决于该脚本本身。
+
+`kill` 与 `force-quit` 例外：服务有 systemd unit 时拒绝执行并返回 1。init 脚本直接向进程发信号，
+进程会脱离 unit。需要强制终止时用 `lnmp stop`，失败再用 `lnmp kill`：
+
+```bash
+lnmp nginx kill; echo "rc=$?"
+#  nginx 由 systemd 管理，不支持单独 kill；请用 lnmp stop，失败时再用 lnmp kill。
+# rc=1
+```
 
 边界：
 
@@ -3039,7 +3053,7 @@ lnmp pureftpd start
   systemctl reset-failed php-fpm@8.2
   systemctl restart php-fpm@8.2
   ```
-- `pureftpd` 可以单独控制，但不被整体命令纳管。
+- `pureftpd`、`redis`、`memcached` 可以单独控制，但不被整体命令纳管。
 - LNMP 模式下，除 `status` 外的动作会打印明确的成功或失败结果并附退出码；数据库启动
   失败时额外输出诊断信息。
 
@@ -3048,12 +3062,13 @@ lnmp pureftpd start
 #### 8.1.6 vhost 站点管理
 
 ```bash
-lnmp vhost add       # 新增站点
-lnmp vhost list      # 列出所有站点
-lnmp vhost del       # 删除站点（只删 Web 配置，保留网站文件）
+lnmp vhost add                  # 新增站点
+lnmp vhost list                 # 列出所有站点
+lnmp vhost del                  # 删除站点（只删 Web 配置，保留网站文件）
+lnmp vhost del example.com      # 指定域名直接删除，不进入交互
 ```
 
-`add` 与 `del` 是交互式命令。`add` 可用环境变量预设答案实现非交互创建，
+`add` 是交互式命令，`del` 不带域名时交互输入。带域名时先校验字符集，非法或站点不存在返回 1。`add` 可用环境变量预设答案实现非交互创建，
 完整字段与示例见 [4.2 非交互创建](#42-非交互创建)；行为细节与删除保护见
 [8.3 站点管理](#83-站点管理)。
 
@@ -3200,6 +3215,24 @@ tail -20 /var/log/lnmp/health.log
 `lnmp start` / `stop` 纳管，见 [8.2](#82-lnmp-命令不纳管的服务与自定义)。Redis 探针
 直接用 bash 的 `/dev/tcp` 发 inline 命令，不调 `redis-cli`，端口从
 `/usr/local/redis/etc/redis.conf` 读取，改端口后无须另行配置。
+
+**证书到期检查。** `check` 每 6 小时检查一次站点配置引用的证书（Nginx 的 `ssl_certificate`、
+Apache 的 `SSLCertificateFile`，含变量的路径跳过），终端执行时每次都检查。证书已过期、文件缺失
+或无法解析、剩余时间低于告警线时写日志并通过 `lnmp tgnotice` 告警。告警线低于 acme.sh 的正常续期点，
+正常续期不会触发：
+
+| 证书有效期 | acme.sh 续期点 | 告警线 |
+|---|---|---|
+| 90 天 | 剩余约 30 天 | 剩余不足 12.8 天（有效期 1/7） |
+| 45 天 | 剩余约 15 天 | 剩余不足 6.4 天 |
+| 7 天短期证书（IP 证书） | 剩余约 16 小时 | 剩余不足 8 小时（有效期 1/20） |
+
+触发告警说明续期至少失败了一轮，常见原因是 80 端口被拦截、DNS 变更、磁盘已满或 acme.sh 的 cron 被删除。
+`lnmp health status` 列出每张证书的剩余有效期：
+
+```text
+证书 /usr/local/nginx/conf/ssl/example.com/fullchain.cer：剩余 61 天
+```
 
 PHP-FPM 探针核对 `/run/php-fpm/php-cgi[版本].sock` 存在、master 进程存活；`pm = dynamic` / `static`
 还要求至少一个 worker，`pm = ondemand`（多版本 PHP 与 3GB 以下内存的主 PHP）空闲时 worker 为 0 属正常，不核对。
@@ -3586,11 +3619,11 @@ lnmp-tgnotice ...                                        与 lnmp tgnotice 等�
 | php-fpm | ✓ | ✓ | ✓ | ✓ | ✓ |
 | MySQL / MariaDB | ✓ | ✓ | — | ✓ | ✓ |
 | Pure-FTPd | — | ✓ | ✓ | — | ✓ |
-| Redis | — | — | ✓ | ✓ | ✓ |
-| Memcached | — | — | ✓ | ✓ | — |
+| Redis | — | ✓ | ✓ | ✓ | ✓ |
+| Memcached | — | ✓ | ✓ | ✓ | — |
 
 因此：`lnmp restart` 之后 Redis 不会被重启；`lnmp stop` 之后 Redis 仍在运行，且
-`lnmp health` 会继续探测它。整机维护需要一并停掉时，显式执行 `systemctl stop redis`。
+`lnmp health` 会继续探测它。整机维护需要一并停掉时，显式执行 `lnmp redis stop`。
 
 #### 8.2.2 统一的起停方式
 
@@ -3601,7 +3634,9 @@ systemctl status  redis --no-pager
 systemctl restart redis
 systemctl status  memcached --no-pager
 systemctl restart memcached
-lnmp pureftpd restart                 # Pure-FTPd 有 lnmp 子命令
+lnmp pureftpd restart                 # 以下三个 lnmp 子命令与 systemctl 等效
+lnmp redis restart
+lnmp memcached restart
 ```
 
 混用两种入口会让 `systemctl is-active` 与实际进程对不上，处理办法见
@@ -3620,7 +3655,7 @@ lnmp pureftpd restart                 # Pure-FTPd 有 lnmp 子命令
 | `port` | `lnmp.conf` 的 `Redis_Port` | 默认 6379 |
 | `unixsocket` | `/run/lnmp-redis/redis.sock` | 目录由 unit 的 `RuntimeDirectory` 或 SysV 脚本创建，路径不要移出该目录 |
 | `unixsocketperm` | `770` | `redis` 组可读写，`www` 已加入该组 |
-| `maxmemory` | 内存的 1/16（32MB～4GB） | `Enable_Auto_Tune=n` 时不写，内存不设上限 |
+| `maxmemory` | 内存的 1/16（32MB～4GB） | `Enable_Auto_Tune=n` 时固定 256MB |
 | `maxmemory-policy` | `cache`：`allkeys-lfu`；`persistent`：`noeviction` | 由 `Redis_Mode` 决定，见 6.5 |
 | `save` / `appendonly` | `cache`：`""` / `no`；`persistent`：默认规则 / `yes` | 由 `Redis_Mode` 决定 |
 | `daemonize` | `no` | unit 用 `Type=simple` 直接跟踪主进程 |
@@ -3900,6 +3935,68 @@ lnmp app logs <name> # 查看应用日志
 > 关闭 PHP 后紧接着问 `是否开启反向代理? (y/N，默认 n)`：不开时 `.php` 请求一律 404，
 > 开启则按输入的后端地址写好整站反代，`.php` 也交给后端；非交互执行用
 > `VHOST_PROXY=<后端地址>`。详见 4.4。
+
+#### 8.3.1 已建站点切换 PHP 版本（LNMP）
+
+站点使用哪个 PHP 由站点配置中的 `include enable-php*.conf;` 决定：
+
+| include 行 | 使用的 PHP |
+|---|---|
+| `enable-php.conf` / `enable-php-pathinfo.conf` | 主 PHP（`/usr/local/php`） |
+| `enable-php8.4.conf` / `enable-php8.4-pathinfo.conf` | 附加 PHP 8.4（`/usr/local/php8.4`） |
+
+切换前确认目标版本在运行，且站点依赖的扩展都已安装：
+
+```bash
+systemctl is-active php-fpm@8.4                 # 主 PHP 为 php-fpm
+diff <(/usr/local/php/bin/php -m) <(/usr/local/php8.4/bin/php -m)
+```
+
+`diff` 中以 `<` 开头的扩展只有当前版本有，WordPress 常用的 `redis`、`imagick` 缺失时先按
+[8.2.6](#826-安装本项目未提供的-php-扩展) 为目标版本补装。
+
+以 `example.com` 从主 PHP 切到 8.4 为例：
+
+```bash
+conf=/usr/local/nginx/conf/vhost/example.com.conf
+cp -p "${conf}" "${conf}.bak"
+grep -n 'include enable-php' "${conf}"
+sed -i 's/include enable-php\(8\.[0-9]\)\{0,1\}\.conf;/include enable-php8.4.conf;/' "${conf}"
+grep -n 'include enable-php' "${conf}"          # 确认已改为 enable-php8.4.conf
+/usr/local/nginx/sbin/nginx -t && lnmp nginx reload
+```
+
+站点启用了 Pathinfo（include 行带 `-pathinfo`）时，目标片段不存在需先生成，再把 include 行改为
+`enable-php8.4-pathinfo.conf`：
+
+```bash
+cd /usr/local/nginx/conf
+[ -s enable-php8.4-pathinfo.conf ] || \
+  sed 's/php-cgi\.sock/php-cgi8.4.sock/g' enable-php-pathinfo.conf > enable-php8.4-pathinfo.conf
+```
+
+验证实际运行的版本，查看后立即删除探测文件。reload 返回时旧 worker 可能仍在处理请求，
+等待 1 秒再请求，否则读到的是切换前的版本：
+
+```bash
+printf '<?php echo PHP_VERSION;' > /home/wwwroot/example.com/lnmp-ver.php
+sleep 1
+curl -s http://example.com/lnmp-ver.php; echo
+rm -f /home/wwwroot/example.com/lnmp-ver.php
+```
+
+回退：
+
+```bash
+mv -f "${conf}.bak" "${conf}" && /usr/local/nginx/sbin/nginx -t && lnmp nginx reload
+```
+
+边界：
+
+- 站点目录的 `.user.ini`（`open_basedir`）对所有版本生效，切换后不需要改动。
+- 切到此前没有站点使用的附加版本后，该实例开始计入 PHP 内存份额，已写入的 `pm.max_children`
+  不会自动重算。内存紧张时按 [6.3](#63-php-fpm-进程模型) 的份额表核对两个实例的上限。
+- LNMPA 与 LAMP 的 PHP 是 Apache 模块，只有一个版本，不适用本节。
 
 ### 8.4 数据库管理
 

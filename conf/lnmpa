@@ -155,11 +155,25 @@ Svc_Feedback()
 {
     local service="$1" action="$2" rc
 
+    # 强制终止由 init 脚本直接发信号，进程会脱离 systemd 管理，须走 lnmp kill。
+    case "${action}" in
+    '')
+        echo "用法：lnmp ${service} {start|stop|restart|reload|status}"
+        return 1
+        ;;
+    kill|force-quit)
+        if [ -d /run/systemd/system ] && Systemd_Service_Exists "${service}"; then
+            Echo_Red "${service} 由 systemd 管理，不支持单独 ${action}；请用 lnmp stop，失败时再用 lnmp kill。"
+            return 1
+        fi
+        ;;
+    esac
+
     Svc "${service}" "${action}"
     rc=$?
 
     case "${action}" in
-    ''|status)
+    status)
         ;;
     *)
         if [ ${rc} -eq 0 ]; then
@@ -342,9 +356,15 @@ lnmpa_kill()
 
 lnmpa_status()
 {
+    local svc
+
     Svc_If_Installed Nginx "${NGINX_SERVICE}" status
     Svc_If_Installed Database "${DB_SERVICE}" status
     Svc_If_Installed Apache "${APACHE_SERVICE}" status
+    # 附加组件不参与整体起停，已安装时一并显示状态。
+    for svc in redis memcached pureftpd; do
+        Service_Exists "${svc}" && Svc "${svc}" status
+    done
     # 访问地址含随机路径，与启用状态一同由 lnmp-phpmyadmin 输出。
     if [ -s /usr/local/phpmyadmin/.access_url ]; then
         if [ -x /bin/lnmp-phpmyadmin ]; then
@@ -737,13 +757,14 @@ Function_Vhost()
             List_VHost
             ;;
         [dD][eE][lL])
-            Del_VHost
+            Del_VHost "$2"
             ;;
         [eE][xX][iI][tT])
             exit 1
             ;;
         *)
             echo "用法：lnmp vhost {add|list|del}"
+            echo "      lnmp vhost del [域名]"
             exit 1
             ;;
 esac
@@ -1703,19 +1724,25 @@ List_VHost()
 
 Del_VHost()
 {
-    echo "======================================="
-    echo "当前虚拟主机："
-    List_VHost
-    echo "======================================="
-    domain=""
-    while :;do
-        Echo_Yellow "请输入要删除的域名："
-        Read_Input domain "域名"
+    domain="$1"
+    if [ -n "${domain}" ]; then
         Lower_Domain_Input domain
         # 域名会组成待删除的配置文件路径，因此必须先限制字符集。
-        Check_Domain_Name "${domain}" || continue
-        break
-    done
+        Check_Domain_Name "${domain}" || exit 1
+    else
+        echo "======================================="
+        echo "当前虚拟主机："
+        List_VHost
+        echo "======================================="
+        while :;do
+            Echo_Yellow "请输入要删除的域名："
+            Read_Input domain "域名"
+            Lower_Domain_Input domain
+            # 域名会组成待删除的配置文件路径，因此必须先限制字符集。
+            Check_Domain_Name "${domain}" || continue
+            break
+        done
+    fi
     # 两端配置都不存在才算站点不存在。用 || 判断会让半删状态无法再用本命令清理。
     if [ ! -f "/usr/local/nginx/conf/vhost/${domain}.conf" ] && [ ! -f "/usr/local/apache/conf/vhost/${domain}.conf" ]; then
         echo "=========================================="
@@ -5679,12 +5706,16 @@ case "${arg1}" in
         Svc_Feedback pureftpd ${arg2}
         exit $?
         ;;
+    redis|memcached)
+        Svc_Feedback "${arg1}" "${arg2}"
+        exit $?
+        ;;
     httpd)
         Svc_Feedback httpd ${arg2}
         exit $?
         ;;
     vhost)
-        Function_Vhost ${arg2}
+        Function_Vhost "${arg2}" "${arg3}"
         ;;
     app)
         Function_App "${arg2}" "${arg3}"
@@ -5781,7 +5812,7 @@ case "${arg1}" in
         ;;
     *)
         echo "用法：lnmp {start|stop|reload|restart|kill|status}"
-        echo "用法：lnmp {nginx|mysql|mariadb|pureftpd|httpd} {start|stop|reload|restart|kill|status}"
+        echo "用法：lnmp {nginx|mysql|mariadb|pureftpd|httpd|redis|memcached} {start|stop|reload|restart|status}"
         echo "用法：lnmp vhost {add|list|del}"
         echo "用法：lnmp app {add|list|del|start|stop|restart|status|logs}"
         echo "用法：lnmp database {add|list|edit|del}"

@@ -97,17 +97,28 @@ Redis_Mode_Policy()
     fi
 }
 
-# 按 Tune_Plan 设置内存上限。未设上限时缓存持续增长会触发 OOM。
+# 内存上限：Tune_Plan 可用时按本机内存计算，Enable_Auto_Tune=n 时取固定值。
+# 未设上限时 Redis 默认 maxmemory 0 且 noeviction，淘汰策略不生效，缓存持续增长会触发 OOM。
+Redis_Maxmemory_MB()
+{
+    if Tune_Plan; then
+        echo "${Tune_Redis_MB}"
+    else
+        echo 256
+    fi
+}
+
 Set_Redis_Maxmemory()
 {
-    local conf="$1" policy
+    local conf="$1" policy mb
 
-    Tune_Plan || return 0
+    mb=$(Redis_Maxmemory_MB)
     policy=$(Redis_Mode_Policy)
     sed -i -E '/^[[:space:]]*maxmemory(-policy)?[[:space:]]/d' "${conf}" || return 1
-    printf '\n# LNMP: 内存上限按本机内存计算。\nmaxmemory %smb\nmaxmemory-policy %s\n' \
-        "${Tune_Redis_MB}" "${policy}" >> "${conf}" || return 1
-    grep -Eq "^maxmemory[[:space:]]+${Tune_Redis_MB}mb\$" "${conf}"
+    printf '\n# LNMP: 内存上限与淘汰策略。\nmaxmemory %smb\nmaxmemory-policy %s\n' \
+        "${mb}" "${policy}" >> "${conf}" || return 1
+    grep -Eq "^maxmemory[[:space:]]+${mb}mb\$" "${conf}" &&
+        grep -Eq "^maxmemory-policy[[:space:]]+${policy}\$" "${conf}"
 }
 
 # 按 Redis_Mode 写持久化。cache 关闭 RDB 与 AOF：对象缓存重启后由应用回源重建，
@@ -365,7 +376,11 @@ Print_Redis_Install_Summary()
     echo "监听端口（写入 redis.conf 与 /etc/init.d/redis）：${Redis_Port}"
     echo "监听地址：127.0.0.1，防火墙同时阻断该端口的公网访问"
     echo "Unix socket：${Redis_Socket}（www 加入 redis 组后可连接）"
-    Tune_Plan && echo "内存上限（按内存计算）：maxmemory ${Tune_Redis_MB}mb，淘汰策略 $(Redis_Mode_Policy)"
+    if Tune_Plan; then
+        echo "内存上限（按内存计算）：maxmemory ${Tune_Redis_MB}mb，淘汰策略 $(Redis_Mode_Policy)"
+    else
+        echo "内存上限（Enable_Auto_Tune=n，固定值）：maxmemory $(Redis_Maxmemory_MB)mb，淘汰策略 $(Redis_Mode_Policy)"
+    fi
     if [ "${Redis_Mode:-cache}" = "persistent" ]; then
         echo "用途（Redis_Mode）：persistent，RDB 快照加 AOF，内存满时拒绝写入"
     else

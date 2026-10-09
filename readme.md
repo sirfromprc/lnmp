@@ -186,7 +186,7 @@ lnmp reload
 lnmp restart
 ```
 
-- `status`：部署后或排障时查看各服务与 phpMyAdmin 入口状态。
+- `status`：部署后或排障时查看各服务（含多版本 PHP、Redis、Memcached、Pure-FTPd）与 phpMyAdmin 入口状态。
 - `start` / `stop`：整栈启停，适合维护窗口。
 - `reload`：配置测试通过后平滑重载，优先用于 Nginx 配置变更。
 - `restart`：必须重建进程状态时使用，会造成短暂中断。
@@ -199,12 +199,14 @@ lnmp php-fpm reload        # 仅 LNMP 模式
 lnmp mysql restart
 lnmp mariadb restart
 lnmp pureftpd status
+lnmp redis restart
+lnmp memcached status
 ```
 
 数据库只会安装 MySQL 或 MariaDB 其中之一，应使用与实际安装分支一致的命令。
 `php-fpm` 子命令只存在于 LNMP 管理脚本；LNMPA/LAMP 由 Apache 加载 PHP，应使用
 `lnmp httpd status`、`lnmp httpd reload` 等命令管理 Web/PHP 进程。
-`lnmp kill` 会终止整栈残留进程，只用于正常停止失败且已确认影响范围的场景。
+`lnmp kill` 会终止整栈残留进程，只用于正常停止失败且已确认影响范围的场景；单组件不支持 `kill`。
 
 ### 3.2 站点与应用
 
@@ -212,6 +214,7 @@ lnmp pureftpd status
 lnmp vhost add
 lnmp vhost list
 lnmp vhost del
+lnmp vhost del example.com
 lnmp app add
 lnmp app list
 lnmp app status example-app
