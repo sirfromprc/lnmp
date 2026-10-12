@@ -27,5 +27,6 @@ dist/
 todo.md
 HANDOVER.md
 tests/
+temp/
 changelogs.md
 codetradeoffs.md

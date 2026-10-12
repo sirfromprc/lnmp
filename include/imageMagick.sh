@@ -37,6 +37,26 @@ Build_ImageMagick_Lib()
     return 0
 }
 
+# ImageMagick 库模块接口。库由 PHP 扩展 imagick 依赖，构建逻辑在 Build_ImageMagick_Lib。
+ImageMagick_Sources()
+{
+    printf 'imagemagick\t-\t%s\t%s.tar.gz\thttps://github.com/ImageMagick/ImageMagick/archive/refs/tags/%s.tar.gz\tsha256\tsrc/checksums.sha256\n' \
+        "${ImageMagick_Ver}" "${ImageMagick_Ver}" "${ImageMagick_Ver#ImageMagick-}"
+}
+
+# 0 已安装；1 缺失。
+ImageMagick_Check()
+{
+    [ -s /usr/local/imagemagick/bin/convert ] || [ -s /usr/local/imagemagick/bin/magick ]
+}
+
+# Build_ImageMagick_Lib 内部以 exit 终止的原语在子 shell 中执行，转为返回码。
+ImageMagick_Install()
+{
+    ( Build_ImageMagick_Lib ) || return 1
+    ImageMagick_Check
+}
+
 # 按 Tune_Plan 写 ImageMagick 资源策略。默认策略不限内存与磁盘，多个 PHP worker
 # 同时处理大图时可占满内存。临时文件放 /var/tmp：Debian 13 的 /tmp 为 tmpfs，map 与磁盘缓存放在
 # 那里仍占内存。文件含 LNMP 标记时重写；首次写入前备份为 policy.xml.orig；
@@ -76,53 +96,13 @@ Write_ImageMagick_Policy()
 
 Install_ImageMagic()
 {
-    echo "====== 正在安装 ImageMagick ======"
-    Press_Start || return 1
-
-    rm -f ${PHP_Path}/conf.d/008-imagick.ini
-    Addons_Get_PHP_Ext_Dir
-    zend_ext="${zend_ext_dir}imagick.so"
-    if [ -s "${zend_ext}" ]; then
-        rm -f "${zend_ext}"
-    fi
-
-    # ImageMagick 库构建失败时停止，避免 imagick 配置阶段产生次生错误。
-    Build_ImageMagick_Lib || return 1
-
-    cd "${cur_dir}/src" || return 1
-    Download_Files https://pecl.php.net/get/${Imagick_Ver}.tgz ${Imagick_Ver}.tgz
-    Require_File "${Imagick_Ver}.tgz" "pecl imagick"
-    Tar_Cd ${Imagick_Ver}.tgz ${Imagick_Ver}
-    ${PHP_Path}/bin/phpize
-    ./configure --with-php-config=${PHP_Path}/bin/php-config --with-imagick=/usr/local/imagemagick
-    Make_Install || return 1
-    cd ../
-
-    cat >${PHP_Path}/conf.d/008-imagick.ini<<EOF
-extension = "imagick.so"
-EOF
-
-    if [ ! -s /usr/local/imagemagick/bin/convert ]; then
-        rm -f ${PHP_Path}/conf.d/008-imagick.ini
-        Echo_Red "ImageMagick 库未安装成功：/usr/local/imagemagick/bin/convert 不存在。"
-        return 1
-    fi
-    if Accept_PHP_Ext imagick "${PHP_Path}/conf.d/008-imagick.ini" "${zend_ext}"; then
-        Echo_Green "====== ImageMagick 安装完成 ======"
-        Echo_Green "ImageMagick 安装成功。"
-        return 0
-    fi
-    Echo_Red "imagick 扩展安装失败！"
-    return 1
+    Addons_Install_Ext imagick "ImageMagick"
 }
 
 Uninstall_ImageMagick()
 {
-    echo "即将卸载 ImageMagick..."
-    Press_Start || return 1
-    rm -f ${PHP_Path}/conf.d/008-imagick.ini
+    Addons_Remove_Ext imagick "ImageMagick" || return 1
     echo "正在删除 ImageMagick 目录..."
     rm -rf /usr/local/imagemagick
-    Restart_PHP
-    Echo_Green "ImageMagick 卸载完成。"
+    Echo_Green "ImageMagick 库已删除。"
 }

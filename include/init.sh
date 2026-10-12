@@ -634,7 +634,7 @@ CentOS_Dependent()
     fi
 
     Echo_Blue "[+] 正在使用 Yum 安装依赖软件包..."
-    for packages in make cmake gcc gcc-c++ gcc-g77 kernel-headers glibc-headers flex bison file libtool libtool-libs autoconf patch wget crontabs libjpeg libjpeg-devel libjpeg-turbo-devel libpng libpng-devel libpng10 libpng10-devel gd gd-devel libxml2 libxml2-devel zlib zlib-devel glib2 glib2-devel unzip tar bzip2 bzip2-devel libzip-devel libevent libevent-devel ncurses ncurses-devel curl curl-devel libcurl libcurl-devel e2fsprogs e2fsprogs-devel krb5 krb5-devel libidn libidn-devel openssl openssl-devel pcre-devel gettext gettext-devel ncurses-devel gmp-devel pspell-devel unzip libcap diffutils ca-certificates net-tools libc-client-devel psmisc libXpm-devel git-core c-ares-devel libicu-devel libxslt libxslt-devel xz expat-devel libaio-devel rpcgen libtirpc-devel perl cyrus-sasl-devel sqlite-devel oniguruma-devel lsof re2c pkg-config libarchive hostname ncurses-libs numactl-devel libxcrypt libwebp-devel gnutls-devel brotli-devel initscripts iproute libxcrypt-compat nftables gnupg2 coreutils logrotate;
+    for packages in make cmake gcc gcc-c++ gcc-g77 kernel-headers glibc-headers flex bison file libtool libtool-libs autoconf patch wget crontabs libjpeg libjpeg-devel libjpeg-turbo-devel libpng libpng-devel libpng10 libpng10-devel gd gd-devel libxml2 libxml2-devel zlib zlib-devel glib2 glib2-devel unzip tar bzip2 bzip2-devel libzip-devel libevent libevent-devel ncurses ncurses-devel curl curl-devel libcurl libcurl-devel e2fsprogs e2fsprogs-devel krb5 krb5-devel libidn libidn-devel openssl openssl-devel pcre-devel gettext gettext-devel ncurses-devel gmp-devel pspell-devel unzip libcap diffutils ca-certificates net-tools psmisc libXpm-devel git-core c-ares-devel libicu-devel libxslt libxslt-devel xz expat-devel libaio-devel rpcgen libtirpc-devel perl cyrus-sasl-devel sqlite-devel oniguruma-devel lsof re2c pkg-config libarchive hostname ncurses-libs numactl-devel libxcrypt libwebp-devel gnutls-devel brotli-devel initscripts iproute libxcrypt-compat nftables gnupg2 coreutils logrotate;
     do yum -y install $packages; done
 
     yum -y update nss
@@ -808,15 +808,58 @@ Deb_Dependent()
 
     Deb_Ncurses5_Compat
 
-    # PHP imap 扩展依赖已从 Debian 13 移除的 uw-imap libc-client；单独安装
-    # 该依赖，以便缺失时明确提示扩展无法编译。
-    if [ "${Enable_PHP_Imap}" = 'y' ]; then
-        Apt_Get --no-install-recommends install -y libc-client-dev libc-client2007e-dev 2>/dev/null
-        if ! ls /usr/include/c-client >/dev/null 2>&1 && ! ls /usr/include/imap >/dev/null 2>&1; then
-            Echo_Yellow "未能安装 libc-client（uw-imap）开发包 —— Debian 13 已移除该库。"
-            Echo_Yellow "PHP imap 扩展将无法编译。若不需要它，请设 Enable_PHP_Imap='n'。"
+    return 0
+}
+
+# 登记并取得配置中启用的默认扩展来源。
+Download_Ext_Sources()
+{
+    local ext
+
+    for ext in $(Default_Ext_List); do
+        Download_Source_Rows "PHP 扩展 ${ext} 的来源" < <(PHPExt_Sources /usr/local/php "${ext}")
+    done
+    return 0
+}
+
+# Download_DB_Verified <种类> <版本> <bin|source>：升级与迁移用，按 Database_Sources 的地址依次
+# 下载并核对上游校验值，任一地址成功即返回 0。
+Download_DB_Verified()
+{
+    local kind=$1 ver=$2 mode=$3 file url
+
+    while IFS=$'\t' read -r _ _ _ file url _; do
+        if Download_Verified "${kind}" "${ver}" "${url}" "${file}"; then
+            echo "${file} 检查通过"
+            return 0
         fi
-    fi
+    done < <(Database_Sources "${kind}" "${ver}" "${mode}")
+    return 1
+}
+
+# 登记并取得所选数据库的安装包。同一文件列出多个地址时依次尝试，任一下载成功即止。
+Download_DB_Sources()
+{
+    [ "${DB_Kind}" = "none" ] && return 0
+    cd "${cur_dir}/src" || return 1
+    Download_Source_Rows "${DB_Ver} 的安装包" < <(Database_Sources "${DB_Kind}" "${DB_Ver#*-}" "$(DB_Install_Mode)")
+}
+
+# Download_Source_Rows <说明>：从标准输入读取 Sources 行，在当前目录下载。同一文件列出多个地址时
+# 依次尝试，任一下载成功即止；最后对每个文件执行一次 Require_File。
+Download_Source_Rows()
+{
+    local label=$1 file url got='' files=''
+
+    while IFS=$'\t' read -r _ _ _ file url _; do
+        [ -n "${file}" ] || continue
+        case " ${files} " in *" ${file} "*) ;; *) files="${files} ${file}" ;; esac
+        case " ${got} " in *" ${file} "*) continue ;; esac
+        Download_Files "${url}" "${file}" && got="${got} ${file}"
+    done
+    for file in ${files}; do
+        Require_File "${file}" "${label}：${file}"
+    done
     return 0
 }
 
@@ -839,32 +882,34 @@ Check_Download()
         Require_File "${Libunwind_Ver}.tar.gz" "libunwind"
     fi
 
-    if [ "${Stack}" != "lamp" ]; then
-        Download_Files https://nginx.org/download/${Nginx_Ver}.tar.gz ${Nginx_Ver}.tar.gz
-        Require_File "${Nginx_Ver}.tar.gz" "nginx"
+    local file url
+    if [ "${Stack}" != "lamp" ] && [ "${WebServer}" != "openresty" ]; then
+        Download_Source_Rows "Nginx 的来源" < <(Nginx_Sources "${Nginx_Ver#nginx-}")
+    elif [ "${WebServer}" = "openresty" ] && [ "${Download_Probe_Only}" = "y" ]; then
+        # OpenResty 源码与自定义模块由模块下载并验签，这里只登记地址供预检探测。
+        while IFS=$'\t' read -r _ _ _ file url _; do
+            Download_Files "${url}" "${file}"
+        done < <(OpenResty_Sources "${OpenResty_Ver#openresty-}" "${OpenResty_Install_Mode}")
     fi
 
-    DB_Download_Files
+    Download_DB_Sources
 
-    Download_Files https://www.php.net/distributions/${Php_Ver}.tar.bz2 ${Php_Ver}.tar.bz2
-    Require_File "${Php_Ver}.tar.bz2" "PHP ${PHP_Branch}"
+    local php_sapi
+
+    php_sapi=$(PHP_Detect_Sapi "${Stack}")
+    Download_Source_Rows "PHP ${PHP_Branch}" < <(PHP_Sources /usr/local/php "${php_sapi}" "${Php_Ver#php-}")
 
     if [ "${Enable_PhpMyAdmin}" = "y" ]; then
-
         local pma_ver="${PhpMyAdmin_Ver#phpMyAdmin-}"
-        pma_ver="${pma_ver%-all-languages}"
-        Download_Files https://files.phpmyadmin.net/phpMyAdmin/${pma_ver}/${PhpMyAdmin_Ver}.tar.xz ${PhpMyAdmin_Ver}.tar.xz
-        Require_File "${PhpMyAdmin_Ver}.tar.xz" "phpMyAdmin"
+        Download_Source_Rows "phpMyAdmin" < <(PhpMyAdmin_Sources "${pma_ver%-all-languages}")
     fi
     # PHP 探针缺少可验证的上游来源，因此不随安装包分发。
 
+    # 默认扩展及其依赖库的来源由扩展模块登记，预检与安装使用同一份清单。
+    Download_Ext_Sources
+
     if [ "${Stack}" != "lnmp" ]; then
-        Download_Files https://archive.apache.org/dist/httpd/${Apache_Ver}.tar.bz2 ${Apache_Ver}.tar.bz2
-        Require_File "${Apache_Ver}.tar.bz2" "Apache httpd"
-        Download_Files https://archive.apache.org/dist/apr/${APR_Ver}.tar.bz2 ${APR_Ver}.tar.bz2
-        Require_File "${APR_Ver}.tar.bz2" "APR"
-        Download_Files https://archive.apache.org/dist/apr/${APR_Util_Ver}.tar.bz2 ${APR_Util_Ver}.tar.bz2
-        Require_File "${APR_Util_Ver}.tar.bz2" "APR-util"
+        Download_Source_Rows "Apache" < <(Apache_Sources "${Apache_Ver#httpd-}" "${Stack}")
     fi
 }
 
@@ -882,9 +927,11 @@ Check_Makefile_Ready()
 
 # 并行任务数同时受 CPU 核数和可用内存约束。按每个任务约 1GB 内存估算，
 # 可降低 MySQL 等大型 C++ 项目编译时触发 OOM 的概率。
+# Build_Jobs [每个任务的内存 MB，默认 1024]
 Build_Jobs()
 {
-    local cpus mem_mb jobs
+    local per_mb=${1:-1024} cpus mem_mb jobs
+    case "${per_mb}" in ''|*[!0-9]*|0) per_mb=1024 ;; esac
     cpus=$(nproc 2>/dev/null)
     [ -n "${cpus}" ] || cpus=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)
     case "${cpus}" in ''|*[!0-9]*) cpus=2 ;; esac
@@ -893,16 +940,17 @@ Build_Jobs()
     mem_mb=$(awk '/MemTotal/ {printf "%d", $2 / 1024; exit}' /proc/meminfo 2>/dev/null)
     case "${mem_mb}" in ''|*[!0-9]*) mem_mb=1024 ;; esac
 
-    jobs=$((mem_mb / 1024))
+    jobs=$((mem_mb / per_mb))
     [ "${jobs}" -lt 1 ] && jobs=1
     [ "${jobs}" -gt "${cpus}" ] && jobs="${cpus}"
     printf '%s' "${jobs}"
 }
 
+# Make_Install [每个任务的内存 MB]
 Make_Install()
 {
     Check_Makefile_Ready || return 1
-    make -j"$(Build_Jobs)"
+    make -j"$(Build_Jobs "${1:-}")"
     if [ $? -ne 0 ]; then
         Echo_Yellow "并行编译失败，退回串行重试..."
         if ! make; then
@@ -1014,18 +1062,6 @@ Install_Curl()
     Remove_Error_Libcurl
 }
 
-Install_Pcre()
-{
-    if ! command -v pcre-config >/dev/null 2>&1 || pcre-config --version | grep -vEqi '^8.'; then
-        Echo_Blue "[+] 正在安装 ${Pcre_Ver}"
-        cd "${cur_dir}/src" || return 1
-        Download_Files https://downloads.sourceforge.net/pcre/${Pcre_Ver}.tar.bz2 ${Pcre_Ver}.tar.bz2
-        Require_File "${Pcre_Ver}.tar.bz2" "PCRE"
-        Tar_Cd ${Pcre_Ver}.tar.bz2
-        Nginx_With_Pcre="--with-pcre=${cur_dir}/src/${Pcre_Ver} --with-pcre-jit"
-    fi
-}
-
 Install_Jemalloc()
 {
     Echo_Blue "[+] 正在安装 ${Jemalloc_Ver}"
@@ -1130,53 +1166,6 @@ Install_Boost()
     if [ -z "${MySQL_WITH_BOOST}" ]; then
         Echo_Red "错误：源码编译 MySQL 需要 Boost，但 Boost 未准备完成。"
         exit 1
-    fi
-}
-
-Install_Openssl_New()
-{
-    if openssl version | grep -Eqi "OpenSSL 3."; then
-        apache_with_ssl='--with-ssl'
-    else
-        if [ ! -s /usr/local/openssl3/bin/openssl ] || /usr/local/openssl3/bin/openssl version | grep -v 'OpenSSL 3'; then
-            Echo_Blue "[+] 正在安装 ${Openssl_New_Ver}"
-            cd "${cur_dir}/src" || return 1
-            Download_Files https://github.com/openssl/openssl/releases/download/${Openssl_New_Ver}/${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}.tar.gz
-            [ $? -ne 0 ] && Download_Files https://www.openssl.org/source/${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}.tar.gz
-            Require_File "${Openssl_New_Ver}.tar.gz" "OpenSSL 3"
-            if [ $? -ne 0 ]; then
-                Download_Files https://www.openssl.org/source/${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}.tar.gz
-                if [ $? -ne 0 ]; then
-                    Echo_Red "错误：无法下载 ${Openssl_New_Ver}。"
-                    exit 1
-                fi
-            fi
-            [[ -d "${Openssl_New_Ver}" ]] && rm -rf "${Openssl_New_Ver}"
-            Tar_Cd ${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}
-            ./config -fPIC --prefix=/usr/local/openssl3 --openssldir=/usr/local/openssl3
-            make depend
-            Make_Install || exit 1
-            cd "${cur_dir}/src/" || return 1
-            Clean_Src_Dir "${Openssl_New_Ver}"
-        fi
-        ldconfig
-        apache_with_ssl='--with-ssl=/usr/local/openssl3'
-    fi
-}
-
-Install_Nghttp2()
-{
-    if [[ ! -s /usr/local/nghttp2/lib/libnghttp2.so || ! -s /usr/local/nghttp2/include/nghttp2/nghttp2.h ]]; then
-        Echo_Blue "[+] 正在安装 ${Nghttp2_Ver}"
-        cd "${cur_dir}/src" || return 1
-        Download_Files https://github.com/nghttp2/nghttp2/releases/download/v${Nghttp2_Ver#nghttp2-}/${Nghttp2_Ver}.tar.xz ${Nghttp2_Ver}.tar.xz
-        Require_File "${Nghttp2_Ver}.tar.xz" "nghttp2"
-        [[ -d "${Nghttp2_Ver}" ]] && rm -rf "${Nghttp2_Ver}"
-        Tar_Cd ${Nghttp2_Ver}.tar.xz ${Nghttp2_Ver}
-        ./configure --prefix=/usr/local/nghttp2
-        Make_Install || exit 1
-        cd "${cur_dir}/src/" || return 1
-        Clean_Src_Dir "${Nghttp2_Ver}"
     fi
 }
 

@@ -22,7 +22,8 @@ else
     Stack=$1
 fi
 
-LNMP_Ver='2.3'
+# 产品版本取自 include/product.sh。
+. "${cur_dir}/include/product.sh"
 . "${cur_dir}/lnmp.conf"
 # version.sh 提供菜单所需的组件版本常量，必须在选择函数执行前载入。
 . "${cur_dir}/include/version.sh"
@@ -33,23 +34,31 @@ LNMP_Ver='2.3'
 . "${cur_dir}/include/profile.sh"
 . "${cur_dir}/include/dbcommon.sh"
 . "${cur_dir}/include/init.sh"
-. "${cur_dir}/include/mysql.sh"
-. "${cur_dir}/include/mariadb.sh"
+. "${cur_dir}/include/mod/database.sh"
 . "${cur_dir}/include/php.sh"
-. "${cur_dir}/include/nginx.sh"
+. "${cur_dir}/include/mod/php.sh"
+. "${cur_dir}/include/mod/nginx.sh"
 # 提供安装和升级流程使用的 Telegram 通知函数。
 . "${cur_dir}/tools/lnmp-tgnotice.sh"
-. "${cur_dir}/include/openresty_modules.sh"
-. "${cur_dir}/include/openresty.sh"
-. "${cur_dir}/include/apache.sh"
+. "${cur_dir}/include/mod/openresty.sh"
+. "${cur_dir}/include/mod/phpmyadmin.sh"
+. "${cur_dir}/include/mod/apache.sh"
 . "${cur_dir}/include/end.sh"
 . "${cur_dir}/include/only.sh"
 . "${cur_dir}/include/multiplephp.sh"
 . "${cur_dir}/include/imageMagick.sh"
+. "${cur_dir}/include/mod/php_ext.sh"
 . "${cur_dir}/include/php_default_ext.sh"
 . "${cur_dir}/include/cleanup.sh"
 . "${cur_dir}/include/residue.sh"
+. "${cur_dir}/include/report.sh"
 . "${cur_dir}/include/precheck.sh"
+. "${cur_dir}/include/lock.sh"
+
+# 维护任务互斥：写入类入口先持锁，再做任何检测与清理。
+case "${Stack}" in
+    phpmyadmin|lnmp|lnmpa|lamp|nginx|apache|php|db|mphp) [ "${Stack} ${2:-}" = "phpmyadmin status" ] || Lock_Acquire "install.sh ${Stack} ${2:-}" || exit 2 ;;
+esac
 
 Validate_Service_Ports || exit 1
 Get_Dist_Name
@@ -67,21 +76,25 @@ Print_Banner \
     "在 ${DISTRO} Linux 上安装 LNMP、LNMPA 或 LAMP" \
     "仅使用上游官方源码，并强制校验完整性"
 
-# 编译耗时长，ssh 直连掉线会中断安装，因此在做任何选择之前先提示。
+# 已完成过安装时只检查现有组件并给出处理命令，不重新安装；栈以已部署的管理命令为准。
 case "${Stack}" in
-    lnmp|lnmpa|lamp) Warn_Detached_Session ;;
-esac
-
-# 已安装的组件和中断安装留下的残留都会让本次安装装到一半失败，
-# 因此在安装开始前统一检测，确认后清理成干净环境再继续。
-# LNMP_Resume_Broken_Install=yes 保留为不清理直接续装的显式入口。
-if [[ "${Stack}" = "lnmp" || "${Stack}" = "lnmpa" || "${Stack}" = "lamp" ]]; then
-    if [ "${LNMP_Resume_Broken_Install:-}" = "yes" ]; then
-        Echo_Yellow "LNMP_Resume_Broken_Install=yes，跳过残留检测，继续在现有环境上重装。"
-    else
+    lnmp|lnmpa|lamp)
+        if Install_Completed; then
+            Report_Stack=$(Detect_Installed_LNMP_Command_Stack) || Report_Stack=${Stack}
+            if [ "${Report_Stack}" != "${Stack}" ]; then
+                Echo_Yellow "本机已部署 ${Report_Stack}，不能在其上安装 ${Stack}；更换栈需先执行 ./uninstall.sh。"
+            fi
+            Stack_Report "${Report_Stack}"
+            Report_Rc=$?
+            [ "${Report_Stack}" = "${Stack}" ] || Report_Rc=1
+            exit "${Report_Rc}"
+        fi
+        # 编译耗时长，ssh 直连掉线会中断安装，因此在做任何选择之前先提示。
+        Warn_Detached_Session
+        # 中断安装留下的残留和未完成安装的组件会让本次安装装到一半失败，确认后清理成干净环境再继续。
         Check_Install_Residue || exit 1
-    fi
-fi
+        ;;
+esac
 
 Init_Install()
 {
@@ -116,7 +129,6 @@ Init_Install()
     Check_Download
     Install_Libiconv
     Install_Freetype
-    Install_Pcre
     if [ "${SelectMalloc}" = "2" ]; then
         Install_Jemalloc
     elif [ "${SelectMalloc}" = "3" ]; then
@@ -129,36 +141,43 @@ Init_Install()
     fi
     if [ "${DB_Kind}" != "none" ]; then
         # 数据库安装失败时立即中止，避免继续配置依赖数据库的组件。
-        Dispatch "${DB_Install}" || return 1
+        Database_Install "${DB_Kind}" "${DB_Ver#*-}" "$(DB_Install_Mode)" || return 1
         # 此后中断，数据目录已非空，重跑时据此区分残留与在用数据库。
         Install_Progress_Mark db
     fi
     TempMycnf_Clean
     Clean_DB_Src_Dir
-    Check_PHP_Option
 }
 
 Install_PHP()
 {
-    Dispatch "${PHP_Install}"
-    Clean_PHP_Src_Dir
-    Install_PHP_Default_Ext
+    local sapi tune
+
+    sapi=$(PHP_Detect_Sapi "${Stack}")
+    tune=$(Tune_PHP_Spec main)
+    PHP_Install /usr/local/php "${sapi}" "${Php_Ver#php-}" "${tune}" || return 1
+    Install_Composer
+    Install_PHP_Default_Ext /usr/local/php "${tune##*:}"
 }
 
 
 Install_WebServer()
 {
+    local malloc=none
+
     if [ "${WebServer}" = "openresty" ]; then
-        Install_OpenResty
-    else
-        Install_Nginx
+        OpenResty_Install "${OpenResty_Ver#openresty-}" "${OpenResty_Install_Mode}" "${Stack}"
+        return $?
     fi
+    [ "${SelectMalloc}" = '2' ] && malloc=jemalloc
+    [ "${SelectMalloc}" = '3' ] && malloc=tcmalloc
+    Nginx_Install "${Nginx_Ver#nginx-}" "${Stack}" "${malloc}"
 }
 
 LNMP_Stack()
 {
     Init_Install || return $?
-    Install_PHP
+    Install_PHP || return 1
     Install_WebServer || return 1
     Creat_PHP_Tools || return 1
     Add_Firewall_Rules
@@ -174,8 +193,8 @@ LNMPA_Stack()
     Apache_Selection || return 1
     Save_Install_Answers
     Init_Install || return $?
-    Dispatch "${Apache_Install}"
-    Install_PHP
+    Apache_Install "${Apache_Ver#httpd-}" "${Stack}" || return 1
+    Install_PHP || return 1
     Install_WebServer || return 1
     Creat_PHP_Tools || return 1
     Add_Firewall_Rules
@@ -191,8 +210,8 @@ LAMP_Stack()
     Apache_Selection || return 1
     Save_Install_Answers
     Init_Install || return $?
-    Dispatch "${Apache_Install}"
-    Install_PHP
+    Apache_Install "${Apache_Ver#httpd-}" "${Stack}" || return 1
+    Install_PHP || return 1
     Creat_PHP_Tools || return 1
     Add_Firewall_Rules
     # 启动阶段失败仍要打印验收结果，返回码由两者合并。
@@ -251,6 +270,16 @@ case "${Stack}" in
         Install_Only_Nginx 2>&1 | tee -a /root/nginx-install.log
         Install_Rc=${PIPESTATUS[0]}
         ;;
+    apache)
+        Install_Log_Begin /root/apache-install.log
+        Install_Only_Apache "${2:-}" 2>&1 | tee -a /root/apache-install.log
+        Install_Rc=${PIPESTATUS[0]}
+        ;;
+    php)
+        Install_Log_Begin /root/php-install.log
+        Install_Only_PHP "${2:-}" 2>&1 | tee -a /root/php-install.log
+        Install_Rc=${PIPESTATUS[0]}
+        ;;
     db)
         Install_Only_Database
         Install_Rc=$?
@@ -268,6 +297,8 @@ case "${Stack}" in
 
         Echo_Red "用法：$0 {lnmp|lnmpa|lamp}"
         Echo_Red "用法：$0 {nginx|db|mphp|phpmyadmin}"
+        Echo_Red "用法：$0 apache [lnmpa|lamp]"
+        Echo_Red "用法：$0 php [lnmp|lnmpa|lamp]"
         Echo_Red "用法：$0 phpmyadmin {enable|disable|status}"
         Install_Rc=1
         ;;

@@ -24,11 +24,17 @@
 # 数据库不执行重启，只发送告警。mysqld_safe 已负责 mysqld 的崩溃拉起，
 # 且数据损坏场景下反复重启会加剧损坏。
 #
-# 本工具依赖 systemd，没有 systemd 的环境下不工作也不安装定时任务，原因见
-# Systemd_Available 的说明。
+# 本工具依赖 systemd，没有 systemd 的环境下不工作也不安装定时任务：区分「人工停止」
+# 和「崩溃」要看 unit 的 enabled 与 active 状态，重启也交给 systemd 执行以复用 unit 的
+# 启动次数上限。SysV 没有对应语义，status 非 0 既可能是崩溃也可能是人工停止，照样重启
+# 会把 lnmp stop 之后的服务重新拉起来。
 # ---------------------------------------------------------------------------
 
 set -u
+
+# 服务运行部分：源码目录中执行时按相对路径加载，部署时由 include/rt/cli_assemble.sh 以文件内容替换本行。
+. "$(dirname "${BASH_SOURCE[0]}")/../include/rt/svc.sh" # @RT_SVC@
+. "$(dirname "${BASH_SOURCE[0]}")/../include/rt/db.sh" # @RT_DB@
 
 Conf_Dir="/etc/lnmp"
 Conf_File="${Conf_Dir}/health.conf"
@@ -147,20 +153,12 @@ Clear_State()
 # ---------------------------------------------------------------------------
 # 服务发现
 # ---------------------------------------------------------------------------
-Unit_Exists()
-{
-    local unit="$1"
-    [ -s "/etc/systemd/system/${unit}.service" ] || \
-    [ -s "/lib/systemd/system/${unit}.service" ] || \
-    [ -s "/usr/lib/systemd/system/${unit}.service" ]
-}
-
 # 输出本机需要探测的服务列表。多版本 PHP 按已安装的 unit 实例展开。
 Managed_Services()
 {
     local unit svc
     for svc in nginx httpd php-fpm mysql mariadb redis memcached; do
-        Unit_Exists "${svc}" && printf '%s\n' "${svc}"
+        Svc_Unit_Exists "${svc}" && printf '%s\n' "${svc}"
     done
     for unit in /etc/systemd/system/multi-user.target.wants/php-fpm@*.service; do
         [ -e "${unit}" ] || continue
@@ -188,24 +186,13 @@ Svc_Kind()
 # ---------------------------------------------------------------------------
 # 前置判定
 # ---------------------------------------------------------------------------
-# 健康检查依赖 systemd：区分「人工停止」和「崩溃」要看 unit 的 enabled 与 active
-# 状态，重启也交给 systemd 执行以复用 unit 的启动次数上限。SysV 没有对应语义，
-# status 非 0 既可能是崩溃也可能是人工停止，照样重启会把 lnmp stop 之后的服务
-# 重新拉起来。因此无 systemd 时本工具不工作，也不安装定时任务。
-Systemd_Available()
-{
-    command -v systemctl >/dev/null 2>&1 || return 1
-    [ -d /run/systemd/system ] || return 1
-    return 0
-}
-
 # 服务当前应处于运行状态时返回 0。人工停止、systemd 已放弃或正在切换状态
 # 时返回非 0，本轮不探测也不动作。
 Should_Probe()
 {
     local svc="$1" active enabled
 
-    Systemd_Available || return 1
+    Svc_Systemd || return 1
 
     enabled=$(systemctl is-enabled "${svc}.service" 2>/dev/null)
     case "${enabled}" in
@@ -618,27 +605,13 @@ Probe_Memcached()
     return 1
 }
 
-# 取数据库 socket 路径，优先读 my.cnf，缺省用安装时写入的正式路径。
-Db_Socket_Path()
-{
-    local sock
-    sock=$(awk -F= '
-        /^[[:space:]]*\[/ { in_srv = ($0 ~ /\[(mysqld|server)\]/) }
-        in_srv && $1 ~ /^[[:space:]]*socket[[:space:]]*$/ {
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit
-        }
-    ' "${My_Cnf}" 2>/dev/null)
-    [ -n "${sock}" ] || sock=/run/mysqld/mysqld.sock
-    printf '%s' "${sock}"
-}
-
 # 数据库探针。mysqladmin ping 在认证失败时同样返回 mysqld is alive，
 # 说明服务在响应，因此不需要口令。
 Probe_Db()
 {
     local svc="$1" admin sock out rc
 
-    sock=$(Db_Socket_Path)
+    sock=$(Db_Server_Socket "${My_Cnf}")
     case "${svc}" in
     mariadb)
         for admin in /usr/local/mariadb/bin/mariadb-admin /usr/local/mariadb/bin/mysqladmin; do
@@ -914,7 +887,7 @@ Cmd_Check()
 {
     local svc fails paused active rc tty='' ok_count=0 fail_count=0 down_count=0
 
-    if ! Systemd_Available; then
+    if ! Svc_Systemd; then
         Log WARN "本机没有运行中的 systemd，健康检查不执行。"
         Err "本机没有运行中的 systemd，健康检查依赖 systemd 才能工作，未执行探测。"
         return 1
@@ -996,7 +969,7 @@ Cmd_Status()
 {
     local svc fails paused active detail downs
 
-    if ! Systemd_Available; then
+    if ! Svc_Systemd; then
         Err "本机没有运行中的 systemd，健康检查不可用。"
         return 1
     fi
@@ -1057,7 +1030,9 @@ Cmd_Reset()
 
 Write_Systemd_Unit()
 {
-    cat > "${Systemd_Service}" <<'EOF' || { Err "写入 ${Systemd_Service} 失败。"; return 1; }
+    local rc
+
+    Svc_Install_Timer "${Systemd_Service}" "${Systemd_Timer}" "$(cat <<'EOF'
 [Unit]
 Description=LNMP service health check
 # 本单元不设 OnFailure，避免探测自身失败触发权限诊断。
@@ -1067,7 +1042,7 @@ Type=oneshot
 ExecStart=/bin/lnmp-health check
 Nice=10
 EOF
-    cat > "${Systemd_Timer}" <<'EOF' || { Err "写入 ${Systemd_Timer} 失败。"; return 1; }
+)" "$(cat <<'EOF'
 [Unit]
 Description=LNMP service health check timer
 
@@ -1079,13 +1054,14 @@ AccuracySec=10s
 [Install]
 WantedBy=timers.target
 EOF
-    chmod 644 "${Systemd_Service}" "${Systemd_Timer}" \
-        || { Err "设置 unit 文件权限失败。"; return 1; }
-    systemctl daemon-reload >/dev/null 2>&1
-    systemctl enable --now lnmp-health.timer >/dev/null 2>&1 \
-        || { Err "启用 lnmp-health.timer 失败，请手工检查。"; return 1; }
-    Ok "已启用 lnmp-health.timer：每分钟探测一次。"
-    return 0
+)"
+    rc=$?
+    case "${rc}" in
+    0) Ok "已启用 lnmp-health.timer：每分钟探测一次。" ;;
+    2) Err "启用 lnmp-health.timer 失败，请手工检查。" ;;
+    *) Err "写入 ${Systemd_Service} 或 ${Systemd_Timer} 失败。" ;;
+    esac
+    return "${rc}"
 }
 
 # 生成默认配置文件，供用户就地修改阈值。文件已存在时不覆盖，
@@ -1132,7 +1108,7 @@ Cmd_Init()
 
     # 不提供 cron 回退：cron 只解决「定时触发」，而本工具的前置判定和重启动作
     # 都依赖 systemd，装上定时任务也不会探测任何服务。
-    if ! Systemd_Available; then
+    if ! Svc_Systemd; then
         Err "本机没有运行中的 systemd，健康检查不可用，未安装定时任务。"
         Err "unit 的 Restart= 在该环境同样不生效，服务异常需要自行监控。"
         return 1
@@ -1152,7 +1128,7 @@ Cmd_Uninit()
     if [ -f "${Systemd_Timer}" ]; then
         systemctl disable --now lnmp-health.timer >/dev/null 2>&1
         rm -f "${Systemd_Timer}" "${Systemd_Service}"
-        systemctl daemon-reload >/dev/null 2>&1
+        Svc_Reload_Units
         Ok "已移除 lnmp-health.timer。"
     fi
     if [ -f "${Cron_File}" ]; then

@@ -1,37 +1,10 @@
 #!/usr/bin/env bash
 
-FW_TABLE='inet lnmp'
-FW_CHAIN='input'
-
-# LNMP 规则单独保存在此文件，避免覆盖系统防火墙主配置。
-FW_INCLUDE_FILE='/etc/nftables.d/lnmp.nft'
-
-# 跟随 nftables.service 加载上述规则文件的单元。
-FW_UNIT_NAME='lnmp-nftables'
-FW_UNIT_FILE="/etc/systemd/system/${FW_UNIT_NAME}.service"
+# 安装期防火墙：逐条放行、阻断与撤销。规则表常量、后端判定、链重建、规则文件持久化、
+# 跟随单元与端口探测在 include/rt/fw.sh，由 include/main.sh 加载，与 lnmp fw 共用。
 
 # 防火墙配置失败时由 end.sh 汇总提示。
 FW_Failed='n'
-
-# 实际监听的 SSH 端口，由 Resolve_SSH_Ports 填充。
-SSH_Ports=()
-
-# 选择可用的防火墙后端，并将结果记录为 firewalld、nft 或 none。
-Firewall_Backend()
-{
-    if [ -n "${FW_Backend}" ]; then
-        return 0
-    fi
-    if command -v firewall-cmd >/dev/null 2>&1 \
-       && systemctl is-active firewalld >/dev/null 2>&1; then
-        FW_Backend='firewalld'
-    elif command -v nft >/dev/null 2>&1; then
-        FW_Backend='nft'
-    else
-        FW_Backend='none'
-    fi
-}
-
 
 # 未找到 nft 时用包管理器补装一次。仅供 Firewall_Init 调用，卸载路径不触发。
 Firewall_Install_Nft()
@@ -78,16 +51,8 @@ Firewall_Init()
         ;;
     esac
 
-    if ! nft add table ${FW_TABLE} 2>/dev/null; then
-        Echo_Red "无法创建 nftables 表 ${FW_TABLE}，跳过防火墙配置。"
-        FW_Failed='y'
-        return 1
-    fi
-    # 重建 LNMP 专用链，防止重复安装造成规则累积。
-    nft delete chain ${FW_TABLE} ${FW_CHAIN} 2>/dev/null
-    if ! nft add chain ${FW_TABLE} ${FW_CHAIN} \
-         '{ type filter hook input priority filter; policy accept; }' 2>/dev/null; then
-        Echo_Red "无法创建 nftables 链 ${FW_TABLE} ${FW_CHAIN}，跳过防火墙配置。"
+    if ! Fw_Rebuild_Chain; then
+        Echo_Red "跳过防火墙配置。"
         FW_Failed='y'
         return 1
     fi
@@ -219,36 +184,6 @@ Firewall_Revoke()
     esac
 }
 
-# 部署并启用 lnmp-nftables.service。该单元 After/PartOf nftables.service，
-# 在 nftables 启动、重启后重新加载 ${FW_INCLUDE_FILE}，因此即使用户重写
-# /etc/nftables.conf 抹掉了 include 行，inet lnmp 表也不会丢失。
-Firewall_Install_Unit()
-{
-    local src="${cur_dir}/init.d/${FW_UNIT_NAME}.service" nft_bin tmp
-
-    Systemd_Is_Running || return 1
-    [ -s "${src}" ] || return 1
-    nft_bin=$(command -v nft) || return 1
-
-    tmp=$(mktemp "${FW_UNIT_FILE}.XXXXXXXX") || return 1
-    # 单元内的 nft 路径按当前系统实际位置替换。
-    if ! sed "s#^\(ExecStart=\|ExecStop=-\)/usr/sbin/nft #\1${nft_bin} #" "${src}" > "${tmp}"; then
-        rm -f "${tmp}"
-        return 1
-    fi
-    if ! chmod 644 "${tmp}" || ! mv -f "${tmp}" "${FW_UNIT_FILE}"; then
-        rm -f "${tmp}"
-        return 1
-    fi
-
-    systemctl daemon-reload >/dev/null 2>&1
-    systemctl enable "${FW_UNIT_NAME}" >/dev/null 2>&1
-    systemctl is-enabled "${FW_UNIT_NAME}" >/dev/null 2>&1 || return 1
-    # 规则此刻已在内存中，仅登记服务状态，避免后续 restart 时被判为未启动。
-    systemctl start "${FW_UNIT_NAME}" >/dev/null 2>&1
-    return 0
-}
-
 # 无 systemd 单元时的退路：在主配置里补一行 include，保留其余现有内容。
 Firewall_Add_Include()
 {
@@ -315,51 +250,21 @@ Firewall_Save()
         ;;
     esac
 
-    local main_conf tmp_file
+    local main_conf
     if [ -d /etc/sysconfig ] && [ "$PM" = "yum" ]; then
         main_conf='/etc/sysconfig/nftables.conf'
     else
         main_conf='/etc/nftables.conf'
     fi
 
-    mkdir -p "$(dirname "${FW_INCLUDE_FILE}")"
-    tmp_file="${FW_INCLUDE_FILE}.tmp.$$"
-
-    {
-        echo '#!/usr/sbin/nft -f'
-        echo '# 由 LNMP 安装脚本生成，见 include/firewall.sh。'
-        echo '# 本文件只定义 LNMP 自己的 inet lnmp 表，不影响系统其他防火墙规则。'
-        echo '# 重新加载：nft -f '"${FW_INCLUDE_FILE}"
-        echo
-        echo 'table inet lnmp'
-        echo 'delete table inet lnmp'
-        nft list table ${FW_TABLE}
-    } > "${tmp_file}" 2>/dev/null
-
-    # 仅在规则采集完整且语法校验通过后替换持久化文件。
-    if [ ! -s "${tmp_file}" ] || ! grep -q "chain ${FW_CHAIN}" "${tmp_file}"; then
-        Echo_Red "采集 nftables 规则失败，未修改任何持久化文件。"
-        rm -f "${tmp_file}"
-        FW_Failed='y'
-        return 1
-    fi
-    if ! nft -c -f "${tmp_file}" >/dev/null 2>&1; then
-        Echo_Red "生成的规则文件语法校验（nft -c -f）未通过，未做替换。"
-        rm -f "${tmp_file}"
-        FW_Failed='y'
-        return 1
-    fi
-
-    chmod 600 "${tmp_file}"
-    if ! mv -f "${tmp_file}" "${FW_INCLUDE_FILE}"; then
-        Echo_Red "写入 ${FW_INCLUDE_FILE} 失败。"
-        rm -f "${tmp_file}"
+    if ! Fw_Write_Rules '由 LNMP 安装脚本生成，见 include/firewall.sh。' "nft -f ${FW_INCLUDE_FILE}"; then
+        Echo_Red "防火墙规则未持久化。"
         FW_Failed='y'
         return 1
     fi
 
     # 单元可用时由它加载规则，不改动系统主配置；不可用时才退回 include。
-    if Firewall_Install_Unit; then
+    if Fw_Install_Unit "${cur_dir}/init.d/${FW_UNIT_NAME}.service"; then
         systemctl enable nftables >/dev/null 2>&1
         Firewall_Remove_Include "${main_conf}"
         echo "防火墙规则已保存到 ${FW_INCLUDE_FILE}，由 ${FW_UNIT_NAME}.service 跟随 nftables 加载。"
@@ -386,24 +291,6 @@ Firewall_Save()
     echo "防火墙规则已保存到 ${FW_INCLUDE_FILE}，nftables 已设为开机自启。"
     echo "（系统原有的 ${main_conf} 内容未被改动，只追加了一行 include。）"
     return 0
-}
-
-# 探测系统实际监听的 SSH 端口并存入 SSH_Ports，非法值丢弃。
-# 放行规则以此为准，不再由配置指定；探测不到时不写 SSH 放行规则，
-# 链策略为 accept，现有连接不受影响。
-Resolve_SSH_Ports()
-{
-    local p
-
-    SSH_Ports=()
-    while read -r p; do
-        case "${p}" in ''|*[!0-9]*) continue ;; esac
-        if [ "${p}" -ge 1 ] && [ "${p}" -le 65535 ]; then
-            SSH_Ports+=("${p}")
-        fi
-    done < <(Get_Actual_SSH_Port)
-
-    [ ${#SSH_Ports[@]} -gt 0 ]
 }
 
 # 安装前告知防火墙将放行哪些 SSH 端口。监听 22 时提示爆破风险并要求交互确认，
@@ -455,10 +342,7 @@ Check_SSH_Port_Policy()
 # 以及历史版本追加到主配置的 include 行。firewalld 后端只提示，不改其配置。
 # addons 安装的 Redis 与 Memcached 不属于栈安装流程，重建防火墙时按实际配置
 # 补回阻断规则，否则重装栈会静默丢弃这两个端口的规则。
-#
-# tools/lnmp-fw.sh 是独立单文件命令，运行期不保证源码目录还在，无法 source
-# 本文件，因此 Resolve_Ports/Port_Redis/Port_Memcached 另有一份等价实现。
-# 两份的配置路径与解析表达式由 t/consistency.sh 的 V18 检查一致性。
+# 端口解析与 lnmp fw 共用 Fw_Redis_Port、Fw_Memcached_Port；读不到时取 lnmp.conf 的值。
 Block_Addons_Ports()
 {
     # 测试注入点与 lnmp-fw 保持同名，默认取实际系统路径。
@@ -469,20 +353,12 @@ Block_Addons_Ports()
     local port
 
     if [ -d "${redis_dir}" ] || [ -s "${conf}" ]; then
-        port=''
-        [ -s "${conf}" ] && port=$(awk '$1 == "port" { print $2; exit }' "${conf}" 2>/dev/null)
-        [ -n "${port}" ] || port="${Redis_Port:-}"
         # port 0 表示只监听 unixsocket，没有 TCP 端口需要阻断。
-        if [ -n "${port}" ] && [ "${port}" != "0" ]; then
-            Firewall_Block tcp "${port}"
-        fi
+        port=$(Fw_Redis_Port "${conf}" "${Redis_Port:-}") && Firewall_Block tcp "${port}"
     fi
 
     if [ -s "${init}" ] || [ -d "${memcached_dir}" ]; then
-        port=''
-        [ -s "${init}" ] && port=$(awk -F= '$1 == "PORT" { gsub(/"/, "", $2); print $2; exit }' "${init}" 2>/dev/null)
-        [ -n "${port}" ] || port="${Memcached_Port:-}"
-        if [ -n "${port}" ]; then
+        if port=$(Fw_Memcached_Port "${init}" "${Memcached_Port:-}"); then
             Firewall_Block tcp "${port}"
             Firewall_Block udp "${port}"
         fi
@@ -498,30 +374,11 @@ Firewall_Purge()
     if [ "${FW_Backend}" = 'firewalld' ]; then
         Echo_Yellow "检测到 firewalld，端口放行由 firewall-cmd 管理，未自动撤销。"
         Echo_Yellow "如需收回，请自行执行：firewall-cmd --permanent --remove-port=<端口>/tcp"
-        return 0
+        # 改用 firewalld 前以 nft 后端写入的 LNMP 规则同样清除。
+        [ -f "${FW_UNIT_FILE}" ] || [ -f "${FW_INCLUDE_FILE}" ] || return 0
     fi
 
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl disable --now "${FW_UNIT_NAME}" >/dev/null 2>&1
-    fi
-    if [ -f "${FW_UNIT_FILE}" ] && ! rm -f "${FW_UNIT_FILE}"; then
-        Echo_Red "删除 ${FW_UNIT_FILE} 失败。"
-        rc=1
-    fi
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl daemon-reload >/dev/null 2>&1
-    fi
-
-    if command -v nft >/dev/null 2>&1; then
-        nft delete table ${FW_TABLE} 2>/dev/null
-    fi
-
-    if [ -f "${FW_INCLUDE_FILE}" ] && ! rm -f "${FW_INCLUDE_FILE}"; then
-        Echo_Red "删除 ${FW_INCLUDE_FILE} 失败。"
-        rc=1
-    fi
-    # 目录为本包创建，仅在没有其他规则文件时移除。
-    rmdir "$(dirname "${FW_INCLUDE_FILE}")" 2>/dev/null
+    Fw_Purge || rc=1
 
     if [ -d /etc/sysconfig ] && [ "$PM" = "yum" ]; then
         main_conf='/etc/sysconfig/nftables.conf'

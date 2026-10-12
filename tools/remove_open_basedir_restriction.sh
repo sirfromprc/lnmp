@@ -26,7 +26,7 @@ Print_Banner \
 
 if [ ! -s "${Nginx_Conf_Dir}/fastcgi.conf" ] || [ ! -d "${Vhost_Dir}" ]; then
     Echo_Red "找不到 ${Nginx_Conf_Dir}/fastcgi.conf 或 ${Vhost_Dir}，本工具只适用于 Nginx + PHP-FPM。"
-    Echo_Yellow "LAMP、LNMPA 的边界由 Apache 的 php_admin_value open_basedir 控制，"
+    Echo_Yellow "LAMP、LNMPA 的边界由 Apache 站点配置中的 open_basedir 控制（PHP-FPM 形态为 ProxyFCGISetEnvIf PHP_ADMIN_VALUE，mod_php 形态为 php_admin_value），"
     echo
     Echo_Yellow "请直接编辑该站点的 Apache 配置。"
     exit 1
@@ -145,6 +145,12 @@ while IFS= read -r conf; do
 $(grep -o 'enable-php[A-Za-z0-9.-]*\.conf' "${conf}" | grep -v -- '-nobasedir' | sort -u)
 EOF
     [ ${rc} -eq 0 ] || break
+    # 内联的 PHP location（Laravel 预设）直接在站点配置中改写。
+    if grep -Eq '^[[:space:]]*(include[[:space:]]+fastcgi\.conf;|fastcgi_param[[:space:]]+PHP_ADMIN_VALUE)' "${conf}"; then
+        sed -i -e 's#include[[:space:]]\+fastcgi\.conf;#include fastcgi-nobasedir.conf;#' \
+            -e '/^[[:space:]]*fastcgi_param[[:space:]]\+PHP_ADMIN_VALUE/d' "${conf}" || { rc=1; break; }
+        echo "${conf}: 内联 PHP 配置 -> fastcgi-nobasedir.conf"
+    fi
 done <<EOF
 ${site_confs}
 EOF

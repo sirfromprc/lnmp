@@ -6,7 +6,7 @@
 | 工作流 | 自动触发 | 用途 | 失败结果 |
 | --- | --- | --- | --- |
 | `CI` | push、PR | Bash 语法、ShellCheck、lint、一致性和定向自测 | 当前提交或 PR 检查失败 |
-| `Build Test` | 由其它工作流调用 | 在 Debian 12 容器内编译并启动验证 | 调用方中止 |
+| `Build Test` | 由其它工作流调用 | 在 Debian 13 容器内编译并启动验证 | 调用方中止 |
 | `上游版本检查` | 每月 8 日 03:00（北京时间） | 检查版本、更新校验值、full 编译、推升级分支并发布 | 不推分支也不发布，详情写入 Actions 摘要 |
 | `同步组件版本到主分支` | 无，手动触发 | 把升级分支的组件版本并入主分支 | 不提交 |
 | `下载源存活探测` | 每周二 03:00（北京时间） | 检查当前版本的下载地址 | 创建或更新 `url-health` issue |
@@ -16,7 +16,7 @@
 
 组件版本有两条线，互不覆盖：
 
-- **主分支**（按产品版本命名，如 `v2.3`）的组件版本由维护者手工确认，
+- **主分支**（按产品版本命名，如 `v3.0.3.000`）的组件版本由维护者手工确认，
   自动升级不会改动它。在主分支上改源码不会覆盖已经升级过的版本号。
 - **`auto-<日期>` 分支**由上游版本检查每月从当时的主分支重建，等于「重建时的主分支源码 + 最新组件版本」。
   它不合并回主分支，只保留日期最新的一个。
@@ -120,12 +120,18 @@ MySQL 探测与安装器使用相同顺序：先查 `Downloads`，再查 `archiv
 
 ## Build Test
 
-`Build Test` 使用 `debian:12` 容器，有两档：
+`Build Test` 使用 `debian:13` 容器，有两档：
 
 | 级别 | 内容 | 使用位置 |
 | --- | --- | --- |
 | `quick` | Lua 组件编译、启动和请求验证 | 上游版本检查的 `dry_run`、手动检查 |
-| `full` | quick 加 nginx 全模块和 PHP 默认分支编译 | 升级分支验证、发布前检查 |
+| `full` | quick 加 Nginx 全模块（含 HTTP/3 请求）、OpenResty 源码编译（含 Lua 与 HTTP/3 请求）、PHP 默认分支与默认扩展 | 升级分支验证、发布前检查 |
+
+`t/build_test.sh` 先以 `Deb_Dependent` 安装依赖，再调用模块函数完成下载校验与编译
+（Nginx `_Nginx_Fetch`/`_Nginx_Build`，OpenResty `_OpenResty_Fetch`/`_OpenResty_Build`，
+PHP `PHP_Install`/`Install_PHP_Default_Ext`），并把产物的编译参数与 `_Nginx_Configure_Args`、
+`_OpenResty_Configure_Args` 比对，参数不再在脚本中另写一份。脚本写入真实安装目录，只在一次性
+容器或验证机中运行。
 
 上游升级尚未提交时，`upstream-check.yml` 会把修改后的文件作为 artifact 传给
 `Build Test`，确保编译的是待推送内容。
@@ -152,17 +158,17 @@ t/probe_urls.sh      t/gen_checksums.sh   t/test_profile.sh
 
 ## 发布
 
-产品版本取自 `install.sh` 的 `LNMP_Ver`，由 `t/product_version.sh` 提取，
-工作流内不写死；分支叫什么名字不参与取值。升到 2.4 时只改 `install.sh`
-和 `uninstall.sh` 两处，工作流、tag 和包名都会跟着变。
+产品版本取自 `include/product.sh` 的 `LNMP_Ver`（格式 `MAJOR.MINOR.PATCH.BUILD`），
+由 `t/product_version.sh` 提取，工作流内不写死；分支叫什么名字不参与取值。
+升版只改 `include/product.sh` 一处，工作流、tag 和包名都会跟着变。
 
 每月自动发布产出两个包，同属一个 Release；手动运行和推送 tag 只产出主分支包：
 
 ```text
-tag         v2.3-20260908                每次发布唯一
-Release     LNMP v2.3 (20260908)
-压缩包      lnmp-v2.3.tar.gz             主分支，不含自动升级
-            lnmp-v2.3-20260908.tar.gz    本轮升级分支，含自动升级（仅每月自动发布）
+tag         v3.0.3.000-20260908                每次发布唯一
+Release     LNMP v3.0.3.000 (20260908)
+压缩包      lnmp-v3.0.3.000.tar.gz             主分支，不含自动升级
+            lnmp-v3.0.3.000-20260908.tar.gz    本轮升级分支，含自动升级（仅每月自动发布）
 ```
 
 升级包只在上游版本检查推送升级分支后由其调用 `release.yml` 打出，`auto_branch`
@@ -173,10 +179,11 @@ Release     LNMP v2.3 (20260908)
 缺少之后的源码提交，打包会得到「旧源码 + 新组件」且带当天日期的包。
 
 不要移动或重复使用已有 tag。同名 tag 指向不同内容后，已经下载的文件将无法稳定校验。
-需要固定下载地址时用 GitHub 的 latest 转发，不要动 tag：
+需要固定下载地址时用 GitHub 的 latest 转发，不要动 tag。主分支包另以不带版本号的
+`lnmp.tar.gz` 上传（内容相同，计入 `SHA256SUMS` 与构建证明），文件名不随版本变化：
 
 ```text
-https://github.com/<owner>/<repo>/releases/latest/download/lnmp-v2.3.tar.gz
+https://github.com/<owner>/<repo>/releases/latest/download/lnmp.tar.gz
 ```
 
 发布工作流有三种触发方式：
@@ -190,9 +197,11 @@ https://github.com/<owner>/<repo>/releases/latest/download/lnmp-v2.3.tar.gz
 这里的深度只作用于主分支包。升级包的编译验证在上游版本检查里完成，固定 full，
 发布说明会按包分别写明各自过了哪些验证。
 
+发布前的静态检查直接调用 `ci.yml`（`workflow_call`），与日常 CI 相同，含 Bash 语法与 ShellCheck。
+
 tag 触发时会核对 tag 前缀与源码里的产品版本，不符即中止。检查全部通过后才会：
 
-1. 打包发布文件（`t/pack.sh`，排除规则只写在这一处）；
+1. 打包发布文件（`t/pack.sh`，排除规则只写在这一处），主分支包另复制为 `lnmp.tar.gz`；
 2. 生成 `SHA256SUMS`，覆盖全部包；
 3. 生成 GitHub build provenance attestation；
 4. 生成发布说明（`t/release_notes.sh`），说明里写清楚哪个包不含自动升级；
@@ -205,8 +214,8 @@ tag 触发时会核对 tag 前缀与源码里的产品版本，不符即中止�
 
 ```bash
 sha256sum -c SHA256SUMS
-gh attestation verify lnmp-v2.3.tar.gz --repo <owner>/<repo>
-gh attestation verify lnmp-v2.3-YYYYMMDD.tar.gz --repo <owner>/<repo>
+gh attestation verify lnmp-v3.0.3.000.tar.gz --repo <owner>/<repo>
+gh attestation verify lnmp-v3.0.3.000-YYYYMMDD.tar.gz --repo <owner>/<repo>
 ```
 
 GPG 分离签名是可选项。仓库配置了 `GPG_PRIVATE_KEY` 和 `GPG_PASSPHRASE` 后，
@@ -259,11 +268,11 @@ bash t/product_version.sh          # 产品版本，两处不一致时报错
 打包和发布说明可以脱离 Actions 单独跑，用于确认包内容和说明措辞：
 
 ```bash
-bash t/pack.sh . lnmp-v2.3 /tmp/dist
-tar -tzf /tmp/dist/lnmp-v2.3.tar.gz | head
+bash t/pack.sh . lnmp-v3.0.3.000 /tmp/dist
+tar -tzf /tmp/dist/lnmp-v3.0.3.000.tar.gz | head
 
-PRODUCT=v2.3 STAMP=20260908 REPO=<owner>/<repo> LEVEL=full \
-BASE_DIR=. BASE_PKG=lnmp-v2.3 bash t/release_notes.sh
+PRODUCT=v3.0.3.000 STAMP=20260908 REPO=<owner>/<repo> LEVEL=full \
+BASE_DIR=. BASE_PKG=lnmp-v3.0.3.000 bash t/release_notes.sh
 ```
 
 分支清理可以先看不删：

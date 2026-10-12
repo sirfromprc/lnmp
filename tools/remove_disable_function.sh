@@ -144,7 +144,9 @@ rc=0
 # 统一走 StartOrStop：装了 systemd unit 时必须用 systemctl 重启，直接调 SysV
 # 脚本会让 unit 变成 inactive 而进程还在跑，systemd 之后再启动就会撞上
 # “Another FPM instance seems to already listen”。
-if [ -x /etc/init.d/httpd ] && [ -d /usr/local/apache ]; then
+# 只有 mod_php 形态由 Apache 加载 php.ini；PHP-FPM 形态的 LNMPA、LAMP 重启 php-fpm。
+if [ -x /etc/init.d/httpd ] && grep -Eq '^[[:space:]]*LoadModule[[:space:]]+php_module[[:space:]]' \
+        /usr/local/apache/conf/httpd.conf 2>/dev/null; then
     echo "正在重启 Apache..."
     StartOrStop restart httpd || rc=1
 else

@@ -24,6 +24,18 @@ save_days=30
 log_files_path="${log_files_path%/}/"
 [ -d "$log_files_path" ] || exit 0
 
+# 目标已存在时追加序号，避免同日重复执行覆盖已有归档
+Archive_Log()
+{
+    local src="$1" dest="$2" n=1
+
+    while [ -e "$dest" ]; do
+        dest="${2%.log}_${n}.log"
+        n=$((n + 1))
+    done
+    mv "$src" "$dest"
+}
+
 # 获取昨天的日期
 yesterday=$(date -d yesterday +"%Y%m%d")
 
@@ -57,11 +69,21 @@ if [ -x "$nginx_sbin" ]; then
     done < <(
         "$nginx_sbin" -T 2>/dev/null |
         awk '
-            $1 == "access_log" || $1 == "error_log" {
-                path = $2
-                sub(/;$/, "", path)
-                if (path ~ /^\// && path ~ /\.log$/)
-                    print path
+            {
+                sub(/\r$/, "")
+                sub(/#.*/, "")
+                # 按 ; { } 拆分，兼容 "error_log x.log;}" 与一行多条指令
+                n = split($0, stmts, /[;{}]/)
+                for (i = 1; i <= n; i++) {
+                    if (split(stmts[i], w, " ") < 2)
+                        continue
+                    if (w[1] != "access_log" && w[1] != "error_log")
+                        continue
+                    path = w[2]
+                    gsub(/["\047]/, "", path)
+                    if (path ~ /^\// && path ~ /\.log$/)
+                        print path
+                }
             }
         '
     )
@@ -70,9 +92,20 @@ fi
 # --------------------------------------------------
 # 获取 Apache 配置中的日志文件。Apache 路径习惯带引号，且不带 .log 后缀
 # （access_log/error_log/xxx-access_log），跟 Nginx 命名习惯不一样。
+# DUMP_CONFIG 由 mod_info 提供，默认配置未加载该模块：仅在本次配置检查中经 -C 加载，
+# 不配置 server-info 处理器，不影响运行中的 Apache。无输出视为发现失败。
 # --------------------------------------------------
 
+apache_rc=0
 if [ -x "$httpd_bin" ]; then
+    info_args=()
+    info_mod="${httpd_bin%/bin/*}/modules/mod_info.so"
+    [ -f "$info_mod" ] && info_args=(-C "LoadModule info_module ${info_mod}")
+    apache_dump=$("$httpd_bin" "${info_args[@]}" -t -D DUMP_CONFIG 2>/dev/null) || apache_dump=""
+    if [ -z "$apache_dump" ]; then
+        apache_rc=1
+        echo "无法从 Apache 配置获取日志路径（${httpd_bin} -t -D DUMP_CONFIG 无输出），未切割 Apache 日志。" >&2
+    fi
     while IFS= read -r file; do
         [ -n "$file" ] || continue
 
@@ -85,7 +118,7 @@ if [ -x "$httpd_bin" ]; then
                 ;;
         esac
     done < <(
-        "$httpd_bin" -t -D DUMP_CONFIG 2>/dev/null |
+        printf '%s\n' "$apache_dump" |
         awk '
             $1 == "CustomLog" || $1 == "ErrorLog" {
                 path = $2
@@ -102,7 +135,7 @@ fi
 # --------------------------------------------------
 
 if [ ${#log_files_name[@]} -eq 0 ]; then
-    [ ${#logs[@]} -gt 0 ] || exit 0
+    [ ${#logs[@]} -gt 0 ] || exit "$apache_rc"
 
     mkdir -p "$log_files_dir" || exit 1
 
@@ -127,7 +160,7 @@ if [ ${#log_files_name[@]} -eq 0 ]; then
         # 空文件不归档，避免每天为无访问的站点生成空归档。
         [ -s "$file" ] || continue
 
-        mv "$file" "$target" || exit 1
+        Archive_Log "$file" "$target" || exit 1
     done
 
 else
@@ -148,12 +181,12 @@ else
 
         file="${log_files_path}${name}.log"
         if [ -s "$file" ]; then
-            mv "$file" "${dest}/${logfile}_${yesterday}.log" || exit 1
+            Archive_Log "$file" "${dest}/${logfile}_${yesterday}.log" || exit 1
         fi
 
         file="${log_files_path}${name}.error.log"
         if [ -s "$file" ]; then
-            mv "$file" "${dest}/${logfile}.error_${yesterday}.log" || exit 1
+            Archive_Log "$file" "${dest}/${logfile}.error_${yesterday}.log" || exit 1
         fi
     done
 fi
@@ -194,4 +227,6 @@ if [ -x "$httpd_bin" ] && pgrep -f "$httpd_bin" >/dev/null 2>&1; then
     "$httpd_bin" -k graceful
 fi
 
-exit 0
+# 自动发现模式下 Apache 日志发现失败时返回非零，定时任务记录为失败。
+[ ${#log_files_name[@]} -gt 0 ] && exit 0
+exit "$apache_rc"

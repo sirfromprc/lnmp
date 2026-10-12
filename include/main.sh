@@ -5,6 +5,11 @@
 # 仍由各自的 ( umask 077; ... ) 子 shell 单独收紧。
 umask 022
 
+# 服务与防火墙运行部分与管理命令、tools/lnmp-* 共用一份。
+. "$(dirname "${BASH_SOURCE[0]}")/rt/svc.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/rt/fw.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/rt/db.sh"
+
 # 数据库、PHP 和 Apache 的菜单信息与编号映射统一定义在 profile.sh。
 
 # phpMyAdmin 位于网站根目录之外，防止 Web 配置失效时源码和 config.inc.php
@@ -171,6 +176,35 @@ PHP_Selection()
     fi
 }
 
+# Installed_PHP_Select <前缀>：输出已装 PHP 分支对应的菜单编号；未安装或分支不在菜单中时返回 1。
+Installed_PHP_Select()
+{
+    local branch i=1
+
+    branch=$("$1/bin/php-config" --version 2>/dev/null | cut -d. -f1-2)
+    [ -n "${branch}" ] || return 1
+    while [ "${i}" -le "${PHP_Count}" ]; do
+        Set_PHP_Profile "${i}" >/dev/null 2>&1 && [ "${PHP_Branch}" = "${branch}" ] && { echo "${i}"; return 0; }
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# PHP_Selection_Installed <前缀>：补齐入口的版本选择。未给编号时取已装分支；
+# 选定分支与已装分支相同时沿用已装完整版本，不隐式更换补丁版。
+PHP_Selection_Installed()
+{
+    local have
+
+    [ -n "${PHPSelect}" ] || PHPSelect=$(Installed_PHP_Select "$1")
+    PHP_Selection
+    have=$("$1/bin/php-config" --version 2>/dev/null)
+    if [ -n "${have}" ] && [ "${have%.*}" = "${PHP_Branch}" ] && [ "php-${have}" != "${Php_Ver}" ]; then
+        Echo_Yellow "已装 PHP ${have}，补齐沿用该版本；更换为 ${Php_Ver#php-} 请执行 ./upgrade.sh。"
+        Php_Ver="php-${have}"
+    fi
+}
+
 MemoryAllocator_Selection()
 {
     # 选择可选的内存分配器。
@@ -207,17 +241,14 @@ MemoryAllocator_Selection()
     if [ "${SelectMalloc}" =  "1" ]; then
         MySQL51MAOpt=''
         MySQLMAOpt=''
-        NginxMAOpt=''
     elif [ "${SelectMalloc}" =  "2" ]; then
         MySQL51MAOpt='--with-mysqld-ldflags=-ljemalloc'
         MySQLMAOpt='[mysqld_safe]
 malloc-lib=/usr/lib/libjemalloc.so'
-        NginxMAOpt="--with-ld-opt='-ljemalloc'"
     elif [ "${SelectMalloc}" =  "3" ]; then
         MySQL51MAOpt='--with-mysqld-ldflags=-ltcmalloc'
         MySQLMAOpt='[mysqld_safe]
 malloc-lib=/usr/lib/libtcmalloc.so'
-        NginxMAOpt='--with-google_perftools_module'
     fi
 }
 
@@ -260,7 +291,7 @@ Web_Selection()
                               || echo "已选择安装 Nginx。"
         WebSelect='1'
         # Nginx 与现有 OpenResty 不能同时占用相同服务入口。
-        Check_WebServer_Conflict nginx || exit 1
+        Nginx_Conflict nginx || exit 1
         return 0
         ;;
     esac
@@ -288,7 +319,7 @@ Web_Selection()
     esac
 
     # 安装前检查 Web 服务器冲突，避免占用相同端口和服务名。
-    Check_WebServer_Conflict openresty || exit 1
+    Nginx_Conflict openresty || exit 1
     return 0
 }
 
@@ -723,8 +754,14 @@ Warn_Detached_Session()
 
 Press_Install()
 {
+    local keep_php=${Php_Ver}
+
     . include/version.sh
     Set_Profiles
+    # 单项 PHP 补齐已由 PHP_Selection_Installed 定下完整版本，重读编号映射不覆盖。
+    if [ "${Stack}" = php ] && [ -n "${keep_php}" ]; then
+        Php_Ver=${keep_php}
+    fi
 
     case "${Stack}" in
     lnmp|lnmpa|lamp)
@@ -737,6 +774,14 @@ Press_Install()
     # 单组件入口只展示该组件的版本、生效配置和系统变更，确认语义与整栈一致。
     nginx)
         Print_Nginx_Only_Summary
+        Confirm_Start_Install || exit 1
+        ;;
+    apache)
+        Print_Apache_Only_Summary
+        Confirm_Start_Install || exit 1
+        ;;
+    php)
+        Print_PHP_Only_Summary
         Confirm_Start_Install || exit 1
         ;;
     db)
@@ -1287,74 +1332,6 @@ Check_Conf_Applied()
     return 0
 }
 
-# Get_Actual_DB_Port [配置文件]
-# 输出本机数据库实际监听的端口，取不到时退回 lnmp.conf 的 DB_Port。
-# 返回 0 表示取自配置文件，返回 1 表示用的是退回值。
-# 环境变量指定的安装端口不会回写 lnmp.conf，后续安装 phpMyAdmin 时需读取
-# /etc/my.cnf 的 [mysqld] 端口，确保 TCP 连接使用数据库当前监听值。
-Get_Actual_DB_Port()
-{
-    local conf="${1:-/etc/my.cnf}" port=''
-
-    if [ -s "${conf}" ]; then
-        port=$(awk '
-            /^[[:space:]]*\[/ {
-                section = $0
-                sub(/^[[:space:]]*\[[[:space:]]*/, "", section)
-                sub(/[[:space:]]*\].*$/, "", section)
-                next
-            }
-            section == "mysqld" && /^[[:space:]]*port[[:space:]]*=/ {
-                value = $0
-                sub(/^[^=]*=[[:space:]]*/, "", value)
-                sub(/[[:space:]#].*$/, "", value)
-                if (value != "") last = value
-            }
-            END { if (last != "") print last }
-        ' "${conf}" 2>/dev/null)
-    fi
-
-    case "${port}" in
-        ''|*[!0-9]*) port='' ;;
-        *) [ "${port}" -ge 1 ] && [ "${port}" -le 65535 ] || port='' ;;
-    esac
-
-    if [ -z "${port}" ]; then
-        printf '%s\n' "${DB_Port}"
-        return 1
-    fi
-    printf '%s\n' "${port}"
-    return 0
-}
-
-# 输出数据库实际使用的 socket 路径，[client] 优先，其次 [mysqld]。
-# --defaults-file 不读 /etc/my.cnf，临时凭据必须自带 socket 才能连上。
-Get_Actual_DB_Socket()
-{
-    local conf="${1:-/etc/my.cnf}" sock=''
-
-    if [ -s "${conf}" ]; then
-        sock=$(awk '
-            /^[[:space:]]*\[/ {
-                section = $0
-                sub(/^[[:space:]]*\[[[:space:]]*/, "", section)
-                sub(/[[:space:]]*\].*$/, "", section)
-                next
-            }
-            /^[[:space:]]*socket[[:space:]]*=/ {
-                value = $0
-                sub(/^[^=]*=[[:space:]]*/, "", value)
-                sub(/[[:space:]#].*$/, "", value)
-                if (value == "") next
-                if (section == "client" && client == "") client = value
-                else if (section == "mysqld" && server == "") server = value
-            }
-            END { print (client != "" ? client : server) }
-        ' "${conf}" 2>/dev/null)
-    fi
-    printf '%s' "${sock:-/run/mysqld/mysqld.sock}"
-}
-
 # 探测本机对外 IPv4，取默认路由的源地址；取不到不输出并返回 1。
 # 不查询外部服务，避免安装收尾阶段因网络阻塞。
 Get_Server_IP()
@@ -1365,67 +1342,6 @@ Get_Server_IP()
         awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
     [ -n "${addr}" ] || return 1
     printf '%s' "${addr}"
-}
-
-# 探测系统当前实际监听的 SSH 端口。sshd_config 尚未重载或 ExecStart 使用
-# -o Port= 覆盖时，配置文件值可能与真实监听端口不同。
-# 优先看真实监听的 socket（ss/netstat 能看到内核当前的状态），
-# 两者都不可用时才退回解析 sshd_config（含 Debian/Ubuntu 默认
-# Include 的 /etc/ssh/sshd_config.d/*.conf）；配置文件存在但没有
-# 显式 Port 行，按 OpenSSH 的默认值处理，即 22。
-# 输出：每行一个端口号，按数字升序去重。彻底探测不到（没有 ss/netstat，
-# 也找不到 sshd_config）时不输出并返回 1。
-Get_Actual_SSH_Port()
-{
-    local port
-    local -a ports=()
-
-    if command -v ss >/dev/null 2>&1; then
-        while read -r port; do
-            case "${port}" in ''|*[!0-9]*) continue ;; esac
-            ports+=("${port}")
-        done < <(ss -Htlnp 2>/dev/null | grep -F 'sshd' | awk '{print $4}' | sed -E 's/.*://')
-    fi
-
-    if [ ${#ports[@]} -eq 0 ] && command -v netstat >/dev/null 2>&1; then
-        while read -r port; do
-            case "${port}" in ''|*[!0-9]*) continue ;; esac
-            ports+=("${port}")
-        done < <(netstat -tlnp 2>/dev/null | grep -F 'sshd' | awk '{print $4}' | sed -E 's/.*://')
-    fi
-
-    if [ ${#ports[@]} -eq 0 ] && [ -s /etc/ssh/sshd_config ]; then
-        while read -r port; do
-            case "${port}" in ''|*[!0-9]*) continue ;; esac
-            ports+=("${port}")
-        done < <(Get_Sshd_Config_Ports)
-        [ ${#ports[@]} -eq 0 ] && ports=(22)
-    fi
-
-    if [ ${#ports[@]} -eq 0 ]; then
-        return 1
-    fi
-    printf '%s\n' "${ports[@]}" | sort -un
-    return 0
-}
-
-# Get_Sshd_Config_Ports [sshd_config 路径]
-#
-# 解析 sshd_config 及同目录 sshd_config.d/*.conf 中的 Port 指令，覆盖
-# Debian/Ubuntu 默认 Include 布局；默认读取 /etc/ssh/sshd_config。
-Get_Sshd_Config_Ports()
-{
-    local conf="${1:-/etc/ssh/sshd_config}"
-    local conf_dir f
-    local -a files
-
-    conf_dir=$(dirname "${conf}")
-    files=("${conf}" "${conf_dir}/sshd_config.d/"*.conf)
-
-    for f in "${files[@]}"; do
-        [ -s "${f}" ] || continue
-        grep -Eio '^[[:space:]]*Port[[:space:]]+[0-9]+' "${f}" 2>/dev/null | awk '{print $2}'
-    done
 }
 
 # 在任何安装动作前统一校验端口。变量会进入配置、sed 和防火墙命令，
@@ -1484,6 +1400,35 @@ Validate_Service_Ports()
             return 1
         fi
     done
+    return 0
+}
+
+# Unpack_Checked <归档> <目标目录> <解出的成员路径>
+# 先核对成员名不含绝对路径与 ..，只解出指定成员，再确认其中没有越界链接。
+Unpack_Checked()
+{
+    local tarball=$1 dest=$2 member=$3 flag link target
+
+    case "${tarball}" in
+    *.tgz|*.tar.gz) flag=z ;;
+    *.tar.bz2)      flag=j ;;
+    *.tar.xz)       flag=J ;;
+    *) return 1 ;;
+    esac
+    if tar "-t${flag}f" "${tarball}" 2>/dev/null \
+        | grep -qE '^/|(^|/)\.\.(/|$)'; then
+        return 1
+    fi
+    tar "-x${flag}f" "${tarball}" -C "${dest}" --no-same-owner --no-same-permissions \
+        "${member}" || return 1
+    [ -d "${dest}/${member}" ] || return 1
+    while IFS= read -r link; do
+        target=$(readlink "${link}")
+        case "${target}" in
+        /*|*..*) return 1 ;;
+        esac
+    # 只检查本次解出的成员；同一目录中其它已构建的源码树可含相对上级的链接。
+    done < <(find "${dest}/${member}" -type l)
     return 0
 }
 
@@ -1649,11 +1594,12 @@ Print_APP_Ver()
     [ "${Enable_PHP_Ldap}" = "y" ] && php_modules="${php_modules}${php_modules:+, }ldap"
     [ "${Enable_PHP_Bz2}" = "y" ] && php_modules="${php_modules}${php_modules:+, }bz2"
     [ "${Enable_PHP_Sodium}" = "y" ] && php_modules="${php_modules}${php_modules:+, }sodium"
-    [ "${Enable_PHP_Imap}" = "y" ] && php_modules="${php_modules}${php_modules:+, }imap"
+    [ "${Enable_PHP_Imap:-}" = "y" ] && Echo_Yellow "PHP imap 扩展已不再提供，忽略 Enable_PHP_Imap=y。"
     [ "${Enable_PHP_Default_Opcache}" = "y" ] && php_modules="${php_modules}${php_modules:+, }opcache"
     [ "${Enable_PHP_Default_Igbinary}" = "y" ] && php_modules="${php_modules}${php_modules:+, }igbinary"
     [ "${Enable_PHP_Default_Redis}" = "y" ] && php_modules="${php_modules}${php_modules:+, }redis"
     [ "${Enable_PHP_Default_Imagick}" = "y" ] && php_modules="${php_modules}${php_modules:+, }imagick"
+    [ "${Enable_PHP_Default_Zstd}" = "y" ] && php_modules="${php_modules}${php_modules:+, }zstd"
     [ -n "${PHP_Modules_Options}" ] && \
         printf -v php_modules '%s%s自定义选项：%s' "${php_modules}" \
             "${php_modules:+；}" "${PHP_Modules_Options}"
@@ -1680,6 +1626,63 @@ Print_APP_Ver()
 }
 
 # 单独安装 Nginx 的确认摘要：只列本入口实际读取的 lnmp.conf 项和将发生的系统变更。
+Print_PHP_Only_Summary()
+{
+    local ver=${Php_Ver#php-} rc ext_list
+
+    PHP_Check /usr/local/php "${PHP_Only_Sapi}" "${ver}" >/dev/null 2>&1
+    rc=$?
+    ext_list=$(Default_Ext_List | paste -sd ' ' -)
+    Echo_Yellow "=========================================================================="
+    Echo_Yellow "单项安装模式：只安装或补齐主 PHP（${PHP_Only_Stack}，${PHP_Only_Sapi}），不改动数据库与 Web 服务器。"
+    echo "目标版本：${Php_Ver}"
+    echo "默认扩展（lnmp.conf 开关）：${ext_list:-无}"
+    case "${rc}" in
+    0) echo "当前状态：PHP 已就绪，不重新编译；只补齐缺失的默认扩展并重启服务。" ;;
+    2) Echo_Yellow "当前状态：已装 PHP 的版本或编译选项与目标不符，本次不改动，更换版本请执行 ./upgrade.sh php。" ;;
+    *)
+        if [ -x /usr/local/php/bin/php ]; then
+            echo "当前状态：不完整，将重新编译安装。"
+            Echo_Yellow "php.ini 与 php-fpm.conf 按随包模板重写，conf.d 下的扩展配置清空，手工改过的先备份。"
+            Echo_Yellow "默认扩展随后重新安装，其它扩展需用 ./addons.sh 重新安装。"
+        else
+            echo "当前状态：未安装，将编译安装。"
+        fi
+        ;;
+    esac
+    echo "完成后重启 $( [ "${PHP_Only_Sapi}" = fpm ] && echo php-fpm || echo httpd )；本入口不改动防火墙。"
+    Echo_Yellow "=========================================================================="
+}
+
+Print_Apache_Only_Summary()
+{
+    local ver=${Apache_Ver#httpd-} rc
+
+    Apache_Check "${ver}" "${Apache_Only_Stack}" >/dev/null 2>&1
+    rc=$?
+    Echo_Yellow "=========================================================================="
+    Echo_Yellow "单项安装模式：只安装或补齐 Apache（${Apache_Only_Stack}），不改动数据库、PHP 与 Nginx。"
+    echo "目标版本：${Apache_Ver}"
+    echo "服务器管理员邮箱：${ServerAdmin}"
+    [ "${Apache_Only_Stack}" = "lamp" ] && echo "默认网站目录：${Default_Website_Dir}"
+    case "${rc}" in
+    0) echo "当前状态：已就绪，本次不写入文件。" ;;
+    2) Echo_Yellow "当前状态：已装 Apache 的版本或编译参数与目标不符，本次不改动，更换版本需先卸载。" ;;
+    *)
+        if [ -x /usr/local/apache/bin/httpd ]; then
+            echo "当前状态：不完整；程序符合时只补写缺失的配置与服务文件，否则重新编译。"
+        else
+            echo "当前状态：未安装，将编译安装。"
+        fi
+        if [ -s /usr/local/apache/conf/httpd.conf ]; then
+            echo "现有 httpd.conf 为随包配置时保留；为上游默认配置时改写为随包模板。"
+        fi
+        ;;
+    esac
+    echo "本入口不改动防火墙，不读取 DB_Port、Enable_PhpMyAdmin 等选项。"
+    Echo_Yellow "=========================================================================="
+}
+
 Print_Nginx_Only_Summary()
 {
     local nginx_modules='' ssh_ports
@@ -1697,7 +1700,7 @@ Print_Nginx_Only_Summary()
     echo "默认网站目录：${Default_Website_Dir}"
     echo "完整性校验：${Enable_Download_Checksum}"
     ssh_ports=$(Get_Actual_SSH_Port | paste -sd ' ' -)
-    echo "防火墙将放行：80、443；SSH 端口：${ssh_ports:-未探测到，不处理}"
+    echo "防火墙将放行：TCP 80、443，UDP 443；SSH 端口：${ssh_ports:-未探测到，不处理}"
     if [ -s /usr/local/nginx/sbin/nginx ]; then
         Echo_Yellow "本机已有 /usr/local/nginx/sbin/nginx，本次会重新编译并覆盖该二进制。"
         Check_Stack
@@ -1795,8 +1798,8 @@ StartUp()
 {
     local init_name=$1
     echo "正在将 ${init_name} 服务设为开机启动..."
-    if Use_Systemd_Unit "${init_name}"; then
-        systemctl daemon-reload
+    if Svc_Use_Systemd "${init_name}"; then
+        Svc_Reload_Units
         systemctl enable "${init_name}.service"
     else
         if [ "$PM" = "yum" ]; then
@@ -1808,6 +1811,28 @@ StartUp()
     fi
 }
 
+# Preserve_Paths <路径>...：删除前保存受保护数据。存在且非空的路径以 cp -a 复制到
+# ${LNMP_Keep_Root:-/root}/lnmp-preserved-<时间>/ 下并保持原绝对路径；同一进程共用一个保存目录。
+# 全部成功返回 0；任一失败返回 1，已复制内容保留，调用方不得继续删除。
+Preserve_Paths()
+{
+    local p dst
+
+    for p in "$@"; do
+        [ -e "${p}" ] && [ -n "$(ls -A -- "${p}" 2>/dev/null)" ] || continue
+        if [ -z "${LNMP_Preserve_Dir:-}" ]; then
+            LNMP_Preserve_Dir="${LNMP_Keep_Root:-/root}/lnmp-preserved-$(date +%Y%m%d%H%M%S)"
+        fi
+        dst="${LNMP_Preserve_Dir}${p}"
+        if [ -e "${dst}" ] || ! mkdir -p -- "${dst%/*}" || ! cp -a -- "${p}" "${dst}"; then
+            Echo_Red "保存 ${p} 到 ${dst} 失败。"
+            return 1
+        fi
+        Echo_Green "已保留 ${p}：${dst}"
+    done
+    return 0
+}
+
 Remove_StartUp()
 {
     local init_name=$1
@@ -1816,12 +1841,12 @@ Remove_StartUp()
     echo "正在取消 ${init_name} 服务的开机启动..."
 
     # 先通过 systemd 停止并重置服务，清除 SysV 兼容单元可能保留的过期状态。
-    if Systemd_Is_Running; then
+    if Svc_Systemd; then
         systemctl stop "${init_name}.service" 2>/dev/null
         systemctl reset-failed "${init_name}.service" 2>/dev/null
     fi
 
-    if Use_Systemd_Unit "${init_name}"; then
+    if Svc_Use_Systemd "${init_name}"; then
         systemctl disable "${init_name}.service"
     else
         if [ "$PM" = "yum" ]; then
@@ -1839,7 +1864,7 @@ Remove_StartUp()
         "^ExecStart=[^[:space:]]*(/usr/local/|/etc/init\.d/${esc_name}([[:space:]]|$))" \
         "${unit}"; then
         rm -f "${unit}"
-        systemctl daemon-reload 2>/dev/null
+        Svc_Reload_Units
     fi
 }
 
@@ -1892,13 +1917,6 @@ Check_CMPT()
     if Version_GE "${PHP_Branch}" 7.4; then
         if echo "${Ubuntu_Version}" | grep -Eqi "^1[0-7]\." || echo "${Debian_Version}" | grep -Eqi "^[4-8]" || echo "${Raspbian_Version}" | grep -Eqi "^[4-8]" || echo "${CentOS_Version}" | grep -Eqi "^[4-6]"  || echo "${RHEL_Version}" | grep -Eqi "^[4-6]" || echo "${Fedora_Version}" | grep -Eqi "^2[0-3]"; then
             Echo_Red "PHP 7.4 和 PHP 8.* 需要较新的 Linux 发行版。"
-            exit 1
-        fi
-    fi
-    # PHP 5.2 在过新的发行版上无法编译
-    if [ "${PHP_Branch}" = "5.2" ]; then
-        if echo "${Ubuntu_Version}" | grep -Eqi "^19|2[0-7]\." || echo "${Debian_Version}" | grep -Eqi "^1[0-9]" || echo "${Raspbian_Version}" | grep -Eqi "^1[0-9]" || echo "${Deepin_Version}" | grep -Eqi "^2[0-9]" || echo "${UOS_Version}" | grep -Eqi "^2[0-9]" || echo "${Fedora_Version}" | grep -Eqi "^29|3[0-9]"; then
-            Echo_Red "PHP 5.2 不支持 Ubuntu 19+、Debian 10、Deepin 20+、Fedora 29+ 等较新的 Linux 发行版。"
             exit 1
         fi
     fi
@@ -1986,16 +2004,27 @@ Get_PHP_Ext_Dir()
     zend_ext_dir="`/usr/local/php/bin/php-config --extension-dir`/"
 }
 
+# Check_Stack：按已装组件识别栈，结果写入 Get_Stack（lnmp、lnmpa、lamp、unknow）。
+# 不以 php-fpm 区分 LNMPA、LAMP：新装的 Apache 栈同样使用 PHP-FPM。
+# Nginx、Apache 与 php-fpm 并存时（LNMPA，或 LNMP 附装 Apache）以已部署的管理命令为准。
 Check_Stack()
 {
-    if [[ -s /usr/local/php/sbin/php-fpm && -s /usr/local/php/etc/php-fpm.conf && -s /etc/init.d/php-fpm && -s /usr/local/nginx/sbin/nginx ]]; then
-        Get_Stack="lnmp"
-    elif [[ -s /usr/local/nginx/sbin/nginx && -s /usr/local/apache/bin/httpd && -s /usr/local/apache/conf/httpd.conf && -s /etc/init.d/httpd && ! -s /usr/local/php/sbin/php-fpm ]]; then
+    local nginx=n apache=n fpm=n cmd=''
+
+    [ -s /usr/local/nginx/sbin/nginx ] && nginx=y
+    [[ -s /usr/local/apache/bin/httpd && -s /usr/local/apache/conf/httpd.conf && -s /etc/init.d/httpd ]] && apache=y
+    [[ -s /usr/local/php/sbin/php-fpm && -s /usr/local/php/etc/php-fpm.conf && -s /etc/init.d/php-fpm ]] && fpm=y
+    Get_Stack="unknow"
+    if [ "${nginx}" = y ] && [ "${apache}" = y ]; then
         Get_Stack="lnmpa"
-    elif [[ -s /usr/local/apache/bin/httpd && -s /usr/local/apache/conf/httpd.conf && -s /etc/init.d/httpd && ! -s /usr/local/php/sbin/php-fpm ]]; then
+        if [ "${fpm}" = y ] && declare -F Detect_Installed_LNMP_Command_Stack >/dev/null; then
+            cmd=$(Detect_Installed_LNMP_Command_Stack 2>/dev/null)
+            [ "${cmd}" = lnmp ] && Get_Stack="lnmp"
+        fi
+    elif [ "${nginx}" = y ] && [ "${fpm}" = y ]; then
+        Get_Stack="lnmp"
+    elif [ "${apache}" = y ]; then
         Get_Stack="lamp"
-    else
-        Get_Stack="unknow"
     fi
 }
 
@@ -2017,23 +2046,15 @@ First_Executable()
 
 Check_DB()
 {
-    local mariadb_client mariadb_config mariadb_safe
+    local found kind dir client config
 
-    if mariadb_client=$(First_Executable /usr/local/mariadb/bin/mariadb /usr/local/mariadb/bin/mysql) \
-        && mariadb_config=$(First_Executable /usr/local/mariadb/bin/mariadb_config /usr/local/mariadb/bin/mysql_config) \
-        && mariadb_safe=$(First_Executable /usr/local/mariadb/bin/mariadbd-safe /usr/local/mariadb/bin/mysqld_safe) \
-        && [ -s /etc/my.cnf ]; then
-        MySQL_Bin="${mariadb_client}"
-        MySQL_Config="${mariadb_config}"
-        MySQL_Dir="/usr/local/mariadb"
-        Is_MySQL="n"
-        DB_Name="mariadb"
-    elif [[ -s /usr/local/mysql/bin/mysql && -s /usr/local/mysql/bin/mysqld_safe && -s /etc/my.cnf ]]; then
-        MySQL_Bin="/usr/local/mysql/bin/mysql"
-        MySQL_Config="/usr/local/mysql/bin/mysql_config"
-        MySQL_Dir="/usr/local/mysql"
-        Is_MySQL="y"
-        DB_Name="mysql"
+    if found=$(Db_Detect); then
+        IFS=$'\t' read -r kind dir client config <<< "${found}"
+        MySQL_Bin="${client}"
+        MySQL_Config="${config}"
+        MySQL_Dir="${dir}"
+        DB_Name="${kind}"
+        if [ "${kind}" = mysql ]; then Is_MySQL="y"; else Is_MySQL="n"; fi
     else
         Is_MySQL="None"
         DB_Name="None"
@@ -2077,7 +2098,7 @@ Make_TempMycnf()
 [client]
 user=root
 password='$(SQL_Escape "$1")'
-socket=$(Get_Actual_DB_Socket)
+socket=$(Db_Socket)
 EOF
     )
     chmod 600 ~/.my.cnf
@@ -2092,7 +2113,7 @@ Check_DB_Password_TCP()
 
     Check_DB
     [ "${Is_MySQL}" = "None" ] && return 2
-    port=$(Get_Actual_DB_Port)
+    port=$(Db_Port /etc/my.cnf "${DB_Port}")
     err=$("${MySQL_Bin}" --defaults-file="${HOME}/.my.cnf" \
         --protocol=TCP --host=127.0.0.1 --port="${port}" \
         --connect-timeout=5 -e 'SELECT 1' 2>&1 >/dev/null)
@@ -2166,43 +2187,11 @@ TempMycnf_Clean()
     rm -f /tmp/.mysql.tmp
 }
 
-# 通过 /run/systemd/system 判断 systemd 是否实际运行，适用于服务器和 WSL。
-Systemd_Is_Running()
-{
-    [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1
-}
-
-Systemd_Unit_Exists()
-{
-    local service=$1 dir template
-
-    for dir in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do
-        [ -s "${dir}/${service}.service" ] && return 0
-    done
-    # 模板实例（如 php-fpm@8.3）没有独立 unit 文件，改判其模板是否存在。
-    case "${service}" in
-    *@*)
-        template="${service%@*}@"
-        for dir in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do
-            [ -s "${dir}/${template}.service" ] && return 0
-        done
-        ;;
-    esac
-    return 1
-}
-
-# 统一选择 systemd 或 init 脚本，保证服务启动与状态检查使用同一管理方式。
-Use_Systemd_Unit()
-{
-    local service=$1
-    Systemd_Is_Running && Systemd_Unit_Exists "${service}"
-}
-
 StartOrStop()
 {
     local action=$1
     local service=$2
-    if Use_Systemd_Unit "${service}"; then
+    if Svc_Use_Systemd "${service}"; then
         systemctl ${action} ${service}.service
     else
         /etc/init.d/${service} ${action}
@@ -2267,26 +2256,6 @@ Ensure_Runtime_Directory()
     fi
     install -d -o "${owner}" -g "${group}" -m 0755 "${dir}" || return 1
     [ ! -L "${dir}" ] && [ -d "${dir}" ]
-}
-
-# Patch_Init_Runtime_Directory <init脚本> <目录> <用户> <组>
-# SysV 和 systemd 生成的兼容服务都可能直接执行 init 脚本，因此把重建逻辑
-# 写进入口；固定标记保证升级或回滚时重复调用不会重复插入。
-# Install_Systemd_Unit <源 unit> <目标路径>
-# 发行版包常把 /etc/systemd/system/<名>.service 建成指向 /usr/lib/systemd/system/ 的
-# 符号链接；直接 cp 会跟随链接改写发行版自带的 unit 文件，把系统里同名服务一并顶掉。
-# 因此先摘掉符号链接再写入，只在 /etc 下留本项目自己的 unit。
-Install_Systemd_Unit()
-{
-    local src="$1" dst="$2"
-
-    [ -s "${src}" ] || { Echo_Red "找不到服务单元模板：${src}"; return 1; }
-    if [ -L "${dst}" ]; then
-        echo "${dst} 是指向 $(readlink -f "${dst}" 2>/dev/null) 的符号链接，先摘除再写入本项目的单元。"
-        rm -f "${dst}" || return 1
-    fi
-    \cp "${src}" "${dst}" || { Echo_Red "写入服务单元失败：${dst}"; return 1; }
-    return 0
 }
 
 # 升级前的搬迁必须整体成功：逐项检查存在性、目标未占用和 mv 返回码，
@@ -2408,6 +2377,9 @@ Require_Empty_Data_Dir()
     return 0
 }
 
+# Patch_Init_Runtime_Directory <init脚本> <目录> <用户> <组>
+# SysV 和 systemd 生成的兼容服务都可能直接执行 init 脚本，因此把重建逻辑
+# 写进入口；固定标记保证升级或回滚时重复调用不会重复插入。
 Patch_Init_Runtime_Directory()
 {
     local initd="$1" dir="$2" owner="$3" group="$4" tmp

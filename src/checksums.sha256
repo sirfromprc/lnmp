@@ -99,6 +99,7 @@ be30d910e67f58d82e753231f1357f326a1a088acf126b21ff77e60aab19b90b  libunwind-1.8.
 # igbinary 必须先于 redis 编译：phpredis 的 --enable-redis-igbinary 要它的头文件。
 # ---------------------------------------------------------------------------
 8bf25d465abc7973d9e2c9a3039a5f8eea635b23bc1477017ff3999ff95836da  igbinary-3.2.16.tgz
+223d0f77eb5a5e73cf5e7a0652dd8fde7ffdcc843e7f30eeb3998283dec847b9  zstd-0.18.0.tgz
 0d5141f634bd1db6c1ddcda053d25ecf2c4fc1c395430d534fd3f8d51dd7f0b5  redis-6.3.0.tgz
 3a3587c0a524c17d0dad9673a160b90cd776e836838474e173b549ed864352ee  imagick-3.8.1.tgz
 ca9c1820810a168786f8048a4c3f8c9e3fd941407ad1553259fb2e30b5f057bf  apcu-5.1.28.tgz
@@ -116,6 +117,15 @@ e22c0bb032fde08f53de9ffbc5a128233041d9f33b5de022c0978a2149885f82  libmemcached-1
 # ionCube 当前未接入安装流程。重新启用前需分别补齐并校验各架构文件，
 # x86-64 的哈希不能用于 x86、armv7l 或 aarch64。
 c2bef41f9635c3a87efd65f089c16ca5df9fd02db199d9fdcf12b206b93d41a6  pure-ftpd-1.0.54.tar.bz2
+
+# ---------------------------------------------------------------------------
+# Node.js（官方二进制，x64 与 arm64）
+# 校验值取自上游已验签的 SHASUMS256.txt；安装时再次验签并交叉核对。
+# ---------------------------------------------------------------------------
+a44aeb94849a299b22df10b9e622ec2f605c2183501bc40590705131de7c740f  node-v22.23.3-linux-arm64.tar.xz
+df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de  node-v22.23.3-linux-x64.tar.xz
+6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2  node-v24.21.0-linux-arm64.tar.xz
+fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  node-v24.21.0-linux-x64.tar.xz
 
 # ---------------------------------------------------------------------------
 # 安全工具（tools/ 下按需安装）

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# 组件删除的共享实现。由 uninstall.sh 的完整卸载和 install.sh 的残留清理共用。
+# 组件删除的共享实现。由 uninstall.sh 的完整卸载和 install.sh 的残留清理共用；
+# 组件程序与配置的删除在各模块的 Remove 中实现。
 # 本文件只提供函数，不执行任何删除动作。
 
 # 把非空数据目录整体移出删除范围。失败返回非零，调用方必须据此中止后续删除。
@@ -90,125 +91,28 @@ Remove_Lnmp_Conf_Dir()
     return 0
 }
 
-# DB_Name 为空时 rm -rf /usr/local/${DB_Name} 会删掉整个 /usr/local，
-# 因此空值与 None 一并提前返回。
-Remove_DB_Files()
-{
-    [ -n "${DB_Name}" ] || return 0
-    [ "${DB_Name}" = "None" ] && return 0
-    Remove_DB_Command_Links
-    Remove_DB_Dev_Links
-    # 空值已在函数开头拦截。
-    # shellcheck disable=SC2115
-    rm -rf "/usr/local/${DB_Name}"
-    rm -f /etc/my.cnf
-    rm -f "/etc/init.d/${DB_Name}"
-    Remove_Libaio_Compat_Link
-}
-
-# 清理本包建立的头文件与库链接和动态库搜索路径配置。
-# 只处理仍指向 /usr/local/mysql 或 /usr/local/mariadb 的链接，
-# 留下的悬空链接会让下次安装的 ln 建出自指链接。
-Remove_DB_Dev_Links()
-{
-    local link target conf changed='n'
-
-    for link in /usr/include/mysql /usr/lib/mysql \
-                /usr/include/mariadb /usr/lib/mariadb; do
-        [ -L "${link}" ] || continue
-        target=$(readlink "${link}" 2>/dev/null)
-        case "${target}" in
-            /usr/local/mysql/*|/usr/local/mariadb/*)
-                rm -f "${link}"
-                changed='y'
-                ;;
-        esac
-    done
-
-    for conf in /etc/ld.so.conf.d/mysql.conf /etc/ld.so.conf.d/mariadb.conf; do
-        [ -f "${conf}" ] || continue
-        grep -Eq '^[[:space:]]*/usr/local/(mysql|mariadb)/lib' "${conf}" || continue
-        rm -f "${conf}"
-        changed='y'
-    done
-
-    [ "${changed}" = 'y' ] && ldconfig 2>/dev/null
-    return 0
-}
-
-# 仅清理本包为数据库通用二进制包建立的 libaio.so.1 兼容链接：必须是符号链接，
-# 且指向 libaio.so.1t64*。发行版自带的实体库或指向别处的链接一律不动。
-Remove_Libaio_Compat_Link()
-{
-    local link target
-
-    for link in $(ldconfig -p 2>/dev/null | awk '$1 == "libaio.so.1t64" {print $NF}' \
-                  | xargs -r -n1 dirname | sort -u | sed 's:$:/libaio.so.1:'); do
-        [ -L "${link}" ] || continue
-        target=$(readlink "${link}")
-        case "${target##*/}" in
-        libaio.so.1t64*)
-            rm -f "${link}"
-            ldconfig
-            ;;
-        esac
-    done
-}
-
-# 只删除仍指向本包数据库目录的软链接，以及带 LNMP 标记的 MariaDB 包装器。
-# 非本包安装的同名系统客户端不在清理范围内。
-Remove_DB_Command_Links()
-{
-    local command path target first second
-
-    for command in mysql mysqldump mysqladmin mysqlcheck mysql_upgrade mysqld_safe \
-                   mariadb mariadb-dump mariadb-admin mariadb-check mariadb-upgrade mariadbd-safe \
-                   myisamchk; do
-        path="/usr/bin/${command}"
-        if [ -L "${path}" ]; then
-            target=$(readlink "${path}" 2>/dev/null)
-            case "${target}" in
-                /usr/local/mysql/*|/usr/local/mariadb/*) rm -f "${path}" ;;
-            esac
-        elif [ -f "${path}" ]; then
-            first=$(sed -n '1p' "${path}")
-            second=$(sed -n '2p' "${path}")
-            if [ "${first}" = '#!/bin/sh' ] \
-                && [ "${second}" = '# LNMP MariaDB compatibility wrapper' ]; then
-                rm -f "${path}"
-            fi
-        fi
-    done
-}
-
 
 MPHP_Supported_Vers='8.0 8.1 8.2 8.3 8.4 8.5'
 
+# 实例删除由 PHP 模块的 PHP_Remove 完成，这里只处理实例共用的 Nginx 片段与模板 unit。
 Remove_Multiple_PHP()
 {
-    local v mphp
+    local v mphp rc=0
+
     for v in ${MPHP_Supported_Vers}; do
         mphp="/usr/local/php${v}"
         [ -d "${mphp}" ] || continue
         echo "正在删除多版本 PHP ${v} ..."
-        # 模板 unit 实例优先，未安装 unit 的存量环境仍走 SysV。
-        if [ -s /etc/systemd/system/php-fpm@.service ] && command -v systemctl >/dev/null 2>&1; then
-            systemctl disable --now php-fpm@${v}.service >/dev/null 2>&1
-        fi
-        if [ -s /etc/init.d/php-fpm${v} ]; then
-            /etc/init.d/php-fpm${v} stop
-            Remove_StartUp php-fpm${v}
-            rm -f /etc/init.d/php-fpm${v}
-        fi
-        rm -f /usr/local/nginx/conf/enable-php${v}.conf
-        rm -rf "${mphp}"
+        PHP_Remove "${mphp}" || rc=1
+        rm -f "/usr/local/nginx/conf/enable-php${v}.conf"
     done
 
     # 模板 unit 由所有版本共用，全部清理完毕后再删除。
     if [ -e /etc/systemd/system/php-fpm@.service ]; then
         rm -f /etc/systemd/system/php-fpm@.service
-        command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+        Svc_Reload_Units
     fi
+    return ${rc}
 }
 
 # 清理 lnmp app 托管的应用：实例 unit、元数据与专属账号。
@@ -236,7 +140,7 @@ Remove_App_Hosting()
     # 模板 unit 由所有应用共用，全部清理完毕后再删除。
     if [ -e /etc/systemd/system/lnmp-app@.service ]; then
         rm -f /etc/systemd/system/lnmp-app@.service
-        command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+        Svc_Reload_Units
     fi
 }
 
@@ -256,7 +160,7 @@ Remove_Health_Schedule()
     fi
     if [ -e "${timer}" ] || [ -e "${service}" ]; then
         rm -f "${timer}" "${service}"
-        command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+        Svc_Reload_Units
     fi
     rm -f "${cron}" /etc/lnmp/health-state
     return 0
@@ -275,7 +179,7 @@ Remove_Cutlogs_Schedule()
     fi
     if [ -e "${timer}" ] || [ -e "${service}" ]; then
         rm -f "${timer}" "${service}"
-        command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+        Svc_Reload_Units
     fi
     return 0
 }
@@ -292,7 +196,7 @@ Remove_Backup_Schedule()
     fi
     if [ -e "${timer}" ] || [ -e "${service}" ]; then
         rm -f "${timer}" "${service}"
-        command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+        Svc_Reload_Units
     fi
     rm -f "${cron}"
     return 0
@@ -322,7 +226,7 @@ Remove_Perm_Hooks()
         systemctl disable --now lnmp-perm.timer >/dev/null 2>&1
     fi
     rm -f "${diagnose}" "${timer}" "${service}" "${cron}"
-    command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+    Svc_Reload_Units
     return 0
 }
 
@@ -333,6 +237,11 @@ Remove_Acme()
     local default_home="${HOME:-/root}/.acme.sh" rc=0
 
     if [ -s /usr/local/acme.sh/acme.sh ]; then
+        # 账户私钥、证书与续期配置在工作目录内，先保存再卸载。
+        if ! Preserve_Paths /usr/local/acme.sh; then
+            Echo_Red "acme.sh 工作目录未能保存，未卸载 acme.sh。"
+            return 1
+        fi
         if ! ( export LE_WORKING_DIR=/usr/local/acme.sh
                export LE_CONFIG_HOME=/usr/local/acme.sh
                /usr/local/acme.sh/acme.sh --uninstall ); then

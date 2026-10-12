@@ -222,7 +222,7 @@ Check_Redis_Port_Free()
 # 服务是否由本机管理入口托管；systemd 可用时以 unit 状态为准。
 Redis_Service_Active()
 {
-    if Use_Systemd_Unit redis; then
+    if Svc_Use_Systemd redis; then
         systemctl is-active --quiet redis.service
     else
         /etc/init.d/redis status >/dev/null 2>&1
@@ -322,49 +322,6 @@ Sync_Redis_Conf_Port()
     [ -n "${old_port}" ] && Firewall_Unblock tcp "${old_port}"
     Firewall_Block tcp "${Redis_Port}"
     Firewall_Save
-    return 0
-}
-
-# 重装时先把现有 phpredis 备份到临时目录，新扩展落地前不破坏可用环境。
-# 只接管本包创建的 021-redis.ini，其它 *redis.ini 保留并提示。
-Backup_Existing_PHPRedis()
-{
-    Redis_Ext_Backup_Dir=""
-    Redis_Ext_Backup_Dir=$(mktemp -d /tmp/lnmp-phpredis-bak.XXXXXXXX) || return 1
-    if [ -s "${PHP_Path}/conf.d/021-redis.ini" ]; then
-        \cp -p "${PHP_Path}/conf.d/021-redis.ini" "${Redis_Ext_Backup_Dir}/021-redis.ini" || return 1
-    fi
-    if [ -s "${zend_ext}" ]; then
-        \cp -p "${zend_ext}" "${Redis_Ext_Backup_Dir}/redis.so" || return 1
-    fi
-    return 0
-}
-
-# 安装失败时把备份的扩展放回原位并重载 PHP，避免留下没有 redis 模块的站点。
-Restore_Existing_PHPRedis()
-{
-    local restored='n'
-
-    [ -n "${Redis_Ext_Backup_Dir}" ] || return 0
-    if [ -s "${Redis_Ext_Backup_Dir}/redis.so" ]; then
-        \cp -p "${Redis_Ext_Backup_Dir}/redis.so" "${zend_ext}" && restored='y'
-    fi
-    if [ -s "${Redis_Ext_Backup_Dir}/021-redis.ini" ]; then
-        \cp -p "${Redis_Ext_Backup_Dir}/021-redis.ini" "${PHP_Path}/conf.d/021-redis.ini" && restored='y'
-    fi
-    if [ "${restored}" = 'y' ]; then
-        Echo_Yellow "已恢复安装前的 phpredis 扩展并重载 PHP。"
-        Restart_PHP
-    fi
-    rm -rf "${Redis_Ext_Backup_Dir}"
-    Redis_Ext_Backup_Dir=""
-    return 0
-}
-
-Clear_PHPRedis_Backup()
-{
-    [ -n "${Redis_Ext_Backup_Dir}" ] && rm -rf "${Redis_Ext_Backup_Dir}"
-    Redis_Ext_Backup_Dir=""
     return 0
 }
 
@@ -472,44 +429,36 @@ Prepare_Redis_Rebuild()
     return 0
 }
 
-Install_Redis()
+# Redis 服务端模块接口。
+Redis_Sources()
 {
-    echo "====== 正在安装 Redis ======"
-    echo "正在安装稳定版 ${Redis_Stable_Ver}..."
-    Check_Redis_Mode || return 1
-    Print_Redis_Install_Summary
-    Press_Start || return 1
+    printf 'redis\t-\t%s\t%s.tar.gz\thttps://download.redis.io/releases/%s.tar.gz\tsha256\tsrc/checksums.sha256\n' \
+        "${Redis_Stable_Ver}" "${Redis_Stable_Ver}" "${Redis_Stable_Ver}"
+}
 
-    Addons_Get_PHP_Ext_Dir
-    zend_ext="${zend_ext_dir}redis.so"
+# 0 二进制与配置、init 脚本齐备；1 缺失或不完整。
+Redis_Check()
+{
+    [ -s /usr/local/redis/bin/redis-server ] && [ -s /usr/local/redis/etc/redis.conf ] \
+        && [ -s /etc/init.d/redis ]
+}
 
+# 服务端安装在子 shell 中执行：不改变调用方工作目录，下载与解包原语的 exit 转为返回码。
+# 返回 0 已安装并启动；1 安装失败；3 已安装但服务未能启动。
+Redis_Install()
+{
+    ( _Redis_Install )
+}
+
+_Redis_Install()
+{
     cd "${cur_dir}/src" || return 1
-    # 扩展包与服务端同属一次安装，先把 phpredis 取齐再动系统，
-    # 避免服务端装完后扩展下载失败，留下未启用的服务和防火墙规则。
-    if [ -s ${PHPRedis_Ver} ]; then
-        rm -rf "${PHPRedis_Ver}"
-    fi
-    Download_Files https://pecl.php.net/get/${PHPRedis_Ver}.tgz ${PHPRedis_Ver}.tgz
-    Require_File "${PHPRedis_Ver}.tgz" "pecl redis"
-
-    # 源码包就绪后才动现有扩展，并先备份以便失败恢复。
-    Backup_Existing_PHPRedis || { Echo_Red "备份现有 phpredis 失败，已中止，未改动任何文件。"; return 1; }
-    # 其它来源的 redis 配置不归本包管理，重复加载时由使用者决定去留。
-    for redis_ini in ${PHP_Path}/conf.d/*redis.ini; do
-        [ -e "${redis_ini}" ] || continue
-        case "${redis_ini}" in
-        */021-redis.ini) rm -f "${redis_ini}" ;;
-        *) Echo_Yellow "发现非本包创建的 PHP 配置：${redis_ini}，未删除；重复加载 redis.so 时请自行处理。" ;;
-        esac
-    done
-    [ -s "${zend_ext}" ] && rm -f "${zend_ext}"
 
     # 重装一律重新编译：误删过二进制、init 脚本或依赖文件时，只重写配置起不来。
     # 服务端源码包同样先取齐再动系统，避免服务停下后卡在下载失败。
     Download_Files https://download.redis.io/releases/${Redis_Stable_Ver}.tar.gz ${Redis_Stable_Ver}.tar.gz
     Require_File "${Redis_Stable_Ver}.tar.gz" "Redis server"
     if ! Prepare_Redis_Rebuild; then
-        Restore_Existing_PHPRedis
         return 1
     fi
     Tar_Cd ${Redis_Stable_Ver}.tar.gz ${Redis_Stable_Ver}
@@ -528,13 +477,11 @@ Install_Redis()
     if [ $? -ne 0 ]; then
         cd "${cur_dir}/src" || return 1
         Echo_Red "Redis 服务端编译或安装失败，未改动服务配置。"
-        Restore_Existing_PHPRedis
         Restart_Old_Redis_Service
         return 1
     fi
     Check_Redis_Server_Version || {
         cd "${cur_dir}/src" || return 1
-        Restore_Existing_PHPRedis
         Restart_Old_Redis_Service
         return 1
     }
@@ -591,88 +538,42 @@ Install_Redis()
     Firewall_Block tcp "${Redis_Port}"
     Firewall_Save
 
-    Tar_Cd ${PHPRedis_Ver}.tgz ${PHPRedis_Ver}
-    ${PHP_Path}/bin/phpize
-
-    # igbinary 可用时保持 phpredis 的对应序列化支持。
-    Redis_Igbinary_Opt=''
-    if [ -s "${zend_ext_dir}igbinary.so" ]; then
-        Redis_Igbinary_Opt='--enable-redis-igbinary'
-        echo "检测到 igbinary，启用 phpredis 的 igbinary 序列化支持。"
-    fi
-    ./configure --with-php-config=${PHP_Path}/bin/php-config ${Redis_Igbinary_Opt}
-    if ! Make_Install; then
-        Restore_Existing_PHPRedis
-        return 1
-    fi
-    cd ../
-    cat >${PHP_Path}/conf.d/021-redis.ini<<EOF
-extension = "redis.so"
-EOF
-
     # init 脚本与防火墙按 lnmp.conf 写端口，redis.conf 必须先对齐到同一值。
-    if ! Sync_Redis_Conf_Port; then
-        Restore_Existing_PHPRedis
-        return 1
-    fi
+    Sync_Redis_Conf_Port || return 1
 
     \cp ${cur_dir}/init.d/init.d.redis /etc/init.d/redis
     sed -i "s/^REDISPORT=.*/REDISPORT=${Redis_Port}/" /etc/init.d/redis
-    if ! Check_Conf_Applied /etc/init.d/redis "^REDISPORT=${Redis_Port}\$" "Redis init 脚本端口 ${Redis_Port}"; then
-        Restore_Existing_PHPRedis
-        return 1
-    fi
-    Install_Systemd_Unit "${cur_dir}/init.d/redis.service" /etc/systemd/system/redis.service || return 1
+    Check_Conf_Applied /etc/init.d/redis "^REDISPORT=${Redis_Port}\$" "Redis init 脚本端口 ${Redis_Port}" || return 1
+    Svc_Install_Unit "${cur_dir}/init.d/redis.service" /etc/systemd/system/redis.service || return 1
     # 启动前检查随 Redis 目录安装，卸载时一并删除；unit 在其缺失时跳过该步。
     \cp ${cur_dir}/tools/redis-preflight.sh /usr/local/redis/bin/redis-preflight
     chmod 755 /usr/local/redis/bin/redis-preflight
     chmod +x /etc/init.d/redis
     Normalize_Redis_Perms
     Grant_Redis_Socket_Access
-    if ! Check_Redis_Runtime_Access; then
-        Restore_Existing_PHPRedis
-        return 1
-    fi
+    Check_Redis_Runtime_Access || return 1
     Set_Redis_Overcommit
     Install_Logrotate_Conf
     echo "正在加入开机自启..."
     StartUp redis
-    # 扩展验收含 PHP 重启，产物或加载失败时会撤回 021-redis.ini。
-    if ! Accept_PHP_Ext redis "${PHP_Path}/conf.d/021-redis.ini" "${zend_ext}"; then
-        Echo_Red "phpredis 扩展验收未通过。"
-        Restore_Existing_PHPRedis
-        return 1
-    fi
     Start_Redis_Service "${Redis_Port}"
     local Redis_Started=$?
     [ "${Redis_Started}" -eq 0 ] && Check_Redis_Socket
 
-    # 测试页无鉴权、暴露 Redis 版本且会写入缓存，因此默认不部署。
-    if [ "${Enable_Redis_Test_Page}" = "y" ]; then
-        echo "正在复制 Redis PHP 测试文件..."
-        \cp ${cur_dir}/conf/redis.php ${Default_Website_Dir}/redis.php
-        sed -i "s/', 6379)/', ${Redis_Port})/" ${Default_Website_Dir}/redis.php
-        Warn_Demo_Page_Not_Served redis.php
-    else
-        echo "未部署 Redis 测试页面（Enable_Redis_Test_Page='n'）。"
-        echo "如需自测：cp conf/redis.php ${Default_Website_Dir}/redis.php"
-    fi
-
     if [ ! -s /usr/local/redis/bin/redis-server ]; then
         Echo_Red "Redis 安装失败！（服务端二进制未生成）"
-        Restore_Existing_PHPRedis
         return 1
     fi
-    Clear_PHPRedis_Backup
 
-    if [ "${Redis_Started}" -eq 0 ]; then
-        Echo_Green "====== Redis 安装完成 ======"
-        Echo_Green "Redis 安装成功。"
-        return 0
-    fi
+    [ "${Redis_Started}" -eq 0 ] && return 0
+    return 3
+}
 
+# 服务端已安装但没能启动时的排查提示。
+Print_Redis_Start_Failure()
+{
     Echo_Red "====== Redis 装好了，但服务没能启动 ======"
-    Echo_Red "PHP 扩展与服务端二进制都已就位，问题出在启动阶段。"
+    Echo_Red "服务端二进制已就位，问题出在启动阶段。"
     Echo_Red "常见原因："
     Echo_Red "  - ${Redis_Port} 端口已被占用（旧的 redis-server 进程还在？ pgrep -a redis-server）"
     Echo_Red "  - 数据目录 /usr/local/redis/var 不存在或不可写"
@@ -680,16 +581,11 @@ EOF
     Echo_Red "排查：journalctl -xeu redis.service --no-pager | tail -30"
     Echo_Red "      tail -20 /usr/local/redis/var/redis.log"
     Echo_Red "      /usr/local/redis/bin/redis-server /usr/local/redis/etc/redis.conf --daemonize no"
-    return 1
 }
 
-Uninstall_Redis()
+# 服务端卸载：删除程序、init 脚本、unit 残留与防火墙规则。PHP 扩展由调用方经扩展模块移除。
+Redis_Remove()
 {
-    echo "即将卸载 Redis..."
-    Press_Start || return 1
-
-    rm -f ${PHP_Path}/conf.d/*redis.ini
-    Restart_PHP
     Remove_StartUp redis
     echo "正在删除 Redis 文件..."
     rm -rf /usr/local/redis
@@ -704,5 +600,5 @@ Uninstall_Redis()
     fi
     Firewall_Unblock tcp "${Redis_Port}"
     Firewall_Save
-    Echo_Green "Redis 卸载完成。"
+    return 0
 }

@@ -116,7 +116,7 @@ expect_empty C12 "无 cmake 自主下载 boost" \
 expect_empty C13 "无明文 HTTP 下载" \
     '(wget|curl|Download_Files)([^|;]*[[:space:]])http://'
 
-# C14 防火墙已全面改用 nftables，规则操作收敛在 include/firewall.sh。
+# C14 防火墙已全面改用 nftables，规则操作收敛在 include/firewall.sh 与 include/rt/fw.sh。
 # 检查 iptables 命令调用及其持久化包，避免与 nftables 规则并存。
 expect_empty C14 "无 iptables 调用与持久化包" \
     '^[^#]*(iptables -[A-Z]|service iptables|iptables-services|iptables-persistent|netfilter-persistent)' -g '*.sh'
@@ -165,7 +165,7 @@ expect_empty C15 "防火墙端口未硬编码（80/443 除外）" 'Firewall_(All
 # 只按核数并行、不看内存，小内存机器会被 OOM 杀掉编译进程：Debian 12 / 8 核
 # 6GB 上 MySQL 8.4 的 sql_gis 就是这么被杀的，白跑一整轮才退到串行。
 # 原先五处各写各的，改一处不改其它等于没改。
-expect_empty C16 "并行编译任务数统一由 Build_Jobs 决定" 'make[^|;#]*-j(?!"\$\(Build_Jobs\)")' -g '*.sh'
+expect_empty C16 "并行编译任务数统一由 Build_Jobs 决定" 'make[^|;#]*-j(?!"\$\(Build_Jobs[ )])' -g '*.sh'
 
 # C17 随包示例的证书路径必须是项目实际产物
 #
@@ -207,7 +207,7 @@ expect_empty C16 "并行编译任务数统一由 Build_Jobs 决定" 'make[^|;#]*
 #
 # lint.sh 的自定义规则只覆盖本项目的收敛不变式，抓不到引号缺失、word splitting、
 # cd 失败后继续执行这类通用 shell 缺陷，交给 shellcheck。规则裁剪与排除原因见
-# t/shellcheck.sh。未安装 shellcheck 时该脚本跳过并返回 0。
+# t/shellcheck.sh。未安装 shellcheck 时该脚本返回 2，T2 记为失败。
 [ -z "${only}" ] || [ "${only}" = "T2" ] && {
     out=$(bash t/shellcheck.sh 2>&1)
     if [ $? -eq 0 ]; then

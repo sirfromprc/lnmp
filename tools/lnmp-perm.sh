@@ -25,6 +25,10 @@
 
 set -u
 
+# 服务运行部分：源码目录中执行时按相对路径加载，部署时由 include/rt/cli_assemble.sh 以文件内容替换本行。
+. "$(dirname "${BASH_SOURCE[0]}")/../include/rt/svc.sh" # @RT_SVC@
+. "$(dirname "${BASH_SOURCE[0]}")/../include/rt/db.sh" # @RT_DB@
+
 Conf_Dir="/etc/lnmp"
 State_File="${Conf_Dir}/perm-state"
 Log_File="/var/log/lnmp/perm.log"
@@ -125,34 +129,6 @@ Baseline=(
 # memcached 无基线条目，不挂钩子。
 Hook_Services="mysql mariadb nginx httpd php-fpm redis pureftpd"
 
-# ---------------------------------------------------------------------------
-# 配置读取
-# ---------------------------------------------------------------------------
-# 输出 my.cnf 中 [mysqld] 段指定键的值，未配置时输出空。
-# 与 conf/lnmp 的 Get_Mysqld_Conf_Value 保持同一解析行为；本工具不依赖源码
-# 目录，也不加载管理脚本，因此保留独立实现。
-Get_Mysqld_Conf_Value()
-{
-    local key="$1" conf="${2:-${My_Cnf}}"
-
-    [ -n "${key}" ] && [ -s "${conf}" ] || return 0
-    awk -v key="${key}" '
-        /^[[:space:]]*\[/ {
-            section = $0
-            sub(/^[[:space:]]*\[[[:space:]]*/, "", section)
-            sub(/[[:space:]]*\].*$/, "", section)
-            next
-        }
-        section == "mysqld" && found == "" && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
-            value = $0
-            sub(/^[^=]*=[[:space:]]*/, "", value)
-            sub(/[[:space:]#].*$/, "", value)
-            found = value
-        }
-        END { if (found != "") print found }
-    ' "${conf}"
-}
-
 # 按 / 拆解并消除 . 与 ..，只做文本规范化，不访问文件系统。
 Normalize_Fs_Path()
 {
@@ -176,12 +152,12 @@ Db_Log_Error_Path()
 {
     local logerror datadir base resolved
 
-    logerror=$(Get_Mysqld_Conf_Value log_error)
+    logerror=$(Db_Conf_Value log_error "${My_Cnf}")
     [ -n "${logerror}" ] || return 0
     case "${logerror}" in
     /*) Normalize_Fs_Path "${logerror}"; return 0 ;;
     esac
-    datadir=$(Get_Mysqld_Conf_Value datadir)
+    datadir=$(Db_Conf_Value datadir "${My_Cnf}")
     [ -n "${datadir}" ] || return 1
     base=$(Normalize_Fs_Path "${datadir}")
     resolved=$(Normalize_Fs_Path "${base}/${logerror}")
@@ -199,8 +175,8 @@ Expand_Token()
 
     case "${raw}" in
     @MY_CNF)      printf '%s' "${My_Cnf}"; return 0 ;;
-    @DB_USER)     Get_Mysqld_Conf_Value user; return 0 ;;
-    @DB_DATADIR)  Get_Mysqld_Conf_Value datadir; return 0 ;;
+    @DB_USER)     Db_Conf_Value user "${My_Cnf}"; return 0 ;;
+    @DB_DATADIR)  Db_Conf_Value datadir "${My_Cnf}"; return 0 ;;
     @DB_LOGERROR) Db_Log_Error_Path; return $? ;;
     @DEFAULT_SITE)        printf '%s' "${Default_Site}"; return 0 ;;
     @DEFAULT_SITE/*)
@@ -861,7 +837,9 @@ Has_Systemd()
 
 Write_Systemd_Unit()
 {
-    cat > "${Systemd_Service}" <<'EOF' || { Err "写入 ${Systemd_Service} 失败。"; return 1; }
+    local rc
+
+    Svc_Install_Timer "${Systemd_Service}" "${Systemd_Timer}" "$(cat <<'EOF'
 [Unit]
 Description=LNMP permission baseline check
 
@@ -871,7 +849,7 @@ ExecStart=/bin/lnmp-perm run
 Nice=10
 IOSchedulingClass=idle
 EOF
-    cat > "${Systemd_Timer}" <<'EOF' || { Err "写入 ${Systemd_Timer} 失败。"; return 1; }
+)" "$(cat <<'EOF'
 [Unit]
 Description=LNMP permission baseline check timer
 
@@ -883,13 +861,14 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-    chmod 644 "${Systemd_Service}" "${Systemd_Timer}" \
-        || { Err "设置 unit 文件权限失败。"; return 1; }
-    systemctl daemon-reload >/dev/null 2>&1
-    systemctl enable --now lnmp-perm.timer >/dev/null 2>&1 \
-        || { Err "启用 lnmp-perm.timer 失败，请手工检查。"; return 1; }
-    Ok "已启用 systemd timer：每天 04:20 前后核对（带随机延迟）。"
-    return 0
+)"
+    rc=$?
+    case "${rc}" in
+    0) Ok "已启用 systemd timer：每天 04:20 前后核对（带随机延迟）。" ;;
+    2) Err "启用 lnmp-perm.timer 失败，请手工检查。" ;;
+    *) Err "写入 ${Systemd_Service} 或 ${Systemd_Timer} 失败。" ;;
+    esac
+    return "${rc}"
 }
 
 Write_Cron()
@@ -936,7 +915,7 @@ Remove_Schedule()
     fi
     if [ -e "${Systemd_Timer}" ] || [ -e "${Systemd_Service}" ]; then
         rm -f "${Systemd_Timer}" "${Systemd_Service}" 2>/dev/null
-        command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+        Svc_Reload_Units
     fi
     rm -f "${Cron_File}" 2>/dev/null
     for path in "${Systemd_Timer}" "${Systemd_Service}" "${Cron_File}"; do
@@ -1038,7 +1017,7 @@ Cmd_Init()
                 rc=1
             fi
         done
-        systemctl daemon-reload >/dev/null 2>&1 || rc=1
+        Svc_Reload_Units || rc=1
     else
         Say "本机不使用 systemd，跳过启停钩子，仅安装定期核对任务。"
     fi
@@ -1073,7 +1052,7 @@ Cmd_Uninit()
     Remove_Schedule || rc=1
     Remove_Diagnose_Unit || rc=1
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl daemon-reload >/dev/null 2>&1 ||
+        Svc_Reload_Units ||
             { Err "systemctl daemon-reload 失败。"; rc=1; }
     fi
     if [ "${rc}" -ne 0 ]; then

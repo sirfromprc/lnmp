@@ -30,6 +30,6 @@ if [ -x /bin/lnmp-backup ]; then
 fi
 
 echo "错误：找不到 /bin/lnmp-backup，无法转发。" >&2
-echo "补装：cp tools/lnmp-backup.sh /bin/lnmp-backup && chmod +x /bin/lnmp-backup" >&2
+echo "补装：在源码目录执行 ./bumpversion.sh 部署管理命令。" >&2
 echo "然后执行：lnmp backup init" >&2
 exit 1

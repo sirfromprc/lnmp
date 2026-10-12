@@ -1,15 +1,16 @@
 # 发布流程。编译验证失败时不创建 Release。
 #
-# 关于版本号：产品版本取自 install.sh 的 LNMP_Ver，由 t/product_version.sh 提取，
-# 工作流内不硬编码。分支名（v2.3、v2.4）不参与取值。
-# 产品版本不随发布次数递增，日期只用于区分发布批次。
+# 关于版本号：产品版本取自 include/product.sh 的 LNMP_Ver，由 t/product_version.sh 提取，
+# 工作流内不硬编码，格式 MAJOR.MINOR.PATCH.BUILD。分支名不参与取值。
+# 产品版本的第四段随可独立验收的功能修改递增，日期只用于区分发布批次。
 # git tag 必须唯一；同名 tag 指向不同内容会破坏下载文件的稳定校验。
 #
 # 一次发布产出两个包，同属一个 Release：
-#   tag        v2.3-20260908                每次发布唯一
-#   release 名 LNMP v2.3 (20260908)
-#   包         lnmp-v2.3.tar.gz             主分支，组件版本由维护者手工确认
-#              lnmp-v2.3-20260908.tar.gz    本轮 auto-<日期> 分支，含自动升级
+#   tag        v3.0.3.000-20260908                每次发布唯一
+#   release 名 LNMP v3.0.3.000 (20260908)
+#   包         lnmp-v3.0.3.000.tar.gz             主分支，组件版本由维护者手工确认
+#              lnmp.tar.gz                        主分支包的同内容副本，文件名不随版本变化
+#              lnmp-v3.0.3.000-20260908.tar.gz    本轮 auto-<日期> 分支，含自动升级
 #
 # 两个包分开的原因：主分支的源码改动不会覆盖自动升级过的组件版本，
 # 自动升级也不会把未经确认的组件版本带进主分支。
@@ -17,7 +18,7 @@
 # 手动运行与 tag 触发只发主分支包，避免已有升级分支的旧源码进入新发布。
 #
 # 固定下载地址（不需要移动 tag）：
-#   /releases/latest/download/lnmp-v2.3.tar.gz
+#   /releases/latest/download/lnmp.tar.gz
 #
 # 默认生成 GitHub 构建证明（attestation），验证方式：
 #   gh attestation verify <包名>.tar.gz --repo <owner>/<repo>
@@ -54,25 +55,17 @@ on:
         default: false
   push:
     tags:
-      # 产品版本不写死，形如 v2.3-20260908 的 tag 都能触发。
-      - 'v[0-9]+.[0-9]+-*'
+      # 产品版本不写死，形如 v3.0.3.000-20260908 的 tag 都能触发。
+      - 'v[0-9]+.[0-9]+.[0-9]+.[0-9]+-*'
 
 permissions:
   contents: read
 
 jobs:
-  # 静态检查
+  # 静态检查与 ci.yml 共用同一组步骤（含 bash -n 与 ShellCheck）
   static:
     name: 静态检查
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - run: bash t/lint.sh
-      - run: bash t/consistency.sh
-      - run: bash t/test_profile.sh
-      - run: bash t/test_dispatch.sh
-      - run: bash t/test_bump.sh
-      - run: bash t/test_upstream.sh
+    uses: ./.github/workflows/ci.yml
 
   # 编译验证
   build:
@@ -101,7 +94,7 @@ jobs:
         id: ver
         run: |
           set -e
-          # 产品版本取自 install.sh，工作流不硬编码，分支名不参与。
+          # 产品版本取自 include/product.sh，工作流不硬编码，分支名不参与。
           PRODUCT_VER="$(bash t/product_version.sh --tag)"
           if [ "${{ github.ref_type }}" = 'tag' ]; then
             TAG="${{ github.ref_name }}"
@@ -172,6 +165,8 @@ jobs:
         run: |
           set -e
           bash t/pack.sh . "${BASE_PKG}" dist
+          # 文件名不带版本的副本，供 releases/latest/download/lnmp.tar.gz 固定地址使用。
+          cp "dist/${BASE_PKG}.tar.gz" dist/lnmp.tar.gz
           if [ "${FOUND}" = 'true' ]; then
             bash t/pack.sh /tmp/autotree "${AUTO_PKG}" dist
           fi

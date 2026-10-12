@@ -24,12 +24,9 @@
 
 set -u
 
-# 与 include/firewall.sh 保持一致，两处取值不同会导致规则表分裂。
-FW_TABLE='inet lnmp'
-FW_CHAIN='input'
-FW_INCLUDE_FILE="${LNMP_FW_NFT_FILE:-/etc/nftables.d/lnmp.nft}"
-FW_UNIT_NAME='lnmp-nftables'
-FW_UNIT_FILE="/etc/systemd/system/${FW_UNIT_NAME}.service"
+# 规则表常量、后端判定、链重建、规则文件持久化与端口探测与安装期共用；部署时由 cli_assemble.sh 展开。
+. "$(dirname "${BASH_SOURCE[0]}")/../include/rt/svc.sh" # @RT_SVC@
+. "$(dirname "${BASH_SOURCE[0]}")/../include/rt/fw.sh" # @RT_FW@
 
 # 测试注入点：默认取实际系统路径。
 Fw_Conf="${LNMP_FW_CONF:-/etc/lnmp/fw.conf}"
@@ -87,12 +84,6 @@ EOF
 # ---------------------------------------------------------------------------
 # 通用校验
 # ---------------------------------------------------------------------------
-Valid_Port()
-{
-    case "$1" in ''|*[!0-9]*) return 1 ;; esac
-    [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
-}
-
 # 接受单端口或 20000-30000 形式的范围。
 Valid_Port_Spec()
 {
@@ -101,10 +92,10 @@ Valid_Port_Spec()
     *-*)
         lo=${spec%%-*}
         hi=${spec##*-}
-        Valid_Port "${lo}" && Valid_Port "${hi}" && [ "${lo}" -le "${hi}" ]
+        Fw_Valid_Port "${lo}" && Fw_Valid_Port "${hi}" && [ "${lo}" -le "${hi}" ]
         ;;
     *)
-        Valid_Port "${spec}"
+        Fw_Valid_Port "${spec}"
         ;;
     esac
 }
@@ -115,23 +106,8 @@ Valid_Proto()
 }
 
 # ---------------------------------------------------------------------------
-# 防火墙后端
+# 防火墙规则
 # ---------------------------------------------------------------------------
-FW_Backend=''
-
-Firewall_Backend()
-{
-    [ -n "${FW_Backend}" ] && return 0
-    if command -v firewall-cmd >/dev/null 2>&1 \
-       && systemctl is-active firewalld >/dev/null 2>&1; then
-        FW_Backend='firewalld'
-    elif command -v nft >/dev/null 2>&1; then
-        FW_Backend='nft'
-    else
-        FW_Backend='none'
-    fi
-}
-
 Chain_Dump()
 {
     nft list chain ${FW_TABLE} ${FW_CHAIN} 2>/dev/null
@@ -144,8 +120,8 @@ Has_DB='n';        P_DB='';        P_DB_X=''
 Has_Redis='n';     P_Redis=''
 Has_Memcached='n'; P_Memcached=''
 Has_Ftp='n';       P_Ftp_Ctl='';   P_Ftp_Data=''; P_Ftp_Pasv=''
+Has_Quic='n'
 P_Http=()
-SSH_Ports=()
 
 # my.cnf 的 [mysqld] 段可能多次出现 port，取最后一个生效值。
 Port_DB()
@@ -166,7 +142,7 @@ Port_DB()
         }
         END { if (last != "") print last }
     ' "${My_Cnf}" 2>/dev/null)
-    Valid_Port "${port}" && printf '%s\n' "${port}"
+    Fw_Valid_Port "${port}" && printf '%s\n' "${port}"
 }
 
 # MariaDB 不使用 X Protocol，配置里没有该项时不产出规则。
@@ -188,26 +164,7 @@ Port_DB_X()
         }
         END { if (last != "") print last }
     ' "${My_Cnf}" 2>/dev/null)
-    Valid_Port "${port}" && printf '%s\n' "${port}"
-}
-
-# port 0 表示只监听 unixsocket，没有 TCP 端口需要阻断。
-Port_Redis()
-{
-    local port
-    port=$(awk '$1 == "port" { print $2; exit }' "${Redis_Conf}" 2>/dev/null)
-    [ "${port}" = "0" ] && return 1
-    Valid_Port "${port}" || port=6379
-    printf '%s\n' "${port}"
-}
-
-Port_Memcached()
-{
-    local port
-    port=$(awk -F= '$1 == "PORT" { gsub(/"/, "", $2); print $2; exit }' \
-           "${Memcached_Init}" 2>/dev/null)
-    Valid_Port "${port}" || port=11211
-    printf '%s\n' "${port}"
+    Fw_Valid_Port "${port}" && printf '%s\n' "${port}"
 }
 
 # Bind 形如 0.0.0.0,21；PassivePortRange 形如 20000 30000。
@@ -216,10 +173,10 @@ Resolve_Ftp_Ports()
     local ctl pasv_lo pasv_hi
 
     ctl=$(awk '$1 == "Bind" { sub(/^.*,/, "", $2); print $2; exit }' "${Pureftpd_Conf}" 2>/dev/null)
-    Valid_Port "${ctl}" || ctl=21
+    Fw_Valid_Port "${ctl}" || ctl=21
     pasv_lo=$(awk '$1 == "PassivePortRange" { print $2; exit }' "${Pureftpd_Conf}" 2>/dev/null)
     pasv_hi=$(awk '$1 == "PassivePortRange" { print $3; exit }' "${Pureftpd_Conf}" 2>/dev/null)
-    Valid_Port "${pasv_lo}" && Valid_Port "${pasv_hi}" && [ "${pasv_lo}" -le "${pasv_hi}" ] || {
+    Fw_Valid_Port "${pasv_lo}" && Fw_Valid_Port "${pasv_hi}" && [ "${pasv_lo}" -le "${pasv_hi}" ] || {
         pasv_lo=20000
         pasv_hi=30000
     }
@@ -228,7 +185,7 @@ Resolve_Ftp_Ports()
     # pure-ftpd.conf 不记录主动模式数据端口，唯一来源是 lnmp.conf；读不到用 20。
     P_Ftp_Data=''
     Resolve_Lnmp_Conf && P_Ftp_Data=$(Read_Lnmp_Conf_Port "${Lnmp_Conf}" Pureftpd_Data_Port)
-    Valid_Port "${P_Ftp_Data}" || P_Ftp_Data=20
+    Fw_Valid_Port "${P_Ftp_Data}" || P_Ftp_Data=20
     P_Ftp_Pasv="${pasv_lo}-${pasv_hi}"
 }
 
@@ -240,6 +197,8 @@ Resolve_Http_Ports()
 
     for dir in "${Nginx_Dir}" "${Openresty_Dir}"; do
         [ -d "${dir}/conf" ] || continue
+        # Nginx 的 HTTP/3 走 UDP 443。
+        Has_Quic='y'
         files+=("${dir}/conf/nginx.conf")
         for f in "${dir}/conf/vhost/"*.conf; do
             [ -s "${f}" ] && files+=("${f}")
@@ -256,7 +215,7 @@ Resolve_Http_Ports()
     # 避免站点暂时没有 443 配置时把已有放行规则删掉。
     P_Http=(80 443)
     while read -r port; do
-        Valid_Port "${port}" || continue
+        Fw_Valid_Port "${port}" || continue
         case " ${P_Http[*]} " in *" ${port} "*) continue ;; esac
         P_Http+=("${port}")
     done < <(
@@ -274,38 +233,6 @@ Resolve_Http_Ports()
     )
 }
 
-# SSH 例外：以实际监听优先，探测不到才读配置。放行错端口会把自己关在门外。
-Resolve_SSH_Ports()
-{
-    local port
-
-    SSH_Ports=()
-    # ss 会把同一端口的 IPv4 与 IPv6 监听各报一次，必须去重，否则规则重复写入。
-    if command -v ss >/dev/null 2>&1; then
-        while read -r port; do
-            Valid_Port "${port}" && SSH_Ports+=("${port}")
-        done < <(ss -Htlnp 2>/dev/null | grep -F 'sshd' | awk '{print $4}' \
-                 | sed -E 's/.*://' | sort -un)
-    fi
-    if [ ${#SSH_Ports[@]} -eq 0 ] && command -v netstat >/dev/null 2>&1; then
-        while read -r port; do
-            Valid_Port "${port}" && SSH_Ports+=("${port}")
-        done < <(netstat -tlnp 2>/dev/null | grep -F 'sshd' | awk '{print $4}' \
-                 | sed -E 's/.*://' | sort -un)
-    fi
-    if [ ${#SSH_Ports[@]} -eq 0 ]; then
-        while read -r port; do
-            Valid_Port "${port}" && SSH_Ports+=("${port}")
-        done < <(
-            for f in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
-                [ -s "${f}" ] || continue
-                grep -Eio '^[[:space:]]*Port[[:space:]]+[0-9]+' "${f}" 2>/dev/null | awk '{print $2}'
-            done | sort -un
-        )
-        [ ${#SSH_Ports[@]} -eq 0 ] && [ -s /etc/ssh/sshd_config ] && SSH_Ports=(22)
-    fi
-}
-
 Resolve_Ports()
 {
     if [ -d "${Mysql_Dir}" ] || [ -d "${Mariadb_Dir}" ] || [ -s "${My_Cnf}" ]; then
@@ -317,11 +244,12 @@ Resolve_Ports()
     fi
     if [ -d "${Redis_Dir}" ] || [ -s "${Redis_Conf}" ]; then
         Has_Redis='y'
-        P_Redis=$(Port_Redis) || P_Redis=''
+        # port 0 表示只监听 unixsocket，没有 TCP 端口需要阻断。
+        P_Redis=$(Fw_Redis_Port "${Redis_Conf}" 6379) || P_Redis=''
     fi
     if [ -s "${Memcached_Init}" ] || [ -d "${Memcached_Dir}" ]; then
         Has_Memcached='y'
-        P_Memcached=$(Port_Memcached)
+        P_Memcached=$(Fw_Memcached_Port "${Memcached_Init}" 11211)
     fi
     if [ -d "${Pureftpd_Dir}" ] || [ -s "${Pureftpd_Conf}" ]; then
         Has_Ftp='y'
@@ -428,6 +356,7 @@ Plan_Rules()
     for port in ${P_Http[@]+"${P_Http[@]}"}; do
         echo "accept tcp ${port}"
     done
+    [ "${Has_Quic}" = 'y' ] && echo 'accept udp 443'
     if [ "${Has_Ftp}" = 'y' ]; then
         echo "accept tcp ${P_Ftp_Data}"
         echo "accept tcp ${P_Ftp_Ctl}"
@@ -458,22 +387,6 @@ Planned_Drops()
 # ---------------------------------------------------------------------------
 # 应用规则
 # ---------------------------------------------------------------------------
-Rebuild_Chain()
-{
-    if ! nft add table ${FW_TABLE} 2>/dev/null; then
-        Err "无法创建 nftables 表 ${FW_TABLE}。"
-        return 1
-    fi
-    # 删链重建，避免重复执行造成规则累积。
-    nft delete chain ${FW_TABLE} ${FW_CHAIN} 2>/dev/null
-    if ! nft add chain ${FW_TABLE} ${FW_CHAIN} \
-         '{ type filter hook input priority filter; policy accept; }' 2>/dev/null; then
-        Err "无法创建 nftables 链 ${FW_TABLE} ${FW_CHAIN}。"
-        return 1
-    fi
-    return 0
-}
-
 Apply_Plan()
 {
     local line rc=0
@@ -502,42 +415,16 @@ Apply_Plan()
     return ${rc}
 }
 
-# 从内核导出当前表并落盘，与 include/firewall.sh 的 Firewall_Save 同构。
+# 导出当前表并落盘；跟随单元缺失时按随包模板补回，purge 之后 sync 才能完整重建。
 Save_Rules()
 {
-    local tmp
+    local src=''
 
-    mkdir -p "$(dirname "${FW_INCLUDE_FILE}")" || return 1
-    tmp="${FW_INCLUDE_FILE}.tmp.$$"
-    {
-        echo '#!/usr/sbin/nft -f'
-        echo '# 由 lnmp fw 生成，见 tools/lnmp-fw.sh。'
-        echo '# 本文件只定义 LNMP 自己的 inet lnmp 表，不影响系统其他防火墙规则。'
-        echo '# 重新加载：lnmp fw reload'
-        echo
-        echo 'table inet lnmp'
-        echo 'delete table inet lnmp'
-        nft list table ${FW_TABLE}
-    } > "${tmp}" 2>/dev/null
-
-    if [ ! -s "${tmp}" ] || ! grep -q "chain ${FW_CHAIN}" "${tmp}"; then
-        Err "采集 nftables 规则失败，未修改 ${FW_INCLUDE_FILE}。"
-        rm -f "${tmp}"
-        return 1
+    Fw_Write_Rules '由 lnmp fw 生成，见 tools/lnmp-fw.sh。' 'lnmp fw reload' || return 1
+    if [ ! -s "${FW_UNIT_FILE}" ]; then
+        src="$(Source_Dir)/init.d/${FW_UNIT_NAME}.service" || src=''
     fi
-    if ! nft -c -f "${tmp}" >/dev/null 2>&1; then
-        Err "生成的规则文件语法校验未通过，未修改 ${FW_INCLUDE_FILE}。"
-        rm -f "${tmp}"
-        return 1
-    fi
-    chmod 600 "${tmp}" || { rm -f "${tmp}"; return 1; }
-    if ! mv -f "${tmp}" "${FW_INCLUDE_FILE}"; then
-        Err "写入 ${FW_INCLUDE_FILE} 失败。"
-        rm -f "${tmp}"
-        return 1
-    fi
-    # 单元缺失时按随包模板补回，purge 之后 sync 才能完整重建。
-    if Install_Fw_Unit; then
+    if Fw_Install_Unit "${src}"; then
         systemctl enable nftables >/dev/null 2>&1
     else
         Warn "未能启用 ${FW_UNIT_NAME}.service，规则在重启后可能不会自动恢复。"
@@ -554,34 +441,6 @@ Source_Dir()
     dir=$(head -1 "${Source_Dir_File}")
     [ -n "${dir}" ] && [ -d "${dir}" ] || return 1
     printf '%s\n' "${dir}"
-}
-
-# purge 会删掉单元，重建时需要补回，否则规则重启后不再加载。
-# 与 include/firewall.sh 的 Firewall_Install_Unit 同构，模板取自记录的源码目录。
-Install_Fw_Unit()
-{
-    local src tmp nft_bin dir
-
-    command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ] || return 1
-    if [ ! -s "${FW_UNIT_FILE}" ]; then
-        dir=$(Source_Dir) || return 1
-        src="${dir}/init.d/${FW_UNIT_NAME}.service"
-        [ -s "${src}" ] || return 1
-        nft_bin=$(command -v nft) || return 1
-        tmp=$(mktemp "${FW_UNIT_FILE}.XXXXXXXX") || return 1
-        # 单元内的 nft 路径按当前系统实际位置替换。
-        if ! sed "s#^\\(ExecStart=\\|ExecStop=-\\)/usr/sbin/nft #\\1${nft_bin} #" "${src}" > "${tmp}" \
-           || ! chmod 644 "${tmp}" || ! mv -f "${tmp}" "${FW_UNIT_FILE}"; then
-            rm -f "${tmp}"
-            return 1
-        fi
-        systemctl daemon-reload >/dev/null 2>&1
-    fi
-    systemctl enable "${FW_UNIT_NAME}" >/dev/null 2>&1
-    systemctl is-enabled "${FW_UNIT_NAME}" >/dev/null 2>&1 || return 1
-    # 规则此刻已在内存中，仅登记服务状态，避免后续 restart 时被判为未启动。
-    systemctl start "${FW_UNIT_NAME}" >/dev/null 2>&1
-    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -720,7 +579,7 @@ Cmd_Sync()
         ;;
     esac
 
-    Rebuild_Chain || return 1
+    Fw_Rebuild_Chain || return 1
     if ! Plan_Rules | Apply_Plan; then
         Err "部分规则写入失败，请核对 nft list table ${FW_TABLE} 的输出。"
         return 1
@@ -1028,22 +887,7 @@ Cmd_Purge()
         esac
     fi
 
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl disable --now "${FW_UNIT_NAME}" >/dev/null 2>&1
-    fi
-    if [ -f "${FW_UNIT_FILE}" ] && ! rm -f "${FW_UNIT_FILE}"; then
-        Err "删除 ${FW_UNIT_FILE} 失败。"
-        rc=1
-    fi
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl daemon-reload >/dev/null 2>&1
-    fi
-    command -v nft >/dev/null 2>&1 && nft delete table ${FW_TABLE} 2>/dev/null
-    if [ -f "${FW_INCLUDE_FILE}" ] && ! rm -f "${FW_INCLUDE_FILE}"; then
-        Err "删除 ${FW_INCLUDE_FILE} 失败。"
-        rc=1
-    fi
-    rmdir "$(dirname "${FW_INCLUDE_FILE}")" 2>/dev/null
+    Fw_Purge || rc=1
 
     [ ${rc} -eq 0 ] && Ok "已清除 ${FW_TABLE} 表、${FW_INCLUDE_FILE} 与 ${FW_UNIT_NAME}.service。"
     Say "规则可用 lnmp fw sync 重建。"

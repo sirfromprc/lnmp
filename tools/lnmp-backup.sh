@@ -29,6 +29,10 @@
 
 set -u
 
+# 服务运行部分：源码目录中执行时按相对路径加载，部署时由 include/rt/cli_assemble.sh 以文件内容替换本行。
+. "$(dirname "${BASH_SOURCE[0]}")/../include/rt/svc.sh" # @RT_SVC@
+. "$(dirname "${BASH_SOURCE[0]}")/../include/rt/db.sh" # @RT_DB@
+
 Conf_Dir="/etc/lnmp"
 Conf_File="${Conf_Dir}/backup.conf"
 My_Cnf="${Conf_Dir}/backup-mysql.cnf"
@@ -181,34 +185,6 @@ Find_Mysql_Client()
     return 1
 }
 
-# 输出数据库实际使用的 socket 路径，[client] 优先，其次 [mysqld]。
-# --defaults-file 不读 /etc/my.cnf，临时凭据必须自带 socket 才能连上。
-Get_Actual_DB_Socket()
-{
-    local conf="${1:-/etc/my.cnf}" sock=''
-
-    if [ -s "${conf}" ]; then
-        sock=$(awk '
-            /^[[:space:]]*\[/ {
-                section = $0
-                sub(/^[[:space:]]*\[[[:space:]]*/, "", section)
-                sub(/[[:space:]]*\].*$/, "", section)
-                next
-            }
-            /^[[:space:]]*socket[[:space:]]*=/ {
-                value = $0
-                sub(/^[^=]*=[[:space:]]*/, "", value)
-                sub(/[[:space:]#].*$/, "", value)
-                if (value == "") next
-                if (section == "client" && client == "") client = value
-                else if (section == "mysqld" && server == "") server = value
-            }
-            END { print (client != "" ? client : server) }
-        ' "${conf}")
-    fi
-    printf '%s' "${sock:-/run/mysqld/mysqld.sock}"
-}
-
 # ---------------------------------------------------------------------------
 # 并发锁保证同一时刻只运行一个备份任务，避免批次写入、上传和清理互相干扰。
 # ---------------------------------------------------------------------------
@@ -347,7 +323,7 @@ Dump_Db()
         return 1
     fi
     # mysqldump 正常结束会写入 "-- Dump completed"，该标记用于拒绝进程中断或
-    # 磁盘写满时留下的不完整转储，判定规则与 Check_DB_Backup 一致。
+    # 磁盘写满时留下的不完整转储，判定规则与数据库模块 _Database_Check_Backup 一致。
     if ! gzip -dc "${part}" 2>/dev/null | tail -c 200 | grep -q -- '-- Dump completed'; then
         rm -f "${part}"
         Log ERROR "导出数据库 ${db} 的转储不完整（缺少结束标记）"
@@ -1457,8 +1433,9 @@ Guess_Db()
 Write_Systemd_Unit()
 {
     local hour="${1:-3}"
-    # unit 写入、权限设置和启用均需成功，否则定时备份无法自动执行。
-    cat > "${Systemd_Service}" <<'EOF' || { Err "写入 ${Systemd_Service} 失败。"; return 1; }
+    local rc
+
+    Svc_Install_Timer "${Systemd_Service}" "${Systemd_Timer}" "$(cat <<'EOF'
 [Unit]
 Description=LNMP backup (websites and databases)
 After=network-online.target mysql.service mariadb.service
@@ -1470,7 +1447,7 @@ ExecStart=/bin/lnmp-backup run
 Nice=10
 IOSchedulingClass=idle
 EOF
-    cat > "${Systemd_Timer}" <<EOF || { Err "写入 ${Systemd_Timer} 失败。"; return 1; }
+)" "$(cat <<EOF
 [Unit]
 Description=LNMP backup timer
 
@@ -1482,13 +1459,14 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-    chmod 644 "${Systemd_Service}" "${Systemd_Timer}" \
-        || { Err "设置 unit 文件权限失败。"; return 1; }
-    systemctl daemon-reload >/dev/null 2>&1
-    systemctl enable --now lnmp-backup.timer >/dev/null 2>&1 \
-        || { Err "启用 lnmp-backup.timer 失败，请手工检查。"; return 1; }
-    Ok "已启用 systemd timer：每天 ${hour}:30 前后执行（带随机延迟）。"
-    return 0
+)"
+    rc=$?
+    case "${rc}" in
+    0) Ok "已启用 systemd timer：每天 ${hour}:30 前后执行（带随机延迟）。" ;;
+    2) Err "启用 lnmp-backup.timer 失败，请手工检查。" ;;
+    *) Err "写入 ${Systemd_Service} 或 ${Systemd_Timer} 失败。" ;;
+    esac
+    return "${rc}"
 }
 
 Write_Cron()
@@ -1512,7 +1490,7 @@ Write_My_Cnf()
     if ! mysql_bin=$(Find_Mysql_Client); then
         return 3
     fi
-    db_sock=$(Get_Actual_DB_Socket)
+    db_sock=$(Db_Socket)
     tmp=$(mktemp "${My_Cnf}.XXXXXXXX") || return 1
     if [ -n "${db_pass}" ]; then
         # option file 在引号内将反斜杠解析为转义符，写入前需加倍。

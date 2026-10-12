@@ -13,6 +13,8 @@ on:
     branches: [ main, master ]
   pull_request:
   workflow_dispatch:
+  # release.yml 以此作为发布前的静态检查。
+  workflow_call:
 
 permissions:
   contents: read
@@ -42,7 +44,7 @@ jobs:
           exit $fail
 
       # 检查范围与排除规则由 t/shellcheck.sh 统一维护，此处只负责装上 shellcheck。
-      # 该脚本在未安装 shellcheck 时会跳过并返回 0，CI 里必须先装，否则等于不检查。
+      # 该脚本在未安装 shellcheck 时返回 2，CI 里必须先装。
       - name: ShellCheck
         run: |
           sudo apt-get update -qq

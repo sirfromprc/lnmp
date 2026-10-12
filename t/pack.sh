@@ -62,7 +62,8 @@ if ! tar --exclude-vcs \
     exit 1
 fi
 
-if ! tar -czf "${Out_Abs}/${Pkg}.tar.gz" -C "${Stage}" "${Pkg}"; then
+# 包内属主归零：root 解包时 tar 默认沿用包内属主。
+if ! tar --owner=0 --group=0 --numeric-owner -czf "${Out_Abs}/${Pkg}.tar.gz" -C "${Stage}" "${Pkg}"; then
     echo "错误：打包失败。" >&2
     exit 1
 fi

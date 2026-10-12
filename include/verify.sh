@@ -365,6 +365,80 @@ Verify_OpenResty_Signature()
     return 0
 }
 
+# Node.js 发布者主密钥指纹，取自 nodejs/node README 的 Release keys 一节。
+# 随包 conf/nodejs-signing-keys.asc 含白名单之外的公钥时拒绝验签。
+Nodejs_Key_Fingerprints='
+108F52B48DB57BB0CC439B2997B01419BD92F80A
+5BE8A3F6C8A5C01D106C0AD820B1A390B168D356
+655F3B5C1FB3FA8D1A0CA6BDE4A7D232B936D2FD
+890C08DB8579162FEE0DF9DB8BEAB4DFCF555EF4
+A363A499291CBBC940DD62E41F10027AF002F8B0
+C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C
+CC68F5A3106FF448322E48ED27F5E38D5B0A215F
+DD792F5973C6DE52C432CBDAC77ABFA00DDBF2B7
+'
+
+Nodejs_Key_Allowed()
+{
+    [ -n "$1" ] || return 1
+    printf '%s\n' "${Nodejs_Key_Fingerprints}" | grep -qxF "$1"
+}
+
+# Verify_Nodejs_Shasums <SHASUMS256.txt> <分离签名>：用随包公钥验证上游发布的校验清单。
+Verify_Nodejs_Shasums()
+{
+    local file="$1" sig="$2" key="${cur_dir}/conf/nodejs-signing-keys.asc"
+    local tmpdir keyring out fpr bad=0 good=0
+
+    if ! command -v gpg >/dev/null 2>&1 || ! command -v gpgv >/dev/null 2>&1; then
+        Echo_Red "系统缺少 gpg 或 gpgv，无法验证 Node.js 的 PGP 签名。"
+        Echo_Red "请安装后重试（Debian/Ubuntu: apt install gnupg gpgv；RHEL 系: yum install gnupg2）。"
+        return 1
+    fi
+    if [ ! -s "${key}" ]; then
+        Echo_Red "缺少 conf/nodejs-signing-keys.asc，无法验证 Node.js 签名。"
+        return 1
+    fi
+
+    tmpdir=$(mktemp -d) || return 1
+    keyring="${tmpdir}/nodejs.gpg"
+    if ! gpg --dearmor < "${key}" > "${keyring}" 2>/dev/null; then
+        Echo_Red "无法解析 conf/nodejs-signing-keys.asc（文件损坏或不是 PGP 公钥）。"
+        rm -rf "${tmpdir}"
+        return 1
+    fi
+    for fpr in $(gpg --show-keys --with-colons "${keyring}" 2>/dev/null |
+                 awk -F: '/^pub:/{p=1} /^fpr:/{if(p){print $10; p=0}}'); do
+        if Nodejs_Key_Allowed "${fpr}"; then
+            good=$((good+1))
+        else
+            Echo_Red "conf/nodejs-signing-keys.asc 含有白名单之外的公钥：${fpr}"
+            bad=$((bad+1))
+        fi
+    done
+    if [ "${bad}" -gt 0 ] || [ "${good}" -eq 0 ]; then
+        Echo_Red "随包 Node.js 公钥与预期不符（白名单内 ${good} 个、之外 ${bad} 个），拒绝验签。"
+        rm -rf "${tmpdir}"
+        return 1
+    fi
+
+    out=$(gpgv --status-fd 1 --keyring "${keyring}" "${sig}" "${file}" 2>/dev/null)
+    if ! echo "${out}" | grep -q '^\[GNUPG:\] GOODSIG'; then
+        Echo_Red "Node.js 校验清单 PGP 签名验证失败，拒绝使用该文件。"
+        rm -rf "${tmpdir}"
+        return 1
+    fi
+    fpr=$(echo "${out}" | awk '/^\[GNUPG:\] VALIDSIG/{print $NF; exit}')
+    if ! Nodejs_Key_Allowed "${fpr}"; then
+        Echo_Red "签名有效，但签名者主密钥 ${fpr:-未知} 不在随包白名单内。"
+        rm -rf "${tmpdir}"
+        return 1
+    fi
+    Echo_Green "Node.js 校验清单 PGP 签名验证通过（签名者主密钥 ${fpr}）。"
+    rm -rf "${tmpdir}"
+    return 0
+}
+
 # Retry_Cached_Download <是否为既有文件> <url> <落地文件名>
 # 既有文件校验失败多半是上次下载中断留下的残缺包：删除后重取一次。
 # 文件本来就是这次下的（第一个参数为 n）则不重试，返回 1 由调用方终止。

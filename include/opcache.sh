@@ -14,7 +14,9 @@ Install_Opcache()
     fi
 
     # 与安装、升级共用同一份参数；8.5 起 OPcache 静态编入，不校验 opcache.so。
-    if ! Enable_Opcache_Config; then
+    local opcache_mb=''
+    Tune_Plan && opcache_mb="${Tune_Opcache_MB}"
+    if ! Enable_Opcache_Config "${PHP_Path}" "${opcache_mb}"; then
         Echo_Red "OPcache 安装失败！"
         return 1
     fi

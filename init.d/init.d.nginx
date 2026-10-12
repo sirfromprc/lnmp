@@ -35,7 +35,11 @@ Nginx_Is_Nginx()
         [ "$_comm" = "nginx" ] && return 0
         return 1
     fi
-    [ "$_exe" = "$_want" ]
+    # 运行中替换二进制后 exe 指向 make install 改名的 .old 或带 (deleted) 后缀。
+    case "$_exe" in
+        "$_want"|"$_want.old"|"$_want (deleted)"|"$_want.old (deleted)") return 0 ;;
+    esac
+    return 1
 }
 
 # 运行时返回 Nginx master pid；优先使用 pid 文件，失效时核对同名进程的

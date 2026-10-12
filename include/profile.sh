@@ -23,30 +23,30 @@ Apache_Default='1'  # Apache 2.4（2.2 已随 EOL 移除）
 
 Set_DB_Profile()
 {
-    DB_Kind='' DB_Branch='' DB_Ver='' DB_Install='' DB_Bin_Archs='' DB_Bin_Default='' DB_Bin_Glibc='' DB_Needs_Boost='n' DB_Boost_Mode='' DB_Min_Mem_MB=0 DB_Service='' DB_Data_Dir='' DB_Note=''
+    DB_Kind='' DB_Branch='' DB_Ver='' DB_Bin_Archs='' DB_Bin_Default='' DB_Bin_Glibc='' DB_Needs_Boost='n' DB_Boost_Mode='' DB_Min_Mem_MB=0 DB_Service='' DB_Data_Dir='' DB_Note=''
 
     case "$1" in
     # DB_Bin_Archs 仅列出上游提供且可验证完整性的通用二进制架构，其他架构
     # 或系统 glibc 低于 DB_Bin_Glibc 时使用源码编译。MySQL 8.4.11 起只提供 glibc 2.28 包。
     1)  DB_Kind='mysql'   DB_Branch='8.0'   DB_Ver='mysql-8.0.46'
-        DB_Install='Install_MySQL_80'     DB_Bin_Archs='x86_64 aarch64'
+        DB_Bin_Archs='x86_64 aarch64'
         DB_Bin_Default='auto' DB_Bin_Glibc='2.28' DB_Needs_Boost='y' DB_Boost_Mode='auto'
         DB_Min_Mem_MB=1024 DB_Note=' (EOL 2026-04)' ;;
     2)  DB_Kind='mysql'   DB_Branch='8.4'   DB_Ver='mysql-8.4.11'
-        DB_Install='Install_MySQL_84'     DB_Bin_Archs='x86_64 aarch64'
+        DB_Bin_Archs='x86_64 aarch64'
         DB_Bin_Default='auto' DB_Bin_Glibc='2.28' DB_Needs_Boost='y' DB_Boost_Mode='auto'
         DB_Min_Mem_MB=1024 ;;
     3)  DB_Kind='mariadb' DB_Branch='10.11' DB_Ver='mariadb-10.11.19'
-        DB_Install='Install_MariaDB_1011' DB_Bin_Archs='x86_64'
+        DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Min_Mem_MB=1024 ;;
     4)  DB_Kind='mariadb' DB_Branch='11.4'  DB_Ver='mariadb-11.4.13'
-        DB_Install='Install_MariaDB_114'  DB_Bin_Archs='x86_64'
+        DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Min_Mem_MB=1024 ;;
     5)  DB_Kind='mariadb' DB_Branch='11.8'  DB_Ver='mariadb-11.8.9'
-        DB_Install='Install_MariaDB_118'  DB_Bin_Archs='x86_64'
+        DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Min_Mem_MB=1024 ;;
     6)  DB_Kind='mariadb' DB_Branch='12.3'  DB_Ver='mariadb-12.3.3'
-        DB_Install='Install_MariaDB_123'  DB_Bin_Archs='x86_64'
+        DB_Bin_Archs='x86_64'
         DB_Bin_Default='auto' DB_Min_Mem_MB=1024 ;;
     0)  DB_Kind='none' ;;
     *)  Legacy_Selection_Hint DB "$1"
@@ -83,8 +83,6 @@ Set_DB_Profile()
 # 产出：
 #   PHP_Branch          主版本号（如 8.3），用于拼接路径与配置文件名
 #   Php_Ver             完整版本标识（如 php-8.3.35）
-#   PHP_Install         主 PHP 安装函数名
-#   MPHP_Install        多版本 PHP 安装函数名
 #   MPHP_Path           多版本 PHP 安装路径
 #   PHP_Apache_Module   Apache 模块文件名（libphp5.so / libphp7.so / libphp.so）
 #   Enable_PHP_Config   conf/ 下对应的 enable-php 配置文件名
@@ -94,26 +92,25 @@ Set_DB_Profile()
 # 返回：0 成功，1 编号非法
 Set_PHP_Profile()
 {
-    PHP_Branch='' Php_Ver='' PHP_Install='' MPHP_Install='' MPHP_Path=''
+    PHP_Branch='' Php_Ver='' MPHP_Path=''
     PHP_Apache_Module='' Enable_PHP_Config='' PhpMyAdmin_Ver=''
     PHP_Needs_DB='n' PHP_Note=''
 
     case "$1" in
-    1)  PHP_Branch='8.0' Php_Ver='php-8.0.30' PHP_Install='Install_PHP_80'
+    1)  PHP_Branch='8.0' Php_Ver='php-8.0.30'
         PHP_Note=' (EOL)' ;;
-    2)  PHP_Branch='8.1' Php_Ver='php-8.1.34' PHP_Install='Install_PHP_81'
+    2)  PHP_Branch='8.1' Php_Ver='php-8.1.34'
         PHP_Note=' (EOL)' ;;
-    3)  PHP_Branch='8.2' Php_Ver='php-8.2.34' PHP_Install='Install_PHP_82'
+    3)  PHP_Branch='8.2' Php_Ver='php-8.2.34'
         PHP_Note=' (EOL 2026-12)' ;;
-    4)  PHP_Branch='8.3' Php_Ver='php-8.3.35' PHP_Install='Install_PHP_83' ;;
-    5)  PHP_Branch='8.4' Php_Ver='php-8.4.26' PHP_Install='Install_PHP_84' ;;
-    6)  PHP_Branch='8.5' Php_Ver='php-8.5.11'  PHP_Install='Install_PHP_85' ;;
+    4)  PHP_Branch='8.3' Php_Ver='php-8.3.35' ;;
+    5)  PHP_Branch='8.4' Php_Ver='php-8.4.26' ;;
+    6)  PHP_Branch='8.5' Php_Ver='php-8.5.11' ;;
     *)  Legacy_Selection_Hint PHP "$1"
         return 1 ;;
     esac
 
     MPHP_Path="/usr/local/php${PHP_Branch}"
-    MPHP_Install="Install_MPHP${PHP_Branch}"
     Enable_PHP_Config="enable-php${PHP_Branch}.conf"
 
     # 当前 PHP 8.x 的 Apache 模块统一使用 libphp.so。
@@ -144,35 +141,16 @@ Legacy_Selection_Hint()
 # Set_Apache_Profile <编号>
 Set_Apache_Profile()
 {
-    Apache_Branch='' Apache_Ver='' Apache_Install=''
+    Apache_Branch='' Apache_Ver=''
 
     case "$1" in
-    1) Apache_Branch='2.4' Apache_Ver='httpd-2.4.69' Apache_Install='Install_Apache_24' ;;
+    1) Apache_Branch='2.4' Apache_Ver='httpd-2.4.69' ;;
     *) return 1 ;;
     esac
 
     return 0
 }
 
-
-Dispatch()
-{
-    local func="$1"
-
-    if [ -z "${func}" ]; then
-        Echo_Red "致命错误：分发目标为空。"
-        Echo_Red "include/profile.sh 的选择表没有生成安装函数。"
-        exit 1
-    fi
-
-    if ! declare -f "${func}" >/dev/null 2>&1; then
-        Echo_Red "致命错误：安装函数 '${func}' 未定义。"
-        Echo_Red "include/profile.sh 引用了不存在的函数。"
-        exit 1
-    fi
-
-    "${func}"
-}
 
 # 判断当前架构是否有可验证的官方通用二进制包；不可用时应使用源码编译。
 # 架构不在列表或系统 glibc 低于二进制包要求时不可用，原因写入 DB_Bin_Reason。
@@ -226,6 +204,12 @@ Print_PHP_Menu()
     done
 }
 
+
+# DB_Install_Mode：按 Select_DB_Bin 的结果输出 bin 或 source。
+DB_Install_Mode()
+{
+    if [ "${Bin}" = "y" ]; then echo bin; else echo source; fi
+}
 
 Select_DB_Bin()
 {

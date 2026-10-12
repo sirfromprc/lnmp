@@ -36,21 +36,12 @@ Install_Only_Nginx()
     Modify_Source
     Check_Host_Repo_Trust
     Nginx_Dependent
-    cd "${cur_dir}/src" || return 1
-    Download_Files https://downloads.sourceforge.net/pcre/${Pcre_Ver}.tar.bz2 ${Pcre_Ver}.tar.bz2
-    Require_File "${Pcre_Ver}.tar.bz2" "PCRE"
-    Install_Pcre
     if [ -n "$(grep -L '/usr/local/lib' '/etc/ld.so.conf')" ]; then
         echo "/usr/local/lib" >> /etc/ld.so.conf
     fi
     ldconfig
-    Download_Files https://nginx.org/download/${Nginx_Ver}.tar.gz ${Nginx_Ver}.tar.gz
-    Require_File "${Nginx_Ver}.tar.gz" "nginx"
-    Install_Nginx
+    Nginx_Reinstall "${Nginx_Ver#nginx-}" nginx none || return 1
     StartUp nginx
-    Clean_Src_Dir "${Nginx_Ver}"
-
-    Clean_Src_Dir "${Openssl_New_Ver}"
     # 重复执行本入口时 nginx 通常在运行，必须重启并核对运行中的二进制。
     if ! Restart_And_Verify_Nginx; then
         Echo_Red "Nginx 未以本次编译的二进制运行，独立安装未完成。"
@@ -135,7 +126,7 @@ DB_Dependent()
 Install_Database()
 {
     echo "============================ 检查文件 ============================"
-    DB_Download_Files
+    Download_DB_Sources
     echo "============================ 文件检查结束 ========================"
 
     Echo_Blue "正在安装依赖包..."
@@ -144,7 +135,7 @@ Install_Database()
     Check_Host_Repo_Trust
     DB_Dependent
     Check_Openssl
-    Dispatch "${DB_Install}" || return 1
+    Database_Install "${DB_Kind}" "${DB_Ver#*-}" "$(DB_Install_Mode)" || return 1
     TempMycnf_Clean
 
     if [ "${DB_Kind}" != "none" ] && ! Start_And_Verify "${DB_Service}"; then
@@ -207,4 +198,115 @@ Install_Only_Database()
         Print_DB_Password_Notice
     fi
     return ${rc}
+}
+
+# Install_Only_Apache [lnmpa|lamp]：单独安装或补齐 Apache。栈缺省按已部署的管理命令识别；
+# Apache 已就绪时不写文件，只确认服务运行。
+Install_Only_Apache()
+{
+    local stack=${1:-} rc
+
+    [ -n "${stack}" ] || stack=$(Detect_Installed_LNMP_Command_Stack)
+    case "${stack}" in
+    lnmpa|lamp) ;;
+    *)
+        Echo_Red "无法确定 Apache 所属的栈，请执行 ./install.sh apache lnmpa 或 ./install.sh apache lamp。"
+        return 1
+        ;;
+    esac
+
+    clear 2>/dev/null || true
+    Print_Banner \
+        "LNMP 单项安装：Apache（${stack}）" \
+        "只安装或补齐 Apache，不改动数据库、PHP 与 Nginx" \
+        "仅使用上游官方源码，并强制校验完整性"
+    Apache_Selection || return 1
+    Apache_Only_Stack=${stack}
+    Press_Install
+    Get_Dist_Version
+    if [ "${PM}" = "yum" ]; then
+        CentOS_Dependent
+    elif [ "${PM}" = "apt" ]; then
+        Deb_Dependent || return 1
+    fi
+    Apache_Install "${Apache_Ver#httpd-}" "${stack}"
+    rc=$?
+    [ ${rc} -eq 0 ] || return ${rc}
+    Start_And_Verify httpd || return 1
+    Apache_Verify "${Apache_Ver#httpd-}" "${stack}" || return 1
+    if [ -x /usr/local/php/bin/php ] && [ ! -s /usr/local/apache/modules/libphp.so ]; then
+        Echo_Yellow "Apache 中没有 PHP 模块 libphp.so，请执行 ./install.sh php 重新安装 PHP。"
+    fi
+    return 0
+}
+
+# PHP 编译依赖的 libiconv 与 freetype 缺失时安装，已安装时跳过。旧安装函数失败时 exit，在子 shell 中调用。
+Install_PHP_Base_Libs()
+{
+    if [ ! -e /usr/local/lib/libiconv.so ]; then
+        cd "${cur_dir}/src" || return 1
+        Download_Files "https://ftp.gnu.org/gnu/libiconv/${Libiconv_Ver}.tar.gz" "${Libiconv_Ver}.tar.gz"
+        Require_File "${Libiconv_Ver}.tar.gz" "libiconv"
+        Install_Libiconv
+    fi
+    if [ ! -e /usr/local/freetype/lib/libfreetype.so ]; then
+        Install_Freetype
+    fi
+    return 0
+}
+
+# Install_Only_PHP [lnmp|lnmpa|lamp]：单独安装或补齐主 PHP 与默认扩展。栈缺省按已部署的管理命令识别；
+# 版本缺省取已装主 PHP 的分支。PHP 已就绪时不重新编译，只补齐默认扩展并重启服务。
+Install_Only_PHP()
+{
+    local stack=${1:-} sapi svc=php-fpm ver tune rc
+
+    [ -n "${stack}" ] || stack=$(Detect_Installed_LNMP_Command_Stack)
+    case "${stack}" in
+    lnmp|lnmpa|lamp) sapi=$(PHP_Detect_Sapi "${stack}"); [ "${sapi}" = apxs ] && svc=httpd ;;
+    *)
+        Echo_Red "无法确定 PHP 所属的栈，请执行 ./install.sh php lnmp、./install.sh php lnmpa 或 ./install.sh php lamp。"
+        return 1
+        ;;
+    esac
+    if [ "${sapi}" = apxs ] && [ ! -x /usr/local/apache/bin/apxs ]; then
+        Echo_Red "${stack} 的 PHP 以 Apache 模块方式编译，需要 /usr/local/apache/bin/apxs。"
+        Echo_Red "请先执行 ./install.sh apache ${stack}。"
+        return 1
+    fi
+
+    clear 2>/dev/null || true
+    Print_Banner \
+        "LNMP 单项安装：PHP（${stack}）" \
+        "只安装或补齐主 PHP 与默认扩展，不改动数据库与 Web 服务器" \
+        "仅使用上游官方源码，并强制校验完整性"
+    PHP_Selection_Installed /usr/local/php
+    PHP_Only_Stack=${stack}
+    PHP_Only_Sapi=${sapi}
+    Press_Install
+    Get_Dist_Version
+    if [ "${PM}" = "yum" ]; then
+        CentOS_Dependent
+    elif [ "${PM}" = "apt" ]; then
+        Deb_Dependent || return 1
+    fi
+    ( Install_PHP_Base_Libs ) || { Echo_Red "PHP 依赖库 libiconv 或 freetype 安装失败。"; return 1; }
+
+    ver=${Php_Ver#php-}
+    tune=$(Tune_PHP_Spec main)
+    PHP_Install /usr/local/php "${sapi}" "${ver}" "${tune}"
+    rc=$?
+    [ ${rc} -eq 0 ] || return ${rc}
+    if [ "${Enable_Composer:-y}" = 'y' ] && [ ! -x /usr/local/bin/composer ]; then
+        Install_Composer || Echo_Yellow "Composer 安装失败，不影响 PHP 运行。"
+    fi
+    Install_PHP_Default_Ext /usr/local/php "${tune##*:}"
+    StartUp "${svc}"
+    StartOrStop stop "${svc}" >/dev/null 2>&1
+    Start_And_Verify "${svc}" || return 1
+    PHP_Verify /usr/local/php "${sapi}" "${ver}" || return 1
+    if [ -n "${PHP_Default_Ext_Failed}" ]; then
+        Echo_Yellow "以下默认扩展未装上：${PHP_Default_Ext_Failed# }，可用 ./addons.sh 单独安装。"
+    fi
+    return 0
 }

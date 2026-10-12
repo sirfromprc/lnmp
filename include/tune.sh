@@ -82,7 +82,19 @@ Tune_Detect_Extras()
         Tune_MPHP_Count=$((Tune_MPHP_Count + 1))
         [ -f "${d}/conf.d/009-apcu.ini" ] && Tune_APCu_Count=$((Tune_APCu_Count + 1))
     done
+    # 正在安装、尚无程序文件的实例按期望状态计入。
+    if [ -n "${Tune_Assume_MPHP:-}" ] && [ ! -x "${Tune_Assume_MPHP}/sbin/php-fpm" ]; then
+        Tune_MPHP_Count=$((Tune_MPHP_Count + 1))
+    fi
     [ -x "${base}/memcached/bin/memcached" ] && Tune_Has_Memcached=y
+}
+
+# lnmpa、lamp 的主 PHP 为 Apache 模块（存量机器）时为真；新装的 Apache 栈使用 PHP-FPM。
+Tune_Is_ModPHP()
+{
+    case "${Stack:-}" in lnmpa|lamp) ;; *) return 1 ;; esac
+    declare -F PHP_Detect_Sapi >/dev/null || return 0
+    [ "$(PHP_Detect_Sapi "${Stack}")" = apxs ]
 }
 
 # 计算全部 Tune_* 值。Enable_Auto_Tune=n 时返回 1，调用方保持模板值。
@@ -160,7 +172,7 @@ Tune_Plan()
     # 多版本 PHP 按需拉起；未安装附加实例时按将新增一个计算。
     Tune_MPHP_Children=$(Tune_Clamp 2 150 $((php_total / (Tune_MPHP_Count > 0 ? Tune_MPHP_Count + 2 : 3))))
 
-    # Apache prefork + mod_php：每个子进程含 Apache 自身开销，按 PHP 估算值加 16MB。
+    # 存量 Apache prefork + mod_php：每个子进程含 Apache 自身开销，按 PHP 估算值加 16MB。
     # 上限 256 不超过 prefork 默认 ServerLimit，无需另设。
     Tune_Apache_Workers=$(Tune_Clamp 6 256 $((Tune_PHP_MB / (proc + 16))))
     Tune_Apache_Min_Spare=$(Tune_Clamp 2 $((Tune_Apache_Workers / 4 > 2 ? Tune_Apache_Workers / 4 : 2)) "${cores}")
@@ -174,7 +186,7 @@ Tune_Plan()
     Tune_Magick_Map_MB=$(Tune_Clamp 768 2048 $((Tune_Magick_Mem_MB * 3)))
     Tune_Magick_Threads=$((cores > 1 ? 2 : 1))
     # 每个 PHP 进程最多占一个连接：按全部 PHP 实例合计上限另留一半余量，再加 20 个给计划任务与管理工具。
-    if [ "${Stack:-}" = "lnmpa" ] || [ "${Stack:-}" = "lamp" ]; then
+    if Tune_Is_ModPHP; then
         conn_base="${Tune_Apache_Workers}"
     else
         conn_base=$(Tune_Clamp 4 300 "${php_total}")
@@ -192,6 +204,21 @@ Tune_Plan()
     return 0
 }
 
+# Tune_PHP_Spec <main|mphp>：输出 PHP 模块的调优参数 pm:children:start:min:max:opcache_mb。
+# Enable_Auto_Tune=n 时输出空行，模块使用模板值。多版本实例固定 ondemand。
+Tune_PHP_Spec()
+{
+    Tune_Plan || { echo; return 0; }
+    if [ "$1" = mphp ]; then
+        printf 'ondemand:%s::::%s\n' "${Tune_MPHP_Children}" "${Tune_Opcache_MB}"
+    elif [ "${Tune_FPM_PM}" = ondemand ]; then
+        printf 'ondemand:%s::::%s\n' "${Tune_FPM_Children}" "${Tune_Opcache_MB}"
+    else
+        printf 'dynamic:%s:%s:%s:%s:%s\n' "${Tune_FPM_Children}" "${Tune_FPM_Start}" \
+            "${Tune_FPM_Min_Spare}" "${Tune_FPM_Max_Spare}" "${Tune_Opcache_MB}"
+    fi
+}
+
 Tune_Print_Summary()
 {
     Tune_Plan || {
@@ -203,7 +230,7 @@ Tune_Print_Summary()
         echo "  数据库：innodb_buffer_pool_size ${Tune_Pool_MB}M，max_connections ${Tune_Max_Conn}"
     fi
     if [ "${Tune_PHP_MB}" -gt 0 ]; then
-        if [ "${Stack:-}" = "lnmpa" ] || [ "${Stack:-}" = "lamp" ]; then
+        if Tune_Is_ModPHP; then
             echo "  Apache prefork：MaxRequestWorkers ${Tune_Apache_Workers}；OPcache ${Tune_Opcache_MB}M"
         else
             echo "  PHP-FPM：pm ${Tune_FPM_PM}，max_children ${Tune_FPM_Children}；OPcache ${Tune_Opcache_MB}M"

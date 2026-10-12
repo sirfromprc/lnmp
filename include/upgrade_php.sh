@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# PHP 升级。2.3 起仅支持升级到 PHP 8.0+。
-# 所有 PHP 8.x 分支使用统一升级流程，Apache 模块统一为 libphp.so。
+# PHP 升级入口：选择目标版本并确认，构建、换入与回滚由 include/mod/php.sh 的 PHP_Upgrade 完成。
 
 Check_Stack_Choose()
 {
@@ -11,11 +10,17 @@ Check_Stack_Choose()
     elif [[ "${Get_Stack}" = "lnmpa" || "${Get_Stack}" = "lamp" ]] && [[ "${Stack}" = "lnmp" ]]; then
         echo "当前架构：${Get_Stack}，请执行：./upgrade.sh phpa"
         exit 1
+    elif [[ "${Stack}" = "" && "${Get_Stack}" != "lnmpa" && "${Get_Stack}" != "lamp" ]]; then
+        echo "未识别到 LNMPA 或 LAMP 架构（当前：${Get_Stack}），不执行 PHP 升级。"
+        exit 1
     fi
+    [ "${Stack}" != "" ] || Stack="${Get_Stack}"
 }
 
-Start_Upgrade_PHP()
+Upgrade_PHP()
 {
+    local sapi log=lnmp tune rc
+
     Check_Stack_Choose
     Check_DB
     php_version=""
@@ -40,381 +45,21 @@ Start_Upgrade_PHP()
     fi
 
     Press_Start || exit 1
-    cd "${cur_dir}/src" || return 1
 
-    if ! Download_Verified php "${php_version}" \
-         "https://www.php.net/distributions/php-${php_version}.tar.bz2" \
-         "php-${php_version}.tar.bz2"; then
-        echo "输入的 PHP 版本为：${php_version}"
-        Echo_Red "错误！PHP ${php_version} 下载或校验失败，请检查版本号。"
-        exit 1
-    fi
-
-    Check_PHP_Option
-    Install_PHP_Dependent
-    Check_Openssl
-}
-
-# PHP 升级使用事务式切换：
-# 顺序：构建 → 装到暂存目录 → 冒烟测试 → 停服务 → 原子切换 → 起服务 → 复检
-# 任何一步失败都把旧目录、init 脚本、Apache 模块与配置换回去并重启服务。
-PHP_Old_Dir=""
-
-Rollback_PHP()
-{
-    Echo_Red "正在回滚到升级前的 PHP..."
-    [ -d /usr/local/php ] && rm -rf /usr/local/php
-    if [ -n "${PHP_Old_Dir}" ] && [ -d "${PHP_Old_Dir}" ]; then
-        mv "${PHP_Old_Dir}" /usr/local/php
-    fi
-    if [ "${Stack}" = "lnmp" ]; then
-        if [ -s "/usr/local/php/init.d.php-fpm.bak.${Upgrade_Date}" ]; then
-            \cp "/usr/local/php/init.d.php-fpm.bak.${Upgrade_Date}" /etc/init.d/php-fpm
-            chmod +x /etc/init.d/php-fpm
-            Patch_Init_Systemd_Redirect /etc/init.d/php-fpm php-fpm
-        fi
-    else
-        [ -s "/usr/local/apache/modules/libphp.so.bak.${Upgrade_Date}" ] && \
-            \cp "/usr/local/apache/modules/libphp.so.bak.${Upgrade_Date}" /usr/local/apache/modules/libphp.so
-        [ -s "/usr/local/apache/conf/httpd.conf.bak.${Upgrade_Date}" ] && \
-            \cp "/usr/local/apache/conf/httpd.conf.bak.${Upgrade_Date}" /usr/local/apache/conf/httpd.conf
-    fi
-    Ln_PHP_Bin
-    lnmp start
-    Echo_Red "已恢复升级前的 PHP。请检查站点是否正常。"
-}
-
-# 把旧 PHP 的附加扩展带到新 PHP。参数：旧安装目录 新安装目录。
-# 同分支点版本升级的扩展 API 编号不变，旧 .so 可直接沿用：复制 .so 与 ini 后用新 PHP
-# 确认能加载且无启动警告；API 不同或加载失败的扩展撤回 ini 并列出名字供重装。
-# 旧目录的 php-config 仍报告原安装路径，扩展目录按 API 编号在旧目录下重新定位。
-Carry_PHP_Ext()
-{
-    local old="$1" new="$2" f base name so old_api new_dir old_ext lost='' carried='' builtin
-
-    [ -d "${old}/conf.d" ] || return 0
-    new_dir=$("${new}/bin/php-config" --extension-dir 2>/dev/null)
-    old_api=$("${old}/bin/php-config" --extension-dir 2>/dev/null)
-    old_api=${old_api##*/}
-    old_ext="${old}/lib/php/extensions/${old_api}"
-    builtin=$("${new}/bin/php" -n -m 2>/dev/null)
-
-    for f in "${old}/conf.d"/*.ini; do
-        [ -f "${f}" ] || continue
-        base=${f##*/}
-        # 新 conf.d 已有同名 ini 时跳过，例如刚重建的 opcache。
-        [ -s "${new}/conf.d/${base}" ] && continue
-        # 文件名形如 009-swoole.ini，去掉序号和后缀取扩展名。
-        name=${base%.ini}
-        name=${name#*-}
-        # 新版本已内置的扩展（如编译时启用的 exif）无需处理。
-        printf '%s\n' "${builtin}" | grep -qixF "${name}" && continue
-        if [ -n "${old_api}" ] && [ -n "${new_dir}" ] && [ "${old_api}" = "${new_dir##*/}" ] && [ -d "${old_ext}" ]; then
-            # PHP 8.5 的 OPcache 静态编入，新版本可能尚无扩展目录。
-            mkdir -p "${new_dir}" || { lost="${lost} ${name}"; continue; }
-            for so in $(sed -n -E 's/^[[:space:]]*(zend_)?extension[[:space:]]*=[[:space:]]*"?([^"[:space:];]+)"?.*/\2/p' "${f}"); do
-                so=${so##*/}
-                [ -f "${old_ext}/${so}" ] && [ ! -e "${new_dir}/${so}" ] && cp -p "${old_ext}/${so}" "${new_dir}/"
-            done
-            cp -p "${f}" "${new}/conf.d/${base}"
-            if "${new}/bin/php" --ri "${name}" >/dev/null 2>&1 &&
-               ! "${new}/bin/php" -m 2>&1 | grep -qiE '^(PHP )?(Warning|Fatal)'; then
-                carried="${carried} ${name}"
-                continue
-            fi
-            rm -f "${new}/conf.d/${base}"
-        fi
-        lost="${lost} ${name}"
-    done
-
-    [ -z "${carried}" ] || Echo_Green "已沿用旧版本的 PHP 扩展（扩展 API ${old_api} 未变）：${carried# }"
-    if [ -n "${lost}" ]; then
-        Echo_Yellow "升级后以下 PHP 扩展需要重装（扩展 API 已变或无法加载）："
-        Echo_Yellow "  ${lost# }"
-        Echo_Yellow "重装：bash addons.sh install <名字>；旧配置保留在 ${old}/conf.d"
-    fi
-    return 0
-}
-
-# 重建 OPcache 配置并沿用其余扩展，在启动新 PHP 之前调用。
-Report_PHP_Ext_After_Upgrade()
-{
-    # Enable_Opcache_Config 按 PHP_Path 取路径，升级流程未设置该变量。
-    local PHP_Path='/usr/local/php'
-
-    if [ "${Enable_PHP_Default_Opcache}" = 'y' ]; then
-        Enable_Opcache_Config
-    fi
-    Carry_PHP_Ext "${PHP_Old_Dir}" "${PHP_Path}"
-}
-
-# 确认暂存目录中的 PHP 可执行且版本正确。
-Smoke_Test_PHP()
-{
-    local root="$1" out
-    if [ ! -x "${root}/usr/local/php/bin/php" ]; then
-        Echo_Red "暂存目录里没有可执行的 php：${root}/usr/local/php/bin/php"
+    [ "${Stack}" = "lnmp" ] || log=a
+    sapi=$(PHP_Detect_Sapi "${Stack}")
+    if [ $? -eq 2 ]; then
+        Echo_Red "Apache 已加载 php_module，同时存在 php-fpm，无法确定网站使用的 PHP 形态，请先清理其一。"
         return 1
     fi
-    # -n 不加载 ini：暂存版本按线上路径编译，线上 conf.d 的启动警告会排在版本行之前。
-    out=$("${root}/usr/local/php/bin/php" -n -v 2>&1 | head -n1)
-    if ! echo "${out}" | grep -q "PHP ${php_version}"; then
-        Echo_Red "新构建的 PHP 版本不符：期望 ${php_version}，实际 '${out}'"
-        return 1
-    fi
-    Echo_Green "新 PHP 冒烟测试通过：${out}"
-    return 0
-}
-
-# 停止服务、备份旧目录并将暂存版本切换到 /usr/local/php。
-Switch_To_New_PHP()
-{
-    local stage="$1"
-    PHP_Old_Dir="/usr/local/oldphp${Upgrade_Date}"
-
-    echo "冒烟测试通过，开始切换（此时才停服务）..."
-    lnmp stop
-
-    if [ "${Stack}" = "lnmp" ]; then
-        mv /usr/local/php "${PHP_Old_Dir}" || return 1
-        mv /etc/init.d/php-fpm "${PHP_Old_Dir}/init.d.php-fpm.bak.${Upgrade_Date}"
-    else
-        # PHP 8 的 Apache 模块统一使用 libphp.so。
-        [ -s /usr/local/apache/modules/libphp.so ] && \
-            \cp /usr/local/apache/modules/libphp.so /usr/local/apache/modules/libphp.so.bak.${Upgrade_Date}
-        mv /usr/local/php "${PHP_Old_Dir}" || return 1
-        \cp /usr/local/apache/conf/httpd.conf /usr/local/apache/conf/httpd.conf.bak.${Upgrade_Date}
-    fi
-
-    if ! mv "${stage}/usr/local/php" /usr/local/php; then
-        Echo_Red "把新 PHP 搬到 /usr/local/php 失败。"
-        return 1
-    fi
-    rm -rf "${stage}"
-    return 0
-}
-Install_PHP_Dependent()
-{
-    echo "正在安装 PHP 依赖包..."
-    if [ "$PM" = "yum" ]; then
-        if [ "${DISTRO}" = "Oracle" ]; then
-            yum -y install oracle-epel-release
-        else
-            yum -y install epel-release
-        fi
-        for packages in make gcc gcc-c++ gcc-g77 libjpeg libjpeg-devel libjpeg-turbo-devel libpng libpng-devel libpng10 libpng10-devel gd gd-devel libxml2 libxml2-devel zlib zlib-devel glib2-devel bzip2-devel libzip-devel libevent libevent-devel ncurses ncurses-devel curl-devel libcurl libcurl-devel e2fsprogs-devel krb5 krb5-devel libidn libidn-devel openssl-devel gettext-devel ncurses-devel gmp-devel pspell-devel libc-client-devel libXpm-devel libtirpc-devel cyrus-sasl-devel c-ares-devel libicu-devel libxslt libxslt-devel xz expat-devel libzip-devel bzip2 bzip2-devel sqlite-devel oniguruma-devel libwebp-devel;
-        do yum -y install $packages; done
-    elif [ "$PM" = "apt" ]; then
-        export DEBIAN_FRONTEND=noninteractive
-        Apt_Get update
-        for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make libzip-dev libc6-dev libbz2-dev libncurses5 libncurses5-dev libevent-dev libssl-dev libsasl2-dev libltdl3-dev libltdl-dev zlib1g zlib1g-dev libbz2-1.0 libbz2-dev libglib2.0-0 libglib2.0-dev libpng3 libjpeg-dev libpng-dev libpng12-0 libpng12-dev libkrb5-dev curl libcurl3-gnutls libcurl4-gnutls-dev libcurl4-openssl-dev libpq-dev libpq5 libpng12-dev libxml2-dev libcap-dev libc-client2007e-dev libaio-dev libtirpc-dev libc-ares-dev libicu-dev e2fsprogs libxslt1.1 libxslt1-dev libc-client-dev xz-utils libexpat1-dev bzip2 libbz2-dev libsqlite3-dev libonig-dev libwebp-dev;
-        do Apt_Get --no-install-recommends install -y $packages; done
-    fi
-
-    if echo "${CentOS_Version}" | grep -Eqi "^8" || echo "${RHEL_Version}" | grep -Eqi "^8" || echo "${Rocky_Version}" | grep -Eqi "^8" || echo "${Alma_Version}" | grep -Eqi "^8" || echo "${Anolis_Version}" | grep -Eqi "^8" || echo "${OpenCloudOS_Version}" | grep -Eqi "^8"; then
-        Check_PowerTools
-        if [ "${repo_id}" != "" ]; then
-            echo "正在安装 PowerTools 仓库中的依赖包..."
-            for c8packages in rpcgen re2c oniguruma-devel;
-            do dnf --enablerepo=${repo_id} install ${c8packages} -y; done
-        fi
-        dnf install libarchive -y
-    fi
-
-    if echo "${CentOS_Version}" | grep -Eqi "^9" || echo "${Alma_Version}" | grep -Eqi "^9" || echo "${Rocky_Version}" | grep -Eqi "^9"; then
-        for cs9packages in oniguruma-devel libzip-devel libtirpc-devel;
-        do dnf --enablerepo=crb install ${cs9packages} -y; done
-    fi
-
-    if [ "${DISTRO}" = "Oracle" ] && echo "${Oracle_Version}" | grep -Eqi "^8"; then
-        Check_Codeready
-        for o8packages in rpcgen re2c oniguruma-devel;
-        do dnf --enablerepo=${repo_id} install ${o8packages} -y; done
-        dnf install libarchive -y
-    fi
-
-    if echo "${CentOS_Version}" | grep -Eqi "^7" || echo "${RHEL_Version}" | grep -Eqi "^7"  || echo "${Aliyun_Version}" | grep -Eqi "^2" || echo "${Alibaba_Version}" | grep -Eqi "^2" || echo "${Oracle_Version}" | grep -Eqi "^7" || echo "${Anolis_Version}" | grep -Eqi "^7"; then
-        # 依赖统一通过官方 EPEL 软件源安装。
-        if [ "${DISTRO}" = "Oracle" ]; then
-            yum -y install oracle-epel-release
-        else
-            yum -y install epel-release
-        fi
-        yum -y install oniguruma oniguruma-devel
-        yum -y install libsodium-devel
-        yum -y install libc-client-devel uw-imap-devel
-    fi
-
-    if [ "${DISTRO}" = "UOS" ]; then
-        Check_PowerTools
-        if [ "${repo_id}" != "" ]; then
-            echo "正在安装 PowerTools 仓库中的依赖包..."
-            for uospackages in rpcgen re2c oniguruma-devel;
-            do dnf --enablerepo=${repo_id} install ${uospackages} -y; done
-        fi
-    fi
-
-    if [ -d /usr/include/x86_64-linux-gnu/curl ]; then
-        ln -sfn /usr/include/x86_64-linux-gnu/curl /usr/include/
-    elif [ -d /usr/include/i386-linux-gnu/curl ]; then
-        ln -sfn /usr/include/i386-linux-gnu/curl /usr/include/
-    fi
-
-    if [ -d /usr/include/arm-linux-gnueabihf/curl ]; then
-        ln -sfn /usr/include/arm-linux-gnueabihf/curl /usr/include/
-    fi
-
-    ldconfig
-}
-Check_PHP_Upgrade_Files()
-{
-    Echo_LNMPA_Upgrade_PHP_Failed()
-    {
+    tune=$(Tune_PHP_Spec main)
+    PHP_Upgrade /usr/local/php "${sapi}" "${php_version}" "${tune}"
+    rc=$?
+    if [ "${rc}" -ne 0 ]; then
         Echo_Red "======== PHP 升级失败 ======"
-        Echo_Red "PHP 升级日志：/root/upgrade_a_php${Upgrade_Date}.log"
-    }
-    rm -rf "${cur_dir}/src/php-${php_version}"
-
-    if [ "${Stack}" = "lnmp" ]; then
-        if [[ ! -s /usr/local/php/sbin/php-fpm || ! -s /etc/init.d/php-fpm || ! -s /usr/local/php/etc/php.ini || ! -s /usr/local/php/bin/php ]]; then
-            Echo_Red "======== PHP 升级失败 ======"
-            Echo_Red "PHP 升级日志：/root/upgrade_lnmp_php${Upgrade_Date}.log"
-            return 1
-        fi
-    else
-
-        if [[ ! -s /usr/local/apache/bin/httpd || ! -s /usr/local/apache/modules/libphp.so || ! -s /usr/local/apache/conf/httpd.conf ]]; then
-            Echo_LNMPA_Upgrade_PHP_Failed
-            return 1
-        fi
-        # 存量机器的 httpd.conf 可能仍是线程型 MPM，与 mod_php 不兼容。
-        Check_Apache_MPM_For_ModPHP || return 1
+        Echo_Red "PHP 升级日志：/root/upgrade_${log}_php${Upgrade_Date}.log"
+        return "${rc}"
     fi
-
-    # 除文件完整外，还需确认运行版本及 PHP-FPM 主进程状态。
-    local run_ver
-    run_ver=$(/usr/local/php/bin/php -v 2>&1 | head -n1)
-    if ! echo "${run_ver}" | grep -q "PHP ${php_version}"; then
-        Echo_Red "升级后运行的 PHP 版本不符：期望 ${php_version}，实际 '${run_ver}'"
-        return 1
-    fi
-    if [ "${Stack}" = "lnmp" ] && ! pgrep -f 'php-fpm: master' >/dev/null 2>&1; then
-        Echo_Red "php-fpm master 进程未启动。"
-        return 1
-    fi
-
-    Echo_Green "======== PHP 升级完成 ======"
-    Echo_Green "${run_ver}"
-    return 0
-}
-
-# PHP 8.x 的统一升级实现；PHP 8.0 按需应用 OpenSSL 3 兼容补丁。
-Upgrade_PHP_8x()
-{
-    Install_Libzip
-    Echo_Blue "[+] 正在安装 PHP ${php_version}"
-    Tar_Cd php-${php_version}.tar.bz2 php-${php_version}
-    PHP_Openssl3_Patch
-    # configure 的 iconv 探针要能加载 /usr/local/lib 里的 libiconv.so.2。
-    Ensure_Libiconv_Ldpath || exit 1
-
-    # PHP_Common_Configure_Opts 输出的是一整串 configure 参数，必须按空格拆分。
-    # shellcheck disable=SC2046
-    if [ "${Stack}" = "lnmp" ]; then
-        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd $(PHP_Common_Configure_Opts)
-    else
-        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --with-apxs2=/usr/local/apache/bin/apxs $(PHP_Common_Configure_Opts)
-    fi
-
-    if [ $? -ne 0 ]; then
-        Echo_Red "PHP ${php_version} 的 configure 失败。**线上 PHP 未做任何改动。**"
-        exit 1
-    fi
-
-    # 使用 INSTALL_ROOT 安装到暂存目录，检查通过前不覆盖当前 PHP。
-    PHP_Stage="${cur_dir}/src/.php-stage.$$"
-    rm -rf "${PHP_Stage}"
-    mkdir -p "${PHP_Stage}" || exit 1
-
-    make ZEND_EXTRA_LIBS='-liconv' -j"$(Build_Jobs)"
-    if [ $? -ne 0 ]; then
-        Echo_Yellow "并行编译失败，退回串行重试..."
-        if ! make ZEND_EXTRA_LIBS='-liconv'; then
-            Echo_Red "PHP ${php_version} 编译失败。**线上 PHP 未做任何改动。**"
-            rm -rf "${PHP_Stage}"
-            exit 1
-        fi
-    fi
-    if ! make install INSTALL_ROOT="${PHP_Stage}"; then
-        Echo_Red "PHP ${php_version} 安装到暂存目录失败。**线上 PHP 未做任何改动。**"
-        rm -rf "${PHP_Stage}"
-        exit 1
-    fi
-
-    if ! Smoke_Test_PHP "${PHP_Stage}"; then
-        Echo_Red "**线上 PHP 未做任何改动。**"
-        rm -rf "${PHP_Stage}"
-        exit 1
-    fi
-
-    # 冒烟检查通过后再停服切换，失败时恢复旧版本。
-    if ! Switch_To_New_PHP "${PHP_Stage}"; then
-        Rollback_PHP
-        rm -rf "${PHP_Stage}"
-        exit 1
-    fi
-
-    Ln_PHP_Bin
-
-    echo "正在复制新的 PHP 配置文件..."
-    mkdir -p /usr/local/php/{etc,conf.d}
-    \cp php.ini-production /usr/local/php/etc/php.ini
-
-    # 配置 PHP 扩展及运行参数。
-    echo "正在修改 php.ini..."
-    PHP_Ini_Tune /usr/local/php/etc/php.ini || exit 1
-    Pear_Pecl_Set
     Install_Composer
-
-    cd "${cur_dir}/src" || return 1
-
-if [ "${Stack}" = "lnmp" ]; then
-    echo "正在创建新的 php-fpm 配置文件..."
-    Write_PHP_FPM_Conf /usr/local/php/etc/php-fpm.conf /usr/local/php \
-        /run/php-fpm/php-cgi.sock || exit 1
-
-    echo "正在复制 php-fpm init.d 服务脚本..."
-    \cp ${cur_dir}/src/php-${php_version}/sapi/fpm/init.d.php-fpm /etc/init.d/php-fpm
-    chmod +x /etc/init.d/php-fpm
-    Ensure_Runtime_Directory /run/php-fpm root root || exit 1
-    Patch_Init_Runtime_Directory /etc/init.d/php-fpm /run/php-fpm root root || exit 1
-    Patch_Init_Systemd_Redirect /etc/init.d/php-fpm php-fpm || exit 1
-    # 已安装的 unit 随升级刷新为当前模板。
-    if [ -f /etc/systemd/system/php-fpm.service ]; then
-        Install_Systemd_Unit "${cur_dir}/init.d/php-fpm.service" /etc/systemd/system/php-fpm.service || exit 1
-        Systemd_Is_Running && systemctl daemon-reload >/dev/null 2>&1
-    fi
-fi
-    if [ "${Stack}" != "lnmp" ]; then
-        # 清理旧 PHP 5/7 Apache 模块的 LoadModule 残留。
-        sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
-        sed -i '/^LoadModule php7_module/d' /usr/local/apache/conf/httpd.conf
-    fi
-    Report_PHP_Ext_After_Upgrade
-    lnmp start
-
-    if ! Check_PHP_Upgrade_Files; then
-        Echo_Red "升级后的自检未通过。"
-        Rollback_PHP
-        return 1
-    fi
-    Echo_Green "旧版本保留在 ${PHP_Old_Dir}，确认无误后可自行删除。"
     return 0
-}
-
-Upgrade_PHP()
-{
-    Start_Upgrade_PHP
-    # 目标版本验证通过后进入统一升级流程。
-    Upgrade_PHP_8x
 }

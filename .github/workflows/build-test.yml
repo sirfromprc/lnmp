@@ -1,17 +1,12 @@
 # 真编译验证。被 upstream-check.yml 和 release.yml 调用（workflow_call），
 # 也可以手动触发。
 #
-# lua-resty-core 与 lua-nginx-module 的版本断言位于 base.lua，只在 Lua 运行时执行：
+# t/build_test.sh 调用 include/mod/ 的模块函数下载、校验并编译，configure 参数与实际安装一致，
+# 并核对产物的编译参数。lua-resty-core 与 lua-nginx-module 的版本断言位于 base.lua，
+# 只在 Lua 运行时执行（configure、make、nginx -t、启动均通过，首次访问 Lua location 返回 500），
+# 因此 Lua 与 HTTP/3 均以临时实例发送真实请求并比对响应。
 #
-#     ./configure  通过
-#     make         通过
-#     nginx -t     通过
-#     nginx 启动   通过
-#     第一次访问带 Lua 的 location  → 500
-#
-# 因此 Lua 验证必须发送真实请求并比对响应体。
-#
-# 容器使用目标发行版 debian:12，避免 ubuntu-latest 的依赖差异掩盖构建问题。
+# 容器使用主线发行版 debian:13，其 curl 支持 HTTP/3。
 
 name: Build Test
 
@@ -19,7 +14,7 @@ on:
   workflow_call:
     inputs:
       level:
-        description: 'quick = 只验 Lua 全家桶；full = 再加 nginx 全模块与 PHP'
+        description: 'quick = 只验 Lua 全家桶；full = 再加 nginx 全模块、OpenResty 与 PHP'
         type: string
         default: quick
       artifact:
@@ -44,7 +39,7 @@ jobs:
     name: Lua 全家桶（编译 + 启动 + 真发请求）
     runs-on: ubuntu-latest
     container:
-      image: debian:12
+      image: debian:13
     timeout-minutes: 45
     steps:
       - name: 装 git（容器基础镜像没有）
@@ -71,18 +66,11 @@ jobs:
       - name: 编译并验证
         run: bash t/build_test.sh lua
 
-      - name: 失败时打包日志
-        if: failure()
-        run: |
-          mkdir -p /tmp/artifacts
-          cp -a /usr/local/nginx-luatest/logs /tmp/artifacts/ 2>/dev/null || true
-          cp -a /usr/local/nginx-luatest/conf/nginx.conf /tmp/artifacts/ 2>/dev/null || true
-
       - uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: lua-build-logs
-          path: /tmp/artifacts
+          path: /tmp/lnmp-buildtest
           retention-days: 7
 
   nginx-full:
@@ -90,7 +78,7 @@ jobs:
     if: inputs.level == 'full'
     runs-on: ubuntu-latest
     container:
-      image: debian:12
+      image: debian:13
     timeout-minutes: 90
     steps:
       - run: |
@@ -105,13 +93,46 @@ jobs:
           path: .
       - name: 编译并验证
         run: bash t/build_test.sh nginx
+      - uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: nginx-build-logs
+          path: /tmp/lnmp-buildtest
+          retention-days: 7
 
-  php:
-    name: PHP 默认分支编译
+  openresty:
+    name: OpenResty 源码编译
     if: inputs.level == 'full'
     runs-on: ubuntu-latest
     container:
-      image: debian:12
+      image: debian:13
+    timeout-minutes: 90
+    steps:
+      - run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git ca-certificates
+      - uses: actions/checkout@v5
+      - name: 覆盖为待验证的改动
+        if: inputs.artifact != ''
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ inputs.artifact }}
+          path: .
+      - name: 编译并验证
+        run: bash t/build_test.sh openresty
+      - uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: openresty-build-logs
+          path: /tmp/lnmp-buildtest
+          retention-days: 7
+
+  php:
+    name: PHP 默认分支与默认扩展
+    if: inputs.level == 'full'
+    runs-on: ubuntu-latest
+    container:
+      image: debian:13
     timeout-minutes: 90
     steps:
       - run: |
@@ -131,16 +152,17 @@ jobs:
   result:
     name: 构建验证结论
     if: always()
-    needs: [lua, nginx-full, php]
+    needs: [lua, nginx-full, openresty, php]
     runs-on: ubuntu-latest
     steps:
       - name: 判定
         run: |
           echo "lua        = ${{ needs.lua.result }}"
           echo "nginx-full = ${{ needs.nginx-full.result }}"
+          echo "openresty  = ${{ needs.openresty.result }}"
           echo "php        = ${{ needs.php.result }}"
           # skipped 是 quick 模式的正常结果，只有 failure / cancelled 才算失败
-          for r in "${{ needs.lua.result }}" "${{ needs.nginx-full.result }}" "${{ needs.php.result }}"; do
+          for r in "${{ needs.lua.result }}" "${{ needs.nginx-full.result }}" "${{ needs.openresty.result }}" "${{ needs.php.result }}"; do
             case "$r" in
               success|skipped) ;;
               *) echo "::error::构建验证未通过"; exit 1 ;;

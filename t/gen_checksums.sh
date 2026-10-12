@@ -151,7 +151,7 @@ grab_nginx()
 
 grab_mysql()
 {
-    # 与 DB_Download_Files 一致：先用当前下载区，失败后查 archives。
+    # 与 Database_Sources 一致：先用当前下载区，失败后查 archives。
     # LIST_ONLY 用于升版后的增量校验，新版本应优先从 Downloads 获取。
     local branch="$1" name="$2"
     local primary="https://cdn.mysql.com/Downloads/MySQL-${branch}/${name}"
@@ -289,7 +289,7 @@ done
 echo
 echo "# --- PHP 扩展（pecl）---"
 for p in "${PHPNewApcu_Ver}" "${Imagick_Ver}" "${PHPSwoole_Ver}" "${PHP8Memcache_Ver}" \
-         "${PHP8Memcached_Ver}" "${PHPRedis_Ver}" "${PHPIgbinary_Ver}"; do
+         "${PHP8Memcached_Ver}" "${PHPRedis_Ver}" "${PHPIgbinary_Ver}" "${PHPZstd_Ver}"; do
     grab "https://pecl.php.net/get/${p}.tgz" "${p}.tgz"
 done
 
@@ -301,6 +301,12 @@ grab "https://download.redis.io/releases/${Redis_Stable_Ver}.tar.gz" "${Redis_St
 grab "https://github.com/ImageMagick/ImageMagick/archive/refs/tags/${ImageMagick_Ver#ImageMagick-}.tar.gz" "${ImageMagick_Ver}.tar.gz"
 grab "https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_x86-64.tar.gz" "ioncube_loaders_lin_x86-64.tar.gz"
 grab "https://download.pureftpd.org/pub/pure-ftpd/releases/${Pureftpd_Ver}.tar.bz2" "${Pureftpd_Ver}.tar.bz2"
+for v in ${Nodejs_Majors}; do
+    nv="Nodejs_${v}_Ver"
+    for arch in x64 arm64; do
+        grab "https://nodejs.org/dist/v${!nv}/node-v${!nv}-linux-${arch}.tar.xz" "node-v${!nv}-linux-${arch}.tar.xz"
+    done
+done
 grab "https://github.com/denyhosts/denyhosts/archive/refs/tags/v3.1.tar.gz" "denyhosts-3.1.tar.gz"
 grab "https://github.com/fail2ban/fail2ban/archive/refs/tags/1.1.0.tar.gz" "fail2ban-1.1.0.tar.gz"
 

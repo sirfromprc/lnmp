@@ -1,18 +1,19 @@
 <a id="top"></a>
 
-# LNMP 2.3 从零搭建 WordPress 生产环境
+# LNMP 3.0.3 从零搭建 WordPress 生产环境
 
 > 主安装、建站、WordPress、Redis、HTTPS 和备份流程已在
 > **Debian 12、Debian 13 / x86_64 / 6G 内存 / 4 核** 上实测，文中的“实测输出”来自
 > 这些环境。1～2GB、3～4GB 和 5GB 以上的容量表依据当前配置生成逻辑与内存预算给出
 > 保守起点，未对每个容量档进行同等真机压测。
-> LNMP 环境组合：nginx 1.30.4 + PHP 8.3.33 + MySQL 8.4.7 或
+> 实测时的 LNMP 环境组合：nginx 1.30.4 + PHP 8.3.33 + MySQL 8.4.7 或
 > MariaDB 11.8.8（均为官方通用二进制）+ Redis 8.10.0 + phpMyAdmin 5.2.3 +
 > WordPress 7.0.3；WordPress 主链路已分别在两种数据库上完成。
 > LAMP 与 LNMPA 另用 Apache 2.4.68 + PHP 8.3.33 完整安装验证。
+> 当前发布包固定的组件版本以安装菜单、`include/profile.sh` 与 `include/version.sh` 为准。
 >
 > 本项目所提供的功能纯终端命令操作，新手建议配合 WinSCP 修改配置参数或使用`nano`命令，避免出错。
-> 阅读 [readme.md](readme.md) 文件，了解LNMP项目更多使用信息。
+> 阅读 [README.md](../README.md) 文件，了解LNMP项目更多使用信息。
 
 **⚠️ 注意： 本文包含较多终端脚本操作，主要用于提供自动化场景下的脚本示例。部分脚本中的变量可能未进行赋值，或因 SSH 连接中断等原因导致变量值丢失，从而引发不可预期的问题。**
 
@@ -43,7 +44,7 @@
 | 项 | 要求 | 说明 |
 |---|---|---|
 | 权限 | **root 用户** | `install.sh` 开头检查 `id -u`，非 root 立即退出；脚本需要写系统目录、服务和防火墙 |
-| 系统 | Debian 12 / 13，Ubuntu 18.04+，EL 8+ | 主要验证目标是 Debian 系 |
+| 系统 | 安装器接受 EL 8+、Debian 10+、Ubuntu 18.04+、Fedora 30+ 及同代系统 | 实测覆盖 Debian 12 / 13，主线为 Debian 13；更早的系统在安装前即被拒绝 |
 | 架构 | x86_64 为主线 | MySQL 通用二进制支持 x86_64 与 aarch64，MariaDB 仅 x86_64；其他架构回退源码编译。MySQL 二进制要求 glibc 2.28 以上，低于时安装前提示并回退源码编译 |
 | 内存 | **≥ 2G** | 编译 nginx（含 Lua/Brotli/OpenSSL）与 PHP 很吃内存。过小内存编译可能会失败 |
 | 磁盘 | 通用二进制安装 ≥ 10G；数据库源码编译 ≥ 15G | 源码编译目录峰值已超过 7G，还要给安装目录、日志、数据和备份留空间 |
@@ -77,6 +78,8 @@ ss -lntup
 
 4 核 6G 的机器上，从零完整安装约 **9 分钟**（MySQL 走二进制不编译，VPS 网络、CPU限制情况不同，时间会有所差异，可达20-30分钟）。
 如果选择源码编译 MySQL，再加 30-60 分钟，且有可能失败。
+MySQL 源码编译按每个编译任务 1.5G 内存计算并行数（6G 内存为 3 路），不编译 MySQL Router 与单元测试；
+需要 `mysqlrouter` 时改用二进制安装（`Bin=y`）。
 
 编译期间 ssh 掉线会使安装中断在半途，用 screen 或 tmux 保持会话：
 
@@ -118,11 +121,11 @@ APT_LOCK_TIMEOUT=900 bash install.sh lnmp
 
 从项目 Release 页面下载固定版本，并使用同一 Release 公布的 SHA-256 核对文件。
 项目尚未在源码中固定公开仓库地址，因此本文不提供可能指向错误仓库的占位下载命令。
-假设已将验证通过的压缩包保存为 `/root/lnmp-v2.3.tar.gz`：
+假设已将验证通过的压缩包保存为 `/root/lnmp-v3.0.3.000.tar.gz`：
 
 ```bash
 install -d -m 700 /root/lnmp-src
-tar -xzf /root/lnmp-v2.3.tar.gz -C /root/lnmp-src --strip-components=1
+tar -xzf /root/lnmp-v3.0.3.000.tar.gz -C /root/lnmp-src --strip-components=1
 cd /root/lnmp-src
 chmod +x install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
 bash -n install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
@@ -148,7 +151,7 @@ tar 包通常会保留可执行位，但 ZIP、面板上传或跨文件系统复
 
 ```bash
 apt update && apt upgrade      # Debian / Ubuntu
-dnf -y update                  # CentOS / RHEL（CentOS 7 用 yum -y update）
+dnf -y update                  # RHEL 系 8 及以上
 bash install.sh lnmp
 ```
 
@@ -234,11 +237,30 @@ LNMP_Purge_Residue=yes bash install.sh lnmp   # 直接清理
 LNMP_Purge_Residue=no  bash install.sh lnmp   # 保留现有环境并中止
 ```
 
-不想清理、要在现有环境上直接续装时跳过整个检测：
+#### 已完成安装后重跑
+
+`/bin/lnmp` 已部署且没有进度标记时，`bash install.sh lnmp|lnmpa|lamp` 不重新安装、不清理，只读检查现有组件后结束：
 
 ```bash
-LNMP_Resume_Broken_Install=yes bash install.sh lnmp
+bash install.sh lnmp          # 检查 Nginx（或 OpenResty）、PHP、默认扩展、PHP-FPM、数据库、phpMyAdmin
+bash install.sh lamp          # 检查 Apache、PHP（PHP-FPM，存量机器为 Apache 模块）、默认扩展、数据库、phpMyAdmin
+echo $?                       # 0 无问题；1 有问题，或本次参数与已部署的栈不同
 ```
+
+每项输出 `[正常]`、`[提示]` 或 `[问题]`，问题项下给出处理命令，例如：
+
+```
+  [问题] Nginx：服务 nginx 未运行
+         处理：lnmp nginx start；仍失败时查看 lnmp status 与错误日志
+  [问题] PHP 扩展 redis：未装上或未加载
+         处理：./install.sh php lnmp（PHP 就绪时只补齐默认扩展）
+```
+
+- `[提示]` 表示组件可用，但编译选项与当前 `lnmp.conf` 不同（安装后改过配置），或数据库未安装；不计为问题。
+- 组件按已装版本检查，不与本次菜单选择比较；附加 PHP 实例（`/usr/local/php8.x`）不在检查范围。
+- 已部署的栈与参数不同（如 LNMP 上执行 `install.sh lnmpa`）时按已部署的栈检查并返回 1，更换栈需先 `bash uninstall.sh`。
+- 检查只读，唯一的写入是 `php-fpm -t` 在 FPM 日志中记录的一行 NOTICE。
+- 整体重装：先 `bash uninstall.sh`（数据库数据目录先移到 `/root/databases_backup_<时间戳>`），再全新安装。
 
 菜单选择在选完后写入 `/root/.lnmp-install-answers`（0600，不含数据库口令），
 安装成功后删除。重跑时先按菜单上的文字列出上次的选择，输入 `y` 才沿用，
@@ -248,9 +270,9 @@ LNMP_Resume_Broken_Install=yes bash install.sh lnmp
 ===========================
 上次的安装选择（记录于 2026-08-21_10:03:22）：
   安装栈：lnmp
-  数据库：MariaDB 11.8.8 LTS（官方通用二进制）
+  数据库：MariaDB 11.8.9 LTS（官方通用二进制）
   启用 InnoDB：y
-  PHP：PHP 8.3.33
+  PHP：PHP 8.3.35
   Web 服务器：Nginx
   内存分配器：不安装
   数据库 root 口令不记录，沿用时需要重新输入。
@@ -286,10 +308,12 @@ LNMP_Move_Existing_DB_Data=yes bash install.sh db
 |---|---|---|
 | `bash install.sh nginx` | 只装 Nginx，不装数据库和 PHP | 无；已装 Nginx 时为重新编译 |
 | `bash install.sh db` | 只装 MySQL/MariaDB | 本机没有本包安装的数据库 |
-| `bash install.sh mphp` | 追加一个并行 PHP 版本到 `/usr/local/php8.x` | 已是完整 LNMP |
+| `bash install.sh apache [lnmpa\|lamp]` | 单独安装或补齐 Apache | LNMPA 或 LAMP；不给栈时按已部署的 `lnmp` 命令识别 |
+| `bash install.sh php [lnmp\|lnmpa\|lamp]` | 单独安装或补齐主 PHP 与默认扩展 | 不给栈时按已部署的 `lnmp` 命令识别；LNMPA、LAMP 需已装 Apache |
+| `bash install.sh mphp` | 追加一个并行 PHP 版本到 `/usr/local/php8.x` | 已是完整 LNMP，或 PHP-FPM 形态的 LNMPA、LAMP |
 | `bash install.sh phpmyadmin` | 为现有环境补装 phpMyAdmin | 主栈已装，PHP ≥ 7.2.5 且有 mysqli |
 | `bash install.sh phpmyadmin {enable\|disable\|status}` | 开关或查看 phpMyAdmin 的 Web 入口 | phpMyAdmin 已装 |
-| `bash addons.sh install `<br>`{memcached\|opcache\|redis\|imagemagick\|exif\|fileinfo\|...}`| PHP 扩展、Redis 服务端、ImageMagick | 对应 PHP 已装 |
+| `bash addons.sh install `<br>`{memcached\|opcache\|redis\|imagemagick\|exif\|fileinfo\|...}`| PHP 扩展、Redis 服务端、ImageMagick、Node.js、PM2 | PHP 扩展需对应 PHP 已装；Node.js 不依赖 PHP，PM2 需先装 Node.js |
 | `bash pureftpd.sh` | 安装 Pure-FTPd | 无；安装前打印端口摘要并要求输入 `y` |
 | `bash upgrade.sh <目标>` | 升级单个组件 | 对应组件已装 |
 
@@ -301,12 +325,12 @@ LNMP_Move_Existing_DB_Data=yes bash install.sh db
 ```
 ==========================================================================
 单独安装模式：只安装 Nginx，不安装数据库和 PHP。
-即将安装：nginx-1.30.4
-OpenSSL：openssl-3.5.7（随 Nginx 一起编译）
+即将安装：nginx-1.30.5
+OpenSSL：openssl-3.5.9（随 Nginx 一起编译）
 附加模块（lnmp.conf 开关）：Lua, Brotli, Cache Purge
 默认网站目录：/home/wwwroot/default
 完整性校验：y
-防火墙将放行：80、443；SSH 端口：22
+防火墙将放行：TCP 80、443，UDP 443；SSH 端口：22
 本入口不读取 DB_Port、MySQL_Data_Dir、Enable_PhpMyAdmin 等选项。
 ==========================================================================
 
@@ -329,7 +353,7 @@ LNMP_Auto=y bash install.sh nginx </dev/null      # 非交互
   `apache2-data`、`apache2-utils`、`apache2-doc`、`libapache2-mod-php`，只处理确实装了的），
   再装编译依赖。
 - 编译安装 PCRE 与 Nginx，版本取自 `include/version.sh`，没有版本菜单。
-- 写默认站点 `index.html` 与 `favicon.ico` 到 `Default_Website_Dir`，放行 80、443，
+- 写默认站点 `index.html` 与 `favicon.ico` 到 `Default_Website_Dir`，放行 TCP 80、443 与 UDP 443（HTTP/3），
   安装 `/bin/lnmp` 管理命令，设为开机自启并启动。
 - 安装 `lnmp-cutlogs.timer`，日志切割见 [8.7](#87-日志)。
 - 依赖里带 `nftables`：本入口和 `install.sh db` 都会配置防火墙，缺 nft 时端口规则
@@ -350,15 +374,14 @@ LNMP_Auto=y bash install.sh nginx </dev/null      # 非交互
 该入口固定装官方 Nginx。OpenResty 没有独立安装入口，只能在整栈安装时选择
 （[2.3 用 OpenResty 替代 nginx](#23-用-openresty-替代-nginx可选)），已装 OpenResty 的机器用 `bash upgrade.sh openresty` 升级。
 
-**在只装了 Nginx 的机器上建站**：本机没有 PHP 时 `lnmp vhost add` 会直接关闭站点 PHP
-并说明原因，随后问是否开启反向代理，答 `y` 就把整站转给后端
-（[4.4 建不带 PHP 的站点](#44-建不带-php-的站点)）。创建数据库那一步仍要选 `n`。
+**在只装了 Nginx 的机器上建站**：本机没有 PHP 时 `lnmp vhost add` 的站点类型菜单中
+PHP 站点不可选，选 `3` 反向代理就把整站转给后端
+（[4.4 建不带 PHP 的站点](#44-建不带-php-的站点)）。本机没有数据库时不询问是否建库。
 
-**这类机器补不了 PHP**：本项目没有单独的 PHP 安装入口。`install.sh mphp` 要求本机已是
-完整 LNMP（同时存在 `/usr/local/php/sbin/php-fpm`、`/usr/local/php/etc/php-fpm.conf`、
-`/etc/init.d/php-fpm`、`/usr/local/nginx/sbin/nginx`），只装了 Nginx 时会以
-「多版本 PHP 仅支持 LNMP 架构」退出。需要 PHP 就执行 `bash install.sh lnmp`，
-安装前的残留检测会列出现有 Nginx，确认后清理再装整套。
+**这类机器补不了 PHP**：`install.sh mphp` 要求本机已是完整的 LNMP、LNMPA 或 LAMP
+（PHP-FPM 形态，同时存在主 PHP 的 `php-fpm`、`php-fpm.conf`、`/etc/init.d/php-fpm` 与对应 Web 服务器），
+只装了 Nginx 时会以「未识别到已安装的 LNMP、LNMPA 或 LAMP」退出。需要 PHP 就执行
+`bash install.sh lnmp`，安装前的残留检测会列出现有 Nginx，确认后清理再装整套。
 
 #### 只装数据库
 
@@ -382,6 +405,45 @@ unset DB_Root_Password
 - 只对 `DB_Port` 与 `DB_X_Port` 写阻断公网访问的规则，防火墙写失败时整个安装返回非 0。
 - 安装成功后装上 `lnmp-health.timer`，探测目标只含本机已存在的服务 unit。
 
+#### 单独安装或补齐 Apache
+
+```bash
+bash install.sh apache                 # 按已部署的 lnmp 命令识别 LNMPA 或 LAMP
+bash install.sh apache lamp            # 指定栈
+LNMP_Auto=y ServerAdmin=admin@example.com bash install.sh apache lnmpa </dev/null   # 非交互
+```
+
+用于 LNMPA、LAMP 上 Apache 缺失或不完整的情况。执行前打印摘要，说明当前状态与本次动作：
+
+- 已就绪（版本、编译参数、随包配置、init 脚本与 unit 都在）：不写入文件，只确认 `httpd` 在运行。
+- 程序与编译参数符合、只缺配置或服务文件：只补写缺失部分，不重新编译。
+- 未安装或程序不完整：下载并校验 httpd、APR、APR-util（LAMP 另有 nghttp2，系统 OpenSSL 低于 3 时另有 OpenSSL 3），编译安装。
+- 已装 Apache 的版本或编译参数与目标不符（例如 LNMPA 的构建用于 LAMP）：不改动，返回非 0。
+
+配置归属：`/usr/local/apache/conf/httpd.conf` 含随包模板标记 `IncludeOptional conf/vhost/*.conf` 时视为已配置并保留；
+为上游默认配置（安装中断留下）时改写为随包模板，原文件保留为 `httpd.conf.bak`。`vhost` 配置、证书和网站目录不受影响。
+存量 mod_php 机器重新编译后 `modules/libphp.so` 不在时，按提示执行 PHP 重新安装，Apache 才能加载 PHP；
+PHP-FPM 形态经 `conf/extra/lnmp-php.conf` 转交 PHP-FPM，不依赖该模块。本入口不改动防火墙。
+
+#### 单独安装或补齐主 PHP
+
+```bash
+bash install.sh php                    # 按已部署的 lnmp 命令识别栈，版本取已装 PHP 的分支
+bash install.sh php lnmpa              # 指定栈，SAPI 按已装形态判定
+LNMP_Auto=y PHPSelect=5 bash install.sh php lnmp </dev/null   # 非交互，编号同整栈安装菜单
+```
+
+用于整栈安装完成后主 PHP（`/usr/local/php`）缺失或不完整的情况。LNMP 与新装的 LNMPA、LAMP 编译 PHP-FPM；
+Apache 主配置已加载 `php_module` 的存量机器编译 Apache 模块，需要 `/usr/local/apache/bin/apxs`，没有时先执行
+`bash install.sh apache`。执行前打印摘要：
+
+- 已就绪（版本、编译选项、php.ini 与服务文件都在）：不重新编译，只补齐缺失的默认扩展并重启 `php-fpm` 或 `httpd`。
+- 不完整：重新编译。php.ini、php-fpm.conf 按随包模板重写，`conf.d` 下的扩展配置清空；默认扩展随后重装，
+  其它扩展用 `bash addons.sh install <扩展>` 重装。手工改过的配置先备份。
+- 版本或编译选项与目标不符：不改动，返回非 0，更换版本用 `bash upgrade.sh php`。
+
+默认扩展未装上时结尾列出名称。日志写入 `/root/php-install.log`。本入口不改动防火墙与数据库。
+
 #### 补装 phpMyAdmin
 
 `Enable_PhpMyAdmin` 只控制整包安装，默认 `n`。主栈装好后补装：
@@ -400,29 +462,47 @@ bash install.sh phpmyadmin
 `lnmp phpmyadmin status` 查看当前访问状态并打印含真实 IP 的完整地址；
 关闭会保留程序、配置和随机路径。安全加固见 [10.1 本项目提供的主机基线](#101-本项目提供的主机基线)。
 
+部署后依次执行 Web 配置测试、重载和本机 HTTP 验证，任一步失败即删除本次装的程序目录、
+`/var/lib/phpmyadmin` 与入口片段并返回非 0。旧安装的默认站点缺少 `include phpmyadmin.*.conf;`
+时会补入，撤销时保留该行（没有片段时不生效）。`upgrade.sh phpmyadmin` 沿用原随机路径，
+旧目录保留为 `/usr/local/phpmyadmin.bak.<时间>`。
+
 #### 追加 PHP 版本
 
 ```bash
 bash install.sh mphp
 ```
 
-选一个版本并行装到 `/usr/local/php8.x`，主 PHP 不动。装好后 `lnmp vhost add` 会多一步
-选择本站使用哪个 PHP 版本。多版本 PHP 的配置目录、扩展安装和命令边界见
+选一个版本并行装到 `/usr/local/php8.x`，主 PHP 不动。该实例与主 PHP 一样按 `lnmp.conf` 的
+`Enable_PHP_Default_*` 开关安装 OPcache、igbinary、phpredis、imagick、zstd；单个扩展失败只告警，
+之后可用 `addons.sh install <名字>` 补装。装好后 `lnmp vhost add` 会多一步
+选择本站使用哪个 PHP 版本。LNMPA、LAMP（PHP-FPM 形态）同样可用：站点配置里写入
+`<FilesMatch "\.php$"> SetHandler "proxy:unix:/run/php-fpm/php-cgi<版本>.sock|fcgi://localhost"`，
+存量 mod_php 机器不支持追加版本。多版本 PHP 的配置目录、扩展安装和命令边界见
 [2.5.3 安装后的配置位置](#253-安装后的配置位置)、
 [8.2.6 安装本项目未提供的 PHP 扩展](#826-安装本项目未提供的-php-扩展)。
 
 #### 扩展与升级
 
 ```bash
-bash addons.sh install {memcached|opcache|redis|apcu|imagemagick|exif|fileinfo|ldap|bz2|sodium|imap|swoole}
-bash addons.sh uninstall <同上>
+bash addons.sh install {memcached|opcache|redis|apcu|imagemagick|exif|fileinfo|ldap|bz2|sodium|swoole|nodejs|pm2}
+bash addons.sh uninstall <同上>       # 另可 uninstall imap 移除旧版本装过的 imap
 bash upgrade.sh {nginx|openresty|mysql|mariadb|m2m|php|phpa|phpmyadmin|mphp}
 ```
 
-`addons.sh` 装的都是 PHP 扩展或需要 PHP 的服务，缺少 PHP 时会直接中止。
-`upgrade.sh` 的 `m2m` 是 MySQL 转 MariaDB，`phpa` 是 Apache 模式的 PHP，`mphp` 是多版本 PHP；
-数据库升级没有自动回滚。`upgrade.sh php` 与 `upgrade.sh mphp` 在同一分支内升级（如 8.5.9 → 8.5.11）时
-扩展 API 不变，自动沿用旧版本的附加扩展；跨分支升级时列出需要重装的扩展。
+`addons.sh` 的 PHP 扩展与依赖 PHP 的服务在缺少 PHP 时直接中止；`nodejs`、`pm2` 不依赖 PHP（见 [4.5](#45-托管-node--go-应用进程)）。
+`upgrade.sh` 的 `m2m` 是 MySQL 转 MariaDB，`php` 是 LNMP 的主 PHP，`phpa` 是 LNMPA、LAMP 的主 PHP（PHP-FPM 与存量 mod_php 均适用），`mphp` 是多版本 PHP；
+数据库升级与迁移失败时放回旧程序与数据目录并重新启动，以旧口令登录验证，仍须事先自行备份（见下方 m2m 说明）。`upgrade.sh php` 与 `upgrade.sh mphp` 先在暂存目录构建并冒烟测试，通过后才停服换入；
+换入后任一步骤失败都恢复旧目录并重新启动服务，旧目录保留在 `/usr/local/oldphp<时间>` 或
+`/usr/local/mphp-<分支>-backup<时间>`，确认无误后可自行删除。
+同一分支内升级（如 8.5.9 → 8.5.11）扩展 API 不变，自动沿用旧版本的附加扩展。跨分支升级（`upgrade.sh php`，如
+8.3 → 8.4）时，`addons.sh` 管理的 PECL 与内置扩展在停服期间按新版本重新编译，停服时间随扩展数量增加（每个约 1～3 分钟）；
+其余扩展与重新编译失败的扩展会列出，用 `bash addons.sh install <名字>` 补装。
+
+```bash
+bash upgrade.sh php      # 输入目标版本，如 8.4.26；LNMP_Auto=y 时跳过确认
+bash upgrade.sh mphp     # 先选实例序号，再输入同分支的目标版本
+```
 这些入口的完整说明见 [8.1.19 不属于 lnmp 命令的入口](#8119-不属于-lnmp-命令的入口)。
 
 **升级到新版本时的完整性校验**：`upgrade.sh` 各目标的校验依据不同，只有 MySQL 需要事先手工写入校验值，
@@ -520,7 +600,7 @@ WebSelect=2 ORMode=2 bash install.sh lnmp    # 源码编译
 | 自定义模块 | 不能（配了会直接报错） | 能，见 2.3.1 |
 
 > 注意：**Debian 13 (trixie) 目前只能用源码编译。**
-> 2026-08 实测，OpenResty 官方 Debian 仓库只有到 bookworm(12) 为止，
+> 2026-10 复核，OpenResty 官方 Debian 仓库只有到 bookworm(12) 为止，
 > `dists/trixie/` 返回 404。官方博客虽然把 Debian 13 列进了支持列表，
 > 但仓库包尚未发布。选择 `ORMode=1` 时，脚本会先探测仓库，明确报告错误并
 > 建议改用源码编译，避免在 `apt-get update` 阶段才失败。
@@ -536,12 +616,14 @@ lnmp vhost add                  # 照常可用
 ```
 
 OpenResty 的 Lua 路径与源码 nginx 那套不同（用它自带的 `lualib`），
-安装脚本已自动配好：
+安装脚本生成 `/usr/local/openresty/nginx/conf/lua_paths.conf` 由主配置 include：
 
 ```nginx
-lua_package_path  "/usr/local/openresty/lualib/?.lua;;";
+lua_package_path "/usr/local/openresty/lualib/?.lua;/usr/local/openresty/lualib/?/init.lua;;";
 lua_package_cpath "/usr/local/openresty/lualib/?.so;;";
 ```
+
+配置了 `OpenResty_Custom_Lualib` 时该目录追加在内置 `lualib` 之后，见 2.3.1。
 
 升级：
 
@@ -632,22 +714,22 @@ lnmp status
 nginx -v && php -v && mysql --version
 ```
 
-实测输出：
+输出示例（版本号随发布包固定的组件版本变化）：
 
 ```
-nginx version: nginx/1.30.4
-PHP 8.3.33 (cli) (built: Aug 10 2026 08:46:50) (NTS)
-mysql  Ver 8.4.7 for Linux on x86_64 (MySQL Community Server - GPL)
+nginx version: nginx/1.30.5
+PHP 8.3.35 (cli) (built: ...) (NTS)
+mysql  Ver 8.4.11 for Linux on x86_64 (MySQL Community Server - GPL)
 ```
 
 选择 MariaDB 11.8 时，最后一项会显示 MariaDB 版本；项目同时保留 `mysql` 兼容入口。
-本轮 Debian 13 验证覆盖：
+Debian 13 实测覆盖（表中为实测时的组件版本）：
 
 | 栈/数据库 | 实测结果 |
 |---|---|
 | LNMP + MySQL 8.4.7 | WordPress 安装、首页、固定链接、REST、PHP-FPM、数据库、Redis 通过 |
 | LNMP + MariaDB 11.8.8 | 同一组 WordPress 链路通过；phpMyAdmin 和数据库管理命令通过 |
-| LAMP / LNMPA | Apache 正常 PHP、PATH_INFO、`.php.bak`、符号链接、default 边界和服务失败码通过 |
+| LAMP / LNMPA | Apache event + PHP-FPM 新装、PHP、PATH_INFO、`.php.bak`、符号链接、default 边界和服务失败码通过 |
 | Pure-FTPd | 新安装 `TLS 2`；明文登录拒绝，显式 FTPS 列目录与上传通过 |
 
 确认编入的模块：
@@ -662,7 +744,7 @@ nginx -V 2>&1 | tr ' ' '\n' | grep -E "lua|brotli|cache_purge|http_v2|http_v3|op
 --add-module=.../ngx_cache_purge-2.3
 --with-http_v2_module
 --with-http_v3_module
---with-openssl=.../openssl-3.5.7
+--with-openssl=.../openssl-3.5.9
 ```
 
 验证 Lua 确实能在真实 worker 里跑（不是只看模块编进去了）：
@@ -723,25 +805,26 @@ curl http://127.0.0.1:1008/lua
 | `Enable_Ngx_CachePurge` | `y` | 编译缓存清除模块；不使用 Nginx/FastCGI 缓存可关闭 |
 | `Enable_Ngx_FancyIndex` | `n` | 目录美化索引；公开生产站一般保持关闭 |
 | `Enable_Swap` | `y` | 缺少 Swap 时创建 swapfile；它只缓冲突发内存，不是增加 FPM worker 的理由 |
-| `Enable_Auto_Tune` | `y` | 按本机内存写数据库、PHP-FPM、Apache prefork、Redis、Memcached、OPcache 的参数，取值见 6.6；`n` 时用各模板固定值 |
+| `Enable_Auto_Tune` | `y` | 按本机内存写数据库、PHP-FPM（存量 mod_php 机器为 Apache prefork）、Redis、Memcached、OPcache 的参数，取值见 6.6；`n` 时用各模板固定值 |
 | `Tune_Mem_MB` | 空 | 参与计算的内存（MB）；空值取 `MemTotal` 与 cgroup 限额的较小者；与其它服务共用机器时填分给本栈的部分 |
-| `Tune_PHP_Proc_MB` | `100` | 单个 PHP 进程高峰内存估算，决定 `pm.max_children` 与 `MaxRequestWorkers`；WooCommerce、页面构建器调大到 150～200 |
+| `Tune_PHP_Proc_MB` | `100` | 单个 PHP 进程高峰内存估算，决定 `pm.max_children`（存量 mod_php 机器为 `MaxRequestWorkers`）；WooCommerce、页面构建器调大到 150～200 |
 | `Enable_Composer` | `y` | 安装主 PHP 时同时安装 Composer；不需要时设 `n` |
 | `Enable_PHP_Default_Opcache` | `y` | WordPress 必需的主要 PHP 性能层，保持开启 |
 | `Enable_PHP_Default_Igbinary` | `y` | phpredis 紧凑序列化支持；使用 Redis 时建议保留 |
 | `Enable_PHP_Default_Redis` | `y` | 安装 phpredis 扩展，不等于安装 Redis 服务端 |
 | `Enable_PHP_Default_Imagick` | `y` | 图片处理扩展；不用 PDF/复杂图片处理时可评估关闭，WordPress 会回退 GD |
+| `Enable_PHP_Default_Zstd` | `y` | Zstandard 压缩扩展（`zstd_compress`/`zstd_uncompress`），使用包内自带的 libzstd 编译；已装环境执行 `bash install.sh php <栈>` 补齐（PHP 就绪时只补默认扩展，不重编 PHP），addons 不提供该扩展 |
 | `Enable_PHP_Exif` | `y` | WordPress 读取照片方向与拍摄信息依赖它，不需要时设为 `n` |
 | `Enable_PHP_Fileinfo` | `y` | 上传 MIME 检测依赖，保持开启 |
 | `Enable_PHP_Ldap` | `n` | 只在对接 LDAP 时开启 |
 | `Enable_PHP_Bz2` | `n` | 只在应用明确依赖 bzip2 时开启 |
 | `Enable_PHP_Sodium` | `n` | PHP 8 自带 sodium 能力因构建方式而异；应用明确要求时开启并用 `php -m` 验证 |
-| `Enable_PHP_Imap` | `n` | Debian 13 已移除旧 uw-imap 开发库，非邮件应用不要开启 |
 | `Download_Insecure` | `n` | 关闭 TLS 校验；除临时定位证书链问题外不得开启，更不能用于生产安装 |
 | `Enable_Download_Checksum` | `y` | 项目完整性校验总开关；保持开启 |
 | `DB_Port` | `3306` | 写入 `/etc/my.cnf` 并生成防火墙规则；安全依靠回环监听和来源控制，不靠换端口 |
 | `DB_X_Port` | `33060` | MySQL X Protocol 端口及阻断规则；MariaDB 不使用 |
 | `Redis_Port` | `6379` | 写 Redis 配置、init 脚本、测试页及防火墙规则 |
+| `Redis_Mode` | `cache` | `cache` 对象缓存，不持久化，内存满时淘汰；`persistent` 用于 session、队列，RDB 加 AOF，内存满时拒绝写入；见 6.5 |
 | `Memcached_Port` | `11211` | 写 init 脚本、测试页及 TCP/UDP 阻断规则 |
 | `Pureftpd_Port` | `21` | FTP 控制端口 |
 | `Pureftpd_Data_Port` | `20` | FTP 主动模式数据端口 |
@@ -822,13 +905,13 @@ CheckMirror=n Bin=y bash install.sh lnmp
 | rewrite | `/usr/local/nginx/conf/rewrite/<名称>.conf` | 同上 |
 | PHP 路由 | `/usr/local/nginx/conf/enable-php*.conf` | 同上；多版本 socket 必须匹配 |
 | TLS 证书 | `/usr/local/nginx/conf/ssl/<域名>/` | 由 `lnmp ssl`/acme.sh 管理，不手工覆盖自动续期文件 |
-| PHP | `/usr/local/php/etc/php.ini`、LNMP 模式下的 `/usr/local/php/etc/php-fpm.conf`、`/usr/local/php/conf.d/*.ini` | LNMP：`php --ini`、`php-fpm -t`，然后 `lnmp php-fpm reload`；LNMPA/LAMP：`httpd -t`，然后 `lnmp httpd reload` |
+| PHP | `/usr/local/php/etc/php.ini`、`/usr/local/php/etc/php-fpm.conf`（存量 mod_php 机器没有）、`/usr/local/php/conf.d/*.ini` | PHP-FPM 形态（LNMP 与新装 LNMPA、LAMP）：`php --ini`、`php-fpm -t`，然后 `lnmp php-fpm reload`；存量 mod_php：`httpd -t`，然后 `lnmp httpd reload` |
 | 多版本 PHP | `/usr/local/php8.x/etc/`、`/usr/local/php8.x/conf.d/` | 用该版本二进制检查；重载对应 FPM 服务 |
 | MySQL/MariaDB | `/etc/my.cnf` | `mysql -e` 回读变量；需要 restart 的参数安排维护窗口 |
 | Redis | `/usr/local/redis/etc/redis.conf` | Redis 没有等价的完整 `-t`；安排维护窗口重启后用日志、`CONFIG GET` 和 `INFO` 回读 |
 | Memcached | `/etc/init.d/memcached` | 重启后用 `ss` 和 `stats settings` 核对监听/内存参数 |
 | Pure-FTPd | `/usr/local/pureftpd/etc/pure-ftpd.conf` | 重启后核对监听端口及被动范围 |
-| phpMyAdmin | `/usr/local/phpmyadmin/config.inc.php`；Web 映射 `/usr/local/nginx/conf/phpmyadmin.enable.conf` | 优先 `lnmp phpmyadmin enable\|disable\|status`；改映射后 `nginx -t` |
+| phpMyAdmin | `/usr/local/phpmyadmin/config.inc.php`；Web 映射 `/usr/local/nginx/conf/phpmyadmin.enable.conf`（LAMP 为 `/usr/local/apache/conf/extra/phpmyadmin.enable.conf`） | 优先 `lnmp phpmyadmin enable\|disable\|status`；改映射后 `nginx -t` 或 `httpd -t` |
 | OpenResty 构建记录 | `/etc/lnmp/openresty-build.conf`，运行期 Lua 路径 `/usr/local/nginx/conf/lua_paths.conf` | 升级会沿用构建记录；改 Lua 路径后 `nginx -t` |
 | 备份 | `/etc/lnmp/backup.conf`、数据库凭据 `/etc/lnmp/backup-mysql.cnf` | 权限必须 600；`lnmp backup run` 后执行 `lnmp backup test` |
 | Telegram | `/etc/lnmp/notify.conf` | `lnmp tgnotice --status`、`--test`；Token 文件必须 600/400 |
@@ -848,7 +931,7 @@ CheckMirror=n Bin=y bash install.sh lnmp
 不要把 Token 写进仓库或命令行历史。
 
 站点级可配置项由 `lnmp vhost add` 收集：主域名、附加域名、站点目录、rewrite、
-是否开启 PHP、Pathinfo、PHP 版本、访问日志、IPv6、数据库、SSL 与跳转策略。
+站点类型（PHP、静态、反向代理）、程序预设（WordPress、Laravel）、Pathinfo、PHP 版本、访问日志、IPv6、数据库、SSL 与跳转策略。
 数据库、FTP、证书和 DNS provider 凭据分别通过 `lnmp database`、`lnmp ftp`、
 `lnmp ssl`/`dnsssl` 管理。不要直接复制别人的完整 vhost；保留本项目生成的 socket、
 PHP 禁用分支和 phpMyAdmin 边界，再做最小修改。
@@ -860,17 +943,18 @@ PHP 禁用分支和 phpMyAdmin 边界，再做最小修改。
 | 目标 | 位置/命令 | 边界 |
 |---|---|---|
 | Nginx/OpenResty 初装模板 | `conf/nginx.conf`、`conf/openresty.conf` | 只影响以后安装；已安装实例改 `/usr/local/nginx/conf/nginx.conf` |
-| 管理命令源码 | `conf/lnmp`、`conf/lnmpa`、`conf/lamp` | 三套公共功能必须同步；运行中的命令是 `/bin/lnmp`，不能只改仓库文件就认为已生效 |
+| 管理命令源码 | 公共函数 `include/rt/cli_common.sh`；Nginx 站点与证书函数 `include/rt/cli_nginx.sh`（lnmp、lnmpa）；服务判定与 unit 写入 `include/rt/svc.sh`；防火墙共用部分 `include/rt/fw.sh`；栈入口 `conf/lnmp`、`conf/lnmpa`、`conf/lamp`；工具 `tools/lnmp-*.sh` | 三套共有且相同的函数只改公共层，服务相关函数只改 `svc.sh`，防火墙表名、持久化与端口探测只改 `fw.sh`（安装器、管理命令、工具共用）；栈入口保留各栈特有函数与分发。运行中的命令是 `/bin/lnmp`、`/bin/lnmp-*`，由 `./bumpversion.sh` 组装为单文件并成组换入，不能只改仓库文件就认为已生效，也不能把 `tools/*.sh` 直接复制到 `/bin` |
 | 通用组件版本 | `include/version.sh` | 改版本后更新对应校验/签名材料并执行 URL、lint 和一致性检查 |
 | 数据库/PHP/Apache 菜单与版本 | `include/profile.sh` | 编号、版本语义、安装函数和架构能力在这里统一映射，不能只改菜单文字 |
 | 静态 SHA256 清单 | `src/checksums.sha256` | 只覆盖走静态 SHA256 的组件；PGP/仓库 GPG/上游动态校验各走自己的路径 |
-| PHP/缓存扩展 | `bash addons.sh install {memcached\|opcache\|redis\|apcu\|imagemagick\|exif\|fileinfo\|ldap\|bz2\|sodium\|imap\|swoole}` | 按实际依赖安装；主安装已默认提供 OPcache、igbinary、phpredis、imagick |
+| PHP/缓存扩展 | `bash addons.sh install {memcached\|opcache\|redis\|apcu\|imagemagick\|exif\|fileinfo\|ldap\|bz2\|sodium\|swoole}` | 按实际依赖安装；主安装已默认提供 OPcache、igbinary、phpredis、imagick、zstd |
+| Node.js 与 PM2 | `bash addons.sh install {nodejs\|pm2}` | 不依赖 PHP；版本与校验材料见 4.5 |
 | Pure-FTPd 服务 | `bash pureftpd.sh` | 端口来自 `lnmp.conf`，安装前会列出并要求确认；不需要传统 FTP 时不要增加该公网服务 |
-| 组件升级 | `bash upgrade.sh {nginx\|openresty\|mysql\|mariadb\|m2m\|php\|phpa\|phpmyadmin\|mphp}` | 先备份和测试；数据库升级没有自动回滚 |
+| 组件升级 | `bash upgrade.sh {nginx\|openresty\|mysql\|mariadb\|m2m\|php\|phpa\|phpmyadmin\|mphp}` | 先备份和测试；数据库升级失败时放回旧实例 |
 | 管理功能 | `lnmp vhost/database/ftp/ssl/dnsssl/onlyssl/backup/tgnotice/phpmyadmin` | 优先走命令生成配置，保留校验、权限与回滚逻辑 |
 
-`addons.sh` 菜单虽然仍列出 ionCube，但当前版本没有接入可用安装流程；不要把菜单名当成
-功能已经实现。Apache/LNMPA/LAMP 保留代码路径，但没有 Debian 13 主线同等级的真机覆盖。
+`addons.sh` 菜单虽然仍列出 ionCube，但当前版本没有接入可用安装流程，选择后只提示到官方取包自行安装；
+不要把菜单名当成功能已经实现。LNMPA/LAMP 已在 Debian 13 完成新装验证，覆盖面仍小于 LNMP + WordPress 主线。
 
 `addons.sh install redis` 与 `addons.sh install memcached` 在按键确认前先列出端口、
 监听地址、防火墙动作和自测页开关，端口取自 `lnmp.conf`，要改就先取消再重跑。已装过时
@@ -904,14 +988,17 @@ WordPress 的对象缓存要用到。**PHP 的 redis 扩展在主安装时就装
 bash addons.sh install redis
 ```
 
-关键回显：
+安装前列出端口、监听地址、`Redis_Mode` 与防火墙动作并等待按键确认。关键回显：
 
 ```
 注释掉 Redis 8.x 默认配置里的 loadmodule（对应模块未随 make install 安装）
-检测到 igbinary，启用 phpredis 的 igbinary 序列化支持。
-checking for redis igbinary support... enabled
-====== Redis install completed ======
+phpredis 扩展 已安装并可加载，无需重复安装。
+====== Redis 安装完成 ======
+Redis 安装成功。
 ```
+
+phpredis 在主安装时已按默认扩展编译（启用 igbinary 序列化与 zstd 压缩），这里不再重编；
+主安装关闭了 `Enable_PHP_Default_Redis` 时，本步骤会补装 phpredis。
 
 验证：
 
@@ -1034,30 +1121,64 @@ define( 'WP_REDIS_PASSWORD', '读取 /root/.lnmp_redis_password 后填入的密�
 lnmp vhost add
 ```
 
-**完整的交互顺序**（单 PHP 版本、未装 pure-ftpd 的情况，共 16 步）：
+**完整的交互顺序**（单 PHP 版本、未装 pure-ftpd、选 WordPress 预设的情况，共 17 步）：
 
 | # | 提示 | WordPress 场景填什么 |
 |---|---|---|
 | 1 | `请输入域名(示例: www.example.com):` | `wp.example.com` |
 | 2 | `请输入更多域名(示例: example.com sub.example.com，直接回车跳过):` | 回车跳过，或填 `example.com` |
-| 3 | `默认目录(直接回车使用): /home/wwwroot/<域名>` | 回车用默认 `/home/wwwroot/<域名>` |
-| 4 | `是否开启伪静态规则? (y/N，默认 n)` | **`y`** |
-| 5 | `(默认 other，直接回车使用):` | **`wordpress`** |
-| 6 | `是否开启 PHP? (Y/n，默认 y)` | 回车用默认 `y`（WordPress 要跑 PHP） |
-| 7 | `是否开启 PHP Pathinfo? (y/N，默认 n)` | `n`（WordPress 不需要） |
-| 8 | `是否开启访问日志? (Y/n，默认 y)` | 回车用默认 `y` |
-| 9 | `请输入访问日志文件名(默认: <域名>.log，直接回车使用):` | 回车用默认 |
-| 10 | `是否开启 IPv6? (y/N，默认 n)` | 有 IPv6 就 `y` |
-| 11 | `是否创建同名数据库和 MySQL 用户? (y/N，默认 n)` | **`y`** |
-| 12 | `请输入当前数据库 root 密码（输入不回显）:` | 数据库 root 密码（不回显） |
-| 13 | `请输入数据库名（只允许字母、数字和下划线）:` | `wpdemo`（库名与用户名相同） |
-| 14 | `请输入数据库用户 <库名> 的密码（输入不回显）:` | 库用户密码（不回显） |
-| 15 | `是否添加 SSL 证书?（HTTP 验证，需 80 端口可从公网访问）(y/N，默认 n)` | 先 `n`，第七章单独做 |
-| 16 | `按任意键开始创建虚拟主机，或按 Ctrl+C 取消...` | 任意键 |
+| 3 | `请选择 [1-3]（默认 1）:`（站点类型：1 PHP、2 静态、3 反向代理） | 回车用默认 `1` |
+| 4 | `请选择 [1-3]（默认 1）:`（程序预设：1 不使用、2 WordPress、3 Laravel） | **`2`** |
+| 5 | `默认目录(直接回车使用): /home/wwwroot/<域名>` | 回车用默认 `/home/wwwroot/<域名>` |
+| 6 | `是否开启伪静态规则? (Y/n，默认 y)` | 回车（预设已把默认改为 `y`） |
+| 7 | `(默认 wordpress，直接回车使用):` | 回车（预设已把默认规则改为 `wordpress`） |
+| 8 | `是否开启 PHP Pathinfo? (y/N，默认 n)` | 回车（WordPress 不需要） |
+| 9 | `是否开启访问日志? (Y/n，默认 y)` | 回车用默认 `y` |
+| 10 | `请输入访问日志文件名(默认: <域名>.log，直接回车使用):` | 回车用默认 |
+| 11 | `是否开启 IPv6? (y/N，默认 n)` | 有 IPv6 就 `y` |
+| 12 | `是否创建同名数据库和 MySQL 用户? (Y/n，默认 y)` | 回车（预设已把默认改为 `y`） |
+| 13 | `请输入当前数据库 root 密码（输入不回显）:` | 数据库 root 密码（不回显） |
+| 14 | `请输入数据库名（只允许字母、数字和下划线）:` | `wpdemo`（库名与用户名相同） |
+| 15 | `请输入数据库用户 <库名> 的密码（输入不回显）:` | 库用户密码（不回显） |
+| 16 | `是否添加 SSL 证书?（HTTP 验证，需 80 端口可从公网访问）(y/N，默认 n)` | 先 `n`，第七章单独做 |
+| 17 | `按任意键开始创建虚拟主机，或按 Ctrl+C 取消...` | 任意键 |
 
-第 5 步之前会先列出已内置的伪静态规则名（`wordpress`、`typecho`、`discuzx` 等），
-第 9 步只在第 8 步选了 `y` 时出现；第 12–14 步只在第 11 步选了 `y` 时出现。
-第 6 步答 `n`（或本机没有 PHP）时，第 7 步换成 `是否开启反向代理?`，见 4.4。
+第 4 步只在第 3 步选 PHP 站点时出现；不用预设时第 6、12 步的默认值是 `n`，第 7 步的默认规则是
+`other`。预设只改变这几处默认值，每一步仍可改成别的答案。第 7 步之前会先列出已内置的伪静态
+规则名（`wordpress`、`typecho`、`discuzx` 等），第 10 步只在第 9 步选了 `y` 时出现；
+第 13–15 步只在第 12 步选了 `y` 时出现。
+
+**第 3 步决定后面问什么**：
+
+| 站点类型 | 额外问 | 不问 |
+|---|---|---|
+| 1 PHP 站点 | 程序预设、伪静态、Pathinfo、PHP 版本（装了多个版本时） | — |
+| 2 静态站点 | — | 程序预设、伪静态、Pathinfo、PHP 版本 |
+| 3 反向代理 | 后端地址 [→ 域名后端的 Host 头]，紧跟在第 3 步之后 | 程序预设、伪静态、Pathinfo、PHP 版本 |
+
+静态站点的 `.php` 与 `.php/xxx` 请求一律返回 404，站点配置里不写任何 PHP 执行入口，首页候选
+去掉 `index.php`，站点目录也不写 `.user.ini`。反向代理站点整站转给后端。详见 4.4。
+
+**本机没有 PHP 时第 3 步的 1 不可选**：检测不到主 PHP（`/usr/local/php/bin/php-config`
+与 `/etc/init.d/php-fpm`）也没有任何完整安装的附加版本时，菜单标注 PHP 不可选，默认值改为 2。
+只用 `install.sh nginx` 装了 Nginx 的机器属于这种情况，装好 PHP 后重新建站或手工改站点配置即可。
+
+**Laravel 预设**（第 4 步选 `3`）：第 5 步输入的是**项目目录**，网站根目录自动设为其下的
+`public/`，open_basedir 放宽到项目目录，使 `public/index.php` 能读取 `vendor/`、`storage/`
+等上级目录。命令不移动任何文件，项目代码需放在项目目录下；`public` 是符号链接或文件时拒绝并
+重新提问。其余默认值：伪静态 `laravel`、建库 `y`。
+
+| 项目 | 普通 PHP 站点 | Laravel 预设 |
+|---|---|---|
+| 网站根目录（`root` / `DocumentRoot`） | `/home/wwwroot/<域名>` | `/home/wwwroot/<域名>/public` |
+| open_basedir | 网站根目录 | 项目目录 `/home/wwwroot/<域名>` |
+| 目录属主与权限 | 网站根目录 | 项目目录 |
+| FTP 账号根目录 | 网站根目录 | 项目目录 |
+
+LNMP 的 open_basedir 默认来自全局 `fastcgi.conf`（按 `$document_root` 计算），Laravel 站点的
+PHP `location` 因此写在站点配置里，在 `include fastcgi.conf;` 之后再给一行
+`fastcgi_param PHP_ADMIN_VALUE "open_basedir=<项目目录>/:/tmp/:/var/tmp/:/proc/";`，
+PHP-FPM 取后一行。LNMPA、LAMP 直接把站点的 open_basedir 写成项目目录。
 
 **第 1、2 步会检查域名是否已被占用**：主域名和附加域名都会与现有站点的 `server_name`
 （Apache 栈是 `ServerName` 与 `ServerAlias`）比对，已被声明就列出占用它的配置文件并
@@ -1065,13 +1186,7 @@ lnmp vhost add
 提示输入，不会终止整条命令。第 2 步还会拒绝与主域名重复、或附加域名内部重复的输入，
 避免写出含重复项的 `server_name`。
 
-**第 6 步只在本机装有 PHP 时出现**：检测不到主 PHP（`/usr/local/php/bin/php-config`
-与 `/etc/init.d/php-fpm`）也没有任何完整安装的附加版本时，站点 PHP 直接关闭并说明原因。
-只用 `install.sh nginx` 装了 Nginx 的机器属于这种情况，装好 PHP 后重新建站或手工改站点
-配置即可。两种情况都紧接着问 `是否开启反向代理? (y/N，默认 n)`，答 `y` 再输入后端地址，
-站点配置直接写好整站反代；答 `n` 则所有 `.php` 请求返回 404。详见 4.4。
-
-**第 16 步之后可能还有一问**：站点目录是本次新建或原本为空时统一设为 755；复用已有的
+**第 17 步之后可能还有一问**：站点目录是本次新建或原本为空时统一设为 755；复用已有的
 非空目录时保留其中文件的权限位，并询问 `是否把目录统一改为 755、普通文件改为 644?`
 （默认 `n`）。两种情况下目录属主都会改为 `www`。非交互执行不占输入行，见 4.2。
 
@@ -1082,13 +1197,16 @@ lnmp vhost add
 |---|---|---|
 | 域名 | 域名 | 域名 |
 | 更多域名 | 更多域名 | 更多域名 |
+| 站点类型 | 站点类型 | 站点类型 |
+| 程序预设（PHP 站点才问） | 同左 | 同左 |
+| 反向代理后端地址 [→ 域名后端的 Host 头]（反向代理站点才问） | 同左 | 同左 |
 | 网站目录 | 网站目录 | 网站目录 |
-| 伪静态开关 [→ 规则名] | — | — |
-| PHP 开关 | PHP 开关 | PHP 开关 |
-| 反向代理 [→ 后端地址 → 域名后端的 Host 头]（PHP 关闭时才问） | 同左 | 同左 |
-| PHP Pathinfo | — | — |
+| — | PHP 版本（装了附加版本才问） | PHP 版本（装了附加版本才问） |
+| 伪静态开关 [→ 规则名]（PHP 站点才问） | — | — |
+| PHP Pathinfo（PHP 站点才问） | — | — |
 | 访问日志 [→ 日志文件名] | 访问日志 [→ 日志文件名] | 访问日志 [→ 日志文件名] |
 | IPv6 | IPv6 | — |
+| PHP 版本（装了多个版本才问） | — | — |
 | — | 管理员邮箱 | 管理员邮箱 |
 | 建库 [→ root 口令 → 库名 → 库口令] | 同左 | 同左 |
 | FTP 账号（装了 pure-ftpd 才问） | 同左 | 同左 |
@@ -1096,26 +1214,24 @@ lnmp vhost add
 | 按任意键开始创建 | 同左 | 同左 |
 
 **LNMPA 与 LAMP 不问伪静态规则**，改问管理员邮箱：这两套栈的伪静态由 Apache 的
-`.htaccess` 处理（站点配置为 `AllowOverride All`，`mod_rewrite` 已加载），详见 5.5。
+`.htaccess` 处理（站点配置为 `AllowOverride All`，`mod_rewrite` 已加载），WordPress 与
+Laravel 都自带 `.htaccess`，详见 5.5。
 **LAMP 不问 IPv6**，站点由 Apache 直接监听。按 LNMP 的序列去驱动另两套栈会整体错位
 （邮箱答到伪静态位、口令答到邮箱位），建站失败且没有明确报错。
 
-**第 6 步选 `n` 时**（纯静态站点，或 Node、Go 等自带后端的站点）：不再问 Pathinfo，
-装了多个 PHP 版本时也不再问选哪个版本；站点配置里不写任何 PHP 执行入口，
-首页候选去掉 `index.php`，站点目录也不再写 `.user.ini`。随后问是否开启反向代理：
-不开时 `.php` 与 `.php/xxx` 一律返回 404，开启则整站转给后端。详见 4.4。
-
-> **第 5 步的 `wordpress` 是关键。** 它会引用内置的
+> **第 7 步的 `wordpress` 是关键。** 它会引用内置的
 > `/usr/local/nginx/conf/rewrite/wordpress.conf`：
 > ```nginx
+> location ~* ^/(readme\.html|license\.txt)$ { return 404; }
 > location / { try_files $uri $uri/ /index.php?$args; }
 > rewrite /wp-admin$ $scheme://$host$uri/ permanent;
 > ```
-> 这正是 WordPress 官方推荐的 nginx 伪静态写法。
+> 后两行是 WordPress 官方推荐的 nginx 伪静态写法；第一行不对外提供暴露版本号的
+> `readme.html` 与 `license.txt`。
 
 成功后会打印站点信息，并且能看到 `数据库创建成功。`。
 
-**第 8 步只控制访问日志。** 错误日志一律写入，Nginx 站点是
+**第 9 步只控制访问日志。** 错误日志一律写入，Nginx 站点是
 `error_log /home/wwwlogs/<域名>.error.log;`，Apache 站点是
 `ErrorLog "/home/wwwlogs/<日志名>-error_log"`：
 
@@ -1145,38 +1261,64 @@ Apache 用 `/etc/init.d/httpd configtest` 和 `/etc/init.d/httpd graceful`。
 
 ### 4.2 非交互创建
 
-**带 PHP 的站点**（WordPress 场景，与 4.1 的问答一一对应）：
+**带 PHP 的站点**（WordPress 场景，不用预设，逐项给出答案）：
 
 ```bash
 printf 'wp.example.com\n\n\ny\nwordpress\nn\ny\n\nn\ny\n数据库root密码\nwpdemo\n库用户密码\nn\n\n' \
   | lnmp vhost add
 ```
 
-**不带 PHP 的站点**（纯静态，或 Node、Go 等自带后端）：用 `VHOST_PHP=n` 关掉 PHP，
-输入序列不再包含 Pathinfo，也不创建数据库：
+**用 WordPress 预设**：伪静态、规则名、建库三项的默认值换成预设值，对应行留空即可：
 
 ```bash
-printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
+printf 'wp.example.com\n\n\n\n\n\n\n\n\n\n数据库root密码\nwpdemo\n库用户密码\nn\n\n' \
+  | VHOST_PRESET=wordpress lnmp vhost add
 ```
 
-> 依次是：域名 → 更多域名(空) → 目录(空) → 伪静态 `n` → 访问日志 `n` →
-> IPv6 `n` → 建库 `n` → SSL `n` → 任意键。站点行为见 4.4。
+> 依次是：域名 → 更多域名(空) → 目录(空) → 伪静态(空=y) → 规则名(空=wordpress) →
+> Pathinfo(空=n) → 访问日志(空=y) → 日志文件名(空) → IPv6(空=n) → 建库(空=y) →
+> root 口令 → 库名 → 库用户密码 → SSL `n` → 任意键。
+
+**不带 PHP 的站点**（纯静态，或 Node、Go 等自带后端）：用 `VHOST_TYPE=static`，
+输入序列不包含伪静态与 Pathinfo：
+
+```bash
+printf 'app.example.com\n\n\nn\nn\nn\nn\n\n' | VHOST_TYPE=static lnmp vhost add
+```
+
+> 依次是：域名 → 更多域名(空) → 目录(空) → 访问日志 `n` → IPv6 `n` → 建库 `n` →
+> SSL `n` → 任意键。站点行为见 4.4。
+
+**站点类型与预设不占喂入序列的行**。非交互执行时不读标准输入，只读环境变量：
+
+| 变量 | 取值 | 说明 |
+|---|---|---|
+| `VHOST_TYPE` | `php`、`static`、`proxy` | 站点类型，不区分大小写；未设置时按下面两个旧变量推断 |
+| `VHOST_PHP` | `y`、`n` | 旧变量，保留兼容：`n` 等同 `VHOST_TYPE=static` |
+| `VHOST_PROXY` | 后端地址 | 反向代理后端；只设它时等同 `VHOST_TYPE=proxy` |
+| `VHOST_PRESET` | `wordpress`、`laravel`、`none` | 程序预设，只用于 PHP 站点 |
+
+三个变量都未设置时建 PHP 站点、不用预设，与旧版行为相同。下列组合相互矛盾，命令以非 0
+退出、不建站，并指出冲突的变量：`VHOST_TYPE=php` 同时给了 `VHOST_PHP=n` 或
+`VHOST_PROXY`；`VHOST_TYPE=static` 同时给了 `VHOST_PHP=y` 或 `VHOST_PROXY`；
+`VHOST_TYPE=proxy` 没给 `VHOST_PROXY` 或给了 `VHOST_PHP=y`；`VHOST_PHP=y` 与
+`VHOST_PROXY` 同时出现；静态或反代站点给了 `VHOST_PRESET`；取值不在上表范围内。
+本机没有 PHP 时，未指定类型按静态站点建立；明确要求 PHP（`VHOST_TYPE=php` 或
+`VHOST_PHP=y`）则以非 0 退出。
 
 > 注意：**输入项数量必须精确**。任何一项（含最后的“任意键”那一行）缺失时都会报告
 > `读取<项目>时遇到 EOF —— 标准输入已经没有内容了。` 并以非 0 退出，不会按默认值
 > 继续创建站点。y/n 类问题只接受 `y`、`yes`、`n`、`no`（不分大小写）和空值（取默认），
 > 其它输入会在原问题处重问，不会带着非法值走到创建阶段。
 >
-> 注意：**装了多个 PHP 版本时会多一步**（第 10 步后会问选哪个 PHP），
-> 序列要相应调整。单版本时不会问。
+> 注意：**装了多个 PHP 版本时会多一步**（LNMP 在 IPv6 之后、LNMPA/LAMP 在网站目录之后
+> 问选哪个 PHP），序列要相应调整。单版本时不会问。
 >
-> 注意：**第 6 步的 PHP 开关不占喂入序列的一行**。非交互执行时不读标准输入，
-> 只读取环境变量 `VHOST_PHP`：未设置时开启 PHP，
-> 上面这条命令不用改。要建不带 PHP 的站点见 4.4。
+> 注意：**3.0.2.007 起静态与反代站点不再问伪静态**。此前 `VHOST_PHP=n` 的序列在目录之后
+> 有一行伪静态答案，升级后要删掉这一行，否则后面的答案整体前移一位。PHP 站点的序列不变。
 >
-> 注意：**反向代理开关同样不占一行**。它只在 PHP 关闭时出现，非交互执行读
-> `VHOST_PROXY`：未设置就是不开反代，给了不合法的值直接以非 0 退出，不建站。
-> 后端是域名时多出的 Host 头一问同样不占一行，非交互读 `VHOST_PROXY_HOST`；
+> 注意：**反向代理的后端地址不占一行**，非交互读 `VHOST_PROXY`，给了不合法的值直接以非 0
+> 退出，不建站。后端是域名时多出的 Host 头一问同样不占一行，非交互读 `VHOST_PROXY_HOST`；
 > 交互执行时这一问**要占一行**。
 >
 > 注意：**复用已有非空目录时的两项提问同样不占一行**。目录是新建的或为空时统一设为
@@ -1185,7 +1327,7 @@ printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
 > （递归改为 `www:www`）。保留属主是为了不破坏 Git/CI 部署账号或其它服务对目录里
 > 文件的归属；此时若 PHP 读不到站点文件，需自行给 `www` 用户授予读取权限。
 
-**LNMPA 与 LAMP 的序列**（按 4.1 的三栏对照表，PHP 开关和反代开关同样不占一行）：
+**LNMPA 与 LAMP 的序列**（按 4.1 的三栏对照表，站点类型、预设与反代后端同样不占一行）：
 
 ```bash
 # LNMPA：域名 → 更多域名(空) → 目录(空) → 访问日志 n → IPv6 n → 邮箱(空)
@@ -1196,7 +1338,15 @@ printf 'wp.example.com\n\n\nn\nn\n\ny\n数据库root密码\nwpdemo\n库用户密
 # LAMP：比 LNMPA 少 IPv6 一行
 printf 'wp.example.com\n\n\nn\n\ny\n数据库root密码\nwpdemo\n库用户密码\nn\n\n' \
   | lnmp vhost add
+
+# LAMP + Laravel 预设：目录(空) 为项目目录，网站根目录为其下的 public/
+#   域名 → 更多域名(空) → 项目目录(空) → 访问日志(空=y) → 日志文件名(空) → 邮箱(空)
+#   → 建库(空=y) → root 口令 → 库名 → 库用户密码 → SSL n → 任意键
+printf 'app.example.com\n\n\n\n\n\n\n数据库root密码\nappdb\n库用户密码\nn\n\n' \
+  | VHOST_PRESET=laravel lnmp vhost add
 ```
+
+本机没装数据库时不问建库，序列去掉建库及其后的三行口令与库名。
 
 ### 4.3 验证站点
 
@@ -1223,27 +1373,28 @@ wpdemo
 
 ### 4.4 建不带 PHP 的站点
 
-纯静态站点，以及 Node、Go 这类自带后端进程的站点用不到 PHP。建站时第 6 步
-（`是否开启 PHP? (Y/n，默认 y)`）选 `n`，站点配置里就不会出现任何 PHP 执行入口。
+纯静态站点，以及 Node、Go 这类自带后端进程的站点用不到 PHP。建站时第 3 步
+（站点类型）选 `2` 静态站点或 `3` 反向代理，站点配置里就不会出现任何 PHP 执行入口，
+也不再问程序预设、伪静态、Pathinfo 和 PHP 版本。
 
 ```bash
-# 交互：第 6 步输入 n
+# 交互：站点类型输入 2
 lnmp vhost add
 
-# 非交互：用环境变量显式关闭，输入序列不包含 Pathinfo
-# 依次是：域名、更多域名、目录、伪静态 n、访问日志 n、IPv6 n、建库 n、SSL n、任意键
-printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' | VHOST_PHP=n lnmp vhost add
+# 非交互：输入序列不包含伪静态与 Pathinfo
+# 依次是：域名、更多域名、目录、访问日志 n、IPv6 n、建库 n、SSL n、任意键
+printf 'app.example.com\n\n\nn\nn\nn\nn\n\n' | VHOST_TYPE=static lnmp vhost add
 ```
 
-`VHOST_PHP` 未设置时按开启 PHP 处理。
+旧变量 `VHOST_PHP=n` 与 `VHOST_TYPE=static` 等价。三个类型变量都未设置时按 PHP 站点处理。
 
-关闭 PHP 后各栈的实际差别：
+不执行 PHP 的站点各栈的实际差别：
 
 | 栈 | HTTP / HTTPS 配置的变化 |
 |---|---|
 | LNMP | 不写 `include enable-php*.conf;`；`.php`、`.php/xxx` 一律 404 |
-| LNMPA | 不写 `include proxy-pass-php.conf;`（不再反代给 Apache）；Apache 侧同时 `php_admin_flag engine off` 并把 `.php` 挡成 404 |
-| LAMP | Apache `php_admin_flag engine off` + `RedirectMatch 404 "\.php(/\|$)"`，`open_basedir` 一并注释掉 |
+| LNMPA | 不写 `include proxy-pass-php.conf;`（不再反代给 Apache）；Apache 侧用 `RedirectMatch 404 "\.php(/\|$)"` 把 `.php` 挡成 404，存量 mod_php 机器另加 `php_admin_flag engine off` |
+| LAMP | Apache `RedirectMatch 404 "\.php(/\|$)"`（存量 mod_php 机器另加 `php_admin_flag engine off`），`open_basedir` 一并注释掉 |
 
 三栈共同点：首页候选去掉 `index.php`、`default.php`，站点目录不写 `.user.ini`。
 Nginx 侧 HTTPS 与 HTTP 共用同一个 server 块，`lnmp ssl add` 只插入 443 监听和证书指令，
@@ -1253,15 +1404,20 @@ Nginx 侧 HTTPS 与 HTTP 共用同一个 server 块，`lnmp ssl add` 只插入 4
 Nginx 侧那条 404 规则**不能省**：站点目录里一旦出现 `.php` 文件（旧站遗留、备份、
 被写入的后门），Nginx 会当成普通静态文件返回——自带的 `mime.types` 没有 `.php`，
 按 `default_type application/octet-stream` 把源码整份交出去。
-Apache 侧更是必需项：`.php` 的处理器挂在 `httpd.conf` 全局，站点配置什么都不写
-就等于照常执行 PHP。
+Apache 侧更是必需项：`.php` 的处理器挂在全局（PHP-FPM 形态为 `conf/extra/lnmp-php.conf`，
+存量 mod_php 为 `httpd.conf`），站点配置什么都不写就等于照常执行 PHP。
 
 #### 建站时直接配好反向代理
 
-PHP 关闭后紧接着问：
+站点类型选 `3` 后紧接着问后端地址：
 
 ```
- 是否开启反向代理? (y/N，默认 n) y
+请选择站点类型：
+  1) PHP 站点
+  2) 静态站点（不执行 .php）
+  3) 反向代理（请求转发到后端服务）
+ 请选择 [1-3]（默认 1）: 3
+站点类型：反向代理，请求转发到后端服务。
  请输入后端地址(示例: 127.0.0.1:3000，默认 http://127.0.0.1:3000): 127.0.0.1:8080
 反向代理后端：http://127.0.0.1:8080
 ```
@@ -1287,7 +1443,7 @@ Host 分发虚拟主机，收到访问者的域名基本返回 404 或跳回自�
 后端是 `https://` 时还会写入 `proxy_ssl_server_name on`（LAMP 为 `SSLProxyEngine On`）。
 nginx 默认不发 SNI，共享 IP 的后端会取不到正确证书。
 
-选 `y` 后写出的站点配置（LNMP / LNMPA 相同）：
+写出的站点配置（LNMP / LNMPA 相同）：
 
 ```nginx
     # 整站反向代理到 http://127.0.0.1:8080，本地 root 只用于 /.well-known/ 验证。
@@ -1370,16 +1526,16 @@ WebSocket 要用 `mod_proxy_wstunnel`，模板里附了一段带实际后端地�
 - **HTTPS 自动继承**：Nginx 侧 443 与 80 是同一个 server 块，LAMP 侧两个 VirtualHost
   Include 同一份公共片段，反代规则都只有一份。
 
-非交互执行用 `VHOST_PROXY` 指定后端地址，未设置就是不开反代；给了不合法的值直接
-放弃建站，不会静默建出一个没有反代的站点：
+非交互执行用 `VHOST_PROXY` 指定后端地址（可同时写 `VHOST_TYPE=proxy`，只写
+`VHOST_PROXY` 也按反代处理）；给了不合法的值直接放弃建站，不会静默建出一个没有反代的站点：
 
 ```bash
-printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' \
-    | VHOST_PHP=n VHOST_PROXY=127.0.0.1:8080 lnmp vhost add
+printf 'app.example.com\n\n\nn\nn\nn\nn\n\n' \
+    | VHOST_TYPE=proxy VHOST_PROXY=127.0.0.1:8080 lnmp vhost add
 
 # 后端是域名，且要向后端传递访问者的域名
-printf 'app.example.com\n\n\nn\nn\nn\nn\nn\n\n' \
-    | VHOST_PHP=n VHOST_PROXY=https://backend.example.com VHOST_PROXY_HOST=n lnmp vhost add
+printf 'app.example.com\n\n\nn\nn\nn\nn\n\n' \
+    | VHOST_TYPE=proxy VHOST_PROXY=https://backend.example.com VHOST_PROXY_HOST=n lnmp vhost add
 ```
 
 后端域名当前解析不到时只提示一句，不阻断建站——内网域名和尚未生效的 DNS 都属正常。
@@ -1416,8 +1572,10 @@ OpenResty 的路径是 `/usr/local/openresty/nginx/conf/`。`./upgrade.sh nginx`
 `location /`，留着会先被它拦成 404）。删掉后 HTTPS 同样没有这条规则——
 两者共用同一个 server 块。建站时选了反代的站点不写这段，不必再删。
 
-模板里静态资源缓存（`.js`、`.css`、图片的 `expires`）两条正则默认是注释状态，
-反代站点不必再删。静态站点需要时就地取消注释即可，HTTP 与 HTTPS 一并生效。
+静态资源缓存（图片 `expires 30d`，`.js`、`.css` `expires 12h`）两条正则在 PHP 站点和
+静态站点默认启用，HTTP 与 HTTPS 一并生效；选了反代的站点不写这两条，静态请求全部交给
+后端。3.0.2.010 之前建的站点这两条是注释状态，需要时就地取消注释。手工把非反代站点改成
+整站反代时，删掉这两条，否则 js、css、图片会被拦在本地目录返回 404。
 
 隐藏文件拦截（`location ~ /\.`）**默认启用**，位置在 `include enable-php*.conf`
 之前——正则 location 取首个匹配，排在后面挡不住 `.hidden.php` 和 `/.git/a.css`。
@@ -1462,7 +1620,7 @@ lnmp app add
 （在脚本里处理引号、变量和重定向），这里填该脚本的绝对路径。
 
 完成后应用以专属账号 `lnmp-app-<应用名>` 运行，已设为开机启动，
-崩溃后由 `Restart=on-failure` 自动拉起（300 秒窗口内最多 5 次，超出标记 failed）。
+崩溃后由 `Restart=on-failure` 自动拉起（间隔 3 秒，60 秒窗口内最多启动 10 次，超出标记 failed）。
 
 ```bash
 lnmp app list                  # 应用名、运行状态、端口、目录
@@ -1480,13 +1638,104 @@ lnmp app del myapp             # 取消托管；询问是否删除专属账号�
 以及已被其它托管应用占用的目录。想把应用放在 `/opt` 或系统目录下不被支持——
 换成 `/srv/<应用名>` 这类专用目录即可。
 
-完整的一条链是：`lnmp app add` 托管进程 → `lnmp vhost add` 建站（PHP 选 `n`）
-→ 在站点的自定义配置区块写 `proxy_pass http://127.0.0.1:<端口>;`
-→ `lnmp ssl add` 加证书（反代规则本身就对 HTTPS 生效）。
+完整的一条链是：`lnmp app add` 托管进程 → `lnmp vhost add` 建站（站点类型选 `3` 反向代理，
+后端填 `127.0.0.1:<端口>`）→ `lnmp ssl add` 加证书（反代规则本身就对 HTTPS 生效）。
+已建好的非反代站点按上一节在自定义配置区块写 `proxy_pass`。
 参考配置见 `/usr/local/nginx/conf/example/nginx-reverse-proxy-example.conf`。
 
 元数据在 `/etc/lnmp/apps/<应用名>.env`（0640），模板单元是
 `/etc/systemd/system/lnmp-app@.service`。`lnmp health` 会一并检查这些实例的存活。
+
+#### 安装 Node.js 并绑定到应用
+
+系统没有 Node.js 时用 `addons.sh` 安装官方二进制。它与 PHP 无关，不要求已安装 PHP：
+
+```bash
+./addons.sh install nodejs        # 交互选择主版本，默认 24
+./addons.sh install nodejs 22     # 直接指定主版本
+./addons.sh uninstall nodejs 22   # 卸载；有应用引用时拒绝
+```
+
+| 项目 | 行为 |
+|---|---|
+| 安装位置 | `/usr/local/nodejs/<主版本>/`，22 与 24 可并存；不创建 `/usr/local/bin/node` |
+| 版本 | 每个主版本固定一个补丁版，写在 `include/version.sh`；菜单标注上游停止支持时间 |
+| 完整性 | 归档的 SHA-256 同时核对 `src/checksums.sha256` 与上游已签名的 `SHASUMS256.txt`，任一不符即中止，线上目录不变 |
+| 重复执行 | 版本一致时直接返回；固定版本变更后重新执行会暂存、验证后改名换入，失败放回旧目录 |
+| 卸载 | `/etc/lnmp/apps/*.env` 的启动命令或 `PATH` 引用该主版本时拒绝，提示先 `lnmp app del` |
+
+`lnmp app add` 的启动命令写解释器的绝对路径即绑定到该主版本：
+
+```text
+应用名：web
+应用目录：/srv/web
+启动命令：/usr/local/nodejs/24/bin/node server.js
+监听端口：3000
+```
+
+启动命令的可执行文件位于 `/usr/local/nodejs/<主版本>/bin` 时，env 文件额外写入
+`PATH=/usr/local/nodejs/24/bin:/usr/local/sbin:...`，应用内 `npm run`、`#!/usr/bin/env node`
+和子进程调用 `node` 取到的是同一个版本。填了监听端口时同时写入 `PORT=<端口>`，
+读取 `process.env.PORT` 的应用无需另行配置。
+
+补丁版本升级（`include/version.sh` 固定版本变更后重新执行 `addons.sh install nodejs`）
+不会让已运行的应用自动切换，需要 `lnmp app restart <应用名>`。
+
+依赖安装与构建由应用自己负责，使用应用账号执行，例如：
+
+```bash
+cd /srv/web
+runuser -u lnmp-app-web -- env PATH=/usr/local/nodejs/24/bin:/usr/bin:/bin HOME=/srv/web npm ci
+```
+
+应用账号的家目录不存在，不指定 `HOME` 时 npm 因无法写入缓存与日志目录而报错退出；
+指定为应用目录后，缓存与日志写入应用目录下的 `.npm/`，部署或打包时需排除。
+安装完成后再执行 `lnmp app restart web`。
+
+#### 用 PM2 托管多进程应用
+
+需要 cluster 多实例或已有 `ecosystem.config.js` 时使用 PM2。它装入某个 Node.js 主版本目录，
+不进入全局 PATH：
+
+```bash
+./addons.sh install pm2          # 只装了一个 Node.js 主版本时自动选用；多个时询问
+./addons.sh install pm2 24
+./addons.sh uninstall pm2 24     # 有 PM2 应用引用时拒绝
+```
+
+PM2 经 npm registry 安装当前最新版，不在固定版本与校验清单范围内；已安装时重复执行不做更改，
+需要升级时先 `uninstall` 再 `install`。
+
+`lnmp app add` 的启动命令写 `pm2-runtime` 的绝对路径，参数固定为 `start <ecosystem 文件>`：
+
+```text
+应用名：web
+应用目录：/srv/web
+启动命令：/usr/local/nodejs/24/bin/pm2-runtime start ecosystem.config.js
+监听端口：3000
+```
+
+```js
+// /srv/web/ecosystem.config.js
+module.exports = { apps: [{ name: "web", script: "server.js", instances: 2, exec_mode: "cluster" }] };
+```
+
+- 文件相对路径以应用目录为准；不存在时在 `lnmp app add` 阶段被拒绝。
+- systemd 直接管理 `pm2-runtime`（前台运行，不产生后台守护进程），PM2 管理其下的工作进程；
+  `systemctl stop` 或 `lnmp app stop` 会一并结束全部工作进程。
+- 状态目录 `/var/lib/lnmp/apps/<应用名>/pm2`（属主为应用账号，0700）由 `PM2_HOME` 指定，
+  `lnmp app del` 时一并删除。
+- 同一应用不要再用 `pm2 start` 另起实例；进程由 ecosystem 文件声明，改动后执行 `lnmp app restart`。
+
+```bash
+lnmp app reload web     # 逐个替换工作进程；仅 PM2 托管的应用支持，普通应用请用 restart
+lnmp app status web     # systemctl status，加 PM2 进程列表
+lnmp app logs web       # journald，含 PM2 与应用的标准输出
+```
+
+`reload` 是否做到无中断取决于应用：需要监听就绪后再接收请求，并在收到 SIGINT 后排空连接退出。
+应用启用 `watch`、依赖本机内存缓存的会话时，不要认为 reload 无感。`max_memory_restart` 只是重启策略，
+不能替代系统层面的资源限制。
 
 [返回顶部](#top)
 
@@ -1707,7 +1956,7 @@ wp-admin: 301        ← wordpress.conf 的补斜杠规则，跳到 /wp-admin/
 
 > **LNMPA 与 LAMP 的伪静态走 Apache。** 这两套栈的站点没有
 > `include rewrite/...`，规则来自网站目录下的 `.htaccess`，由 WordPress 在后台
-> 保存固定链接时自己写入（站点目录属 `www:www`，Apache 也以 `www` 运行，可写）。
+> 保存固定链接时自己写入（站点目录属 `www:www`，PHP-FPM 与 Apache 都以 `www` 运行，可写）。
 > 直接改数据库里的 `permalink_structure` 不会生成 `.htaccess`，文章页和
 > `/wp-json/` 仍会 404，须在后台「设置 → 固定链接」保存一次。
 >
@@ -1837,6 +2086,24 @@ php -r '$r=new Redis(); $r->connect("127.0.0.1",6379);
 # {"a":1}
 ```
 
+phpredis 还启用了 **zstd 压缩**（编译依赖系统 libzstd 开发包，安装时自动装
+`libzstd-dev`/`libzstd-devel`）。默认不压缩，由应用按连接开启；大值（页面片段、序列化对象）
+压缩后能明显减少 Redis 内存和网络流量，小值收益很小还多耗 CPU。开启后写入的值只有同样开启
+压缩的客户端能正确读取，已有数据不受影响。验证：
+
+```bash
+php --ri redis | grep 'Available compression'
+# Available compression => zstd
+php -r '$r=new Redis(); $r->connect("127.0.0.1",6379);
+  $r->setOption(Redis::OPT_COMPRESSION, Redis::COMPRESSION_ZSTD);
+  $r->setOption(Redis::OPT_COMPRESSION_LEVEL, 3);
+  $v=str_repeat("x",10000); $r->set("t",$v); echo $r->get("t")===$v ? "OK" : "BAD",PHP_EOL;
+  $r->setOption(Redis::OPT_COMPRESSION, Redis::COMPRESSION_NONE);
+  echo strlen($r->get("t")),PHP_EOL; $r->del("t");'
+# OK
+# 远小于 10000 的字节数，即 Redis 中实际存储的压缩数据
+```
+
 ### 6.2 PHP 与 OPcache
 
 > ⚠️ **改配置前先暂停健康检查**：`systemctl stop lnmp-health.timer` ，改完再
@@ -1892,16 +2159,17 @@ PHP 8.5 起 OPcache 始终编入，不再有 `opcache.so`，该文件不含 `zen
 /usr/local/php/sbin/php-fpm -t && lnmp php-fpm reload
 ```
 
-以上 PHP-FPM 命令只适用于 LNMP。LNMPA/LAMP 把 PHP 加载到 Apache 进程中，应改为
-`/usr/local/apache/bin/httpd -t && lnmp httpd reload`。
+以上命令适用于 PHP-FPM 形态（LNMP 与新装的 LNMPA、LAMP）。存量 mod_php 机器把 PHP 加载到 Apache 进程中，
+应改为 `/usr/local/apache/bin/httpd -t && lnmp httpd reload`。
 
-#### PHP-FPM 慢日志与状态页（LNMP）
+#### PHP-FPM 慢日志与状态页
 
 每个 FPM 实例（主版本与多版本）默认：
 
 - 单个请求超过 5 秒，把调用栈写入 `<PHP 目录>/var/log/slow.log`，随 `/etc/logrotate.d/lnmp` 轮转。
 - 状态页 `/fpm-status` 与 `/fpm-ping` 经独立 socket `/run/php-fpm/php-cgi[版本]-status.sock` 由隐藏 pool 处理，
-  worker 全部占满时仍能查询。Nginx/OpenResty 的 1008 内部 server（只监听 127.0.0.1）转发主 PHP 的状态页。
+  worker 全部占满时仍能查询。Nginx/OpenResty 的 1008 内部 server（只监听 127.0.0.1）转发主 PHP 的状态页；
+  LAMP 没有 Nginx，不提供该 HTTP 入口，慢日志照常写入。
 
 ```bash
 curl -s http://127.0.0.1:1008/fpm-ping                  # pong
@@ -1984,7 +2252,7 @@ journalctl -k --since today | grep -Ei 'oom|out of memory|killed process'
 > `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
 > 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
-MySQL 与 MariaDB 的安装和升级都调用项目的 `MySQL_Opt`，按 6.6 的预算只改 `[mysqld]` 段：
+MySQL 与 MariaDB 的安装和升级都调用数据库模块的 `_Database_Tune`，按 6.6 的预算只改 `[mysqld]` 段：
 `innodb_buffer_pool_size`、`innodb_log_file_size`（缓冲池的 1/4，MySQL 8.4 再换算为
 `innodb_redo_log_capacity`）、`max_connections`（FPM 或 Apache 进程上限的 1.5 倍加 20，
 范围 40～500；单装数据库保持 500）、`thread_cache_size`、`table_open_cache`、
@@ -2205,8 +2473,9 @@ key 前缀、TTL 和插件行为，再决定扩容；低流量站点甚至可能
 附加组件：Memcached 缓存（内存的 1/16）、主 PHP 与在用附加实例中每个启用 APCu 的 32M、
 每个在用附加实例一份 OPcache；缓冲池 8GB 以内为内存的 1/8，以上逐步提高到 20%～30%，
 1G 以下按 128M、以上按 1G 取整；数据库另计 256MB 连接与内部结构开销；其余给 PHP。
-LNMPA、LAMP 的 Apache prefork `MaxRequestWorkers` 按 PHP 份额 ÷（估算值 + 16MB）计算，
-范围 6～256。单装数据库（`install.sh db`）时缓冲池取除系统余量外的大部分内存。
+LNMPA、LAMP 新装机器的 PHP-FPM 参数与 LNMP 相同，Apache event 的 `MaxRequestWorkers`
+取 FPM `max_children` 的两倍并按 25 取整，范围 50～400。存量 mod_php 机器的 Apache prefork
+`MaxRequestWorkers` 按 PHP 份额 ÷（估算值 + 16MB）计算，范围 6～256。单装数据库（`install.sh db`）时缓冲池取除系统余量外的大部分内存。
 
 计算结果在安装确认摘要中列出。与其它服务共用机器时先设 `Tune_Mem_MB`，例如：
 
@@ -2373,8 +2642,8 @@ lnmp ssl add
 `ssl add` 只给**已经存在的站点**添加证书。输入域名后会先检查对应虚拟主机配置；
 不存在就提示先执行 `lnmp vhost add` 并退出，不会在证书流程中创建网站或重新询问
 目录、rewrite、日志、Pathinfo、IPv6。现有站点的目录和附加域名会从配置中读取。
-**HTTPS 与 HTTP 共用同一个 server 块**：证书写入后，站点的 PHP 开关、伪静态和自定义
-配置保持原样，不存在两份配置需要同步。
+**HTTPS 与 HTTP 共用同一个 server 块**（LAMP 为两个 VirtualHost 共用公共片段，见 7.6）：证书写入后，
+站点的 PHP 开关、伪静态和自定义配置保持原样，不存在两份配置需要同步。
 
 交互顺序：域名 → **证书来源(普通站点 1-3，default 站点 1-2)** → 是否 301 跳转。选择自有证书时会继续询问
 证书和私钥路径；选择 CA 时按需询问账户邮箱。
@@ -2430,7 +2699,7 @@ acme.sh 只会反复打印 `Could not get nonce`，重试约 5 分钟后才失�
 
 在域名处输入 **`default`**，菜单只显示自有证书和 Let's Encrypt 两项；选择
 Let's Encrypt 后，本包会自动转为 **IP 地址证书**流程，
-并打印完整说明。该方式存在以下硬性限制，**申请前必须确认**：
+并打印说明（LNMP 打印完整限制说明，LNMPA、LAMP 只打印签发目标与有效期）。该方式存在以下硬性限制，**申请前必须确认**：
 
 | 限制 | 说明 |
 |---|---|
@@ -2477,17 +2746,17 @@ acme.sh DNS 插件名。
 |---|---|---|---|
 | 验证方式 | HTTP-01 | DNS-01 | DNS-01 |
 | 要求站点已存在 | 是 | 是 | 否 |
-| 修改 Nginx 配置 | 是，向 80 块插入 443 监听与证书 | 同左 | 否 |
+| 修改站点配置 | 是，Nginx 向 80 块插入 443 监听与证书（LAMP 新增 443 VirtualHost） | 同左 | 否 |
 | 支持泛域名 | 否 | 是 | 是 |
 | 要求 80 端口公网可达 | 是 | 否 | 否 |
 | 要求 DNS API 凭据 | 否 | 是（手工 TXT 模式除外） | 是（手工 TXT 模式除外） |
 | 可选 CA | Let's Encrypt / ZeroSSL | Let's Encrypt / ZeroSSL | Let's Encrypt / ZeroSSL |
 | 自动续期 | 是 | 是（手工 TXT 模式不可自动续期） | 是（同左） |
-| 签发与续期后重载 Nginx | 是 | 是 | 否 |
-| 证书目录 | `/usr/local/nginx/conf/ssl/<域名>/` | 同左 | 同左 |
+| 签发与续期后重载 Web 服务 | 是 | 是 | 否 |
+| 证书目录 | `/usr/local/nginx/conf/ssl/<域名>/`（LAMP 为 `/usr/local/apache/conf/ssl/<域名>/`） | 同左 | 同左 |
 
-**共同点**：都用 acme.sh，都默认 EC-256 密钥，签发后都会把证书安装到
-`/usr/local/nginx/conf/ssl/<域名>/`（`fullchain.cer` 与 `<域名>.key`），
+**共同点**：都用 acme.sh，都默认 EC-256 密钥，签发后都会把证书安装到上表的证书目录
+（Nginx 引用 `fullchain.cer` 与 `<域名>.key`；LAMP 引用 `<域名>.cer`、`<域名>.key` 与链文件 `ca.cer`），
 续期任务由 acme.sh 的 cron 统一处理。
 
 **HTTP 验证 (`lnmp ssl add`)**
@@ -2726,8 +2995,10 @@ Include conf/vhost/shared/example.com.conf
 
 <VirtualHost *:443>
 SSLEngine on
-SSLCertificateFile /usr/local/nginx/conf/ssl/example.com/fullchain.cer
-SSLCertificateKeyFile /usr/local/nginx/conf/ssl/example.com/example.com.key
+SSLCertificateFile /usr/local/apache/conf/ssl/example.com/example.com.cer
+SSLCertificateKeyFile /usr/local/apache/conf/ssl/example.com/example.com.key
+SSLCertificateChainFile /usr/local/apache/conf/ssl/example.com/ca.cer
+Protocols h2 h2c http/1.1
 Include conf/vhost/shared/example.com.conf
 </VirtualHost>
 ```
@@ -2771,9 +3042,26 @@ LNMPA 的一个站点有两份配置，语法不同，无法共用片段：
 
 泛域名批量签发时，不一致的站点会被跳过并计入汇总，其余站点照常写入。
 
-### 7.8 LNMPA 与 LAMP 的 Apache 只能用 prefork
+### 7.8 LNMPA 与 LAMP 的 PHP 形态与 MPM
 
-两栈的 PHP 编译成 mod_php 且未开启线程安全（ZTS），只能在 `mpm_prefork_module` 下运行。
+新装的 LNMPA、LAMP 使用 Apache event MPM，PHP 经 `mod_proxy_fcgi` 交给 PHP-FPM
+（`/run/php-fpm/php-cgi.sock`）。MPM 与 PHP 处理器写在 `/usr/local/apache/conf/extra/lnmp-php.conf`，
+由 `httpd.conf` 包含。判断本机形态：
+
+```bash
+grep -n 'lnmp-php.conf' /usr/local/apache/conf/httpd.conf    # 有输出为 PHP-FPM 形态
+/usr/local/apache/bin/httpd -M | grep -E 'php_module|proxy_fcgi'
+```
+
+PHP-FPM 形态注意事项：
+
+- FPM 未运行时 `.php` 返回 503，不会返回源码；先 `lnmp php-fpm start`。
+- 站点目录内 `.htaccess` 不能再写 `php_value`、`php_flag`（`php_admin_*` 同理），Apache 会因未知指令返回 500。
+  改写为站点根目录的 `.user.ini`，例如 `upload_max_filesize = 64M`；`open_basedir` 由站点配置中的
+  `ProxyFCGISetEnvIf "true" PHP_ADMIN_VALUE "open_basedir=..."` 固定，`.user.ini` 不能覆盖。
+- 站点级覆盖写在站点配置的自定义配置区，指令用 `ProxyFCGISetEnvIf`，不要用 `php_admin_value`。
+
+以下为存量 mod_php 机器的说明。两栈的 PHP 编译成 mod_php 且未开启线程安全（ZTS），只能在 `mpm_prefork_module` 下运行。
 换成 `mpm_event_module` 或 `mpm_worker_module` 后，每个 PHP 请求都会让子进程段错误，
 错误日志里是连续的 `child pid ... exit signal Segmentation fault (11)`，浏览器侧表现为
 LNMPA 的 502 或 LAMP 的无响应。
@@ -2796,6 +3084,70 @@ systemctl start httpd
 
 `restart` 与 `graceful` 都换不了 MPM，Apache 会报
 `AH00534: httpd: Configuration error: The MPM cannot be changed during restart.`。
+
+### 7.9 HTTP/3
+
+适用于 LNMP、LNMPA 的 Nginx 与 OpenResty；Apache 不支持 HTTP/3，LAMP 不涉及。
+
+`lnmp ssl add` 在两个条件同时满足时给站点写入 HTTP/3：
+
+1. `nginx -V` 含 `--with-http_v3_module`。源码版 Nginx 固定编译该模块；OpenResty 源码编译在
+   系统 OpenSSL 不低于 1.1.1 时编译，软件包方式以官方包实际编译参数为准。
+2. `vhost/default.conf` 有已启用的 `listen 443 quic reuseport`。`reuseport` 在同一地址端口只能
+   声明一次，由 default 的未知 SNI 拒绝块承担；default 配证书后由 default 的 HTTPS 监听承担。
+
+条件不满足时只写 HTTP/2，并提示原因。写入内容（业务站点）：
+
+```nginx
+    listen 443 ssl;
+    #listen [::]:443 ssl;
+    listen 443 quic;
+    #listen [::]:443 quic;
+    server_name example.com www.example.com;
+    ...
+    # SSL 配置--开始
+    ...
+    add_header Alt-Svc 'h3=":443"; ma=86400' always;
+    # SSL 配置--结束
+```
+
+浏览器第一次经 TCP 访问，收到 `Alt-Svc` 后改用 UDP 443。站点开了 IPv6 且 default 的
+`[::]:443 quic reuseport` 已启用时，`[::]:443 quic` 一并启用。
+
+**防火墙**：安装时与 `lnmp fw sync` 放行 UDP 443（装有 Nginx 或 OpenResty 时）。云服务器的
+安全组需另外放行 UDP 443，否则浏览器停留在 HTTP/2，不影响访问。
+
+**验证**（curl 需支持 HTTP/3，`curl -V` 的 Features 含 `HTTP3`）：
+
+```bash
+nginx -V 2>&1 | grep -o -- --with-http_v3_module
+curl -sI https://example.com/ | grep -i alt-svc
+curl -sI --http3-only https://example.com/ | head -1      # 应为 HTTP/3 200
+```
+
+**3.0.2.010 之前安装的服务器**：default.conf 没有 quic 监听，`ssl add` 只写 HTTP/2。在
+`/usr/local/nginx/conf/vhost/default.conf` 含 `ssl_reject_handshake on;` 的 server 块里加：
+
+```nginx
+    listen 443 quic reuseport default_server;
+    #listen [::]:443 quic reuseport default_server ipv6only=on;
+```
+
+default 已配证书（没有拒绝块）时，加在 default 的 `listen 443 ssl default_server;` 下一行。
+站点开了 IPv6 时去掉第二行的注释。已有证书的站点在自己的 `listen 443 ssl;` 下加
+`listen 443 quic;`，在 `# SSL 配置` 区内加上面的 `add_header Alt-Svc` 一行，再放行防火墙：
+
+```bash
+lnmp fw sync
+nginx -t && lnmp nginx reload
+```
+
+**注意**：
+
+- Nginx 的 `add_header` 不向下继承到自带 `add_header` 的 `location`。在 `# 自定义配置` 区的
+  `location` 里写了 `add_header` 时，要在该 `location` 里重复 `Alt-Svc` 一行。
+- 停用某个站点的 HTTP/3：删掉该站点的 `listen ... quic;` 与 `Alt-Svc` 两处。不要删 default 的
+  `quic reuseport`，其它站点的 quic 监听依赖它。
 
 [返回顶部](#top)
 
@@ -2823,17 +3175,20 @@ systemctl start httpd
 #### 8.1.1 命令入口与三种模式
 
 命令实体是 `/bin/lnmp`，安装结束时同步一份到 `/usr/bin/lnmp`，两者内容一致、权限 755。
+`/bin/lnmp` 与 `/bin/lnmp-*` 成组部署，文件末尾的 `# LNMP-BUILD-ID:` 在同一次部署中相同，
+可用 `grep -h '^# LNMP-BUILD-ID:' /bin/lnmp /bin/lnmp-* | sort -u` 核对，输出多于一行说明存在混合版本。
 三种运行模式共用 `lnmp` 这个命令名，脚本来源不同：
 
 | 安装模式 | 命令来源 | Web 层 | PHP 运行方式 |
 |---|---|---|---|
 | LNMP | `conf/lnmp` | Nginx | 独立 php-fpm |
-| LNMPA | `conf/lnmpa` | Nginx 反代 Apache | Apache 内置 PHP 模块 |
-| LAMP | `conf/lamp` | Apache | Apache 内置 PHP 模块 |
+| LNMPA | `conf/lnmpa` | Nginx 反代 Apache | php-fpm（Apache event + `mod_proxy_fcgi`）；存量机器为 Apache 内置 PHP 模块 |
+| LAMP | `conf/lamp` | Apache | 同 LNMPA |
 
-由此产生的差异只有两处，其余子命令三种模式完全一致：
+子命令的差异只有以下两点，其余三种模式完全一致：
 
-- **LNMPA 和 LAMP 没有 `php-fpm` 子命令**，也不存在 php-fpm 服务，PHP 随 Apache 一同起停。
+- **LNMPA 和 LAMP 多一个 `httpd` 子命令**；存量 mod_php 机器不存在 php-fpm 服务，`php-fpm` 子命令
+  提示找不到服务，PHP 随 Apache 一同起停。
 - **LAMP 没有 `nginx` 子命令**。
 
 所有子命令都必须以 root 执行，非 root 直接退出并返回 1。
@@ -2852,7 +3207,7 @@ systemctl start httpd
 - `lnmp kill` — 强制终止 Web、PHP 与数据库进程，仅在 stop 失败时用
 - `lnmp nginx <动作>` — 单独控制 Nginx（LAMP 无此命令）
 - `lnmp httpd <动作>` — 单独控制 Apache（仅 LNMPA / LAMP）
-- `lnmp php-fpm <动作>` — 单独控制 php-fpm（仅 LNMP）
+- `lnmp php-fpm <动作>` — 单独控制主 php-fpm（存量 mod_php 机器没有该服务）
 - `lnmp mysql <动作>` / `lnmp mariadb <动作>` — 单独控制数据库，用实际安装的那个
 - `lnmp pureftpd <动作>` — 单独控制 Pure-FTPd
 - `lnmp redis <动作>` / `lnmp memcached <动作>` — 单独控制 Redis、Memcached
@@ -2861,10 +3216,12 @@ systemctl start httpd
 
 - `lnmp vhost add` — 新增站点（交互）
 - `lnmp vhost list` — 列出所有站点
-- `lnmp vhost del [域名]` — 删除站点，保留网站文件；不带域名时交互输入
+- `lnmp vhost del [域名]` — 删除站点，保留网站文件；不带域名时交互输入；`default` 兜底站点不能删除
+- `lnmp vhost stop|start <域名>` — 停用站点（返回 503，保留 ACME 验证路径）或恢复
 - `lnmp app add` — 登记一个 Node、Go 等自带后端的应用（交互）
 - `lnmp app list` — 已托管应用及运行状态
 - `lnmp app start|stop|restart|status <应用名>` — 控制单个应用
+- `lnmp app reload <应用名>` — PM2 托管应用的平滑重载
 - `lnmp app logs <应用名>` — 查看应用日志
 - `lnmp app del <应用名>` — 注销应用
 
@@ -2923,8 +3280,10 @@ lnmp reload
 | 模式 | 起停顺序 |
 |---|---|
 | LNMP | Nginx → 数据库 → php-fpm → 已安装的多版本 php-fpm |
-| LNMPA | Nginx → 数据库 → Apache |
-| LAMP | Apache → 数据库 |
+| LNMPA | Nginx → 数据库 → php-fpm → 多版本 php-fpm → Apache |
+| LAMP | php-fpm → 多版本 php-fpm → Apache → 数据库 |
+
+LNMPA、LAMP 的 php-fpm 两项只在 PHP-FPM 形态存在。
 
 **不在纳管范围内**：Redis、Memcached、Pure-FTPd、phpMyAdmin。前三者有各自的 unit
 和 init 脚本，用 `lnmp redis|memcached|pureftpd <动作>` 单独起停，详见
@@ -2934,6 +3293,13 @@ lnmp reload
 systemd unit 或 `/etc/init.d` 脚本判断。因此主安装之后再单独装的组件，下一次执行
 `lnmp` 命令就会自动纳入，不需要改配置。未安装的组件打印“未检测到已安装服务，跳过”
 并继续处理其余服务，不算失败。
+
+**返回码汇总全部动作。** 某个服务或附加 PHP 实例失败时打印失败的组件、动作和退出码，
+继续处理其余服务，命令最终返回 1；`restart` 的 stop 阶段失败同样计入。脚本中可据此判断：
+
+```bash
+lnmp reload || echo "有服务重载失败，见上方红字"
+```
 
 **动作优先走 systemd。** 系统在 systemd 下运行且该服务有 unit 时执行
 `systemctl <动作> <服务>.service`，否则回退 `/etc/init.d/<服务> <动作>`。这样进程状态
@@ -2950,7 +3316,7 @@ systemd unit 或 `/etc/init.d` 脚本判断。因此主安装之后再单独装�
 
 重启期间 unit 状态为 `activating` 时不判定为异常，避免误报。
 
-**`lnmp status`** 依次显示 Web、PHP-FPM、多版本 PHP（LNMP）、数据库的状态，再显示已安装的
+**`lnmp status`** 依次显示 Web、PHP-FPM、多版本 PHP、数据库的状态，再显示已安装的
 Redis、Memcached、Pure-FTPd，未安装的组件不输出。之后显示安装时随机生成的 phpMyAdmin 访问路径；
 访问被禁用时显示“访问已禁用（程序和配置仍保留）”。
 
@@ -2990,7 +3356,7 @@ yum install -y procps-ng       # CentOS / RHEL
 ```bash
 lnmp nginx status
 lnmp mysql restart               # 或 lnmp mariadb restart，按实际安装的数据库
-lnmp php-fpm reload              # 仅 LNMP
+lnmp php-fpm reload              # PHP-FPM 形态
 lnmp httpd status                # 仅 LNMPA / LAMP
 lnmp pureftpd start
 lnmp redis restart
@@ -3012,8 +3378,7 @@ lnmp nginx kill; echo "rc=$?"
 边界：
 
 - `mysql` 与 `mariadb` 只有实际安装的那个可用，另一个会提示找不到 unit 和 init 脚本并返回 1。
-- **单组件命令不处理多版本 PHP。** 只有 `lnmp start` / `stop` / `reload` 会遍历
-  `/etc/init.d/php-fpm<版本>`。要单独控制某个版本，用
+- **单组件命令不处理多版本 PHP。** 只有 `lnmp start` / `stop` / `reload` / `status` 会遍历多版本实例。要单独控制某个版本，用
   `systemctl restart php-fpm@8.2`（模板 unit 已安装时）或 `/etc/init.d/php-fpm8.2 restart`。
 - PHP 自带的 init 脚本与 systemd unit 共用 pid 文件和 socket。新安装与升级后的
   `/etc/init.d/php-fpm`、`/etc/init.d/php-fpm<版本>` 在 systemd 运行且 unit 存在时，把
@@ -3054,7 +3419,7 @@ lnmp nginx kill; echo "rc=$?"
   systemctl restart php-fpm@8.2
   ```
 - `pureftpd`、`redis`、`memcached` 可以单独控制，但不被整体命令纳管。
-- LNMP 模式下，除 `status` 外的动作会打印明确的成功或失败结果并附退出码；数据库启动
+- 三种模式下，除 `status` 外的动作都会打印明确的成功或失败结果并附退出码；数据库启动
   失败时额外输出诊断信息。
 
 [↑ 命令目录](#cmd-index) · [返回顶部](#top)
@@ -3066,11 +3431,46 @@ lnmp vhost add                  # 新增站点
 lnmp vhost list                 # 列出所有站点
 lnmp vhost del                  # 删除站点（只删 Web 配置，保留网站文件）
 lnmp vhost del example.com      # 指定域名直接删除，不进入交互
+lnmp vhost stop example.com     # 停用站点，访问返回 503
+lnmp vhost start example.com    # 恢复停用的站点
 ```
 
 `add` 是交互式命令，`del` 不带域名时交互输入。带域名时先校验字符集，非法或站点不存在返回 1。`add` 可用环境变量预设答案实现非交互创建，
 完整字段与示例见 [4.2 非交互创建](#42-非交互创建)；行为细节与删除保护见
 [8.3 站点管理](#83-站点管理)。
+
+**建站后的请求验收**：`add` 生成配置、处理完 SSL 后，以站点域名经本机 80 端口实际请求一次：
+
+- PHP 站点在网站目录写入随机名称的临时 PHP 文件，确认请求由所选 PHP 版本执行，随后删除；
+- 静态站点确认请求到达网站目录；
+- 反代站点确认上游有响应，502/503 提示上游未启动或拒绝连接，504 提示响应超时。
+
+```text
+请求验收通过：example.com 的 PHP 请求由 PHP 8.3.x 执行。
+请求验收未通过：反代上游未启动或拒绝连接（HTTP 502），请先启动上游服务。
+```
+
+未通过时站点配置保留，命令返回 1，按提示处理后可用 `curl -I -H 'Host: example.com' http://127.0.0.1/` 复查。
+Web 服务未运行或系统没有 curl 时只说明未验收，不判失败。整栈安装收尾也做同样的 PHP 请求验收，
+使用随机 `.invalid` 域名的临时站点，结束后删除。
+
+**单站点启停**：`stop` 不删除、不移动任何文件，只在站点配置的每个 `server_name`（Nginx）或
+`ServerName`（Apache）之后插入一段带 `LNMP-VHOST-STOP` 标记的规则；`start` 删除这段规则。
+
+```bash
+lnmp vhost stop example.com
+curl -I -H 'Host: example.com' http://127.0.0.1/                                  # 503
+curl -I -H 'Host: example.com' http://127.0.0.1/.well-known/acme-challenge/test   # 不受影响
+lnmp vhost list                                                                 # example.com [已停用]
+lnmp vhost start example.com
+```
+
+- 主域名、别名、HTTP 与 HTTPS 都返回 503，请求不会落到默认站点或其它站点；域名仍被占用。
+- `/.well-known/acme-challenge/` 保留，停用期间证书照常续期。
+- 网站文件、证书、数据库、FTP 账号与共享的 Web/PHP 服务不变；托管应用的进程仍用 `lnmp app stop` 控制。
+- 配置测试或重载失败时恢复原配置，返回 1；重复执行返回 0；服务未运行时只写配置，启动后生效。
+- `default` 站点不支持启停。LAMP 内联结构的站点停用期间不能执行 `lnmp ssl add`，需先 `start`。
+- `server_name` 跨行书写的 Nginx 配置无法自动处理，命令返回 1 且不改文件，改为单行后再执行。
 
 [↑ 命令目录](#cmd-index) · [返回顶部](#top)
 
@@ -3082,6 +3482,7 @@ lnmp app list                # 已托管应用及运行状态
 lnmp app start   <应用名>
 lnmp app stop    <应用名>
 lnmp app restart <应用名>
+lnmp app reload  <应用名>    # 仅 PM2 托管的应用
 lnmp app status  <应用名>
 lnmp app logs    <应用名>
 lnmp app del     <应用名>
@@ -3176,7 +3577,7 @@ systemctl is-active nginx
 systemctl show nginx -p NRestarts    # 计数比之前大 1
 ```
 
-300 秒窗口内最多启动 5 次，超出后 unit 标记为 failed 并停止重试，同时推送 Telegram
+60 秒窗口内最多启动 10 次，超出后 unit 标记为 failed 并停止重试，同时推送 Telegram
 告警。此时排查原因、修好后手工拉起：
 
 ```bash
@@ -3478,8 +3879,10 @@ SSH 端口是唯一例外：以实际监听为准（`ss` → `netstat` → `sshd
 
 | 变量 | 作用 | 说明 |
 |---|---|---|
-| `VHOST_PHP=n` | 建站时关闭 PHP | 见 [4.4 建不带 PHP 的站点](#44-建不带-php-的站点) |
-| `VHOST_PROXY=<后端地址>` | 建站时配置整站反向代理，只在 PHP 关闭时生效 | 见 [4.4 建不带 PHP 的站点](#44-建不带-php-的站点) |
+| `VHOST_TYPE=php\|static\|proxy` | 建站时的站点类型 | 未设置时按下两项推断，冲突组合直接拒绝，见 [4.2 非交互创建](#42-非交互创建) |
+| `VHOST_PRESET=wordpress\|laravel` | PHP 站点的程序预设 | 只改变后续提问的默认值，见 [4.1 交互式创建](#41-交互式创建) |
+| `VHOST_PHP=n` | 建站时关闭 PHP，等同 `VHOST_TYPE=static` | 见 [4.4 建不带 PHP 的站点](#44-建不带-php-的站点) |
+| `VHOST_PROXY=<后端地址>` | 建站时配置整站反向代理，只设它时等同 `VHOST_TYPE=proxy` | 见 [4.4 建不带 PHP 的站点](#44-建不带-php-的站点) |
 | `VHOST_PROXY_HOST=n` | 后端是域名时，向后端传递访问者的域名而不是后端域名 | 见 [4.4 建不带 PHP 的站点](#44-建不带-php-的站点) |
 | `VHOST_FIX_PERM=y` | 建站复用非空目录时统一权限位 | 未设置时保留原权限位，见 [4.2 非交互创建](#42-非交互创建) |
 | `VHOST_FIX_OWNER=y` | 建站复用非空目录时统一属主为 `www:www` | 未设置时保留原属主，见 [4.2 非交互创建](#42-非交互创建) |
@@ -3496,8 +3899,8 @@ SSH 端口是唯一例外：以实际监听为准（`ss` → `netstat` → `sshd
 **组件与扩展的增删**
 
 ```text
-bash addons.sh install   {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}
-bash addons.sh uninstall {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole}
+bash addons.sh install   {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|swoole|nodejs|pm2}
+bash addons.sh uninstall {memcached|opcache|redis|apcu|imagemagick|ioncube|exif|fileinfo|ldap|bz2|sodium|imap|swoole|nodejs|pm2}
 ```
 
 ```bash
@@ -3506,8 +3909,8 @@ bash addons.sh uninstall swoole
 bash addons.sh                    # 不带参数进菜单，编号与上面的名字一一对应
 ```
 
-装了多个 PHP 版本时会先让你选版本，直接回车用主版本。安装动作要求 PHP 已存在；
-卸载不要求，便于在 PHP 已移除后清理残留。各名字的作用：
+装了多个 PHP 版本时会先让你选版本，直接回车用主版本。PHP 扩展的安装动作要求 PHP 已存在；
+卸载不要求，便于在 PHP 已移除后清理残留。`nodejs`、`pm2` 与 PHP 无关。各名字的作用：
 
 - `memcached` — 编译 Memcached 服务端并装 PHP 侧扩展，参数与自定义见
   [8.2.4 Memcached 自定义](#824-memcached-自定义)
@@ -3527,8 +3930,15 @@ bash addons.sh                    # 不带参数进菜单，编号与上面的�
 - `ldap` — LDAP 目录服务客户端，自动装 `libldap2-dev`、`libsasl2-dev`
 - `bz2` — bzip2 压缩解压
 - `sodium` — libsodium 现代加密库，自动装 `libsodium-dev`
-- `imap` — IMAP/POP3/NNTP 客户端，自动装 `libc-client-dev`、`libkrb5-dev`
+- `imap` — **已移除安装**，只保留卸载。依赖的 UW c-client 已停止维护，Debian 13 软件源不再提供；
+  PHP 8.4 起源码包不含 `ext/imap`。`install imap`（或菜单 12）打印原因并返回 1；
+  `lnmp.conf` 不再有 `Enable_PHP_Imap`，环境变量设为 `y` 时安装摘要提示已忽略
 - `swoole` — 常驻内存的异步协程运行时，从 PECL 编译。WordPress 用不到
+- `nodejs` — Node.js 官方二进制，按主版本装到 `/usr/local/nodejs/<主版本>/`，见 [4.5](#45-托管-node--go-应用进程)
+- `pm2` — 经 npm 装入已安装的 Node.js 主版本目录，供 `lnmp app` 托管，见 [4.5](#45-托管-node--go-应用进程)
+
+PHP 扩展统一由构建模块（`include/mod/php_ext.sh`）下载、校验、编译并核对加载：产物生成且 PHP
+能加载后才写 ini；构建失败时恢复原有的 `.so` 与 ini；扩展已可加载时不重复构建。
 
 `eaccelerator`、`xcache`、`sourceguardian` 已在 2.3 移除：它们只支持已停止维护的
 PHP 5.x，或属于没有官方公开下载源的闭源组件。传这些名字会明确报错并返回 1。
@@ -3547,14 +3957,31 @@ bash upgrade.sh nginx     # 升级单个组件
 bash uninstall.sh         # 卸载整套环境
 ```
 
-`upgrade.sh` 的 `m2m` 是 MySQL 转 MariaDB，`phpa` 是 Apache 模式的 PHP，
-`mphp` 是多版本 PHP。数据库升级没有自动回滚，务必先备份并在测试环境验证。
-`upgrade.sh php` 与 `upgrade.sh mphp` 以新目录替换旧安装，`conf.d` 从空开始，OPcache 自动重建。
+`upgrade.sh` 的 `m2m` 是 MySQL 转 MariaDB，`phpa` 是 LNMPA、LAMP 的主 PHP，
+`mphp` 是多版本 PHP。数据库升级与迁移失败时放回旧程序与数据目录并重新启动，务必先备份并在测试环境验证。
+`upgrade.sh php` 与 `upgrade.sh mphp` 以新目录替换旧安装，OPcache 自动重建。
+`conf.d` 按每个 ini 的 `extension=`/`zend_extension=` 声明处理：不含声明的普通配置（如只写 `upload_max_filesize`）原样沿用；
+声明的扩展已内置于新版本时删去声明行，保留同文件的其余设置。
 其余附加扩展：同一分支的点版本升级扩展 API 编号不变（如 8.5.9 与 8.5.11 均为 `20250925`），
 旧 `.so` 与 ini 复制到新版本并确认能加载且无启动警告后沿用；跨分支升级或加载失败的扩展撤回 ini，
 在升级结束时列出，按提示 `bash addons.sh install <名字>` 重装，旧配置保留在备份目录的 `conf.d`。
+升级后按 pid 文件、实际程序路径与监听 socket 确认目标实例已启动，否则回滚；回滚后服务仍未启动时返回非零。
+
+`upgrade.sh m2m` 只迁移业务库与账号，MariaDB 使用自己的系统库。`mysql_native_password` 账号沿用原口令；
+MySQL 8 默认的 `caching_sha2_password` 账号 MariaDB 无法沿用，迁移前列出并询问是否改为随机口令，不同意即中止。
+新口令写入 `/root/mysql2mariadb_passwords<时间>.txt`（仅 root 可读），迁移后按清单通知各应用修改配置。
+root 口令沿用安装时输入的 `DB_Root_Password`。
+
+```bash
+bash upgrade.sh m2m                                   # 交互确认改口令
+LNMP_Auto=y LNMP_M2M_Reset_Passwords=yes bash upgrade.sh m2m   # 非交互同意改口令
+cat /root/mysql2mariadb_passwords*.txt                # 账号<TAB>新口令
+```
 `upgrade.sh nginx` 只替换二进制，不修改 `nginx.conf`，替换前用新二进制对现有配置执行
-`nginx -t`，不通过则中止且线上不变。升级时新启用 `Enable_Nginx_Lua` 的，先在 http 段手工加入：
+`nginx -t`，不通过则中止且线上不变。现有二进制已编入的 OpenSSL、Lua、Brotli、缓存清除、
+目录索引模块与内存分配器在升级后保留，`lnmp.conf` 新开启的模块一并编入。
+热升级后进程不在或版本不符时写回旧二进制，写回失败返回 2，需按提示人工处理。
+升级时新启用 `Enable_Nginx_Lua` 的，先在 http 段手工加入：
 
 ```nginx
 lua_package_path "/usr/local/nginx/lib/lua/?.lua;;";
@@ -3564,8 +3991,20 @@ Nginx 模块是编译期决定的，增删模块需要重新编译，见
 [8.2.7 安装本项目未提供的 Nginx 模块](#827-安装本项目未提供的-nginx-模块)。
 
 `uninstall.sh` 先停服并确认没有残留进程，栈内服务仍在运行时中止，且不删除任何文件。
+数据库最先处理：两种数据库（MySQL、MariaDB）都检查，`/etc/my.cnf` 的 `datadir` 与 `lnmp.conf` 的数据目录先移到
+`/root/databases_backup_<时间戳>`，移动失败或服务端仍在运行时中止，不删除任何文件。
+各组件按栈删除：LNMP 为 Nginx（或 OpenResty）与 PHP，LNMPA 为 Nginx、Apache 与 PHP，LAMP 为 Apache 与 PHP；
+组件不完整（如安装中断只装了一部分）时只删除存在的部分。
 删除阶段逐项复核结果：服务、单元、程序目录、定时任务或防火墙产物有残留时逐条列出并
 返回非零，全部清除才打印「卸载完成」。addons 组件的程序目录与网站数据是设计保留项。
+删除 Nginx、OpenResty、Apache 前先把 `conf/vhost`、`conf/ssl` 复制到 `/root/lnmp-preserved-<时间>/<原路径>`，
+删除 acme.sh 前同样复制 `/usr/local/acme.sh`；复制失败则不删除。卸载结束时打印保留目录，重装后按原路径放回即可恢复站点：
+
+```bash
+ls /root/lnmp-preserved-*/usr/local/nginx/conf/
+cp -a /root/lnmp-preserved-<时间>/usr/local/nginx/conf/vhost/. /usr/local/nginx/conf/vhost/
+```
+
 旧版本可能在 `/root/.acme.sh` 留下第二套 ACME 账户目录，该目录也可能是自建实例，
 卸载只提示路径，不自动删除。
 
@@ -3729,7 +4168,7 @@ Memcached 没有独立配置文件，参数写在 `/etc/init.d/memcached` 顶部
 | `IP` | `127.0.0.1` | 只监听回环 |
 | `PORT` | `lnmp.conf` 的 `Memcached_Port`，默认 11211 | |
 | `USER` | `memcached` | 专用低权限账号，不存在时启动脚本自动创建 |
-| `CACHESIZE` | `64` | 缓存上限，单位 MB |
+| `CACHESIZE` | 内存的 1/16（64～1024） | 缓存上限，单位 MB；`Enable_Auto_Tune=n` 时为模板值 64 |
 | `MAXCONN` | `1024` | 最大并发连接数 |
 | `OPTIONS` | 空 | 追加的原始启动参数 |
 
@@ -3759,7 +4198,7 @@ echo -e 'stats settings\r' | nc 127.0.0.1 11211 | grep -E 'maxbytes|maxconns'
 重跑 `addons.sh install memcached` 是**重新编译安装**：先停服务，把现有
 `/etc/init.d/memcached` 备份为 `memcached.bak.<时间戳>`，再按随包模板重建并写入
 `lnmp.conf` 的 `Memcached_Port`，阻断规则同步迁移，最后 `restart` 服务。
-`CACHESIZE`、`MAXCONN`、`OPTIONS` 等改过的参数会回到默认值，需要时从备份取回。
+`CACHESIZE` 按当前内存重算，`MAXCONN`、`OPTIONS` 等改过的参数回到默认值，需要时从备份取回。
 只想让防火墙跟上当前端口，用 `lnmp fw sync`。
 
 Memcached 协议不提供鉴权和租户隔离，不要对公网开放；互不信任的站点应拆分实例和
@@ -3839,16 +4278,17 @@ lnmp php-fpm restart
 几条必须知道的约束：
 
 - **编号决定加载顺序，有依赖关系时不能随便取。** 现有占用：`004` opcache、
-  `005` memcached、`008` imagick、`009` 各普通扩展、`020` igbinary、`021` redis。
+  `005` memcached、`008` imagick、`009` 各普通扩展（含 zstd）、`020` igbinary、`021` redis。
   phpredis 依赖 igbinary，所以排在它后面。新扩展无依赖时用 `009`。
 - **多版本 PHP 要用绝对路径。** `/usr/bin/php`、`/usr/bin/phpize`、`/usr/bin/pecl`
   这三个软链接指向主版本 `/usr/local/php`。要装到别的版本，全程换成
   `/usr/local/php8.2/bin/phpize` 这样的完整路径，ini 也写进对应版本的 `conf.d`。
-- **`bash upgrade.sh php` 会清空 `/usr/local/php/conf.d/`**，手工装的扩展和
-  `addons.sh` 装的扩展都会失效，升级后需要重新安装并重建 ini。
+- **`bash upgrade.sh php` 只自动处理能确认的扩展。** 同一分支升级时扩展 API 不变，手工装的 `.so`
+  与 ini 复制到新版本并确认能加载后沿用；跨分支升级时只有 `addons.sh` 管理的扩展会重新编译，
+  手工装的扩展撤回 ini 并在升级结束时列出，需要按上面的步骤对新版本重装。
 - 手工装的扩展不进本项目的校验清单和升级流程，来源可信度、版本兼容和后续维护
   由使用者自己负责。
-- Apache 模式（LNMPA / LAMP）第 5 步改用 `lnmp httpd restart`。
+- 存量 mod_php 机器（LNMPA / LAMP）第 5 步改用 `lnmp httpd restart`。
 
 #### 8.2.7 安装本项目未提供的 Nginx 模块
 
@@ -3930,13 +4370,11 @@ lnmp app logs <name> # 查看应用日志
 > 不提供通用 `rm -rf` 示例，避免空变量或错误目录造成跨站点删除。`.user.ini` 的
 > immutable 属性已由删站流程自动解除。
 >
-> `vhost add` 会问 `是否开启 PHP? (Y/n，默认 y)`。选 `n` 建出的站点不执行 PHP，
-> 适合纯静态站点和 Node、Go 等自带后端的站点；非交互执行用 `VHOST_PHP=n`。
-> 关闭 PHP 后紧接着问 `是否开启反向代理? (y/N，默认 n)`：不开时 `.php` 请求一律 404，
-> 开启则按输入的后端地址写好整站反代，`.php` 也交给后端；非交互执行用
-> `VHOST_PROXY=<后端地址>`。详见 4.4。
+> `vhost add` 先选站点类型：静态站点不执行 PHP，`.php` 请求一律 404，适合纯静态站点；
+> 反向代理按输入的后端地址写好整站反代，`.php` 也交给后端，适合 Node、Go 等自带后端的站点。
+> 非交互执行用 `VHOST_TYPE=static` 或 `VHOST_TYPE=proxy VHOST_PROXY=<后端地址>`。详见 4.4。
 
-#### 8.3.1 已建站点切换 PHP 版本（LNMP）
+#### 8.3.1 已建站点切换 PHP 版本
 
 站点使用哪个 PHP 由站点配置中的 `include enable-php*.conf;` 决定：
 
@@ -3996,7 +4434,10 @@ mv -f "${conf}.bak" "${conf}" && /usr/local/nginx/sbin/nginx -t && lnmp nginx re
 - 站点目录的 `.user.ini`（`open_basedir`）对所有版本生效，切换后不需要改动。
 - 切到此前没有站点使用的附加版本后，该实例开始计入 PHP 内存份额，已写入的 `pm.max_children`
   不会自动重算。内存紧张时按 [6.3](#63-php-fpm-进程模型) 的份额表核对两个实例的上限。
-- LNMPA 与 LAMP 的 PHP 是 Apache 模块，只有一个版本，不适用本节。
+- LNMPA、LAMP（PHP-FPM 形态）的版本不在 Nginx 侧：使用附加 PHP 的站点在 Apache 站点配置里有一段
+  `# 本站点使用 PHP <版本>。` 加 `<FilesMatch "\.php$"> SetHandler "proxy:unix:/run/php-fpm/php-cgi<版本>.sock|fcgi://localhost"`，
+  改其中的版本号即切换，删除整段即回到主 PHP，然后 `/usr/local/apache/bin/httpd -t && lnmp httpd reload`。
+  存量 mod_php 机器只有一个版本，不适用本节。
 
 ### 8.4 数据库管理
 
@@ -4459,6 +4900,7 @@ SHA-256。大小核对能发现传输截断和文件缺失，发现不了内容�
 | 站点错误日志（Nginx） | `/home/wwwlogs/<域名>.error.log` |
 | 站点错误日志（Apache） | `/home/wwwlogs/<域名>-error_log` |
 | PHP-FPM 日志 | `/usr/local/php/var/log/php-fpm.log` |
+| PHP-FPM 慢日志 | `/usr/local/php/var/log/slow.log`（多版本为 `/usr/local/php<版本>/var/log/slow.log`） |
 | MySQL 错误日志 | `/usr/local/mysql/var/<主机名>.err` |
 | MariaDB 错误日志 | `/usr/local/mariadb/var/mariadb.err` |
 | Redis 日志 | `/usr/local/redis/var/redis.log` |
@@ -4494,8 +4936,18 @@ EOF
 
 日志名从 `nginx -T` 与 `httpd -t -D DUMP_CONFIG` 中位于 `/home/wwwlogs` 的
 `access_log`/`error_log`/`CustomLog`/`ErrorLog` 取得，LAMP 栈同样安装该定时任务。
+DUMP_CONFIG 由 mod_info 提供，默认配置未加载该模块，脚本只在这次配置检查中临时加载，
+Apache 配置不变。取不到 Apache 配置时脚本仍切割 Nginx 日志，保留 Apache 日志并返回 1，
+定时任务记为失败：
+
+```bash
+systemctl status lnmp-cutlogs.service --no-pager
+/usr/local/apache/bin/httpd -C 'LoadModule info_module /usr/local/apache/modules/mod_info.so' \
+    -t -D DUMP_CONFIG 2>/dev/null | grep -E 'CustomLog|ErrorLog'
+```
 
 空日志文件不归档，无访问的站点不会每天产生空归档。
+同一天重复执行时，同名归档已存在则追加序号，如 `default_20261009_1.log`，不覆盖已有归档。
 
 服务日志轮转：
 
@@ -4568,8 +5020,8 @@ log_format main '$time_iso8601 $status "$request_time" $remote_addr $request_met
 
 ### 9.1 站点 502 Bad Gateway
 
-以下步骤适用于 LNMP。LNMPA/LAMP 不使用 PHP-FPM socket，应改查
-`lnmp httpd status` 和 Apache 错误日志。LNMP 按顺序查：
+以下步骤适用于 PHP-FPM 形态（LNMP 与新装的 LNMPA、LAMP；后两者 PHP-FPM 不可用时 Apache 返回 503）。
+存量 mod_php 机器不使用 PHP-FPM socket，应改查 `lnmp httpd status` 和 Apache 错误日志。按顺序查：
 
 ```bash
 # 1. php-fpm 是否在跑
@@ -4749,7 +5201,7 @@ journalctl -u redis.service --no-pager -n 20     # 会打印占用进程所在�
 ss -lntp | grep :6379
 ```
 
-连续启动失败达到 unit 限制（300 秒内 5 次）后进入 `failed`，日志显示
+连续启动失败达到 unit 限制（60 秒内 10 次）后进入 `failed`，日志显示
 `Start request repeated too quickly`。修复原因后清除计数再启动：
 
 ```bash
@@ -4811,7 +5263,6 @@ bash tools/reset_mysql_root_password.sh
 某些程序（如需要调用外部命令的采集、缩略图或队列组件，或用 `putenv` 设置环境变量的组件）会因此报
 `Call to undefined function` 或 `has been disabled for security reasons`。
 禁用 `putenv` 是为了阻止通过 `LD_PRELOAD` 加 `mail()` 绕过 exec 限制；`mail()` 本身可用。
-禁用范围的取舍见 `codetradeoffs.md` 19.28。
 
 查看当前禁用列表：
 
@@ -4819,7 +5270,7 @@ bash tools/reset_mysql_root_password.sh
 grep '^disable_functions' /usr/local/php/etc/php.ini
 ```
 
-`putenv` 在本版加入，此前安装的 PHP 在下次 PHP 升级时更新列表；需要立即生效时，在上面这一行末尾追加
+列表中没有 `putenv` 的旧安装在下次 PHP 升级时更新列表；需要立即生效时，在上面这一行末尾追加
 `,putenv` 后执行 `systemctl restart php-fpm`。
 
 回到源码目录执行，按菜单选择解禁范围：
@@ -4831,7 +5282,7 @@ bash tools/remove_disable_function.sh
 菜单按 `php.ini` 里当前实际禁用的函数生成：`1` 清空全部禁用函数，`2` 之后每一项
 对应一个当前被禁用的函数。编号非法会原地重问，不会跳过修改直接重启服务。
 
-脚本先备份 `php.ini`，改完核对配置确实变了，再重启 PHP-FPM（LAMP/LNMPA 下重启
+脚本先备份 `php.ini`，改完核对配置确实变了，再重启 PHP-FPM（存量 mod_php 机器重启
 Apache）；重启失败会恢复备份并返回非零。
 解禁范围越大，PHP 被利用后可执行的系统操作越多；只放行程序确实需要的那个函数，
 不要图省事直接选 `1`。
@@ -4879,8 +5330,8 @@ grep PHP_ADMIN_VALUE /usr/local/nginx/conf/fastcgi-nobasedir.conf
 
 该限制是多站点之间的目录边界，去掉后这个站点的 PHP 可以读写 `open_basedir`
 原本挡住的路径。单站点服务器影响有限，共享主机场景不建议去掉。
-LAMP、LNMPA 的边界来自 Apache 的 `php_admin_value open_basedir`，本工具不适用，
-需要直接编辑该站点的 Apache 配置。
+LAMP、LNMPA 的边界来自 Apache 站点配置（PHP-FPM 形态为 `ProxyFCGISetEnvIf ... PHP_ADMIN_VALUE`，
+存量 mod_php 形态为 `php_admin_value open_basedir`），本工具不适用，需要直接编辑该站点的 Apache 配置。
 
 ### 9.10 服务起不来，或状态与 systemd 对不上
 
@@ -5137,12 +5588,12 @@ systemctl list-timers 'apt-daily*' 'dnf-automatic*' --all  # 下次触发时间
 
 | 项 | 状态 | 注意 |
 |---|---|---|
-| 防火墙 | nftables `inet lnmp` 表，放行 22/80/443 + ICMP，**3306 / 6379 / 11211 显式 drop** | **链策略是 `policy accept`**，不是默认拒绝：它仅阻断明确列出的端口，不表示只允许这些端口 |
+| 防火墙 | nftables `inet lnmp` 表，放行实际监听的 SSH 端口、TCP 80/443、UDP 443 与 ICMP，**数据库 / Redis / Memcached 端口显式 drop** | **链策略是 `policy accept`**，不是默认拒绝：它仅阻断明确列出的端口，不表示只允许这些端口 |
 | MySQL / MariaDB | 无匿名用户；root 只能从 localhost 登录；无 test 库；**`bind-address = 127.0.0.1`**；socket 位于 `/run/mysqld/` | MySQL 另把 X Protocol 绑定回环且不默认启用 `mysql_native_password`；MariaDB 没有 X Protocol，使用自身认证逻辑 |
 | Redis | 只监听回环；以专用低权限账号运行 | 回环是必要条件但不是充分条件；认证、跨机访问和多站点隔离见“安装 Redis”一章 |
 | Memcached | 只监听回环；以专用低权限账号运行 | 协议本身不提供可靠的租户隔离，不要对公网开放；互不信任的站点应拆分实例和系统账号 |
 | PHP | `disable_functions` 禁用 exec 系列（含 `pcntl_exec`）与 `putenv`；FPM socket 位于 `/run/php-fpm/` 且为 0660；每站点 `open_basedir` 隔离 | `open_basedir` 限制文件路径访问，**不提供**操作系统级租户隔离：多站点共用 `www` 账号时没有内核层面的边界 |
-| Apache（LAMP/LNMPA） | 只把末尾 `.php` 交给 mod_php；根目录默认拒绝；站点使用 `SymLinksIfOwnerMatch` | 已在 Debian 13 两种栈实测；其它发行版部署前仍需复验模块与目录边界 |
+| Apache（LAMP/LNMPA） | 只把末尾 `.php` 交给 PHP-FPM（存量 mod_php 形态交给 mod_php）；根目录默认拒绝；站点使用 `SymLinksIfOwnerMatch` | 已在 Debian 13 两种栈实测；其它发行版部署前仍需复验模块与目录边界 |
 | Pure-FTPd | 新安装默认 `TLS 2`，拒绝明文登录 | 客户端选择显式 FTPS；既有部署需直接核对运行配置，不会被源码更新自动改写 |
 | phpinfo / phpMyAdmin / 演示页 | **默认全部不部署** | 需在 `lnmp.conf` 显式开启 |
 | default 站点的 PHP 边界 | 只放行 `phpinfo.php` / `redis.php` / `memcached.php` 三个固定文件名与 phpMyAdmin 入口，其余 `.php` 一律拒绝 | 放行的三个文件仅在对应开关打开时才会写入，未写入时访问返回 404；80 与 443 在同一个 server 块内共用同一套规则，为 default 配 HTTPS 后行为不变；往 default 根目录手工放同名文件同样会被执行，该站点是系统默认创建，其他需求 php 的请自建新站点 |
@@ -5314,9 +5765,9 @@ WordPress 自动更新是否可写与本指南的 root-owned 发布模型存在�
 > `systemctl start lnmp-health.timer` 恢复。它每分钟探一次，连续 3 次失败会自动重启服务，
 > 和你的手工重启抢同一个服务。原因见 [2.5 配置总索引](#25-配置总索引) 开头。
 
-`lnmp vhost add` 新建的站点默认带下面两条规则（LNMP、LNMPA 写在 Nginx 站点配置，
-LAMP 写在 Apache 站点的公共片段，HTTP 与 HTTPS 共用）。只按路径匹配，与建站时选的
-伪静态无关，非 WordPress 站点不受影响：
+`lnmp vhost add` 生成的站点配置不含程序专用规则，WordPress 站点建好后按下面写法手工加入。
+规则只按路径匹配，与建站时选的伪静态无关。Nginx 站点（LNMP、LNMPA）的 HTTP 与 HTTPS
+共用同一个 server 块，加一次即可：
 
 ```nginx
 # 上传目录只存媒体，拒绝其中的 PHP（含 /x.php/foo 形式的 PATH_INFO）
@@ -5329,7 +5780,8 @@ location ~* /wp-config[^/]*$ {
 }
 ```
 
-LAMP 的等价写法：
+LAMP 的等价写法，加在 `/usr/local/apache/conf/vhost/shared/<域名>.conf`（80 与 443 共用的
+站点公共片段；旧版本建的站点没有该片段时，分别加进 80 与 443 两个 `<VirtualHost>`）：
 
 ```apache
 <LocationMatch "(?i)(/wp-content/uploads/.*\.php(/|$)|/wp-config[^/]*$)">
@@ -5339,41 +5791,12 @@ LAMP 的等价写法：
 
 > 注意：**Nginx 规则必须放在 `include enable-php.conf;` 之前。**
 > 正则 location 按出现顺序匹配，`enable-php.conf` 的 `location ~ [^/]\.php(/|$)` 能匹配
-> uploads 下的 `.php`，规则放在 server 块末尾时不生效。旧版本建的站点没有这两条，
-> 按上面写法加到 `/usr/local/nginx/conf/vhost/<域名>.conf` 的该 include 之前。
+> uploads 下的 `.php`，规则放在 server 块末尾或 `# 自定义配置` 区时不生效。按上面写法加到
+> `/usr/local/nginx/conf/vhost/<域名>.conf` 的该 include 之前。3.0.2.010 之前建的站点已带这两条。
 >
 > 规则只覆盖 `wp-content/uploads` 与 `wp-config*`，插件目录下的合法脚本不受影响。
 > 其它备份文件（`.sql`、`.zip`、整站打包）不要放在站点目录下，
 > 放到 `/root` 或 `lnmp-backup.sh` 的备份目录；隐藏文件规则不能保护非隐藏的备份文件。
-
-### 10.4 更新 PHP 依赖的 FreeType 与 libiconv
-
-FreeType（`/usr/local/freetype`）与 libiconv（`/usr/local/lib`）只在完整安装时编译，`upgrade.sh php`
-不会重编。PHP 的 GD 与 iconv 动态链接这两个库；新版 soname 不变（`libfreetype.so.6`、`libiconv.so.2`），
-原位覆盖后重启 PHP 即生效，不需要重编 PHP。FreeType 2.13.0 及更早版本受 CVE-2025-27363
-（解析字体文件时越界写）影响，旧安装应更新到 `include/version.sh` 中的版本。
-
-```bash
-cd <代码目录>/src
-wget https://downloads.sourceforge.net/freetype/freetype-2.14.3.tar.xz
-grep ' freetype-2.14.3.tar.xz$' checksums.sha256 | sha256sum -c -
-tar Jxf freetype-2.14.3.tar.xz && cd freetype-2.14.3
-./configure --prefix=/usr/local/freetype --enable-freetype-config
-make -j"$(nproc)" && make install && ldconfig
-/usr/local/freetype/bin/freetype-config --ftversion    # 应输出 2.14.3
-
-cd <代码目录>/src
-wget https://ftp.gnu.org/gnu/libiconv/libiconv-1.19.tar.gz
-grep ' libiconv-1.19.tar.gz$' checksums.sha256 | sha256sum -c -
-tar zxf libiconv-1.19.tar.gz && cd libiconv-1.19
-./configure --enable-static
-make -j"$(nproc)" && make install && ldconfig
-
-lnmp restart                  # LNMPA 用 lnmpa restart，LAMP 用 lamp restart
-/usr/local/php/bin/php -r 'echo ICONV_VERSION, PHP_EOL;'    # 应输出 1.19
-```
-
-多版本 PHP 共用这两个库，重启后同样生效。
 
 修改后应验证实际请求结果；`nginx -t` 通过不代表规则已经生效：
 
@@ -5400,6 +5823,35 @@ unset SITE DOMAIN TEST_FILE HTTP_CODE
 实测确认：规则插在 `include enable-php.conf;` 之前时返回 **403**；
 放在末尾时返回 **200 并执行**。`enable-php-pathinfo.conf` 站点同样返回 403。
 
+### 10.4 更新 PHP 依赖的 FreeType 与 libiconv
+
+FreeType（`/usr/local/freetype`）与 libiconv（`/usr/local/lib`）只在完整安装时编译，`upgrade.sh php`
+不会重编。PHP 的 GD 与 iconv 动态链接这两个库；新版 soname 不变（`libfreetype.so.6`、`libiconv.so.2`），
+原位覆盖后重启 PHP 即生效，不需要重编 PHP。FreeType 2.13.0 及更早版本受 CVE-2025-27363
+（解析字体文件时越界写）影响，旧安装应更新到 `include/version.sh` 中的版本。
+
+```bash
+cd <代码目录>/src
+wget https://downloads.sourceforge.net/freetype/freetype-2.14.3.tar.xz
+grep ' freetype-2.14.3.tar.xz$' checksums.sha256 | sha256sum -c -
+tar Jxf freetype-2.14.3.tar.xz && cd freetype-2.14.3
+./configure --prefix=/usr/local/freetype --enable-freetype-config
+make -j"$(nproc)" && make install && ldconfig
+/usr/local/freetype/bin/freetype-config --ftversion    # 应输出 2.14.3
+
+cd <代码目录>/src
+wget https://ftp.gnu.org/gnu/libiconv/libiconv-1.19.tar.gz
+grep ' libiconv-1.19.tar.gz$' checksums.sha256 | sha256sum -c -
+tar zxf libiconv-1.19.tar.gz && cd libiconv-1.19
+./configure --enable-static
+make -j"$(nproc)" && make install && ldconfig
+
+lnmp restart                  # 三种模式的管理命令都是 lnmp
+/usr/local/php/bin/php -r 'echo ICONV_VERSION, PHP_EOL;'    # 应输出 1.19
+```
+
+多版本 PHP 共用这两个库，重启后同样生效。
+
 [返回顶部](#top)
 
 ---
@@ -5409,8 +5861,8 @@ unset SITE DOMAIN TEST_FILE HTTP_CODE
 本指南的数值建议不是从旧版“优化参数合集”复制而来，依据分为两类：
 
 - **项目实现事实**：版本、默认值、路径、端口、菜单和自动分档均来自当前
-  `install.sh`、`lnmp.conf`、`include/*.sh`、`conf/lnmp`、`tools/*.sh`。例如项目确实会
-  将 4～8GB 主机的 FPM `max_children` 设为 60、MySQL buffer pool 设为 512M；指南明确
+  `install.sh`、`lnmp.conf`、`include/*.sh`、`conf/lnmp`、`tools/*.sh`。例如项目按本机内存
+  公式计算 FPM `max_children` 与 MySQL buffer pool（6GB 混部主机的缓冲池约 768M）；指南明确
   记录该行为，但不把它直接当作混部 VPS 推荐值。
 - **容量建议**：先从整机内存预算和并发上界推导保守起点，再要求用高峰 PSS、
   `Max_used_connections`、Redis 命中/淘汰、Swap/PSI/OOM 和恢复演练校准。没有一个百分比
@@ -5450,6 +5902,8 @@ unset SITE DOMAIN TEST_FILE HTTP_CODE
 ---
 
 ## 附：验证环境的完整结果
+
+以下为实测时的版本与结果，当前组件版本以安装菜单与 `include/version.sh` 为准。
 
 ```
 组件版本    nginx/1.30.4  PHP 8.3.33  MySQL 8.4.7 / MariaDB 11.8.8

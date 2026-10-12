@@ -2,58 +2,12 @@
 
 Install_Apcu()
 {
-    echo "====== 正在安装 APCu ======"
-    Press_Start || return 1
-
-    rm -f ${PHP_Path}/conf.d/009-apcu.ini
-    Addons_Get_PHP_Ext_Dir
-    zend_ext="${zend_ext_dir}apcu.so"
-    if [ -s "${zend_ext}" ]; then
-        rm -f "${zend_ext}"
-    fi
-
-    cd "${cur_dir}/src" || return 1
-
-    # 支持的 PHP 8.x 使用 PHPNewApcu_Ver，并从 PECL 官方源下载。
-    Download_Files https://pecl.php.net/get/${PHPNewApcu_Ver}.tgz ${PHPNewApcu_Ver}.tgz
-    Require_File "${PHPNewApcu_Ver}.tgz" "pecl apcu"
-    Tar_Cd ${PHPNewApcu_Ver}.tgz ${PHPNewApcu_Ver}
-    ${PHP_Path}/bin/phpize
-    ./configure --with-php-config=${PHP_Path}/bin/php-config
-    Make_Install || return 1
-
-
-    cd ..
-
-    # apcu_bc 仅适用于 PHP 7，PHP 8 无需安装。
-    Clean_Src_Dir "${PHPNewApcu_Ver}"
-
-    cat >${PHP_Path}/conf.d/009-apcu.ini<<EOF
-[apcu]
-extension=apcu.so
-apc.enabled=1
-apc.shm_size=32M
-apc.enable_cli=1
-
-EOF
-
-    if Accept_PHP_Ext apcu "${PHP_Path}/conf.d/009-apcu.ini" "${zend_ext}"; then
-        Echo_Green "======== APCu 安装完成 ======"
-        Echo_Green "APCu 安装成功。"
-        Tune_Advise_PHP_Pools
-        return 0
-    fi
-    Echo_Red "APCu 安装失败！"
-    return 1
+    Addons_Install_Ext apcu "APCu" || return 1
+    Tune_Advise_PHP_Pools
+    return 0
 }
 
 Uninstall_Apcu()
 {
-    echo "即将卸载 APCu..."
-    Press_Start || return 1
-    rm -f ${PHP_Path}/conf.d/009-apcu.ini
-    echo "正在删除 APCu 文件..."
-    rm -f "${zend_ext}"
-    Restart_PHP
-    Echo_Green "APCu 卸载完成。"
+    Addons_Remove_Ext apcu "APCu"
 }

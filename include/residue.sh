@@ -103,9 +103,15 @@ Print_Install_Residue()
     done
 }
 
-# 已装好的环境重装的确认。这里的组件是在用的，不是中断留下的半成品，
+# 安装成功收尾会部署 /bin/lnmp 并删除进度标记，两者同时成立视为已完成过安装。
+Install_Completed()
+{
+    [ -s "${Residue_Root}/bin/lnmp" ] && ! Install_Progress_Get started >/dev/null
+}
+
+# 有组件但未完成过安装（未部署 /bin/lnmp）时的清理确认。组件可能在用，
 # 因此要求输入完整的 yes，不接受单个 y。
-Confirm_Reinstall_Installed()
+Confirm_Purge_Components()
 {
     local ans
 
@@ -186,7 +192,7 @@ Stop_Residue_Services()
     local svc ver pid exe waited left
 
     for svc in nginx php-fpm httpd mysql mariadb pureftpd redis memcached; do
-        if Systemd_Is_Running; then
+        if Svc_Systemd; then
             systemctl stop "${svc}.service" >/dev/null 2>&1
             systemctl disable "${svc}.service" >/dev/null 2>&1
             systemctl reset-failed "${svc}.service" >/dev/null 2>&1
@@ -195,7 +201,7 @@ Stop_Residue_Services()
     done
 
     for ver in ${MPHP_Supported_Vers}; do
-        if Systemd_Is_Running; then
+        if Svc_Systemd; then
             systemctl stop "php-fpm@${ver}.service" >/dev/null 2>&1
             systemctl disable "php-fpm@${ver}.service" >/dev/null 2>&1
         fi
@@ -230,47 +236,28 @@ Stop_Residue_Services()
     return 0
 }
 
-# 清理数据库残留。数据目录先移出删除范围，移动失败则整个清理中止。
+# 清理数据库残留。两种数据库各调用一次 Database_Remove，数据目录移动失败或服务端仍在运行时中止。
 Purge_Residue_DB()
 {
-    local dir path
-
-    for dir in "${MySQL_Data_Dir}" "${MariaDB_Data_Dir}"; do
-        Backup_DB_Data "${dir}" || return 1
-    done
-
-    rm -rf /usr/local/mysql /usr/local/mariadb
-    rm -f /etc/my.cnf /etc/init.d/mysql /etc/init.d/mariadb
-    Remove_DB_Command_Links
-    Remove_DB_Dev_Links
-    Remove_Libaio_Compat_Link
-
-    # 异常退出留下的套接字和 pid 文件会让下次安装误判有实例在运行。
-    for path in /run/mysqld/mysqld.sock /run/mysqld/mysqld.pid; do
-        [ -e "${path}" ] || continue
-        if fuser "${path}" >/dev/null 2>&1; then
-            Echo_Red "${path} 仍被进程占用，无法清理，安装已中止。"
-            return 1
-        fi
-        rm -f "${path}"
-    done
-    rmdir /run/mysqld 2>/dev/null
-
-    # 密码初始化使用的私有临时目录，异常退出时会残留。
-    find /run -maxdepth 1 -name 'lnmp-db-init.*' -type d -exec rm -rf {} + 2>/dev/null
+    Database_Remove mariadb "${MariaDB_Data_Dir}"
+    [ $? -eq 2 ] && return 1
+    Database_Remove mysql "${MySQL_Data_Dir}"
+    [ $? -eq 2 ] && return 1
     return 0
 }
 
-# 清理 Web 服务端残留。OpenResty 由软件包安装，需先走包管理器卸载。
+# 清理 Web 服务端与 PHP 残留。OpenResty 由软件包安装，先走包管理器卸载，再删 Nginx 目录。
 Purge_Residue_Web()
 {
     if [ -d /usr/local/openresty ]; then
-        Uninstall_OpenResty
+        OpenResty_Remove || return 1
     fi
-    rm -rf /usr/local/nginx /usr/local/php /usr/local/apache /usr/local/zend
-    rm -rf /usr/local/phpmyadmin /var/lib/phpmyadmin
+    Nginx_Remove || [ $? -eq 2 ] || return 1
+    Apache_Remove || return 1
+    PHP_Remove /usr/local/php
+    PhpMyAdmin_Remove
     find /usr/local -maxdepth 1 -name 'phpmyadmin.bak.*' -exec rm -rf {} + 2>/dev/null
-    rm -f /etc/init.d/nginx /etc/init.d/php-fpm /etc/init.d/httpd
+    rm -rf /usr/local/zend
     return 0
 }
 
@@ -294,7 +281,7 @@ Purge_Residue_Commands()
         rm -f "${unit}"
         changed='y'
     done
-    [ "${changed}" = 'y' ] && Systemd_Is_Running && systemctl daemon-reload >/dev/null 2>&1
+    [ "${changed}" = 'y' ] && Svc_Reload_Units
     return 0
 }
 
@@ -305,7 +292,7 @@ Purge_Install_Residue()
     Echo_Yellow "开始清理安装残留..."
     Stop_Residue_Services
     Purge_Residue_DB || return 1
-    Purge_Residue_Web
+    Purge_Residue_Web || return 1
     Remove_Multiple_PHP
     Remove_Backup_Schedule
     Remove_Health_Schedule
@@ -328,8 +315,8 @@ Purge_Install_Residue()
     return 0
 }
 
-# 完整安装入口的前置检查。进度标记只在安装成功收尾时删除，据此区分
-# 「已经装好、正在用的环境」和「上次没装完留下的半成品」，两者确认方式不同。
+# 完整安装入口的前置检查，在 Install_Completed 不成立时调用。进度标记只在安装成功收尾时删除，
+# 有标记为中断的安装，无标记为未完成过安装的组件，两者确认方式不同。
 Check_Install_Residue()
 {
     local started
@@ -341,10 +328,9 @@ Check_Install_Residue()
         Print_Install_Residue
         Confirm_Purge_Residue || return 1
     else
-        Echo_Yellow "你已成功安装过 ${Stack}，如需重新安装，请先备份相关数据。"
-        Echo_Yellow "本机现有以下组件："
+        Echo_Yellow "本机有以下组件，但没有完成过整栈安装（未部署 /bin/lnmp）："
         Print_Install_Residue
-        Confirm_Reinstall_Installed || return 1
+        Confirm_Purge_Components || return 1
     fi
 
     Purge_Install_Residue || return 1

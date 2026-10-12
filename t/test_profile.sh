@@ -6,7 +6,7 @@
 # 本测试可在 Windows/Git Bash 环境中验证编号映射。
 #
 # 覆盖：
-#   1. 每个编号 → DB_Kind / DB_Ver / DB_Install / MySQL_Dir
+#   1. 每个编号 → DB_Kind / DB_Ver / DB_Branch / MySQL_Dir
 #   2. 非法编号必须返回非零（不能静默回退到默认值）
 #   3. 菜单文本与映射表一致
 
@@ -33,7 +33,7 @@ check()
 echo "=== 数据库映射 ==="
 expect_db()
 {
-    # expect_db <编号> <kind> <ver> <install> <dir>
+    # expect_db <编号> <kind> <ver> <branch> <dir>
     if ! Set_DB_Profile "$1"; then
         echo "FAIL Set_DB_Profile $1 返回非零"
         fail=1
@@ -41,16 +41,16 @@ expect_db()
     fi
     check "db$1.kind"    "$2" "${DB_Kind}"
     check "db$1.ver"     "$3" "${DB_Ver}"
-    check "db$1.install" "$4" "${DB_Install}"
+    check "db$1.branch"  "$4" "${DB_Branch}"
     check "db$1.dir"     "$5" "${MySQL_Dir}"
 }
 
-expect_db 1 mysql   mysql-8.0.46     Install_MySQL_80     /usr/local/mysql
-expect_db 2 mysql   mysql-8.4.11      Install_MySQL_84     /usr/local/mysql
-expect_db 3 mariadb mariadb-10.11.19 Install_MariaDB_1011 /usr/local/mariadb
-expect_db 4 mariadb mariadb-11.4.13  Install_MariaDB_114  /usr/local/mariadb
-expect_db 5 mariadb mariadb-11.8.9   Install_MariaDB_118  /usr/local/mariadb
-expect_db 6 mariadb mariadb-12.3.3   Install_MariaDB_123  /usr/local/mariadb
+expect_db 1 mysql   mysql-8.0.46     8.0                  /usr/local/mysql
+expect_db 2 mysql   mysql-8.4.11      8.4                  /usr/local/mysql
+expect_db 3 mariadb mariadb-10.11.19 10.11                /usr/local/mariadb
+expect_db 4 mariadb mariadb-11.4.13  11.4                 /usr/local/mariadb
+expect_db 5 mariadb mariadb-11.8.9   11.8                 /usr/local/mariadb
+expect_db 6 mariadb mariadb-12.3.3   12.3                 /usr/local/mariadb
 
 Set_DB_Profile 0
 check "db0.kind" "none" "${DB_Kind}"
@@ -59,7 +59,7 @@ echo
 echo "=== PHP 映射 ==="
 expect_php()
 {
-    # expect_php <编号> <branch> <ver> <install> <apache_module>
+    # expect_php <编号> <branch> <ver> <apache_module>
     if ! Set_PHP_Profile "$1"; then
         echo "FAIL Set_PHP_Profile $1 返回非零"
         fail=1
@@ -67,16 +67,15 @@ expect_php()
     fi
     check "php$1.branch" "$2" "${PHP_Branch}"
     check "php$1.ver"    "$3" "${Php_Ver}"
-    check "php$1.install" "$4" "${PHP_Install}"
-    check "php$1.module" "$5" "${PHP_Apache_Module}"
+    check "php$1.module" "$4" "${PHP_Apache_Module}"
 }
 
-expect_php 1 8.0 php-8.0.30 Install_PHP_80 libphp.so
-expect_php 2 8.1 php-8.1.34 Install_PHP_81 libphp.so
-expect_php 3 8.2 php-8.2.34 Install_PHP_82 libphp.so
-expect_php 4 8.3 php-8.3.35 Install_PHP_83 libphp.so
-expect_php 5 8.4 php-8.4.26 Install_PHP_84 libphp.so
-expect_php 6 8.5 php-8.5.11  Install_PHP_85 libphp.so
+expect_php 1 8.0 php-8.0.30 libphp.so
+expect_php 2 8.1 php-8.1.34 libphp.so
+expect_php 3 8.2 php-8.2.34 libphp.so
+expect_php 4 8.3 php-8.3.35 libphp.so
+expect_php 5 8.4 php-8.4.26 libphp.so
+expect_php 6 8.5 php-8.5.11  libphp.so
 
 # 已停止支持与临近停止支持的分支须在菜单标注
 for pair in '1: (EOL)' '2: (EOL)' '3: (EOL 2026-12)' '4:' '5:' '6:'; do
@@ -112,7 +111,6 @@ echo "=== Apache 映射 ==="
 if Set_Apache_Profile 1; then
     check "apache1.branch"  "2.4"              "${Apache_Branch}"
     check "apache1.ver"     "httpd-2.4.69"     "${Apache_Ver}"
-    check "apache1.install" "Install_Apache_24" "${Apache_Install}"
 else
     echo "FAIL Set_Apache_Profile 1 返回非零"; fail=1
 fi

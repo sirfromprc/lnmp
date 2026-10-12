@@ -19,6 +19,7 @@ action=$1
 shopt -s extglob
 Upgrade_Date=$(date +"%Y%m%d%H%M%S")
 
+. "${cur_dir}/include/product.sh"
 . "${cur_dir}/lnmp.conf"
 . "${cur_dir}/include/version.sh"
 . "${cur_dir}/include/main.sh"
@@ -29,14 +30,16 @@ Upgrade_Date=$(date +"%Y%m%d%H%M%S")
 . "${cur_dir}/include/dbcommon.sh"
 . "${cur_dir}/include/init.sh"
 . "${cur_dir}/include/php.sh"
+. "${cur_dir}/include/mod/php.sh"
+. "${cur_dir}/include/imageMagick.sh"
+. "${cur_dir}/include/mod/php_ext.sh"
 . "${cur_dir}/include/php_default_ext.sh"
-. "${cur_dir}/include/nginx.sh"
+. "${cur_dir}/include/mod/nginx.sh"
 # 提供安装和升级流程使用的 Telegram 通知函数。
 . "${cur_dir}/tools/lnmp-tgnotice.sh"
-. "${cur_dir}/include/openresty_modules.sh"
-. "${cur_dir}/include/openresty.sh"
-. "${cur_dir}/include/mysql.sh"
-. "${cur_dir}/include/mariadb.sh"
+. "${cur_dir}/include/mod/openresty.sh"
+. "${cur_dir}/include/mod/phpmyadmin.sh"
+. "${cur_dir}/include/mod/database.sh"
 . "${cur_dir}/include/upgrade_nginx.sh"
 . "${cur_dir}/include/upgrade_openresty.sh"
 . "${cur_dir}/include/upgrade_php.sh"
@@ -45,6 +48,10 @@ Upgrade_Date=$(date +"%Y%m%d%H%M%S")
 . "${cur_dir}/include/upgrade_mysql2mariadb.sh"
 . "${cur_dir}/include/upgrade_phpmyadmin.sh"
 . "${cur_dir}/include/upgrade_mphp.sh"
+. "${cur_dir}/include/lock.sh"
+
+# 维护任务互斥：持锁后再做任何检测与升级。
+Lock_Acquire "upgrade.sh ${action}" || exit 2
 
 Validate_Service_Ports || exit 1
 Get_Dist_Name
@@ -69,7 +76,7 @@ Display_Upgrade_Menu()
 
 clear 2>/dev/null || true
 Print_Banner \
-    "LNMP V2.3 升级工具" \
+    "LNMP V${LNMP_Ver} 升级工具" \
     "升级 Nginx、MySQL/MariaDB 和 PHP" \
     "仅使用上游官方源码，并强制校验完整性"
 
@@ -92,16 +99,16 @@ fi
         Upgrade_MariaDB 2>&1 | tee /root/upgrade_mariadb${Upgrade_Date}.log
         Upgrade_Rc=${PIPESTATUS[0]}
         ;;
-    4|[pP][hP][pP])
+    4|[pP][hH][pP])
         Stack="lnmp"
         Upgrade_PHP 2>&1 | tee /root/upgrade_lnmp_php${Upgrade_Date}.log
         Upgrade_Rc=${PIPESTATUS[0]}
         ;;
-    5|[pP][hP][pP][aA])
+    5|[pP][hH][pP][aA])
         Upgrade_PHP 2>&1 | tee /root/upgrade_a_php${Upgrade_Date}.log
         Upgrade_Rc=${PIPESTATUS[0]}
         ;;
-    6|[mM]2[mY])
+    6|[mM]2[mM])
         Upgrade_MySQL2MariaDB 2>&1 | tee /root/upgrade_mysql2mariadb${Upgrade_Date}.log
         Upgrade_Rc=${PIPESTATUS[0]}
         ;;

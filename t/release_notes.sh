@@ -81,10 +81,11 @@ if [ "${Has_Auto}" -eq 1 ]; then
 两个包的脚本源码相同，差别只在 \`include/version.sh\`、\`include/profile.sh\`
 和 \`src/checksums.sha256\` 里的组件版本号。
 
-不确定选哪个就用 \`${Base_Pkg}.tar.gz\`。它的固定下载地址是：
+不确定选哪个就用 \`${Base_Pkg}.tar.gz\`。同一内容另以 \`lnmp.tar.gz\` 发布，
+固定下载地址始终指向最新一次发布：
 
 \`\`\`
-https://github.com/${Repo}/releases/latest/download/${Base_Pkg}.tar.gz
+https://github.com/${Repo}/releases/latest/download/lnmp.tar.gz
 \`\`\`
 
 ## 组件版本对照
@@ -112,10 +113,10 @@ else
 本次没有待发布的自动升级分支，只提供 \`${Base_Pkg}.tar.gz\`。
 该包**不含自动升级**，组件版本由维护者手工确认。
 
-固定下载地址：
+同一内容另以 \`lnmp.tar.gz\` 发布，固定下载地址始终指向最新一次发布：
 
 \`\`\`
-https://github.com/${Repo}/releases/latest/download/${Base_Pkg}.tar.gz
+https://github.com/${Repo}/releases/latest/download/lnmp.tar.gz
 \`\`\`
 
 ## 组件版本

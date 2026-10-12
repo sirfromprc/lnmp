@@ -1,6 +1,6 @@
-# LNMP 2.3
+# LNMP 3.0.3
 
-LNMP 2.3 是一套面向 Linux 服务器的 Shell 安装与运维工具，支持：
+LNMP 3.0.3 是一套面向 Linux 服务器的 Shell 安装与运维工具，支持：
 
 - LNMP：Nginx、MySQL/MariaDB、PHP；
 - LNMPA：Nginx 前端、Apache、MySQL/MariaDB、PHP；
@@ -8,7 +8,7 @@ LNMP 2.3 是一套面向 Linux 服务器的 Shell 安装与运维工具，支持
 
 项目同时提供站点、数据库、证书、备份、FTP、权限基线和服务健康检查等管理命令。
 主线验证环境是 Debian 13、Nginx、PHP 8.3、MySQL 8.4、phpMyAdmin、Redis 和
-WordPress。Apache 栈及其它发行版的支持边界见 [HowtoGuides.md](HowtoGuides.md)。
+WordPress。Apache 栈及其它发行版的支持边界见 [HowtoGuides.md](docs/HowtoGuides.md)。
 
 ![Nginx / MySQL / PHP](conf/lnmp.gif)
 
@@ -41,13 +41,14 @@ WordPress。Apache 栈及其它发行版的支持边界见 [HowtoGuides.md](Howt
   自动安装 nftables，装不上才降级为跳过并提示自行确认端口暴露情况。
 - 站点默认拒绝 `.user.ini`、`.env`、`.git` 等隐藏文件的 HTTP 与 HTTPS 访问，
   ACME 用的 `/.well-known/` 例外。
-- 站点默认拒绝 `wp-content/uploads` 下的 PHP 请求，以及 `wp-config.php` 及其副本的访问。
+- 站点配置不含程序专用规则；WordPress 上传目录禁止执行 PHP 等规则按 HowtoGuides 10.3 手工加入。
 - default 站点在 443 上拒绝未知 SNI 的握手，未匹配的 HTTPS 请求不会落到业务站点
   （LAMP 除外，Apache 无等价指令）。
 - PHP 站点的 `open_basedir` 在站点对外可访问之前写入；Composer 通过包装脚本获得
   CLI 所需的进程函数，不放宽 Web 请求的 `disable_functions`。
 - 数据库和 PHP-FPM socket 位于 `/run` 下的专用目录，不使用共享 `/tmp`。
 - 数据库 root 随机密码不会写入安装日志；需要保存时使用权限为 0600 的凭据文件。
+- `install.sh`、`upgrade.sh`、`addons.sh`、`uninstall.sh`、`bumpversion.sh` 共用一把维护锁。已有任务运行时，后到的执行以退出码 2 结束并提示持有者 PID 与命令，不会改动系统。
 - 安装、编译、配置测试或服务启动失败时返回非零退出码。安装收尾除了检查文件，
   还确认各服务确实在运行，并对 Web、PHP-FPM 和数据库各做一次最小协议探测。
 - Nginx、PHP 和 phpMyAdmin 的升级包含切换前检查及失败回滚；数据库升级在搬走旧实例之后
@@ -86,25 +87,27 @@ ss -lntup
 
 ### 2.2 获取发布包
 
-每个 Release 提供两个包，脚本源码相同，差别只在组件版本号：
+每个 Release 都提供主分支包；由每月上游检查触发的发布另附一个带日期的自动升级包，
+两者脚本源码相同，差别只在组件版本号：
 
 | 包 | 组件版本 | 适用情况 |
 | --- | --- | --- |
-| `lnmp-v2.3.tar.gz` | 维护者手工确认，**不含自动升级** | 默认选它 |
-| `lnmp-v2.3-<日期>.tar.gz` | 每月自动跟进上游 | 需要更新的组件版本时 |
+| `lnmp-v3.0.3.000.tar.gz` | 维护者手工确认，**不含自动升级** | 默认选它 |
+| `lnmp-v3.0.3.000-<日期>.tar.gz` | 每月自动跟进上游，仅部分 Release 提供 | 需要更新的组件版本时 |
 
-不带日期的包有固定下载地址，始终指向最新一次发布：
+不带日期的包另以 `lnmp.tar.gz` 发布（内容相同，计入 Release 的 `SHA256SUMS`），固定下载地址
+始终指向最新一次发布：
 
 ```text
-https://github.com/<owner>/<repo>/releases/latest/download/lnmp-v2.3.tar.gz
+https://github.com/<owner>/<repo>/releases/latest/download/lnmp.tar.gz
 ```
 
 从项目 Release 页面下载固定版本并按页面公布的 SHA-256 核对。假设已将下载文件保存为
-`/root/lnmp-v2.3.tar.gz`：
+`/root/lnmp-v3.0.3.000.tar.gz`：
 
 ```bash
 install -d -m 700 /root/lnmp-src
-tar -xzf /root/lnmp-v2.3.tar.gz -C /root/lnmp-src --strip-components=1
+tar -xzf /root/lnmp-v3.0.3.000.tar.gz -C /root/lnmp-src --strip-components=1
 cd /root/lnmp-src
 chmod +x install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
 bash -n install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
@@ -152,9 +155,11 @@ bash install.sh lamp
 | `LNMP_Purge_Residue` | `yes` 直接清理检测到的残留，`no` 拒绝清理并中止；非交互环境必须显式给出 |
 | `LNMP_Reuse_Answers` | `yes` 不询问直接沿用上次的菜单选择，`no` 不询问重新选择 |
 | `LNMP_Move_Existing_DB_Data=yes` | 允许把已存在的非空数据目录整体搬到 `/root` 后新建空实例 |
-| `LNMP_Resume_Broken_Install=yes` | 跳过残留检测，直接在现有环境上继续重装 |
 
-后两项默认关闭，不显式声明时安装一律中止，不会移动或删除任何数据。
+最后一项默认关闭，不显式声明时安装一律中止，不会移动或删除任何数据。
+
+已完成过安装（`/bin/lnmp` 已部署且无进度标记）时重跑 `install.sh lnmp|lnmpa|lamp` 不重新安装，
+只逐项检查现有组件、服务与本机 HTTP、FPM 监听，列出问题与处理命令；无问题返回 0，有问题返回 1。
 
 ### 2.4 非交互安装
 
@@ -195,7 +200,7 @@ lnmp restart
 
 ```bash
 lnmp nginx status
-lnmp php-fpm reload        # 仅 LNMP 模式
+lnmp php-fpm reload        # 存量 mod_php 机器无此服务
 lnmp mysql restart
 lnmp mariadb restart
 lnmp pureftpd status
@@ -204,8 +209,8 @@ lnmp memcached status
 ```
 
 数据库只会安装 MySQL 或 MariaDB 其中之一，应使用与实际安装分支一致的命令。
-`php-fpm` 子命令只存在于 LNMP 管理脚本；LNMPA/LAMP 由 Apache 加载 PHP，应使用
-`lnmp httpd status`、`lnmp httpd reload` 等命令管理 Web/PHP 进程。
+新装的 LNMPA、LAMP 与 LNMP 一样由 PHP-FPM 执行 PHP，可使用 `lnmp php-fpm status|restart` 等命令；
+存量 mod_php 机器没有 php-fpm 服务，PHP 随 `lnmp httpd` 命令管理。
 `lnmp kill` 会终止整栈残留进程，只用于正常停止失败且已确认影响范围的场景；单组件不支持 `kill`。
 
 ### 3.2 站点与应用
@@ -215,6 +220,8 @@ lnmp vhost add
 lnmp vhost list
 lnmp vhost del
 lnmp vhost del example.com
+lnmp vhost stop example.com
+lnmp vhost start example.com
 lnmp app add
 lnmp app list
 lnmp app status example-app
@@ -222,9 +229,16 @@ lnmp app logs example-app
 ```
 
 - `vhost` 管理 Nginx/Apache 站点；删除站点配置时不会删除网站文件。
-- `vhost add` 关闭站点 PHP 后会问是否开启反向代理。开启时按输入的后端地址写好整站
-  代理规则，`.php` 一并交给后端；不开启时 `.php` 请求一律返回 404。站点目录仍会创建，
-  `/.well-known/` 不进代理，反代站点照样能签发证书。
+- `vhost add` 建站后以站点域名经本机实际请求一次，确认 PHP 版本、静态目录或反代上游可用；未通过时返回 1。
+- `vhost stop` 让站点返回 503（证书验证路径保留），`vhost start` 恢复；文件、证书和数据库不动。
+- `vhost add` 先选站点类型：PHP 站点、静态站点（`.php` 请求一律返回 404）或反向代理
+  （按输入的后端地址写好整站代理规则，`.php` 一并交给后端）。反代站点的目录仍会创建，
+  `/.well-known/` 不进代理，照样能签发证书。非交互用 `VHOST_TYPE=php|static|proxy`。
+- PHP 站点可选 WordPress 或 Laravel 预设，预设只改变后续提问的默认值。Laravel 预设以
+  输入目录为项目目录、`public/` 为网站根目录，open_basedir 放宽到项目目录。
+- PHP 站点与静态站点默认对图片、js、css 设置浏览器缓存（`expires`），反代站点不设。
+- `ssl add` 在 Nginx/OpenResty 编译了 http_v3 模块时同时启用 HTTP/3（UDP 443），
+  安装与 `lnmp fw sync` 放行 UDP 443；条件与旧安装的启用方法见 HowtoGuides 7.9。
 - `app` 用独立 systemd 服务和账号托管 Node、Go 等后端进程，适合反向代理站点。
 
 ### 3.3 数据库
@@ -285,9 +299,18 @@ bash addons.sh
 bash pureftpd.sh
 bash upgrade.sh
 bash install.sh mphp
+bash install.sh apache
+bash install.sh php
 ```
 
-- 安装时按本机内存为数据库、PHP-FPM（LNMPA/LAMP 为 Apache prefork）、Redis、Memcached
+- `install.sh apache [lnmpa|lamp]` 在 LNMPA、LAMP 上单独安装或补齐 Apache，栈缺省按已部署的
+  `lnmp` 管理命令识别；Apache 已就绪时不写入文件，版本或编译参数不符时不改动。
+- `install.sh php [lnmp|lnmpa|lamp]` 单独安装或补齐主 PHP 与默认扩展（OPcache、igbinary、phpredis、imagick、zstd，
+  由 `lnmp.conf` 的 `Enable_PHP_Default_*` 控制）。SAPI 按已装形态判定：
+  新装为 PHP-FPM（Apache 栈为 event MPM + mod_proxy_fcgi）；Apache 主配置已加载 `php_module` 的
+  存量机器沿用 Apache 模块（需有 Apache）。PHP 已就绪时不重新编译，版本或编译选项不符时不改动。
+
+- 安装时按本机内存为数据库、PHP-FPM（存量 mod_php 机器为 Apache prefork）、Redis、Memcached
   和 OPcache 分配参数，由 `lnmp.conf` 的 `Enable_Auto_Tune`（总开关）、`Tune_Mem_MB`
   （参与计算的内存）和 `Tune_PHP_Proc_MB`（单个 PHP 进程估算）控制。已安装的 Memcached、APCu
   与有站点在用的附加 PHP 实例从 PHP 份额中扣除，这些附加实例与主实例共享 PHP 份额。
@@ -295,15 +318,28 @@ bash install.sh mphp
   Unix socket `/run/lnmp-redis/redis.sock`，`www` 加入 `redis` 组以便 PHP 经 socket 连接。扩展装完会用
   `php --ri <模块>` 确认 PHP 真的能加载，加载不了或服务重启失败就撤回本次写入的
   `conf.d` 配置并返回非零。
+- `addons.sh install nodejs [22|24]` 安装 Node.js 官方二进制到 `/usr/local/nodejs/<主版本>/`，多个主版本可并存，
+  不创建全局 `node` 链接，不依赖 PHP。版本固定在 `include/version.sh`，归档同时核对 `src/checksums.sha256`
+  与上游已签名的 `SHASUMS256.txt`（随包公钥 `conf/nodejs-signing-keys.asc`）。进入维护期的主版本在菜单中标注
+  停止支持时间。应用经 `lnmp app add` 的启动命令绝对路径绑定解释器；`addons.sh uninstall nodejs <主版本>`
+  在有应用引用时拒绝。
+- `addons.sh install pm2 [主版本]` 经 npm 把 PM2 装入已安装的 Node.js 主版本目录（版本不固定，不进校验清单）。
+  `lnmp app add` 的启动命令写 `<前缀>/<主版本>/bin/pm2-runtime start <ecosystem 文件>` 即为 PM2 托管：
+  由 systemd 管理 `pm2-runtime`，PM2 状态目录为 `/var/lib/lnmp/apps/<应用名>/pm2`，`lnmp app reload` 平滑重载，
+  `lnmp app status` 附带 PM2 进程列表。有 PM2 应用引用时 `addons.sh uninstall pm2` 拒绝。
 - `Redis_Mode`：`cache`（默认，对象缓存，不持久化，内存满时淘汰）或 `persistent`（session、
   队列等，RDB 加 AOF，内存满时拒绝写入）。
 - `pureftpd.sh` 管理 Pure-FTPd 安装。
-- `upgrade.sh` 按菜单升级组件；升级前先完成备份和恢复演练。
-- `install.sh mphp` 为 LNMP 模式增加一个 PHP 版本，OPcache 参数与主 PHP 相同（`Enable_PHP_Default_Opcache`
+- `upgrade.sh` 按菜单升级组件；升级前先完成备份和恢复演练。`m2m`（MySQL 转 MariaDB）只迁移业务库与账号，
+  `caching_sha2_password` 账号需同意改为随机口令（非交互用 `LNMP_M2M_Reset_Passwords=yes`），新口令写入
+  `/root/mysql2mariadb_passwords<时间>.txt`。
+- `install.sh mphp` 为 LNMP 及 PHP-FPM 形态的 LNMPA、LAMP 增加一个 PHP 版本，OPcache 参数与主 PHP 相同（`Enable_PHP_Default_Opcache`
   控制）。systemd 下各版本由 `php-fpm@<版本>` 管理，`/etc/init.d/php-fpm<版本>` 的启停动作转交该 unit。
 
 卸载入口为 `bash uninstall.sh`。它要求输入完整的 `uninstall-lnmp`、
-`uninstall-lnmpa` 或 `uninstall-lamp`，并会移动数据库目录。执行前必须另外备份网站、
+`uninstall-lnmpa` 或 `uninstall-lamp`，并会移动数据库目录（移到 `/root/databases_backup_<时间戳>`，
+移动失败时不删除任何文件）；Web 服务器的 `conf/vhost`、`conf/ssl` 与 `/usr/local/acme.sh` 先复制到
+`/root/lnmp-preserved-<时间>/` 再删除；装过 Pure-FTPd 时一并删除，FTP 账号不保留。中断安装留下的不完整环境同样可以卸载。执行前必须另外备份网站、
 站点配置、证书和数据库；不要把卸载脚本当作重置命令。
 
 ### 3.7 监控与权限检查
@@ -329,7 +365,7 @@ lnmp perm init
   切割并归档 `/home/wwwlogs` 下的日志，保留天数等可在 `/etc/lnmp/cutlogs.conf` 覆盖。
 - PHP-FPM（含慢日志）、Redis、数据库错误日志与 `/var/log/lnmp` 下的工具日志由系统 logrotate 按
   `/etc/logrotate.d/lnmp` 每周轮转，超过上限时提前轮转，保留 4 份。未安装 logrotate 时安装流程自动补装。
-- PHP-FPM 每个实例记录超过 5 秒的请求调用栈到 `<PHP 目录>/var/log/slow.log`；主 PHP 的状态页经
+- PHP-FPM 每个实例记录超过 5 秒的请求调用栈到 `<PHP 目录>/var/log/slow.log`；LNMP、LNMPA 上主 PHP 的状态页经
   `http://127.0.0.1:1008/fpm-status` 与 `/fpm-ping` 本机访问，worker 占满时仍可查询。
 - `perm` 核对服务所需目录和文件权限；默认只报告，不自动递归修改权限。
 - 有意调整某条权限后，可用 `lnmp perm ignore <条目ID>` 单独忽略，使用
@@ -378,13 +414,13 @@ FTP 账号操作依赖已安装的 Pure-FTPd。Telegram 通知需要真实 Bot T
 4. 不要用 `chmod -R 777` 解决网站写入问题。它会扩大被入侵后的写入范围，也可能破坏服务配置。
    用已有代码目录建站时，建站流程默认保留目录中原有的权限位，只改属主；确需统一权限时
    按提示确认，它会把目录设为 755、普通文件设为 644。
-5. 修改 Nginx 配置后先执行 `nginx -t`，通过后再`lnmp nginx reload`。
+5. 修改 Nginx 配置后先执行 `nginx -t`，通过后再 `lnmp nginx reload`。
 6. 不要用 `nft flush ruleset`、停用防火墙或递归改整个 `/usr/local` 权限来排障。
 7. 数据库导入、恢复、删除和升级都有数据影响；先执行独立备份并验证可恢复。
 8. phpMyAdmin 的随机路径不是访问控制。公网使用时还应限制来源并使用 HTTPS。
 
 ## 5. 文档索引
 
-- [HowtoGuides.md](HowtoGuides.md)：主要安装、部署、日常运维、备份恢复和故障排查手册。
-- [changelog.md](changelog.md)：功能修改与验证摘要。
-- [SecurityCheck.md](SecurityCheck.md)：安全检查范围和结果说明。
+- [HowtoGuides.md](docs/HowtoGuides.md)：主要安装、部署、日常运维、备份恢复和故障排查手册。
+- [changelogs.md](docs/changelogs.md)：功能修改与验证摘要。
+- [SecurityCheck.md](docs/SecurityCheck.md)：安全检查范围和结果说明。

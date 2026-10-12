@@ -93,8 +93,8 @@ probe libzip   "https://libzip.org/download/${Libzip_Ver}.tar.xz"
 echo
 echo "=== 可选：OpenResty（仅 ORMode=src 源码编译方式使用）==="
 # 走官方 apt/yum 仓库时装的是仓库里的当前版本，不经过这个地址；
-# 源码编译方式由 include/openresty.sh 与 include/upgrade_openresty.sh 下载它。
-# 它只有 PGP 签名、不进 src/checksums.sha256（见 consistency.sh V4 的豁免），
+# 源码编译方式由 include/mod/openresty.sh 下载它。
+# 它只有 PGP 签名、不进 src/checksums.sha256（见 consistency.sh V3 的豁免），
 # 但可达性仍需探测：上游同样会下线旧点版本。
 probe openresty "https://openresty.org/download/${OpenResty_Ver}.tar.gz"
 
@@ -130,6 +130,16 @@ for boost in "${Boost_Ver}" "${Boost_New_Ver}"; do
 done
 
 echo
+echo "=== Node.js（addons.sh install nodejs）==="
+for v in ${Nodejs_Majors}; do
+    nv="Nodejs_${v}_Ver"
+    for arch in x64 arm64; do
+        probe nodejs "https://nodejs.org/dist/v${!nv}/node-v${!nv}-linux-${arch}.tar.xz"
+    done
+    probe nodejs签名 "https://nodejs.org/dist/v${!nv}/SHASUMS256.txt.sig"
+done
+
+echo
 echo "=== Apache / phpMyAdmin ==="
 probe apache   "https://archive.apache.org/dist/httpd/${APACHE_VER}.tar.bz2"
 probe apr      "https://archive.apache.org/dist/apr/${APR_Ver}.tar.bz2"
@@ -153,7 +163,7 @@ probe ngx-devel  "https://github.com/vision5/ngx_devel_kit/archive/refs/tags/v${
 probe lua-core   "https://github.com/openresty/lua-resty-core/archive/refs/tags/v${LuaRestyCore#lua-resty-core-}.tar.gz"
 probe lua-lru    "https://github.com/openresty/lua-resty-lrucache/archive/refs/tags/v${LuaRestyLrucache#lua-resty-lrucache-}.tar.gz"
 probe lua-cjson  "https://github.com/openresty/lua-cjson/archive/refs/tags/${LuaCjson#lua-cjson-}.tar.gz"
-# 纯 Lua 的 resty 库，命名规律一致，用与 nginx.sh 相同的方式推导仓库名与 tag
+# 纯 Lua 的 resty 库，命名规律一致，用与 include/mod/nginx.sh 相同的方式推导仓库名与 tag
 for lib in "${LuaRestyLock}" "${LuaRestyString}" "${LuaRestyRedis}" \
            "${LuaRestyMysql}" "${LuaRestyUpload}" "${LuaRestyWebsocket}" \
            "${LuaRestyDns}" "${LuaRestyMemcached}" "${LuaRestyLimitTraffic}"; do
@@ -172,6 +182,7 @@ probe memcache  "https://pecl.php.net/get/${PHP8Memcache_Ver}.tgz"
 probe memcached "https://pecl.php.net/get/${PHP8Memcached_Ver}.tgz"
 probe phpredis  "https://pecl.php.net/get/${PHPRedis_Ver}.tgz"
 probe igbinary  "https://pecl.php.net/get/${PHPIgbinary_Ver}.tgz"
+probe zstd      "https://pecl.php.net/get/${PHPZstd_Ver}.tgz"
 
 echo
 echo "=== 可选：缓存 / 其他服务 ==="

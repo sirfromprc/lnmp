@@ -17,14 +17,25 @@ fi
 cd "${cur_dir}" || exit 1
 Stack=$1
 
-LNMP_Ver='2.3'
+# 产品版本取自 include/product.sh。
+. "${cur_dir}/include/product.sh"
 
 . "${cur_dir}/lnmp.conf"
 . "${cur_dir}/include/main.sh"
 . "${cur_dir}/include/verify.sh"
 . "${cur_dir}/include/firewall.sh"
-. "${cur_dir}/include/openresty.sh"
+. "${cur_dir}/include/mod/openresty.sh"
+. "${cur_dir}/include/mod/nginx.sh"
+. "${cur_dir}/include/mod/apache.sh"
+. "${cur_dir}/include/mod/php.sh"
+. "${cur_dir}/include/mod/database.sh"
+. "${cur_dir}/include/mod/phpmyadmin.sh"
+. "${cur_dir}/include/mod/pureftpd.sh"
 . "${cur_dir}/include/cleanup.sh"
+. "${cur_dir}/include/lock.sh"
+
+# 维护任务互斥：持锁后再做任何检测与卸载。
+Lock_Acquire "uninstall.sh ${Stack}" || exit 2
 
 shopt -s extglob
 
@@ -186,6 +197,8 @@ Report_Uninstall_Result()
     local stack="$1" item
 
     if [ ${#Uninstall_Failures[@]} -eq 0 ]; then
+        # 环境已清空，未完成安装的进度标记与选择记录随之失效。
+        Install_Progress_Done
         echo "${stack} 卸载完成。"
         return 0
     fi
@@ -196,19 +209,6 @@ Report_Uninstall_Result()
     Echo_Red "请按上述条目处理后重新执行卸载。addons 组件与网站数据为设计保留项，不在此列。"
     return 1
 }
-
-# 停止数据库并备份数据，任一步失败均中止卸载。
-Stop_And_Backup_DB()
-{
-    [ "${DB_Name}" = "None" ] && return 0
-    Remove_StartUp ${DB_Name}
-    if [ "${DB_Name}" = "mysql" ]; then
-        Backup_DB_Data "${MySQL_Data_Dir}" || exit 1
-    elif [ "${DB_Name}" = "mariadb" ]; then
-        Backup_DB_Data "${MariaDB_Data_Dir}" || exit 1
-    fi
-}
-
 
 # ---------------------------------------------------------------------------
 # addons 安装的 Redis 与 Memcached 不在各栈 kill/stop 的覆盖范围内，
@@ -279,35 +279,55 @@ Stop_Stack_Services()
     return 0
 }
 
-Uninstall_LNMP()
+# Uninstall_Stack <lnmp|lnmpa|lamp>：组件程序与配置经各模块的 Remove 删除。
+# 数据库最先处理，数据目录未能移出或服务端仍在运行时中止，不删除任何文件。
+Uninstall_Stack()
 {
-    echo "正在停止 LNMP..."
+    local stack=$1 label kind dir rc
+
+    label=$(printf '%s' "${stack}" | tr '[:lower:]' '[:upper:]')
+    echo "正在停止 ${label}..."
     if ! Stop_Stack_Services; then
         Echo_Red "服务未全部停止，已中止卸载，未删除任何文件。"
         Echo_Red "请手工停止上述进程后重新执行卸载。"
         return 1
     fi
 
-    Disable_Stack_Service nginx
-    Disable_Stack_Service php-fpm
-    # 数据备份在删除操作前完成，失败时中止卸载。
-    Stop_And_Backup_DB
+    case "${stack}" in
+    lnmp)  Disable_Stack_Service nginx; Disable_Stack_Service php-fpm ;;
+    lnmpa) Disable_Stack_Service nginx; Disable_Stack_Service httpd; Disable_Stack_Service php-fpm ;;
+    lamp)  Disable_Stack_Service httpd; Disable_Stack_Service php-fpm ;;
+    esac
 
-    chattr -i ${Default_Website_Dir}/.user.ini 2>/dev/null
-    echo "正在删除 LNMP 文件..."
-    # OpenResty 使用 /usr/local/nginx 软链接，需先卸载软件包并移除链接。
-    if [ -d /usr/local/openresty ]; then
-        Uninstall_OpenResty
+    for kind in mariadb mysql; do
+        dir=${MySQL_Data_Dir}
+        [ "${kind}" = mariadb ] && dir=${MariaDB_Data_Dir}
+        Database_Remove "${kind}" "${dir}"
+        rc=$?
+        if [ "${rc}" -eq 2 ]; then
+            Echo_Red "数据库数据目录未能移出或服务端仍在运行，已中止卸载。"
+            return 1
+        fi
+        [ "${rc}" -eq 0 ] || Record_Uninstall_Failure "删除 ${kind} 程序与配置失败"
+    done
+
+    chattr -i "${Default_Website_Dir}/.user.ini" 2>/dev/null
+    echo "正在删除 ${label} 文件..."
+    if [ "${stack}" != lamp ]; then
+        # OpenResty 使用 /usr/local/nginx 软链接，需先卸载软件包并移除链接。
+        [ -d /usr/local/openresty ] && Run_Uninstall_Step "删除 OpenResty" OpenResty_Remove
+        Run_Uninstall_Step "删除 Nginx" Nginx_Remove
     fi
-    Remove_Uninstall_Path /usr/local/nginx
-    Remove_Uninstall_Path /usr/local/php
-    Remove_Uninstall_Path /usr/local/zend
+    [ "${stack}" = lnmp ] || Run_Uninstall_Step "删除 Apache" Apache_Remove
+    Run_Uninstall_Step "删除 PHP" PHP_Remove /usr/local/php
     # phpMyAdmin 及模板缓存位于网站根目录之外。
-    Remove_Uninstall_Path /usr/local/phpmyadmin /usr/local/phpmyadmin.bak.*
-    Remove_Uninstall_Path /var/lib/phpmyadmin
+    Run_Uninstall_Step "删除 phpMyAdmin" PhpMyAdmin_Remove
+    Remove_Uninstall_Path /usr/local/phpmyadmin.bak.*
+    Remove_Uninstall_Path /usr/local/zend
 
-    Run_Uninstall_Step "删除数据库程序与配置" Remove_DB_Files
     Run_Uninstall_Step "删除多版本 PHP" Remove_Multiple_PHP
+    # 管理命令删除后 FTP 账号无法维护，防火墙放行也随后清除。
+    [ -d "$(_Pureftpd_Prefix)" ] && Run_Uninstall_Step "删除 Pure-FTPd" Pureftpd_Remove
     Run_Uninstall_Step "卸载 acme.sh" Remove_Acme
     Run_Uninstall_Step "清理备份定时任务" Remove_Backup_Schedule
     Run_Uninstall_Step "清理巡检定时任务" Remove_Health_Schedule
@@ -315,8 +335,6 @@ Uninstall_LNMP()
     Run_Uninstall_Step "取消应用托管" Remove_App_Hosting
     Run_Uninstall_Step "清理权限校验钩子" Remove_Perm_Hooks
 
-    Remove_Uninstall_Path /etc/init.d/nginx
-    Remove_Uninstall_Path /etc/init.d/php-fpm
     Remove_Uninstall_Path /bin/lnmp
     Remove_Uninstall_Path /bin/lnmp-backup
     Remove_Uninstall_Path /bin/lnmp-tgnotice
@@ -333,135 +351,25 @@ Uninstall_LNMP()
 
     local -a residue=()
     mapfile -t residue < <(Common_Uninstall_Targets)
-    residue+=(
-        /usr/local/nginx
-        /etc/init.d/nginx
-        /etc/init.d/php-fpm
-        /etc/systemd/system/nginx.service
-        /etc/systemd/system/php-fpm.service
-    )
+    residue+=(/usr/local/mysql /usr/local/mariadb /etc/my.cnf)
+    case "${stack}" in
+    lnmp)
+        residue+=(/usr/local/nginx /etc/init.d/nginx /etc/init.d/php-fpm
+                  /etc/systemd/system/nginx.service /etc/systemd/system/php-fpm.service)
+        ;;
+    lnmpa)
+        residue+=(/usr/local/nginx /usr/local/apache /etc/init.d/nginx /etc/init.d/httpd /etc/init.d/php-fpm
+                  /etc/systemd/system/nginx.service /etc/systemd/system/httpd.service
+                  /etc/systemd/system/php-fpm.service)
+        ;;
+    lamp)
+        residue+=(/usr/local/apache /etc/init.d/httpd /etc/init.d/php-fpm
+                  /etc/systemd/system/httpd.service /etc/systemd/system/php-fpm.service)
+        ;;
+    esac
     Check_Uninstall_Residue "${residue[@]}"
-    Report_Uninstall_Result LNMP
-}
-
-Uninstall_LNMPA()
-{
-    echo "正在停止 LNMPA..."
-    if ! Stop_Stack_Services; then
-        Echo_Red "服务未全部停止，已中止卸载，未删除任何文件。"
-        Echo_Red "请手工停止上述进程后重新执行卸载。"
-        return 1
-    fi
-
-    Disable_Stack_Service nginx
-    Disable_Stack_Service httpd
-    Stop_And_Backup_DB
-
-    chattr -i ${Default_Website_Dir}/.user.ini 2>/dev/null
-    echo "正在删除 LNMPA 文件..."
-    Remove_Uninstall_Path /usr/local/nginx
-    Remove_Uninstall_Path /usr/local/php
-    Remove_Uninstall_Path /usr/local/apache
-    Remove_Uninstall_Path /usr/local/zend
-    # phpMyAdmin 及模板缓存位于网站根目录之外。
-    Remove_Uninstall_Path /usr/local/phpmyadmin /usr/local/phpmyadmin.bak.*
-    Remove_Uninstall_Path /var/lib/phpmyadmin
-
-    Run_Uninstall_Step "删除数据库程序与配置" Remove_DB_Files
-    Run_Uninstall_Step "删除多版本 PHP" Remove_Multiple_PHP
-    Run_Uninstall_Step "卸载 acme.sh" Remove_Acme
-    Run_Uninstall_Step "清理备份定时任务" Remove_Backup_Schedule
-    Run_Uninstall_Step "清理巡检定时任务" Remove_Health_Schedule
-    Run_Uninstall_Step "清理日志切割定时任务" Remove_Cutlogs_Schedule
-    Run_Uninstall_Step "取消应用托管" Remove_App_Hosting
-    Run_Uninstall_Step "清理权限校验钩子" Remove_Perm_Hooks
-
-    Remove_Uninstall_Path /etc/init.d/nginx
-    Remove_Uninstall_Path /etc/init.d/httpd
-    Remove_Uninstall_Path /bin/lnmp
-    Remove_Uninstall_Path /bin/lnmp-backup
-    Remove_Uninstall_Path /bin/lnmp-tgnotice
-    Remove_Uninstall_Path /bin/lnmp-phpmyadmin
-    Remove_Uninstall_Path /bin/lnmp-perm
-    Remove_Uninstall_Path /bin/lnmp-health
-    Remove_Uninstall_Path /bin/lnmp-sqlguard
-    Remove_Uninstall_Path /bin/lnmp-fw
-    Remove_Uninstall_Path /bin/lnmp-cutlogs
-    Remove_Uninstall_Path /etc/profile.d/lnmp-tgnotice.sh
-    Run_Uninstall_Step "清理 /etc/lnmp" Remove_Lnmp_Conf_Dir
-    Run_Uninstall_Step "清理防火墙规则" Firewall_Purge
-    Notice_Addons_Residue
-
-    local -a residue=()
-    mapfile -t residue < <(Common_Uninstall_Targets)
-    residue+=(
-        /usr/local/nginx
-        /usr/local/apache
-        /etc/init.d/nginx
-        /etc/init.d/httpd
-        /etc/systemd/system/nginx.service
-        /etc/systemd/system/httpd.service
-        /etc/systemd/system/php-fpm.service
-    )
-    Check_Uninstall_Residue "${residue[@]}"
-    Report_Uninstall_Result LNMPA
-}
-
-Uninstall_LAMP()
-{
-    echo "正在停止 LAMP..."
-    if ! Stop_Stack_Services; then
-        Echo_Red "服务未全部停止，已中止卸载，未删除任何文件。"
-        Echo_Red "请手工停止上述进程后重新执行卸载。"
-        return 1
-    fi
-
-    Disable_Stack_Service httpd
-    Stop_And_Backup_DB
-
-    chattr -i ${Default_Website_Dir}/.user.ini 2>/dev/null
-    echo "正在删除 LAMP 文件..."
-    Remove_Uninstall_Path /usr/local/apache
-    Remove_Uninstall_Path /usr/local/php
-    Remove_Uninstall_Path /usr/local/zend
-    # phpMyAdmin 及模板缓存位于网站根目录之外。
-    Remove_Uninstall_Path /usr/local/phpmyadmin /usr/local/phpmyadmin.bak.*
-    Remove_Uninstall_Path /var/lib/phpmyadmin
-
-    Run_Uninstall_Step "删除数据库程序与配置" Remove_DB_Files
-    Run_Uninstall_Step "删除多版本 PHP" Remove_Multiple_PHP
-    Run_Uninstall_Step "卸载 acme.sh" Remove_Acme
-    Run_Uninstall_Step "清理备份定时任务" Remove_Backup_Schedule
-    Run_Uninstall_Step "清理巡检定时任务" Remove_Health_Schedule
-    Run_Uninstall_Step "清理日志切割定时任务" Remove_Cutlogs_Schedule
-    Run_Uninstall_Step "取消应用托管" Remove_App_Hosting
-    Run_Uninstall_Step "清理权限校验钩子" Remove_Perm_Hooks
-
-    Remove_Uninstall_Path /etc/my.cnf
-    Remove_Uninstall_Path /etc/init.d/httpd
-    Remove_Uninstall_Path /bin/lnmp
-    Remove_Uninstall_Path /bin/lnmp-backup
-    Remove_Uninstall_Path /bin/lnmp-tgnotice
-    Remove_Uninstall_Path /bin/lnmp-phpmyadmin
-    Remove_Uninstall_Path /bin/lnmp-perm
-    Remove_Uninstall_Path /bin/lnmp-health
-    Remove_Uninstall_Path /bin/lnmp-sqlguard
-    Remove_Uninstall_Path /bin/lnmp-fw
-    Remove_Uninstall_Path /bin/lnmp-cutlogs
-    Remove_Uninstall_Path /etc/profile.d/lnmp-tgnotice.sh
-    Run_Uninstall_Step "清理 /etc/lnmp" Remove_Lnmp_Conf_Dir
-    Run_Uninstall_Step "清理防火墙规则" Firewall_Purge
-    Notice_Addons_Residue
-
-    local -a residue=()
-    mapfile -t residue < <(Common_Uninstall_Targets)
-    residue+=(
-        /usr/local/apache
-        /etc/init.d/httpd
-        /etc/systemd/system/httpd.service
-    )
-    Check_Uninstall_Residue "${residue[@]}"
-    Report_Uninstall_Result LAMP
+    [ -n "${LNMP_Preserve_Dir:-}" ] && Echo_Yellow "虚拟主机配置、证书与 acme.sh 工作目录已保留在 ${LNMP_Preserve_Dir}。"
+    Report_Uninstall_Result "${label}"
 }
 
 # 卸载会停服务、搬数据库并删除程序与配置，确认必须来自真实终端且输入完整栈名。
@@ -554,7 +462,7 @@ inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
         Sleep_Sec 3
         Confirm_Uninstall lnmp || exit 1
-        Uninstall_LNMP || exit 1
+        Uninstall_Stack lnmp || exit 1
     ;;
     2|[lL][nN][mM][pP][aA])
         echo "即将卸载 LNMPA。"
@@ -593,7 +501,7 @@ inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
         Sleep_Sec 3
         Confirm_Uninstall lnmpa || exit 1
-        Uninstall_LNMPA || exit 1
+        Uninstall_Stack lnmpa || exit 1
     ;;
     3|[lL][aA][mM][pP])
         echo "即将卸载 LAMP。"
@@ -630,7 +538,7 @@ inet lnmp 防火墙表、/etc/nftables.d/lnmp.nft 与 lnmp-nftables.service
 EOF
         Sleep_Sec 3
         Confirm_Uninstall lamp || exit 1
-        Uninstall_LAMP || exit 1
+        Uninstall_Stack lamp || exit 1
     ;;
     *)
 

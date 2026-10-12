@@ -5,14 +5,19 @@
 # 用法：bash t/shellcheck.sh
 #   SHELLCHECK=/path/to/shellcheck 可指定二进制位置。
 #
-# 未安装 shellcheck 时跳过并返回 0，避免 t/lint.sh 在没装的机器上整体不可用。
+# 未安装 shellcheck 视为环境失败，返回 2。
+# 本地临时跳过需显式设置 LNMP_SHELLCHECK_OPTIONAL=1，发布与 CI 不得设置。
 
 cd "$(dirname "$0")/.." || exit 1
 
 SC="${SHELLCHECK:-shellcheck}"
 if ! command -v "${SC}" >/dev/null 2>&1; then
-    echo "跳过：未找到 shellcheck，安装后重跑（Debian/Ubuntu: apt-get install shellcheck）。"
-    exit 0
+    if [ "${LNMP_SHELLCHECK_OPTIONAL:-}" = "1" ]; then
+        echo "跳过：未找到 shellcheck，LNMP_SHELLCHECK_OPTIONAL=1 已允许跳过。"
+        exit 0
+    fi
+    echo "失败：未找到 shellcheck（Debian/Ubuntu: apt-get install shellcheck）。"
+    exit 2
 fi
 
 # 排除的规则及原因：

@@ -531,6 +531,7 @@ check_misc()
         pecl_propose PHPRedis_Ver      "${PHPRedis_Ver}"      redis     'redis-'
         pecl_propose PHPIgbinary_Ver   "${PHPIgbinary_Ver}"   igbinary  'igbinary-' "必须先于 phpredis 编译"
         pecl_propose PHPSwoole_Ver     "${PHPSwoole_Ver}"     swoole    'swoole-'
+        pecl_propose PHPZstd_Ver       "${PHPZstd_Ver}"       zstd      'zstd-'
         pecl_propose PHPNewApcu_Ver    "${PHPNewApcu_Ver}"    apcu      'apcu-'
         pecl_propose Imagick_Ver       "${Imagick_Ver}"       imagick   'imagick-'
         pecl_propose PHP8Memcached_Ver "${PHP8Memcached_Ver}" memcached 'memcached-'

@@ -38,7 +38,7 @@ Libunwind_Ver='libunwind-1.8.3'
 Nginx_Ver='nginx-1.30.5'
 Nghttp2_Ver='nghttp2-1.70.0'
 
-# --- OpenResty（与 nginx 官方版互斥，见 include/openresty.sh）---
+# --- OpenResty（与 nginx 官方版互斥，见 include/mod/openresty.sh）---
 #
 # 此版本号仅用于源码编译；apt/yum 安装使用上游仓库当前版本。
 #
@@ -111,6 +111,13 @@ PHPMemcache_Ver='memcache-3.0.8'
 PHP7Memcache_Ver='memcache-4.0.5.2'
 PHP8Memcache_Ver='memcache-8.2'
 
+# --- Node.js ---
+# 官方二进制按主版本并存；固定到具体补丁版，校验值写入 src/checksums.sha256。
+Nodejs_Majors='22 24'
+Nodejs_Default_Major='24'
+Nodejs_22_Ver='22.23.3'
+Nodejs_24_Ver='24.21.0'
+
 # --- PHP 扩展 ---
 PHPOldApcu_Ver='apcu-4.0.11'
 PHPNewApcu_Ver='apcu-5.1.28'
@@ -120,3 +127,5 @@ PHPSwoole_Ver='swoole-6.2.3'
 # igbinary：phpredis 的序列化后端，必须先于 phpredis 编译。
 # 3.2.17 目前只有 RC，故取最后一个正式版；PHP 8.5 兼容由 src/patch/igbinary-3.2.16-php85.patch 提供。
 PHPIgbinary_Ver='igbinary-3.2.16'
+# zstd：使用包内自带的 libzstd 编译，不依赖系统库。
+PHPZstd_Ver='zstd-0.18.0'

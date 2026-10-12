@@ -3,103 +3,32 @@
 # 各扩展由 lnmp.conf 的 Enable_PHP_Default_* 开关控制，默认全开。
 # 单个扩展安装失败时告警但不中止整个 LNMP 安装，
 # 并在结束时汇总未完成项，便于单独重试。
-# 编译顺序有一处硬约束：igbinary 必须在 phpredis 之前，
-# 因为 phpredis 的 --enable-redis-igbinary 需要 igbinary 的头文件。
+# 编译与安装由 include/mod/php_ext.sh 完成，本文件只负责选择与汇总。
 
 PHP_Default_Ext_Failed=''
 
-# 获取当前 PHP 的扩展目录。
-PHP_Ext_Dir()
-{
-    ${PHP_Path}/bin/php-config --extension-dir 2>/dev/null
-}
-
-# Build_Pecl_Ext <包名带版本> <生成的.so名> <conf.d文件名> [额外configure参数...]
-# PECL 扩展使用统一的安装流程：
-#   下载 → 校验 → 解包 → phpize → configure → make install → 写 conf.d
-# 最后核对 .so 真的生成了才写 ini，否则 PHP 启动会因加载不到扩展而告警。
-Build_Pecl_Ext()
-{
-    local pkg="$1" so="$2" ini="$3"; shift 3
-    local ext_dir patch_file="${cur_dir}/src/patch/${pkg}-php85.patch"
-
-    Echo_Blue "[+] 正在安装 PHP 扩展 ${pkg}... "
-    cd "${cur_dir}/src" || return 1
-
-    Download_Files https://pecl.php.net/get/${pkg}.tgz ${pkg}.tgz
-    if [ ! -s "${cur_dir}/src/${pkg}.tgz" ]; then
-        Echo_Red "${pkg} 下载失败，跳过"
-        printf -v PHP_Default_Ext_Failed '%s %s(下载失败)' \
-            "${PHP_Default_Ext_Failed}" "${pkg}"
-        return 1
-    fi
-    Require_File "${pkg}.tgz" "pecl ${pkg}"
-
-    Clean_Src_Dir "${pkg}"
-    Tar_Cd ${pkg}.tgz ${pkg}
-
-    # 上游尚未发布正式版的 PHP 8.5 兼容修正，补丁按 <包名>-php85.patch 命名。
-    if [ -s "${patch_file}" ] && \
-       ! patch -p1 --forward --no-backup-if-mismatch < "${patch_file}"; then
-        cd "${cur_dir}/src" || return 1
-        Clean_Src_Dir "${pkg}"
-        Echo_Red "${pkg} 打补丁失败，跳过"
-        printf -v PHP_Default_Ext_Failed '%s %s(补丁失败)' \
-            "${PHP_Default_Ext_Failed}" "${pkg}"
-        return 1
-    fi
-
-    ${PHP_Path}/bin/phpize
-    ./configure --with-php-config=${PHP_Path}/bin/php-config "$@"
-    # 构建失败时扩展目录可能残留旧 .so，不能按产物存在判定成功。
-    if ! Make_Install; then
-        cd "${cur_dir}/src" || return 1
-        Clean_Src_Dir "${pkg}"
-        Echo_Red "${pkg} 编译失败，跳过"
-        printf -v PHP_Default_Ext_Failed '%s %s(编译失败)' \
-            "${PHP_Default_Ext_Failed}" "${pkg}"
-        return 1
-    fi
-
-    cd "${cur_dir}/src" || return 1
-    Clean_Src_Dir "${pkg}"
-
-    ext_dir=$(PHP_Ext_Dir)
-    if [ -s "${ext_dir}/${so}" ]; then
-        cat >${PHP_Path}/conf.d/${ini}<<EOF
-extension = "${so}"
-EOF
-        Echo_Green "${pkg} 安装成功"
-        return 0
-    else
-        Echo_Red "${pkg} 编译失败：${ext_dir}/${so} 未生成"
-        printf -v PHP_Default_Ext_Failed '%s %s(编译失败)' \
-            "${PHP_Default_Ext_Failed}" "${pkg}"
-        return 1
-    fi
-}
-
-# 写入 PHP_Path 下的 OPcache 配置，主版本、多版本、升级与 addons 共用。
+# Enable_Opcache_Config <PHP 前缀> [内存 MB]：写入 OPcache 配置，主版本、多版本、升级与 addons 共用。
+# 内存值由调用方按调优结果传入，为空时取 128。
 # 8.4 及以下为共享扩展，需 zend_extension 加载；8.5 起静态编入，无 opcache.so。
 # JIT 不写入：8.0~8.3 默认 jit_buffer_size=0，8.4 起默认 jit=disable。
 Enable_Opcache_Config()
 {
-    local ext_dir load='' opcache_mb=128 interned=32 ini="${PHP_Path}/conf.d/004-opcache.ini"
-    ext_dir=$(PHP_Ext_Dir)
-    Tune_Plan && opcache_mb="${Tune_Opcache_MB}"
+    local prefix="$1" opcache_mb="${2:-128}" ext_dir load='' interned=32 ini
+    ini="${prefix}/conf.d/004-opcache.ini"
+    ext_dir=$("${prefix}/bin/php-config" --extension-dir 2>/dev/null)
     # interned strings 缓冲占用 memory_consumption，小内存档减半。
     [ "${opcache_mb}" -lt 128 ] && interned=16
 
     if [ -n "${ext_dir}" ] && [ -s "${ext_dir}/opcache.so" ]; then
         load="zend_extension = \"${ext_dir}/opcache.so\""
-    elif ! "${PHP_Path}/bin/php" -n -m 2>/dev/null | grep -qx 'Zend OPcache'; then
-        Echo_Red "${PHP_Path} 未包含 OPcache，跳过（opcache.so 不存在且未静态编入）"
+    elif ! "${prefix}/bin/php" -n -m 2>/dev/null | grep -qx 'Zend OPcache'; then
+        Echo_Red "${prefix} 未包含 OPcache，跳过（opcache.so 不存在且未静态编入）"
         printf -v PHP_Default_Ext_Failed '%s opcache(未编译)' \
             "${PHP_Default_Ext_Failed}"
         return 1
     fi
 
-    mkdir -p "${PHP_Path}/conf.d" || return 1
+    mkdir -p "${prefix}/conf.d" || return 1
     if ! { echo '[Zend Opcache]'
            [ -z "${load}" ] || printf '%s\n' "${load}"
            cat <<EOF
@@ -122,54 +51,48 @@ EOF
     return 0
 }
 
-# 安装配置中启用的默认扩展；调用时 /usr/local/php 已完成安装。
+# 输出配置中启用的默认编译扩展，顺序即安装顺序：
+# igbinary 必须在 phpredis 之前，phpredis 的 --enable-redis-igbinary 需要它的头文件。
+Default_Ext_List()
+{
+    [ "${Enable_PHP_Default_Igbinary}" = 'y' ] && echo igbinary
+    [ "${Enable_PHP_Default_Redis}" = 'y' ] && echo redis
+    [ "${Enable_PHP_Default_Imagick}" = 'y' ] && echo imagick
+    [ "${Enable_PHP_Default_Zstd}" = 'y' ] && echo zstd
+    return 0
+}
+
+# Install_PHP_Default_Ext <PHP 前缀> [OPcache 内存 MB]：安装配置中启用的默认扩展。
+# 单个扩展失败只告警并记入 PHP_Default_Ext_Failed，不中止安装。
 Install_PHP_Default_Ext()
 {
-    PHP_Path='/usr/local/php'
+    local prefix="${1:-/usr/local/php}" opcache_mb="${2:-}" ext reason
 
-    if [ ! -s "${PHP_Path}/bin/php-config" ]; then
-        Echo_Red "未找到 ${PHP_Path}/bin/php-config，跳过默认扩展安装。"
+    if [ ! -s "${prefix}/bin/php-config" ]; then
+        Echo_Red "未找到 ${prefix}/bin/php-config，跳过默认扩展安装。"
         return 1
     fi
 
-    mkdir -p ${PHP_Path}/conf.d
+    mkdir -p "${prefix}/conf.d"
 
     if [ "${Enable_PHP_Default_Opcache}" = 'y' ]; then
-        Enable_Opcache_Config
+        Enable_Opcache_Config "${prefix}" "${opcache_mb}"
     fi
 
-    # phpredis 编译 igbinary 支持前需要先安装对应头文件。
-    if [ "${Enable_PHP_Default_Igbinary}" = 'y' ]; then
-        Build_Pecl_Ext "${PHPIgbinary_Ver}" igbinary.so 020-igbinary.ini
-    fi
-
-    if [ "${Enable_PHP_Default_Redis}" = 'y' ]; then
-        if [ -s "$(PHP_Ext_Dir)/igbinary.so" ]; then
-            # igbinary 可用时启用更紧凑的 Redis 序列化支持。
-            Build_Pecl_Ext "${PHPRedis_Ver}" redis.so 021-redis.ini --enable-redis-igbinary
-        else
-            Build_Pecl_Ext "${PHPRedis_Ver}" redis.so 021-redis.ini
+    for ext in $(Default_Ext_List); do
+        reason=''
+        if ! PHPExt_Install "${prefix}" "${ext}" reason; then
+            printf -v PHP_Default_Ext_Failed '%s %s(%s)' \
+                "${PHP_Default_Ext_Failed}" "${ext}" "${reason:-安装失败}"
         fi
-    fi
-
-    if [ "${Enable_PHP_Default_Imagick}" = 'y' ]; then
-        Echo_Blue "[+] 正在安装 ImageMagick（编译较慢，约数分钟）... "
-        Build_ImageMagick_Lib
-        if [ -s /usr/local/imagemagick/bin/convert ] || [ -s /usr/local/imagemagick/bin/magick ]; then
-            Build_Pecl_Ext "${Imagick_Ver}" imagick.so 008-imagick.ini --with-imagick=/usr/local/imagemagick
-        else
-            Echo_Red "ImageMagick 库编译失败，跳过 imagick 扩展"
-            printf -v PHP_Default_Ext_Failed '%s ImageMagick(库编译失败)' \
-            "${PHP_Default_Ext_Failed}"
-        fi
-    fi
+    done
 
     # fileinfo 在 PHP configure 阶段决定，此处仅核对最终加载状态。
     if [ "${Enable_PHP_Fileinfo}" = 'y' ]; then
-        if ! ${PHP_Path}/bin/php -m 2>/dev/null | grep -qi '^fileinfo$'; then
+        if ! "${prefix}/bin/php" -m 2>/dev/null | grep -qi '^fileinfo$'; then
             Echo_Red "fileinfo 未编入 PHP（检查 lnmp.conf 的 Enable_PHP_Fileinfo 是否在编译前就是 y）"
             printf -v PHP_Default_Ext_Failed '%s fileinfo(未编入)' \
-            "${PHP_Default_Ext_Failed}"
+                "${PHP_Default_Ext_Failed}"
         fi
     fi
 
@@ -182,6 +105,6 @@ Install_PHP_Default_Ext()
     fi
 
     Echo_Blue "当前已加载的 PHP 扩展："
-    ${PHP_Path}/bin/php -m 2>/dev/null | tr '\n' ' '
+    "${prefix}/bin/php" -m 2>/dev/null | tr '\n' ' '
     echo
 }

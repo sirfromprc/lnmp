@@ -19,6 +19,8 @@ Add_Firewall_Rules()
     fi
     Firewall_Allow tcp 80
     Firewall_Allow tcp 443
+    # Nginx 的 HTTP/3 走 UDP 443。
+    [ -x /usr/local/nginx/sbin/nginx ] && Firewall_Allow udp 443
     Firewall_Allow_ICMP
     # 数据库端口拒绝外部新建连接，本机经回环接口访问不受影响。
     Firewall_Block tcp "${DB_Port}"
@@ -71,6 +73,117 @@ Detect_Installed_LNMP_Command_Stack()
     fi
 }
 
+# Deploy_LNMP_Command_Group <栈> <目标目录>
+# 管理命令成组部署：全部产物先在目标目录内的暂存目录组装并通过 bash -n，
+# 嵌入同一构建 ID，备份现有文件后逐个 rename 换入，再核对构建 ID。
+# 任一环节失败，已换入的文件按备份恢复。
+# 返回：0 成功；1 失败且目标已保持部署前状态；2 失败且恢复未完成，暂存目录保留。
+Deploy_LNMP_Command_Group()
+{
+    local stack=$1 bindir=$2
+    local -a names=(lnmp lnmp-backup lnmp-tgnotice lnmp-phpmyadmin lnmp-perm \
+                    lnmp-health lnmp-sqlguard lnmp-fw lnmp-cutlogs)
+    local -a srcs=("conf/${stack}" tools/lnmp-backup.sh tools/lnmp-tgnotice.sh \
+                   tools/lnmp-phpmyadmin.sh tools/lnmp-perm.sh tools/lnmp-health.sh \
+                   tools/lnmp-sqlguard.sh tools/lnmp-fw.sh tools/cut_nginx_logs.sh)
+    local i name stage build_id swapped=0 failed='' restore_rc=0
+
+    if [ -z "${bindir}" ] || [ ! -d "${bindir}" ]; then
+        Echo_Red "安装管理命令失败：目标目录不存在：${bindir}"
+        return 1
+    fi
+    for i in "${!names[@]}"; do
+        if [ ! -s "${cur_dir}/${srcs[i]}" ]; then
+            Echo_Red "安装管理命令失败：缺少 ${cur_dir}/${srcs[i]}"
+            return 1
+        fi
+    done
+
+    # 暂存目录与目标同一文件系统，换入为 rename。上次中断留下的暂存目录先清理。
+    rm -rf "${bindir}"/.lnmp-deploy.* 2>/dev/null
+    stage=$(mktemp -d "${bindir}/.lnmp-deploy.XXXXXXXX") || {
+        Echo_Red "安装管理命令失败：无法在 ${bindir} 创建暂存目录。"
+        return 1
+    }
+    mkdir "${stage}/new" "${stage}/old" || { rm -rf "${stage}"; return 1; }
+
+    bash "${cur_dir}/include/rt/cli_assemble.sh" "${cur_dir}" "${stack}" > "${stage}/new/lnmp" || failed='组装'
+    # 工具中的服务运行部分加载行替换为文件内容，部署产物不依赖源码目录。
+    for i in "${!names[@]}"; do
+        [ -n "${failed}" ] && break
+        [ "${i}" -eq 0 ] && continue
+        bash "${cur_dir}/include/rt/cli_assemble.sh" "${cur_dir}" "${srcs[i]}" > "${stage}/new/${names[i]}" \
+            || failed="组装 ${names[i]}"
+    done
+    for name in "${names[@]}"; do
+        [ -n "${failed}" ] && break
+        if [ ! -s "${stage}/new/${name}" ] || ! bash -n "${stage}/new/${name}" 2>/dev/null; then
+            failed="语法检查 ${name}"
+        fi
+    done
+
+    if [ -z "${failed}" ]; then
+        build_id=$(for name in "${names[@]}"; do cat "${stage}/new/${name}"; done \
+            | { sha256sum 2>/dev/null || cksum; } | awk '{print substr($1, 1, 16)}')
+        for name in "${names[@]}"; do
+            printf '\n# LNMP-BUILD-ID: %s\n' "${build_id}" >> "${stage}/new/${name}" \
+                && chmod 755 "${stage}/new/${name}" || failed="写入构建 ID ${name}"
+        done
+    fi
+
+    for name in "${names[@]}"; do
+        [ -n "${failed}" ] && break
+        if [ -e "${bindir}/${name}" ] && ! \cp -p "${bindir}/${name}" "${stage}/old/${name}"; then
+            failed="备份 ${name}"
+        fi
+    done
+
+    for name in "${names[@]}"; do
+        [ -n "${failed}" ] && break
+        if ! mv -f -T "${stage}/new/${name}" "${bindir}/${name}"; then
+            failed="换入 ${name}"
+            break
+        fi
+        swapped=$((swapped + 1))
+    done
+
+    if [ -z "${failed}" ]; then
+        declare -F Deploy_Test_Hook >/dev/null 2>&1 && Deploy_Test_Hook "${bindir}"
+        for name in "${names[@]}"; do
+            if [ ! -x "${bindir}/${name}" ] \
+               || ! grep -qx "# LNMP-BUILD-ID: ${build_id}" "${bindir}/${name}"; then
+                failed="核对构建 ID ${name}"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "${failed}" ]; then
+        rm -rf "${stage}"
+        return 0
+    fi
+
+    Echo_Red "安装管理命令失败（${failed}），正在恢复部署前的文件。"
+    for ((i = 0; i < swapped; i++)); do
+        name=${names[i]}
+        if [ -f "${stage}/old/${name}" ]; then
+            if ! \cp -p "${stage}/old/${name}" "${bindir}/.lnmp-restore.${name}" \
+               || ! mv -f -T "${bindir}/.lnmp-restore.${name}" "${bindir}/${name}"; then
+                Echo_Red "恢复 ${bindir}/${name} 失败，备份保留在 ${stage}/old。"
+                restore_rc=1
+            fi
+        elif ! rm -f "${bindir}/${name}"; then
+            Echo_Red "删除未部署前不存在的 ${bindir}/${name} 失败。"
+            restore_rc=1
+        fi
+    done
+    if [ "${restore_rc}" -ne 0 ]; then
+        return 2
+    fi
+    rm -rf "${stage}"
+    return 1
+}
+
 Install_Current_LNMP_Command()
 {
     local fallback=${1:-lnmp} installed_stack
@@ -83,7 +196,7 @@ Install_Current_LNMP_Command()
 # 管理命令依赖配套工具，需同步安装以保证各子命令可用。
 Install_LNMP_Command()
 {
-    local stack=$1 source target
+    local stack=$1
 
     case "${stack}" in lnmp|lnmpa|lamp) ;; *)
         Echo_Red "未知管理脚本类型：${stack}"
@@ -91,25 +204,7 @@ Install_LNMP_Command()
         ;;
     esac
 
-    for source in \
-        "${cur_dir}/conf/${stack}:/bin/lnmp" \
-        "${cur_dir}/tools/lnmp-backup.sh:/bin/lnmp-backup" \
-        "${cur_dir}/tools/lnmp-tgnotice.sh:/bin/lnmp-tgnotice" \
-        "${cur_dir}/tools/lnmp-phpmyadmin.sh:/bin/lnmp-phpmyadmin" \
-        "${cur_dir}/tools/lnmp-perm.sh:/bin/lnmp-perm" \
-        "${cur_dir}/tools/lnmp-health.sh:/bin/lnmp-health" \
-        "${cur_dir}/tools/lnmp-sqlguard.sh:/bin/lnmp-sqlguard" \
-        "${cur_dir}/tools/lnmp-fw.sh:/bin/lnmp-fw" \
-        "${cur_dir}/tools/cut_nginx_logs.sh:/bin/lnmp-cutlogs"
-    do
-        target=${source#*:}
-        source=${source%%:*}
-        if [ ! -s "${source}" ] || ! \cp "${source}" "${target}" || \
-           ! chmod 755 "${target}" || [ ! -x "${target}" ]; then
-            Echo_Red "安装管理命令失败：${source} -> ${target}"
-            return 1
-        fi
-    done
+    Deploy_LNMP_Command_Group "${stack}" /bin || return $?
 
     # 保证从 /bin 或 /usr/bin 调用时使用同一份管理命令。
     Sync_LNMP_Command_Alias || return 1
@@ -155,12 +250,10 @@ Install_Perm_Diagnose_Unit()
     local dst="/etc/systemd/system/lnmp-perm-diagnose@.service"
 
     [ -d /etc/systemd/system ] || return 0
-    [ -s "${src}" ] || { Echo_Red "缺少 ${src}"; return 1; }
-    if ! \cp "${src}" "${dst}" || ! chmod 644 "${dst}"; then
+    if ! Svc_Install_Unit "${src}" "${dst}"; then
         Echo_Red "安装权限诊断单元失败：${dst}"
         return 1
     fi
-    command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
     return 0
 }
 
@@ -171,12 +264,10 @@ Install_App_Unit_Tpl()
     local dst="/etc/systemd/system/lnmp-app@.service"
 
     [ -d /etc/systemd/system ] || return 0
-    [ -s "${src}" ] || { Echo_Red "缺少 ${src}"; return 1; }
-    if ! \cp "${src}" "${dst}" || ! chmod 644 "${dst}"; then
+    if ! Svc_Install_Unit "${src}" "${dst}"; then
         Echo_Red "安装应用托管单元失败：${dst}"
         return 1
     fi
-    command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
     return 0
 }
 
@@ -202,6 +293,8 @@ Install_Health_Timer()
 # Web 服务 reload 或 graceful 重开日志，因此含任一 Web 服务的入口都调用。
 Install_Cutlogs_Timer()
 {
+    local service timer
+
     [ -d /etc/systemd/system ] || return 0
     command -v systemctl >/dev/null 2>&1 || return 0
     if [ ! -x /bin/lnmp-cutlogs ]; then
@@ -209,16 +302,13 @@ Install_Cutlogs_Timer()
         return 0
     fi
 
-    cat > /etc/systemd/system/lnmp-cutlogs.service <<'EOF' || return 0
-[Unit]
+    service='[Unit]
 Description=LNMP nginx log rotation
 
 [Service]
 Type=oneshot
-ExecStart=/bin/lnmp-cutlogs
-EOF
-    cat > /etc/systemd/system/lnmp-cutlogs.timer <<'EOF' || return 0
-[Unit]
+ExecStart=/bin/lnmp-cutlogs'
+    timer='[Unit]
 Description=Daily LNMP nginx log rotation
 
 [Timer]
@@ -227,12 +317,9 @@ Persistent=true
 AccuracySec=1min
 
 [Install]
-WantedBy=timers.target
-EOF
-    chmod 644 /etc/systemd/system/lnmp-cutlogs.service \
-              /etc/systemd/system/lnmp-cutlogs.timer
-    systemctl daemon-reload >/dev/null 2>&1
-    if ! systemctl enable --now lnmp-cutlogs.timer >/dev/null 2>&1; then
+WantedBy=timers.target'
+    if ! Svc_Install_Timer /etc/systemd/system/lnmp-cutlogs.service \
+            /etc/systemd/system/lnmp-cutlogs.timer "${service}" "${timer}"; then
         Echo_Yellow "启用日志切割定时任务失败，可稍后执行 systemctl enable --now lnmp-cutlogs.timer 重试。"
     fi
     return 0
@@ -253,19 +340,6 @@ PROFILE_EOF
     chmod 644 /etc/profile.d/lnmp-tgnotice.sh
 }
 
-# 服务是否真的在运行。判定后端与管理命令一致：有 systemd unit 时以 unit
-# 状态为准，否则回落到 init 脚本的 status。
-Service_Running()
-{
-    local service="$1"
-
-    if Use_Systemd_Unit "${service}"; then
-        systemctl is-active --quiet "${service}.service"
-    else
-        [ -x "/etc/init.d/${service}" ] && "/etc/init.d/${service}" status >/dev/null 2>&1
-    fi
-}
-
 # 设为开机启动并启动服务，再确认服务真的处于运行状态。
 # 启动命令返回成功不代表进程还活着：端口被占、动态库缺失、运行期配置错误
 # 都会让服务在启动后立刻退出。
@@ -283,7 +357,7 @@ Start_And_Verify()
     fi
     # unit 带 Restart= 时状态会短暂停在 activating，重试到 15 秒再判失败。
     while [ ${i} -lt 15 ]; do
-        Service_Running "${service}" && return 0
+        Svc_Running "${service}" && return 0
         sleep 1
         i=$((i + 1))
     done
@@ -302,10 +376,6 @@ Add_LNMP_Startup()
     Start_And_Verify nginx || rc=1
     Startup_DB || rc=1
     Start_And_Verify php-fpm || rc=1
-    if [ "${PHP_Branch}" = "5.2" ]; then
-        sed -i 's#/usr/local/php/var/run/php-fpm.pid#/usr/local/php/logs/php-fpm.pid#' /bin/lnmp
-        Sync_LNMP_Command_Alias || return 1
-    fi
     # 定时任务装不上不影响已装好的服务，不改变本函数的返回码。
     Install_Health_Timer
     Install_Cutlogs_Timer
@@ -331,6 +401,7 @@ Add_LNMPA_Startup()
     Set_Tools_Permission || return 1
     Start_And_Verify nginx || rc=1
     Startup_DB || rc=1
+    [ "$(PHP_Detect_Sapi lnmpa)" = fpm ] && { Start_And_Verify php-fpm || rc=1; }
     Start_And_Verify httpd || rc=1
     Install_Health_Timer
     Install_Cutlogs_Timer
@@ -345,6 +416,7 @@ Add_LAMP_Startup()
     echo "正在设置开机启动并启动 LAMP..."
     Install_LNMP_Command lamp || return 1
     Set_Tools_Permission || return 1
+    [ "$(PHP_Detect_Sapi lamp)" = fpm ] && { Start_And_Verify php-fpm || rc=1; }
     Start_And_Verify httpd || rc=1
     Startup_DB || rc=1
     Install_Health_Timer
@@ -401,12 +473,79 @@ Probe_DB_Select1()
 [client]
 user=root
 password='$(SQL_Escape "${DB_Root_Password}")'
-socket=$(Get_Actual_DB_Socket)
+socket=$(Db_Socket)
 EOF
     "${bin}" --defaults-file="${opt}" -e "SELECT 1;" >/dev/null 2>&1
     rc=$?
     rm -f "${opt}"
     return ${rc}
+}
+
+# _Probe_Install_Reload <栈>：配置测试后重载该栈的 Web 服务。
+_Probe_Install_Reload()
+{
+    case "$1" in
+    lnmp|lnmpa)
+        /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1 && StartOrStop reload nginx >/dev/null 2>&1 || return 1
+        ;;
+    esac
+    case "$1" in
+    lnmpa|lamp)
+        /usr/local/apache/bin/httpd -t >/dev/null 2>&1 && StartOrStop reload httpd >/dev/null 2>&1 || return 1
+        ;;
+    esac
+    return 0
+}
+
+# Probe_Install_PHP <栈>：安装收尾经本机 80 端口实际请求主 PHP。默认站点按设计不执行任意 PHP，
+# 因此临时加入只响应随机 .invalid 域名的探测站点，PHP 处理沿用站点的 enable-php.conf、
+# proxy-pass-php.conf 或 Apache 全局处理器；目录建在默认站点下的隐藏目录，满足兜底 open_basedir。
+# 验收后删除探测配置与目录并重载。0 通过；1 未通过。
+Probe_Install_PHP()
+{
+    local stack=$1 name host dir ngx='' apa='' port=80 want rc i
+
+    name="lnmp_probe_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+    host="${name//_/-}.invalid"
+    want=$(/usr/local/php/bin/php-config --version 2>/dev/null)
+    dir=$(mktemp -d "${Default_Website_Dir}/.lnmp-probe.XXXXXX") || return 1
+    chmod 755 "${dir}"
+    case "${stack}" in
+    lnmp)  ngx="/usr/local/nginx/conf/vhost/${name}.conf" ;;
+    lnmpa) ngx="/usr/local/nginx/conf/vhost/${name}.conf"; apa="/usr/local/apache/conf/vhost/${name}.conf"; port=88 ;;
+    lamp)  apa="/usr/local/apache/conf/vhost/${name}.conf" ;;
+    *) rm -rf -- "${dir}"; return 1 ;;
+    esac
+    if [ -n "${ngx}" ]; then
+        printf 'server {\n    listen 80;\n    server_name %s;\n    root %s;\n    access_log off;\n    include %s;\n}\n' \
+            "${host}" "${dir}" "$([ "${stack}" = lnmpa ] && echo proxy-pass-php.conf || echo enable-php.conf)" > "${ngx}" || rc=1
+    fi
+    if [ -n "${apa}" ]; then
+        printf '<VirtualHost *:%s>\nServerName %s\nDocumentRoot "%s"\n<Directory "%s">\n    AllowOverride None\n    Require all granted\n</Directory>\n</VirtualHost>\n' \
+            "${port}" "${host}" "${dir}" "${dir}" > "${apa}" || rc=1
+    fi
+    if [ -z "${rc}" ] && _Probe_Install_Reload "${stack}"; then
+        # reload 后旧工作进程可能仍在处理连接，未到达探测站点时重试。
+        for i in 1 2 3 4 5; do
+            Web_Probe php "${host}" 80 "${dir}" "${want}"
+            rc=$?
+            [ "${rc}" -eq 5 ] || break
+            sleep 1
+        done
+    else
+        Echo_Red "错误：PHP 请求验收所需的临时探测站点无法写入或未通过配置测试。"
+        rc=1
+    fi
+    rm -f -- ${ngx:+"${ngx}"} ${apa:+"${apa}"}
+    rm -rf -- "${dir}"
+    _Probe_Install_Reload "${stack}" || Echo_Red "删除临时探测站点后重载失败，请执行 lnmp reload。"
+    case "${rc}" in
+    0) Echo_Green "$(Web_Probe_Report 0 php "本机 Web 入口")"; return 0 ;;
+    1) return 1 ;;
+    7|8) Web_Probe_Report "${rc}" php "本机 Web 入口"; return 0 ;;
+    esac
+    Echo_Red "错误：$(Web_Probe_Report "${rc}" php "本机 Web 入口" "${want}")"
+    return 1
 }
 
 Check_Nginx_Files()
@@ -424,7 +563,7 @@ Check_Nginx_Files()
         return 1
     fi
     # 离线语法检查通过也可能因端口被占用等运行期问题起不来，因此确认服务在跑。
-    if ! Service_Running nginx; then
+    if ! Svc_Running nginx; then
         Echo_Red "错误：Nginx 未在运行，执行 systemctl status nginx.service 查看详情。"
         return 1
     fi
@@ -464,7 +603,7 @@ Check_DB_Files()
     MySQL_Bin="${db_client}"
 
     # 客户端和配置齐全不代表服务起得来，因此确认服务在跑并能执行一次查询。
-    if ! Service_Running "${DB_Service}"; then
+    if ! Svc_Running "${DB_Service}"; then
         Echo_Red "错误：${db_name} 未在运行，执行 systemctl status ${DB_Service}.service 查看详情。"
         return 1
     fi
@@ -481,12 +620,12 @@ Check_DB_Files()
 Check_PHP_Files()
 {
     isPHP=""
-    if [ "${Stack}" = "lnmp" ]; then
+    if [ "$(PHP_Detect_Sapi "${Stack}")" = fpm ]; then
         if [[ ! -s /usr/local/php/sbin/php-fpm || ! -s /usr/local/php/etc/php.ini || ! -s /usr/local/php/bin/php ]]; then
             Echo_Red "错误：PHP 安装失败。"
             return 1
         fi
-        if ! Service_Running php-fpm; then
+        if ! Svc_Running php-fpm; then
             Echo_Red "错误：PHP-FPM 未在运行，执行 systemctl status php-fpm.service 查看详情。"
             return 1
         fi
@@ -512,8 +651,17 @@ Check_PHP_Files()
 Check_Apache_Files()
 {
     isApache=""
-    if [[ ! -s /usr/local/apache/bin/httpd || ! -s /usr/local/apache/modules/${PHP_Apache_Module} || ! -s /usr/local/apache/conf/httpd.conf ]]; then
+    if [[ ! -s /usr/local/apache/bin/httpd || ! -s /usr/local/apache/conf/httpd.conf ]]; then
         Echo_Red "错误：Apache 安装失败。"
+        return 1
+    fi
+    if [ "$(PHP_Detect_Sapi "${Stack}")" = fpm ]; then
+        if [ ! -s /usr/local/apache/modules/mod_proxy_fcgi.so ] || [ ! -s /usr/local/apache/modules/mod_mpm_event.so ]; then
+            Echo_Red "错误：Apache 缺少 mod_proxy_fcgi 或 mod_mpm_event，PHP 请求无法交给 PHP-FPM。"
+            return 1
+        fi
+    elif [ ! -s "/usr/local/apache/modules/${PHP_Apache_Module}" ]; then
+        Echo_Red "错误：Apache 安装失败（缺少 ${PHP_Apache_Module}）。"
         return 1
     fi
     if ! /usr/local/apache/bin/httpd -t >/dev/null 2>&1; then
@@ -523,7 +671,7 @@ Check_Apache_Files()
     if ! Check_Apache_MPM_For_ModPHP; then
         return 1
     fi
-    if ! Service_Running httpd; then
+    if ! Svc_Running httpd; then
         Echo_Red "错误：Apache 未在运行，执行 systemctl status httpd.service 查看详情。"
         return 1
     fi
@@ -556,13 +704,6 @@ Clean_DB_Src_Dir()
     return 0
 }
 
-Clean_PHP_Src_Dir()
-{
-    echo "正在清理 PHP 源码目录..."
-    [ -n "${Php_Ver}" ] && rm -rf "${cur_dir}/src/${Php_Ver}"
-    return 0
-}
-
 Clean_Web_Src_Dir()
 {
     echo "正在清理 Web 服务器源码目录..."
@@ -574,14 +715,6 @@ Clean_Web_Src_Dir()
     elif [ "${Stack}" = "lamp" ]; then
         [ -n "${Apache_Ver}" ] && rm -rf "${cur_dir}/src/${Apache_Ver}"
     fi
-
-    # 版本变量为空时路径退化为 ${cur_dir}/src，-d 判断反而成立，
-    # 因此每项都先判非空。
-    local item
-    for item in "${Openssl_New_Ver}" "${Pcre_Ver}" "${LuaNginxModule}" \
-        "${NgxDevelKit}" "${NgxFancyIndex_Ver}"; do
-        [ -n "${item}" ] && [ -d "${cur_dir}/src/${item}" ] && rm -rf "${cur_dir}/src/${item}"
-    done
     return 0
 }
 
@@ -732,6 +865,10 @@ Check_LNMP_Install()
     Check_Nginx_Files
     Check_DB_Files
     Check_PHP_Files
+    # 组件各自正常后，再经 Web 入口实际执行一次 PHP。
+    if [[ "${isNginx}" = "ok" && "${isDB}" = "ok" && "${isPHP}" = "ok" ]] && ! Probe_Install_PHP lnmp; then
+        isPHP=""
+    fi
     if [[ "${isNginx}" = "ok" && "${isDB}" = "ok" && "${isPHP}" = "ok" ]]; then
         Print_Sucess_Info
         # 组件齐全后仍需分别检查防火墙和数据库初始化，两项均通过才返回成功。
@@ -751,6 +888,10 @@ Check_LNMPA_Install()
     Check_DB_Files
     Check_PHP_Files
     Check_Apache_Files
+    # 组件各自正常后，再经 Web 入口实际执行一次 PHP。
+    if [[ "${isNginx}" = "ok" && "${isDB}" = "ok" && "${isPHP}" = "ok" && "${isApache}" = "ok" ]] && ! Probe_Install_PHP lnmpa; then
+        isPHP=""
+    fi
     if [[ "${isNginx}" = "ok" && "${isDB}" = "ok" && "${isPHP}" = "ok" && "${isApache}" = "ok" ]]; then
         Print_Sucess_Info
         local rc=0
@@ -768,6 +909,10 @@ Check_LAMP_Install()
     Check_Apache_Files
     Check_DB_Files
     Check_PHP_Files
+    # 组件各自正常后，再经 Web 入口实际执行一次 PHP。
+    if [[ "${isApache}" = "ok" && "${isDB}" = "ok" && "${isPHP}" = "ok" ]] && ! Probe_Install_PHP lamp; then
+        isPHP=""
+    fi
     if [[ "${isApache}" = "ok" && "${isDB}" = "ok" && "${isPHP}" = "ok" ]]; then
         Print_Sucess_Info
         local rc=0

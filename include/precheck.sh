@@ -172,7 +172,7 @@ Precheck_Ports()
 }
 
 # 收集本次安装真正要下载的地址并逐个探测（Download_Head_OK 在 HEAD 被拒时回退 Range GET）。
-# 地址列表复用 Check_Download 与 DB_Download_Files，避免在预检里另存一份 URL；
+# 地址列表复用 Check_Download 与各模块的 Sources，避免在预检里另存一份 URL；
 # 同一文件登记主备地址，任一可用即算可下载。
 Precheck_Download_Urls()
 {

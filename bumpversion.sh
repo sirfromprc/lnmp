@@ -51,6 +51,10 @@ fi
 
 . "${cur_dir}/include/main.sh"
 . "${cur_dir}/include/end.sh"
+. "${cur_dir}/include/lock.sh"
+
+# 与安装、升级、卸载互斥，避免同步管理命令时其它任务正在读取或改写它们。
+Lock_Acquire "bumpversion.sh ${Stack}" || exit 2
 
 echo "同步 ${Stack} 管理命令（源码目录：${cur_dir}）..."
 Install_LNMP_Command "${Stack}" || exit 1
