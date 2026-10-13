@@ -3931,7 +3931,7 @@ bash addons.sh                    # 不带参数进菜单，编号与上面的�
 - `bz2` — bzip2 压缩解压
 - `sodium` — libsodium 现代加密库，自动装 `libsodium-dev`
 - `imap` — **已移除安装**，只保留卸载。依赖的 UW c-client 已停止维护，Debian 13 软件源不再提供；
-  PHP 8.4 起源码包不含 `ext/imap`。`install imap`（或菜单 12）打印原因并返回 1；
+  PHP 8.4 起源码包不含 `ext/imap`，PECL imap（1.0.3）同样依赖 c-client 编译。`install imap`（或菜单 12）打印原因并返回 1；
   `lnmp.conf` 不再有 `Enable_PHP_Imap`，环境变量设为 `y` 时安装摘要提示已忽略
 - `swoole` — 常驻内存的异步协程运行时，从 PECL 编译。WordPress 用不到
 - `nodejs` — Node.js 官方二进制，按主版本装到 `/usr/local/nodejs/<主版本>/`，见 [4.5](#45-托管-node--go-应用进程)

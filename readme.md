@@ -422,5 +422,5 @@ FTP 账号操作依赖已安装的 Pure-FTPd。Telegram 通知需要真实 Bot T
 ## 5. 文档索引
 
 - [HowtoGuides.md](docs/HowtoGuides.md)：主要安装、部署、日常运维、备份恢复和故障排查手册。
-- [changelogs.md](docs/changelogs.md)：功能修改与验证摘要。
+- [changelog.md](docs/changelog.md)：功能修改与验证摘要。
 - [SecurityCheck.md](docs/SecurityCheck.md)：安全检查范围和结果说明。

@@ -1,17 +1,36 @@
-# 每次推送 / PR 的快速静态检查。
+# 推送 / PR 涉及脚本、配置或校验材料时的快速静态检查。
 #
 # 分工：
-#   ci.yml          静态检查，几十秒，每次推送都跑
+#   ci.yml          静态检查，几十秒，代码相关的推送才跑
 #   build-test.yml  真编译，几十分钟，只在升级 PR 和发布前跑
 #
 # consistency 检查用于发现版本、映射和校验清单之间的跨文件不一致。
 
 name: CI
 
+# 仅文档、许可证或其它工作流变更时不触发；后出现的规则覆盖前面的规则。
 on:
   push:
     branches: [ main, master ]
+    paths:
+      - '**'
+      - '!**.md'
+      - '!docs/**'
+      - '!License'
+      - '!.gitignore'
+      - '!.gitattributes'
+      - '!.github/workflows/**'
+      - '.github/workflows/ci.yml'
   pull_request:
+    paths:
+      - '**'
+      - '!**.md'
+      - '!docs/**'
+      - '!License'
+      - '!.gitignore'
+      - '!.gitattributes'
+      - '!.github/workflows/**'
+      - '.github/workflows/ci.yml'
   workflow_dispatch:
   # release.yml 以此作为发布前的静态检查。
   workflow_call:
