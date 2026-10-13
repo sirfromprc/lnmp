@@ -16,7 +16,7 @@
 
 组件版本有两条线，互不覆盖：
 
-- **主分支**（按产品版本命名，如 `v3.0.3.000`）的组件版本由维护者手工确认，
+- **主分支**（按产品版本命名，如 `v3.0.3`）的组件版本由维护者手工确认，
   自动升级不会改动它。在主分支上改源码不会覆盖已经升级过的版本号。
 - **`auto-<日期>` 分支**由上游版本检查每月从当时的主分支重建，等于「重建时的主分支源码 + 最新组件版本」。
   它不合并回主分支，只保留日期最新的一个。
@@ -158,17 +158,17 @@ t/probe_urls.sh      t/gen_checksums.sh   t/test_profile.sh
 
 ## 发布
 
-产品版本取自 `include/product.sh` 的 `LNMP_Ver`（格式 `MAJOR.MINOR.PATCH.BUILD`），
+产品版本取自 `include/product.sh` 的 `LNMP_Ver`（格式 `MAJOR.MINOR.PATCH`），
 由 `t/product_version.sh` 提取，工作流内不写死；分支叫什么名字不参与取值。
 升版只改 `include/product.sh` 一处，工作流、tag 和包名都会跟着变。
 
 每月自动发布产出两个包，同属一个 Release；手动运行和推送 tag 只产出主分支包：
 
 ```text
-tag         v3.0.3.000-20260908                每次发布唯一
-Release     LNMP v3.0.3.000 (20260908)
-压缩包      lnmp-v3.0.3.000.tar.gz             主分支，不含自动升级
-            lnmp-v3.0.3.000-20260908.tar.gz    本轮升级分支，含自动升级（仅每月自动发布）
+tag         v3.0.3-20260908                每次发布唯一
+Release     LNMP v3.0.3 (20260908)
+压缩包      lnmp-v3.0.3.tar.gz             主分支，不含自动升级
+            lnmp-v3.0.3-20260908.tar.gz    本轮升级分支，含自动升级（仅每月自动发布）
 ```
 
 升级包只在上游版本检查推送升级分支后由其调用 `release.yml` 打出，`auto_branch`
@@ -214,8 +214,8 @@ tag 触发时会核对 tag 前缀与源码里的产品版本，不符即中止�
 
 ```bash
 sha256sum -c SHA256SUMS
-gh attestation verify lnmp-v3.0.3.000.tar.gz --repo <owner>/<repo>
-gh attestation verify lnmp-v3.0.3.000-YYYYMMDD.tar.gz --repo <owner>/<repo>
+gh attestation verify lnmp-v3.0.3.tar.gz --repo <owner>/<repo>
+gh attestation verify lnmp-v3.0.3-YYYYMMDD.tar.gz --repo <owner>/<repo>
 ```
 
 GPG 分离签名是可选项。仓库配置了 `GPG_PRIVATE_KEY` 和 `GPG_PASSPHRASE` 后，
@@ -268,11 +268,11 @@ bash t/product_version.sh          # 产品版本，两处不一致时报错
 打包和发布说明可以脱离 Actions 单独跑，用于确认包内容和说明措辞：
 
 ```bash
-bash t/pack.sh . lnmp-v3.0.3.000 /tmp/dist
-tar -tzf /tmp/dist/lnmp-v3.0.3.000.tar.gz | head
+bash t/pack.sh . lnmp-v3.0.3 /tmp/dist
+tar -tzf /tmp/dist/lnmp-v3.0.3.tar.gz | head
 
-PRODUCT=v3.0.3.000 STAMP=20260908 REPO=<owner>/<repo> LEVEL=full \
-BASE_DIR=. BASE_PKG=lnmp-v3.0.3.000 bash t/release_notes.sh
+PRODUCT=v3.0.3 STAMP=20260908 REPO=<owner>/<repo> LEVEL=full \
+BASE_DIR=. BASE_PKG=lnmp-v3.0.3 bash t/release_notes.sh
 ```
 
 分支清理可以先看不删：

@@ -121,11 +121,11 @@ APT_LOCK_TIMEOUT=900 bash install.sh lnmp
 
 从项目 Release 页面下载固定版本，并使用同一 Release 公布的 SHA-256 核对文件。
 项目尚未在源码中固定公开仓库地址，因此本文不提供可能指向错误仓库的占位下载命令。
-假设已将验证通过的压缩包保存为 `/root/lnmp-v3.0.3.000.tar.gz`：
+假设已将验证通过的压缩包保存为 `/root/lnmp-v3.0.3.tar.gz`：
 
 ```bash
 install -d -m 700 /root/lnmp-src
-tar -xzf /root/lnmp-v3.0.3.000.tar.gz -C /root/lnmp-src --strip-components=1
+tar -xzf /root/lnmp-v3.0.3.tar.gz -C /root/lnmp-src --strip-components=1
 cd /root/lnmp-src
 chmod +x install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
 bash -n install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
@@ -1314,7 +1314,7 @@ printf 'app.example.com\n\n\nn\nn\nn\nn\n\n' | VHOST_TYPE=static lnmp vhost add
 > 注意：**装了多个 PHP 版本时会多一步**（LNMP 在 IPv6 之后、LNMPA/LAMP 在网站目录之后
 > 问选哪个 PHP），序列要相应调整。单版本时不会问。
 >
-> 注意：**3.0.2.007 起静态与反代站点不再问伪静态**。此前 `VHOST_PHP=n` 的序列在目录之后
+> 注意：**3.0.3 起静态与反代站点不再问伪静态**。此前 `VHOST_PHP=n` 的序列在目录之后
 > 有一行伪静态答案，升级后要删掉这一行，否则后面的答案整体前移一位。PHP 站点的序列不变。
 >
 > 注意：**反向代理的后端地址不占一行**，非交互读 `VHOST_PROXY`，给了不合法的值直接以非 0
@@ -1574,7 +1574,7 @@ OpenResty 的路径是 `/usr/local/openresty/nginx/conf/`。`./upgrade.sh nginx`
 
 静态资源缓存（图片 `expires 30d`，`.js`、`.css` `expires 12h`）两条正则在 PHP 站点和
 静态站点默认启用，HTTP 与 HTTPS 一并生效；选了反代的站点不写这两条，静态请求全部交给
-后端。3.0.2.010 之前建的站点这两条是注释状态，需要时就地取消注释。手工把非反代站点改成
+后端。3.0.3 之前建的站点这两条是注释状态，需要时就地取消注释。手工把非反代站点改成
 整站反代时，删掉这两条，否则 js、css、图片会被拦在本地目录返回 404。
 
 隐藏文件拦截（`location ~ /\.`）**默认启用**，位置在 `include enable-php*.conf`
@@ -3125,7 +3125,7 @@ curl -sI https://example.com/ | grep -i alt-svc
 curl -sI --http3-only https://example.com/ | head -1      # 应为 HTTP/3 200
 ```
 
-**3.0.2.010 之前安装的服务器**：default.conf 没有 quic 监听，`ssl add` 只写 HTTP/2。在
+**3.0.3 之前安装的服务器**：default.conf 没有 quic 监听，`ssl add` 只写 HTTP/2。在
 `/usr/local/nginx/conf/vhost/default.conf` 含 `ssl_reject_handshake on;` 的 server 块里加：
 
 ```nginx
@@ -4018,6 +4018,7 @@ bash tools/denyhosts_removeip.sh "${BLOCKED_IP}"  # 解除 DenyHosts 误封，�
 bash tools/reset_mysql_root_password.sh           # 重置数据库 root 密码，见 9.7
 bash tools/remove_disable_function.sh             # 解除 PHP 禁用函数限制，见 9.8
 bash tools/remove_open_basedir_restriction.sh     # 解除站点 open_basedir 限制，见 9.9
+bash tools/convert_db_dump.sh mysql|mariadb <输入> <输出>   # MySQL 与 MariaDB 导出文件互转，见 8.4.1
 ```
 
 `tools/backup.sh` 与 `tools/check502.sh` 已废弃，保留仅为兼容存量 crontab，
@@ -4475,6 +4476,75 @@ lnmp database import example_db /root/example_db.sql.gz
 MariaDB 11.8 会在直接调用旧程序名时打印弃用提示。新版安装流程内部优先调用
 `mariadb`、`mariadb-dump`、`mariadb-admin` 等新名称，同时用包装器保留
 `mysql`、`mysqldump`、`mysqladmin` 等旧命令，因此原有运维脚本仍可继续使用。
+
+#### 8.4.1 MySQL 与 MariaDB 之间迁移数据库
+
+两种数据库的导出文件不能直接互导：MariaDB 11 导出的 `utf8mb4_uca1400_ai_ci` 在 MySQL 中不存在，
+MySQL 导出的 `SET @@GLOBAL.GTID_PURGED` 在 MariaDB 中报错。`tools/convert_db_dump.sh` 把导出文件
+改写为目标库可以导入的格式，只处理文件，不连接数据库。第一个参数为导入目标：
+
+```bash
+# 源服务器为 MariaDB，目标服务器为 MySQL
+lnmp database export example_db /root/example_db.sql.gz
+bash tools/convert_db_dump.sh mysql /root/example_db.sql.gz /root/example_db-mysql.sql.gz
+
+# 源服务器为 MySQL，目标服务器为 MariaDB
+bash tools/convert_db_dump.sh mariadb /root/example_db.sql.gz /root/example_db-mariadb.sql.gz
+
+# 目标服务器上建库建账号后导入
+lnmp database add
+lnmp database import example_db /root/example_db-mysql.sql.gz
+```
+
+成功时列出各项改写及次数，例如：
+
+```text
+已转换为 mysql 格式：/root/example_db-mysql.sql.gz
+  排序规则 utf8mb4_uca1400_ai_ci -> utf8mb4_0900_ai_ci：2 处
+  删除 MariaDB sandbox 注释行：1 处
+```
+
+改写只作用于 SQL 代码部分，字符串数据和普通注释不变，文章内容里出现的同名文本不会被替换。
+
+| 目标 | 改写内容 |
+|------|----------|
+| MySQL | `utf8mb4_uca1400_ai_ci`、`as_ci`、`as_cs`（含 `nopad_` 变体）改为 `utf8mb4_0900_*`；`utf8mb4_nopad_bin` 改为 `utf8mb4_0900_bin` |
+| MySQL | 删除首行 `/*M!999999\- enable the sandbox mode */` |
+| MySQL | Aria 表改为 InnoDB，去掉 `PAGE_CHECKSUM`、`TRANSACTIONAL`、`ROW_FORMAT=PAGE` |
+| MySQL | TEXT/BLOB 字面默认值改为 `DEFAULT ('...')`；函数默认值（如 `uuid()`、`curdate()`）加括号，`CURRENT_TIMESTAMP`、`NOW` 类不改 |
+| MySQL | `IGNORED` 索引改为 `INVISIBLE` |
+| MySQL | 触发器、存储程序的 `sql_mode` 去掉 `NO_AUTO_CREATE_USER`、`TIME_ROUND_FRACTIONAL` |
+| MariaDB | `utf8mb4_0900_ai_ci`、`as_ci`、`as_cs` 改为 `utf8mb4_uca1400_nopad_*`；`utf8mb4_0900_bin` 改为 `utf8mb4_nopad_bin` |
+| MariaDB | 删除 `SET @@GLOBAL.GTID_PURGED` 语句 |
+| MariaDB | 隐藏列 `/*!80023 INVISIBLE */` 改为 `INVISIBLE`，隐藏索引 `/*!80000 INVISIBLE */` 改为 `IGNORED` |
+| MariaDB | 其它 MySQL 8 版本注释（如 `DEFAULT ENCRYPTION`、`SRID`）改为普通注释 |
+| MariaDB | `sql_mode` 去掉 `TIME_TRUNCATE_FRACTIONAL` |
+
+0900 规则对应 MariaDB 的 `nopad` 规则，两者都不忽略尾随空格，唯一索引不会因转换产生重复。
+
+以下内容无法等价转换。文件含有任意一项时返回 1，列出起始行号，不生成输出文件：
+
+- 账号与授权语句（`CREATE USER`、`GRANT` 等）：两种数据库的口令插件不通用，在目标库用
+  `lnmp database add` 或 `lnmp database edit` 重新建账号、设口令。
+- `mysql` 系统库：只转换业务库，不转换 `--all-databases` 全库导出。
+- 目标库没有对应规则的排序规则：如 `utf8mb4_uca1400_ai_cs`、`utf8mb3_uca1400_*`、`utf8mb4_zh_0900_as_cs`
+  等语言专用规则，需在源库改为通用规则后重新导出。
+- MariaDB 的 SEQUENCE、系统版本表、UUID/INET4/INET6/VECTOR 列类型；MySQL 的函数索引。
+- 影响语义且目标库没有的 `sql_mode`，如 `SIMULTANEOUS_ASSIGNMENT`、`EMPTY_STRING_IS_NULL`、`ORACLE`。
+
+其它行为与限制：
+
+- 输入可为 `.sql` 或 `.sql.gz`，按内容判断；输出文件名以 `.gz` 结尾时压缩写出。
+- 输出文件已存在时不覆盖，返回 2；结果先写同目录临时文件再改名，权限 600。参数与读写错误返回 2。
+- 支持的目标为 MySQL 8.0、8.4 与 MariaDB 10.11 及以上。
+- 两种规则的 Unicode 排序算法版本不同（MariaDB 为 14.0.0，MySQL 为 9.0.0），个别字符的排序结果可能不同。
+- MariaDB 没有 SRID 列约束，转为 MariaDB 后列定义不再限制 SRID，坐标值自带的 SRID 保留。
+- 视图、触发器、存储程序的 `DEFINER` 原样保留，目标库没有该账号时先创建账号再导入。
+- 导入后在源库与目标库分别统计行数核对（`information_schema.tables` 的 `table_rows` 是估算值，不用于核对）：
+
+```bash
+mysql -N -e "select count(*) from example_db.wp_posts"
+```
 
 ### 8.5 备份
 
@@ -5792,7 +5862,7 @@ LAMP 的等价写法，加在 `/usr/local/apache/conf/vhost/shared/<域名>.conf
 > 注意：**Nginx 规则必须放在 `include enable-php.conf;` 之前。**
 > 正则 location 按出现顺序匹配，`enable-php.conf` 的 `location ~ [^/]\.php(/|$)` 能匹配
 > uploads 下的 `.php`，规则放在 server 块末尾或 `# 自定义配置` 区时不生效。按上面写法加到
-> `/usr/local/nginx/conf/vhost/<域名>.conf` 的该 include 之前。3.0.2.010 之前建的站点已带这两条。
+> `/usr/local/nginx/conf/vhost/<域名>.conf` 的该 include 之前。3.0.3 之前建的站点已带这两条。
 >
 > 规则只覆盖 `wp-content/uploads` 与 `wp-config*`，插件目录下的合法脚本不受影响。
 > 其它备份文件（`.sql`、`.zip`、整站打包）不要放在站点目录下，

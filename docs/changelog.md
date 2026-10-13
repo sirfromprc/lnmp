@@ -2,7 +2,7 @@
 
 归总修改及验证结论。
 
-## 3.0.3.000
+## 3.0.3
 
 ### 新增功能
 
@@ -13,6 +13,7 @@
 - 建站类型与预设：`lnmp vhost add` 先选 PHP、静态、反代，PHP 站点可选 WordPress、Laravel 预设；非交互变量 `VHOST_TYPE`、`VHOST_PRESET`。
 - PHP 默认扩展 zstd（开关 `Enable_PHP_Default_Zstd`，默认 `y`）；phpredis 支持 zstd 压缩。
 - Nginx HTTPS 站点默认启用 HTTP/3，安装期防火墙放行 UDP 443；OpenResty 源码编译按 OpenSSL 版本启用 http_v3。
+- MySQL 与 MariaDB 导出文件互相转换：`bash tools/convert_db_dump.sh mysql|mariadb <输入> <输出>`，改写排序规则、表选项、默认值写法等不兼容语法，数据内容不变；含账号授权等无法等价转换的内容时不生成输出。
 
 ### 行为变化
 
@@ -21,6 +22,7 @@
 - 站点模板删除 WordPress 上传目录 PHP 与 `wp-config*` 的拒绝规则（改为按 HowtoGuides 10.3 手工加入），PHP 与静态站点默认启用静态资源缓存。
 - 整栈 `lnmp start|stop|reload|restart` 中任一服务或附加 PHP 实例失败时返回 1。
 - `upgrade.sh M2M` 可用，`m2Y` 按无效选项处理。
+- 版本号、tag 与发布包名改为三段，如 `v3.0.3-<日期>`、`lnmp-v3.0.3.tar.gz`，四段格式的 tag 不再触发发布。
 - 发布包新增无版本号的 `lnmp.tar.gz`，固定下载地址为 `releases/latest/download/lnmp.tar.gz`；CI 镜像改为 Debian 13。
 
 ### 缺陷修复
@@ -37,7 +39,7 @@
 
 各项均有离线用例；Node.js、PM2、单站点启停、请求验收、建站预设、zstd、LNMPA/LAMP FPM 形态已在测试机实测。待实机复验：LNMP/LNMPA 整栈下的站点启停、HTTP/3 完整签发流程、mod_php 形态的 `upgrade.sh phpa`、arm64。
 
-## 3.0.2.000（2026-10-11）
+## 3.0.2（2026-10-11）
 
 ### 新增功能
 
@@ -74,7 +76,7 @@
 
 ### 行为变化
 
-- 产品版本采用四段格式，唯一来源 `include/product.sh`。
+- 产品版本唯一来源 `include/product.sh`，安装、升级、卸载入口与横幅从该文件取值。
 - PHP 扩展统一经扩展模块构建，产物可加载后才写 ini，失败恢复原有文件；`addons.sh uninstall` 只删除本包写入的文件。
 - `addons.sh install redis|memcached` 先装服务端，扩展失败时保留服务端并返回 1。
 

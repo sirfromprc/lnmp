@@ -10,7 +10,7 @@ LNMP 3.0.3 是一套面向 Linux 服务器的 Shell 安装与运维工具，支�
 主线验证环境是 Debian 13、Nginx、PHP 8.3、MySQL 8.4、phpMyAdmin、Redis 和
 WordPress。Apache 栈及其它发行版的支持边界见 [HowtoGuides.md](docs/HowtoGuides.md)。
 
-![Nginx / MySQL / PHP](conf/lnmp.gif)
+![Nginx / MySQL / PHP](docs/assets/lnmp.png)
 
 ## 目录
 
@@ -92,8 +92,8 @@ ss -lntup
 
 | 包 | 组件版本 | 适用情况 |
 | --- | --- | --- |
-| `lnmp-v3.0.3.000.tar.gz` | 维护者手工确认，**不含自动升级** | 默认选它 |
-| `lnmp-v3.0.3.000-<日期>.tar.gz` | 每月自动跟进上游，仅部分 Release 提供 | 需要更新的组件版本时 |
+| `lnmp-v3.0.3.tar.gz` | 维护者手工确认，**不含自动升级** | 默认选它 |
+| `lnmp-v3.0.3-<日期>.tar.gz` | 每月自动跟进上游，仅部分 Release 提供 | 需要更新的组件版本时 |
 
 不带日期的包另以 `lnmp.tar.gz` 发布（内容相同，计入 Release 的 `SHA256SUMS`），固定下载地址
 始终指向最新一次发布：
@@ -103,11 +103,11 @@ https://github.com/<owner>/<repo>/releases/latest/download/lnmp.tar.gz
 ```
 
 从项目 Release 页面下载固定版本并按页面公布的 SHA-256 核对。假设已将下载文件保存为
-`/root/lnmp-v3.0.3.000.tar.gz`：
+`/root/lnmp-v3.0.3.tar.gz`：
 
 ```bash
 install -d -m 700 /root/lnmp-src
-tar -xzf /root/lnmp-v3.0.3.000.tar.gz -C /root/lnmp-src --strip-components=1
+tar -xzf /root/lnmp-v3.0.3.tar.gz -C /root/lnmp-src --strip-components=1
 cd /root/lnmp-src
 chmod +x install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
 bash -n install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
@@ -255,6 +255,8 @@ lnmp database import example_db /root/example_db.sql.gz
 - `export` 生成单库 gzip 备份。
 - `import` 将 SQL 导入已存在的目标库，会改写数据，执行前应另做备份并核对文件来源。
 - `lnmp database del` 会删除数据库，仅在已验证备份后使用。
+- `bash tools/convert_db_dump.sh mysql|mariadb <输入> <输出>` 把导出文件转换为可导入 MySQL 或 MariaDB 的格式，
+  用于两种数据库之间迁移，见 `HowtoGuides.md` 第 8.4.1 节。
 
 ### 3.4 备份与恢复
 
