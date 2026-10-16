@@ -266,11 +266,16 @@ lnmp backup status
 lnmp backup run all
 lnmp backup list
 lnmp backup test
+lnmp backup remote-setup
 ```
 
 - `init` 生成 `/etc/lnmp/backup.conf` 并安装定时任务。
 - `run all` 立即执行数据库和网站备份。
 - `test` 将最新数据库备份导入临时库验证，不覆盖现有站点。
+- `remote-setup` 配置 SFTP 异地上传：生成专用密钥、核对备份机指纹、试连试写通过后才写入配置。
+- 备份机运行随包的 `tools/lnmp-backup-vault.sh`：创建 chroot 专用账号与 sshd 配置，定时把收到的批次
+  移出生产机可访问的范围并校验 `SHA256SUMS` 后归档，生产机密钥无法删除或改写已归档的备份。
+  步骤见 `HowtoGuides.md` 第 8.6 节。
 - `restore` 会覆盖目标数据库或网站文件，具体语法和恢复前检查见
   `HowtoGuides.md` 第 8.5 节。
 

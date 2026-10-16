@@ -3628,6 +3628,7 @@ lnmp backup list [db|web]              # 列出批次（配了异地上传则一
 lnmp backup restore db  <库名> [批次]
 lnmp backup restore web <域名> [批次]
 lnmp backup test                       # 试恢复：导入临时库校验后删除
+lnmp backup remote-setup               # 配置 SFTP 异地上传：生成密钥、核对指纹、试连后写入配置
 ```
 
 配置文件 `/etc/lnmp/backup.conf`（权限 600），日志 `/var/log/lnmp/backup.log`。
@@ -4679,7 +4680,7 @@ lnmp backup test                     # 试恢复验证：导入临时库校验�
 - 中途失败的批次不会留下空目录：全部产物都失败时（例如目标磁盘写满）
   批次目录会被删掉；部分成功时保留已产出的文件并标为不完整，
   同时跳过旧批次清理，已有的恢复点不受影响。
-- 异地上传默认关闭，开启方法和备份机侧的配置见 [8.6 异地备份（SFTP）](#86-异地备份sftp)。
+- 异地上传默认关闭，SFTP 方式执行 `lnmp backup remote-setup` 开启，备份机侧的配置见 [8.6 异地备份（SFTP）](#86-异地备份sftp)。
   上传先传到远端 `.incoming/<批次>/`，逐个核对大小无误后才改名到正式目录，
   最后才清理远端旧批次 —— 传输中断不会损失已有的恢复点。
 - 同一时刻只允许一个备份在跑（flock，没有 flock 的环境退回 mkdir 锁）。
@@ -4736,191 +4737,181 @@ tar czf /root/backup/wp-content-$(date +%F).tar.gz \
 
 [返回顶部](#top)
 
->建议第一次配置时按 8.6.4
-> 的顺序逐步确认，不要直接依赖定时任务 —— 出错多半出在备份机侧的
-> 权限与主机指纹上，逐步走一遍能立刻定位。
+异地上传默认关闭，需要一台独立的备份服务器。备份机运行随包的接收端守护
+`tools/lnmp-backup-vault.sh`，生产机执行 `lnmp backup remote-setup`，两侧各配置一次。
 
-本地备份在 `lnmp backup init` 之后就已经自动执行了。异地上传默认关闭，
-需要一台**独立的备份服务器**，并在两侧各配一次。
-
-本示例中备份服务器保存的备份文件所在路径为 `/srv/sftp/backupuser/backup`,请根据实际情况更改。
-
-整体结构：
+整体结构（默认路径）：
 
 ```
-生产机                                备份机
-/home/backup/                        /srv/sftp/backupuser/   ← chroot 根
-  db/<批次>/  ── SFTP ──────────────→   backup/
-  www/<批次>/                            db/<批次>/
-                                         www/<批次>/
-                                         .incoming/          ← 上传中转
+生产机                              备份机
+/home/backup/                       /srv/sftp/<账号>/              ← chroot 根，root 所有
+  db/<批次>/  ── SFTP ───────────→    backup/                      ← 生产机 Remote_Dir
+  www/<批次>/                           .incoming/                 ← 上传中转
+                                        db/<批次>/ www/<批次>/     ← 已提交，待归档
+                                        .vault-index               ← 归档索引
+                                    /srv/lnmp-archive/<账号>/      ← 归档，chroot 之外，root 所有
+                                      db/<批次>/ www/<批次>/
+                                      quarantine/                  ← 校验未通过的批次
 ```
 
-上传过程是：先传到 `.incoming/<批次>-<类型>/`，逐个核对文件大小，
-全部对上之后把整个目录 `rename` 到正式位置，最后才清理远端过期批次。
-所以传输中断不会损失已有的恢复点，也不会在正式目录里留下残缺文件。
+生产机先把批次传到 `.incoming/<批次>-<类型>/`，逐个核对文件大小，全部一致后改名到
+`db/` 或 `www/`。备份机 guard 每 15 分钟把已提交的批次移出 chroot，校验 `SHA256SUMS`
+后归档。归档后的批次生产机密钥无法读取、删除或改写，生产机被入侵时异地恢复点不受影响。
 
-#### 8.6.1 备份机：建账号和目录
+已按旧版文档手工配置的 SFTP 账号继续可用。改由守护管理时使用新账号名执行 setup；
+旧账号手工写的 `Match User` 段会被 setup 判为冲突。
 
-以下命令在**备份服务器**上执行。
+#### 8.6.1 备份机：建账号
+
+备份机需要 OpenSSH 服务端、`runuser`、`flock`、`sha256sum`（Debian、RHEL 系默认具备），以 root 执行。
+
+把发布包中的 `tools/lnmp-backup-vault.sh` 复制到备份机：
 
 ```bash
-# 专用账号，不给 shell
-id backupuser >/dev/null 2>&1 || useradd -m -d /home/backupuser -s /usr/sbin/nologin backupuser
-
-# chroot 根目录：必须 root 所有，且不能被组或其他人写，
-# 否则 sshd 会拒绝登录并在日志里报 "bad ownership or modes"
-mkdir -p /srv/sftp/backupuser
-chown root:root /srv/sftp/backupuser
-chmod 755 /srv/sftp/backupuser
-
-# chroot 内真正存备份的子目录，这个才属于备份账号
-mkdir -p /srv/sftp/backupuser/backup
-chown backupuser:backupuser /srv/sftp/backupuser/backup
-chmod 700 /srv/sftp/backupuser/backup
+scp tools/lnmp-backup-vault.sh root@备份机地址:/root/
 ```
 
-> chroot 根本身对该账号是只读的，这是 OpenSSH 的硬性要求。
-> 备份写在下面那个 `backup/` 子目录里，生产机配置中的
-> `Remote_Dir="backup"` 指的就是它（相对 chroot 根）。
-
-#### 8.6.2 备份机：限制这个账号只能做 SFTP
-
-**先备份配置**，再编辑 `/etc/ssh/sshd_config`。在**文件末尾**追加（`Match` 块必须放在最后，
-它之后的配置都属于这个块）：
-
-```
-Match User backupuser
-    ChrootDirectory /srv/sftp/backupuser
-    ForceCommand internal-sftp
-    AllowTcpForwarding no
-    X11Forwarding no
-    PermitTTY no
-```
-
-检查语法后重载。下面是 Debian/Ubuntu 的服务名；如果语法或 reload 失败，立即恢复备份：
+每台生产机使用一个独立账号，不要多台生产机共用。公钥可以先留空，生产机生成后再执行一次：
 
 ```bash
-# Debian/Ubuntu：
-sshd -t && systemctl reload ssh
-
-# EL（按需执行，不要和上一条同时执行）：
-# sshd -t && systemctl reload sshd
+bash /root/lnmp-backup-vault.sh setup backupuser
 ```
 
-`sshd -t` 没有输出就是通过了。**先别关掉当前的 SSH 会话**，
-另开一个连接确认登录正常，再关闭旧会话。
+setup 可重复执行，完成以下操作：
 
-#### 8.6.3 生产机：密钥与主机指纹
+- 创建无 shell、无口令的系统账号；同名账号已存在且不是本工具创建的，拒绝执行。
+- 建立 chroot 根 `/srv/sftp/<账号>/`（root 所有，755）、数据目录 `backup/`（账号所有，700）
+  与归档目录 `/srv/lnmp-archive/<账号>/`。
+- 在 `/etc/ssh/sshd_config` 末尾写入 `# BEGIN lnmp-backup-vault <账号>` 与 `# END` 标记的
+  `Match User` 块：chroot、`ForceCommand internal-sftp`、只允许公钥认证、禁止转发与 TTY，
+  公钥文件为 `/etc/ssh/lnmp-backup-vault/<账号>.keys`（root 所有，644，每个账号一把公钥，
+  前缀固定为 `restrict,command="internal-sftp"`）。写入前以 `sshd -t` 检查语法、以 `sshd -T`
+  核对该账号的生效配置，原文件备份为 `sshd_config.lnmp-bak.<时间>`，重载失败时恢复原文件。
+- 安装 `/usr/local/sbin/lnmp-backup-vault` 与 `lnmp-backup-vault.timer`；无 systemd 时写入
+  `/etc/cron.d/lnmp-backup-vault`。
+- 输出本机 SSH 主机指纹，供生产机核对。
 
-以下命令回到**生产服务器**上执行。
+以下情况 setup 返回 1，不修改 sshd 配置：
 
-**第一步，生成专用密钥。** 不要复用日常登录的密钥 —— 这把钥匙就放在被备份的
-这台机器上，一旦这台机器失陷，它能开的门越少越好：
+- 账号名不合法，或为 `root` 等系统账号；
+- `sshd_config` 或其 Include 文件中已有针对该账号的 `Match`；
+- chroot 路径上任一级目录不是 root 所有，或可被组、其他人写入；
+- 新配置未通过 `sshd -t`，或该账号的生效配置不是 chroot、`internal-sftp` 与公钥认证。
+
+sshd 设置了 `AllowUsers` 且不含该账号时只提示，需手工加入。
+
+> 修改 sshd 配置前保持一个已登录的 SSH 会话，setup 完成后另开连接确认登录正常，再关闭旧会话。
+
+#### 8.6.2 生产机：执行 remote-setup
 
 ```bash
-ssh-keygen -t ed25519 -N '' -f /root/.ssh/lnmp_backup
+lnmp backup remote-setup
 ```
 
-**第二步，把公钥装到备份机。** 先创建公钥文件路径
+依次询问备份机地址（域名或 IPv4）、SSH 端口、账号与远端数据目录（默认 `backup`，
+与备份机 `Data_Dir` 一致），然后：
+
+1. 生成专用密钥 `/root/.ssh/lnmp_backup`（ed25519，无口令，600），已存在则沿用。
+2. 显示需要在备份机执行的命令，含公钥：
+
+   ```text
+   bash lnmp-backup-vault.sh setup backupuser 'ssh-ed25519 AAAA...'
+   ```
+
+   在备份机执行后回到生产机按回车；输入 `q` 退出，配置不变。
+3. 用 `ssh-keyscan` 取得备份机主机公钥并显示指纹，与备份机 setup 输出的指纹逐字核对后输入 `y`。
+   指纹与 `/root/.ssh/lnmp_backup_known_hosts` 中的记录完全一致时不再询问；公钥不变、
+   仅地址或端口变化时直接更新记录；公钥变化时提示可能是中间人，并要求重新确认。
+4. 在 `.incoming/` 中上传并删除一个探测文件，验证登录、目录与写权限。
+5. 全部通过后改写 `/etc/lnmp/backup.conf` 中的 `Enable_Remote_Backup=1`、`Remote_Protocol="sftp"`、
+   `Remote_Host`、`Remote_Port`、`Remote_User`、`Remote_Dir`，原配置备份为 `backup.conf.bak.<时间>`。
+
+任一步失败、取消或输入 EOF 时返回 1，`backup.conf` 不变；已生成的密钥与已确认的指纹保留，
+重新执行即可。原来配置为 ftp 或 ftps 的，执行后改为 sftp，端口默认值从 21 改为 22。
+远端数据目录不是 `backup` 时，先在备份机配置中把 `Data_Dir` 改为相同值，再执行 setup。
+
+#### 8.6.3 验证
+
+生产机：
 
 ```bash
-mkdir -p /home/backupuser/.ssh/
-```
-
-用 `nano` 或其他方式把 `/root/.ssh/lnmp_backup.pub` 的内容加到备份机的
-`/home/backupuser/.ssh/authorized_keys`，并在前面加上限制前缀：
-
-```
-restrict,command="internal-sftp" ssh-ed25519 AAAAC3NzaC1...（你的公钥）
-```
-
-备份机上这两个权限必须对，否则公钥认证会被静默拒绝：
-
-```bash
-chown -R backupuser:backupuser /home/backupuser/.ssh
-chmod 700 /home/backupuser/.ssh
-chmod 600 /home/backupuser/.ssh/authorized_keys
-```
-
-> `authorized_keys` 放在 `/home/backupuser/` 而不是 chroot 里面，是因为
-> sshd 读它是在切进 chroot **之前**、以 root 身份读的。
-
-**第三步，固定并核对主机指纹。** 备份脚本用
-`StrictHostKeyChecking=yes`，遇到未知主机直接失败，不会像 `accept-new`
-那样在首次连接时盲信 —— 所以这一步必须做：
-
-```bash
-ssh-keyscan -p 22 备份机地址 > /root/.ssh/lnmp_backup_known_hosts
-ssh-keygen -lf /root/.ssh/lnmp_backup_known_hosts
-```
-
-记下输出的指纹，然后**到备份机本机上**（不要通过刚才那条网络连接）执行：
-
-```bash
-ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
-```
-
-两边的指纹逐字比对，对上了才算可信。对不上说明有中间人篡改，别继续。然后生产机上执行：
-
-```bash
-chmod 600 /root/.ssh/lnmp_backup /root/.ssh/lnmp_backup_known_hosts
-```
-
-#### 8.6.4 生产机：开启上传并验证
-
-编辑 `/etc/lnmp/backup.conf`（权限 600），改这几项：
-
-```text
-Enable_Remote_Backup=1
-Remote_Host="备份机地址"
-Remote_Port=22
-Remote_User="backupuser"
-Remote_Dir="backup"
-Remote_SSH_Key="/root/.ssh/lnmp_backup"
-Remote_Known_Hosts="/root/.ssh/lnmp_backup_known_hosts"
-```
-
-**按这个顺序验证，不要跳步**：
-
-```bash
-# 1. 先单独确认 SFTP 通道本身是通的
-sftp -i /root/.ssh/lnmp_backup -P 22 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/lnmp_backup_known_hosts backupuser@备份机地址
-# 进去之后执行 pwd 应显示 /，ls 能看到 backup 目录，然后 bye
-
-# 2. 完整跑一次备份（包含上传）
 lnmp backup run all
-echo "退出码：$?"       # 必须是 0
-
-# 3. 看本地和远端各有哪些批次
-lnmp backup list
-
-# 4. 验证备份真的能恢复
-lnmp backup test
+echo "退出码：$?"               # 必须为 0
+lnmp backup list                # 远端未归档批次，以及“备份机已归档 N 个，最新 <批次>”
 ```
 
-只有第 2 步退出码为 0、且第 3 步的「远端 db 批次」里能看到刚才的批次，
-这条路才算真的通了。之后 systemd timer 会每天自动执行同样的 `run`，
-库每天一份、网站按 `Web_Interval_Days` 的周期一份，都会自动上传。
+备份机：
 
 ```bash
-systemctl list-timers lnmp-backup.timer    # 确认下次触发时间
-journalctl -u lnmp-backup.service -n 50    # 看最近一次自动执行的输出
-tail -f /var/log/lnmp/backup.log           # 备份任务日志
+lnmp-backup-vault guard         # 立即归档，不等定时任务
+lnmp-backup-vault status        # 各账号已归档数、最新批次、待归档与隔离区
+lnmp-backup-vault list          # 已归档批次与大小
+systemctl list-timers lnmp-backup-vault.timer
+tail -f /var/log/lnmp-backup-vault.log
+```
+
+`lnmp backup list` 的远端部分逐个列出尚未归档的批次；已归档的批次按 guard 写回的
+`.vault-index` 汇总显示。
+
+#### 8.6.4 备份机：归档、校验与保留
+
+配置文件 `/etc/lnmp-backup-vault.conf`（root 所有，600）由 setup 生成，修改后下次 guard 生效：
+
+| 项 | 默认 | 说明 |
+|---|---|---|
+| `Chroot_Base` | `/srv/sftp` | chroot 根的上级目录，每个账号为 `<Chroot_Base>/<账号>` |
+| `Archive_Dir` | `/srv/lnmp-archive` | 归档目录，必须位于 chroot 之外 |
+| `Data_Dir` | `backup` | chroot 内的数据目录，对应生产机 `Remote_Dir` |
+| `Keep_Days_Db`、`Keep_Days_Web` | 30、90 | 归档保留天数 |
+| `Keep_Min` | 3 | 每类至少保留的最新批次数，生产机停止上传时归档不会被清空 |
+| `Incoming_Keep_Hours` | 48 | `.incoming` 中断上传的遗留超过该时长后删除 |
+| `Stale_Hours` | 48 | 超过该时长未收到新批次时 guard 返回 1，0 表示不检查 |
+| `Vault_Users` | — | setup 登记的账号 |
+
+`Chroot_Base`、`Archive_Dir`、`Data_Dir` 应在首次 setup 前确定：先按上表写好配置文件（600）再执行
+setup，或修改后对每个账号重新执行 setup。
+
+guard 对每个已提交的批次依次执行：
+
+1. 以该账号身份把批次移到 chroot 外的暂存目录，root 不在账号可写的路径中操作。
+2. 批次本身是符号链接或不是目录，或含符号链接、子目录、硬链接时，原样移入 `quarantine/`，
+   不读取内容，不修改属主与权限。
+3. 由 root 逐个复制为新文件。生产机仍打开着的文件句柄无法写入副本。
+4. 核对文件名、`SHA256SUMS` 与文件集合一致、`sha256sum -c` 通过后，改名到
+   `<Archive_Dir>/<账号>/<类型>/<批次>`；不通过移入 `quarantine/`。同名批次已归档时，新批次也移入
+   `quarantine/`，已归档的不覆盖。
+5. 按保留期清理归档，清理超时的 `.incoming` 遗留，写回 `.vault-index`。
+
+出现隔离批次、账号目录不完整或超过 `Stale_Hours` 未收到新批次时 guard 返回 1，
+`systemctl --failed` 中可见 `lnmp-backup-vault.service`。隔离区不自动清理，排查后手工删除。
+
+生产机的 `Keep_Days_Db`、`Keep_Days_Web` 只作用于本机与尚未归档的远端批次；
+归档后的保留期以备份机配置为准。
+
+从归档恢复：把批次目录复制回生产机的备份目录，再执行 `restore`：
+
+```bash
+# 备份机
+scp -r /srv/lnmp-archive/backupuser/db/20261016-033012 root@生产机地址:/home/backup/db/
+# 生产机
+lnmp backup restore db wpdb 20261016-033012
 ```
 
 #### 8.6.5 出错时对照排查
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `HOST KEY VERIFICATION FAILED` | 备份机主机密钥与记录的指纹不符 | **先查清楚原因**。备份机重装过就重新 keyscan 并带外核对；否则按中间人处理，不要直接覆盖 known_hosts |
-| `Permission denied (publickey)` | 公钥没装对，或备份机上 `.ssh`/`authorized_keys` 权限不对 | 检查 700 / 600，以及属主是不是 backupuser |
-| 登录就断开，日志报 `bad ownership or modes for chroot directory` | chroot 根不是 root 所有或被组/其他人可写 | `chown root:root` + `chmod 755` |
-| `远端缺少文件` 或 `远端文件大小不符` | 上传中断或备份机磁盘满 | 脚本已拒绝改名，正式目录没被污染。清理 `.incoming` 后重跑；先看备份机 `df -h` |
-| 远端改名失败 | 该账号在 chroot 内没有写权限 | 确认 `backup/` 子目录属主是 backupuser 且权限 700 |
-| `找不到数据库 option file` | `init` 时免密不可用且跳过了口令，或该文件被删 | 重跑 `lnmp backup init`，或手工建 `/etc/lnmp/backup-mysql.cnf`（600） |
-| `另一个备份任务正在运行` | 上一次还没跑完，或异常退出留下了锁 | 用 `lnmp backup status` 看上次执行时间；确认没有在跑的任务后删除 `/var/lock/lnmp-backup.lock*` |
-| 备份成功但没有自动执行 | timer 没启用 | `systemctl enable --now lnmp-backup.timer` |
+| remote-setup 提示无法取得主机公钥 | 地址、端口错误，或防火墙未放行 | 核对 SSH 端口，备份机放行生产机地址 |
+| remote-setup 提示公钥未生效 | 备份机未执行 setup，或账号名不一致 | 在备份机执行提示中的 setup 命令后重试 |
+| remote-setup 提示远端目录不存在 | `Remote_Dir` 与备份机 `Data_Dir` 不一致 | 两侧改为一致，重新执行 setup 与 remote-setup |
+| `HOST KEY VERIFICATION FAILED` | 备份机主机密钥与记录的指纹不符 | 先查明原因。备份机重装过就重新执行 remote-setup 并带外核对指纹；否则按中间人处理 |
+| setup 提示 chroot 路径权限不符 | 某级目录不是 root 所有，或可被组、其他人写入 | 修正该目录属主与权限，或改 `Chroot_Base` |
+| setup 提示已有 Match 配置 | sshd 配置中已有针对该账号的 `Match` | 删除手工写的段落，或换账号名 |
+| `远端缺少文件` 或 `远端文件大小不符` | 上传中断，或备份机磁盘满 | 正式目录不受影响，`.incoming` 遗留由 guard 按时清理；先查看备份机 `df -h` |
+| guard 报“校验未通过，已隔离” | 传输后内容被改动，或批次含非普通文件 | 查看 `quarantine/` 下对应目录与生产机日志，排查后手工删除 |
+| guard 报“生产机可能已停止上传” | 超过 `Stale_Hours` 未收到新批次 | 在生产机查看 `lnmp backup status` 与 `/var/log/lnmp/backup.log` |
+| `另一个备份任务正在运行` | 上一次未结束，或异常退出留下了锁 | `lnmp backup status` 查看上次执行时间；确认无运行中的任务后删除 `/var/lock/lnmp-backup.lock*` |
+| `找不到数据库 option file` | `init` 时免密不可用且跳过了口令，或该文件被删 | 重新执行 `lnmp backup init`，或手工建 `/etc/lnmp/backup-mysql.cnf`（600） |
 
 #### 8.6.6 只有 FTP 服务器可用时
 
@@ -5023,16 +5014,16 @@ lnmp backup test                 # 解密 + 校验 + 试恢复，退出码必须
 
 #### 8.6.8 关于远端校验的边界
 
-远端只做**逐个文件的大小核对**，不是内容校验。
+上传阶段只做**逐个文件的大小核对**：受限的 `internal-sftp` 账号不能在备份机上执行命令，
+生产机无法让远端计算 SHA-256。大小核对能发现传输截断与文件缺失，发现不了等长改写。
 
-受限的 `internal-sftp` 账号不能在备份机上执行命令，所以脚本没法让远端算
-SHA-256。大小核对能发现传输截断和文件缺失，发现不了内容被改写。
-内容级校验依赖每个批次里的 `SHA256SUMS`，在生产机本地做（`restore` 和
-`test` 都会先校验再动手）。
+备份机运行 `lnmp-backup-vault` 时，guard 在批次移出 chroot 后执行 `sha256sum -c`，
+内容不一致的批次进入隔离区。校验依据的 `SHA256SUMS` 由生产机生成：它能证明归档内容与
+生产机提交时一致，不能证明生产机提交的内容本身可信。生产机已被入侵后上传的批次，
+清单与内容都可能被同时伪造；此前已归档的批次不受影响。
 
-要做到远端内容校验，需要备份机侧配合，两个方向：在备份机上放一个定期
-`sha256sum -c SHA256SUMS` 的任务；或者改用允许执行受限命令的通道。
-这部分不属于本包能单独完成的范围。
+使用 ftp、ftps 或未运行守护的 SFTP 服务器时，远端仍只有大小核对，内容校验在生产机本地
+（`restore` 与 `test` 都会先校验再操作）。最终可恢复性以 `lnmp backup test` 试恢复与整站演练为准。
 
 ### 8.7 日志
 

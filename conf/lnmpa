@@ -1275,7 +1275,7 @@ case "${arg1}" in
         echo "用法：lnmp database export <数据库名> <文件.sql.gz>"
         echo "用法：lnmp database import <数据库名> <文件.sql.gz>"
         echo "用法：lnmp ftp {add|list|edit|del|show}"
-        echo "用法：lnmp backup {init|run|status|list|restore|test}"
+        echo "用法：lnmp backup {init|run|status|list|restore|test|remote-setup}"
         echo "用法：lnmp backup run [db|web|all] [域名...]"
         echo "用法：lnmp tgnotice {--init|--test|--status} | lnmp tgnotice \"文本\" [md]"
         echo "用法：lnmp perm {check|run|status|init|uninit}"

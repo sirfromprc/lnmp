@@ -13,6 +13,7 @@
 - 建站类型与预设：`lnmp vhost add` 先选 PHP、静态、反代，PHP 站点可选 WordPress、Laravel 预设；非交互变量 `VHOST_TYPE`、`VHOST_PRESET`。
 - PHP 默认扩展 zstd（开关 `Enable_PHP_Default_Zstd`，默认 `y`）；phpredis 支持 zstd 压缩。
 - Nginx HTTPS 站点默认启用 HTTP/3，安装期防火墙放行 UDP 443；OpenResty 源码编译按 OpenSSL 版本启用 http_v3。
+- 异地备份一键配置与备份机守护：生产机 `lnmp backup remote-setup` 生成专用密钥、核对备份机指纹、试连试写通过后才写入配置；备份机运行随包的 `tools/lnmp-backup-vault.sh setup <账号>` 创建 chroot 专用账号与 sshd 配置，定时把收到的批次移出生产机可访问的范围、校验 `SHA256SUMS` 后归档，生产机被入侵时无法删除或改写已归档的备份。
 - MySQL 与 MariaDB 导出文件互相转换：`bash tools/convert_db_dump.sh mysql|mariadb <输入> <输出>`，改写排序规则、表选项、默认值写法等不兼容语法，数据内容不变；含账号授权等无法等价转换的内容时不生成输出。
 
 ### 行为变化

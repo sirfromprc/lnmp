@@ -10,6 +10,7 @@
 #   lnmp backup list [db|web]        列出本地批次（配了远端则一并列远端）
 #   lnmp backup restore ...          从备份恢复
 #   lnmp backup test                 试恢复：把最新库备份导入临时库再删掉
+#   lnmp backup remote-setup         配置 SFTP 异地上传（密钥、指纹、试连）
 #
 # ---------------------------------------------------------------------------
 # 备份与恢复规则
@@ -746,6 +747,17 @@ List_Remote_Batches()
     printf '%s\n' "${out}" | tr -d '\r' | grep -v '^sftp>' | sed 's#.*/##; /^$/d'
 }
 
+# 备份机 lnmp-backup-vault 写回的归档索引，每行为“类型 批次”；文件不存在时输出为空。
+Remote_Vault_Index()
+{
+    local tmp
+    tmp=$(mktemp) || return 1
+    printf -- '-get %s/.vault-index %s\nbye\n' "${Remote_Dir}" "${tmp}" | Sftp_Run >/dev/null 2>&1
+    grep -E '^(db|www) [0-9]{8}-[0-9]{6}$' "${tmp}" 2>/dev/null
+    rm -f "${tmp}"
+    return 0
+}
+
 Cleanup_Local()
 {
     local type="$1" days="$2" b
@@ -1002,7 +1014,7 @@ Cmd_Status()
 
 Cmd_List()
 {
-    local what="${1:-all}" type b dir size remote mark
+    local what="${1:-all}" type b dir size remote mark index='' n
     Load_Conf || return 1
     for type in db www; do
         case "${what}" in db) [ "${type}" = "db" ] || continue ;; web) [ "${type}" = "www" ] || continue ;; esac
@@ -1021,6 +1033,7 @@ Cmd_List()
     # 防止定时任务将仅列出本地批次误判为完整成功。
     if [ "${Enable_Remote_Backup}" = "1" ]; then
         Check_Remote_Conf || return 1
+        [ "${Remote_Protocol}" = "sftp" ] && index=$(Remote_Vault_Index)
         for type in db www; do
             case "${what}" in db) [ "${type}" = "db" ] || continue ;; web) [ "${type}" = "www" ] || continue ;; esac
             Say "=== 远端 ${type} 批次 ==="
@@ -1029,6 +1042,10 @@ Cmd_List()
                 return 1
             fi
             printf '%s\n' "${remote}" | sed '/^$/d; s/^/  /'
+            # 备份机守护移走的批次只出现在归档索引中。
+            n=$(printf '%s\n' "${index}" | grep -c "^${type} ")
+            [ "${n}" -eq 0 ] || Say "  备份机已归档 ${n} 个，最新 $(printf '%s\n' "${index}" \
+                | awk -v t="${type}" '$1 == t { print $2 }' | sort | tail -n 1)"
         done
     fi
     return 0
@@ -1523,7 +1540,7 @@ Cmd_Init()
 
     Say "init 会扫描已有站点，生成备份配置、备份目录与定时任务。"
     Say "配置生成后位于：${Conf_File}，之后可按需修改备份计划等参数，改完直接生效。"
-    Say "异地上传默认关闭，需要时在配置文件中开启并填写远端主机与凭据。"
+    Say "异地上传默认关闭，SFTP 方式可执行 lnmp backup remote-setup 配置。"
     Say "使用 ftp/ftps 上传时，接收端需提供 FTP 服务（可用 pureftpd.sh 搭建），本机需有 curl。"
     Say ""
     printf '确认开始配置请输入 y，其它输入一律取消：'
@@ -1657,8 +1674,7 @@ Remote_Dir="backup"
 
 # 以下两项仅 sftp 使用。专用备份密钥，避免复用日常登录密钥。
 Remote_SSH_Key="/root/.ssh/lnmp_backup"
-# 预先固定并通过独立渠道核对主机指纹：
-#   ssh-keyscan -p 22 <主机> > /root/.ssh/lnmp_backup_known_hosts
+# 由 lnmp backup remote-setup 生成密钥并在核对后写入主机指纹。
 Remote_Known_Hosts="/root/.ssh/lnmp_backup_known_hosts"
 
 # 以下三项仅 ftp 和 ftps 使用。
@@ -1720,7 +1736,222 @@ Notice_Review_Conf()
     Say "  立即备份：lnmp backup run all"
     Say "  只备份一个站点：lnmp backup run <域名>"
     Say "  验证可恢复：lnmp backup test"
+    Say "  配置异地上传：lnmp backup remote-setup"
     Say ""
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# 子命令：remote-setup —— 配置 SFTP 异地上传
+#
+# 生成专用密钥，提示在备份机执行 lnmp-backup-vault setup，抓取并确认主机指纹，
+# 试连并试写通过后才改写配置；取消或任一步失败时 backup.conf 不变。
+# ---------------------------------------------------------------------------
+Ask_Reply=''
+
+# Ask_Valid <提示> <默认值> <正则> <错误说明>：结果写入 Ask_Reply；EOF 或连续三次无效返回 1。
+Ask_Valid()
+{
+    local tries=0
+    while [ "${tries}" -lt 3 ]; do
+        if [ -n "$2" ]; then printf '%s（默认 %s）：' "$1" "$2"; else printf '%s：' "$1"; fi
+        read -r Ask_Reply || { echo; Err "读取输入时遇到 EOF，配置未改动。"; return 1; }
+        [ -n "${Ask_Reply}" ] || Ask_Reply="$2"
+        printf '%s' "${Ask_Reply}" | grep -Eq "$3" && return 0
+        Err "$4"
+        tries=$((tries + 1))
+    done
+    Err "连续三次输入无效，配置未改动。"
+    return 1
+}
+
+Remote_Setup_Key()
+{
+    local key="${Remote_SSH_Key}"
+    if [ -f "${key}" ]; then
+        Check_Perm "${key}" || return 1
+        if [ ! -s "${key}.pub" ]; then
+            ssh-keygen -y -f "${key}" > "${key}.pub" || { Err "无法从 ${key} 导出公钥。"; return 1; }
+        fi
+        Say "沿用已有密钥：${key}"
+        return 0
+    fi
+    [ -d "${key%/*}" ] || { mkdir -p "${key%/*}" && chmod 700 "${key%/*}"; } || return 1
+    ssh-keygen -q -t ed25519 -N '' -C "lnmp-backup@$(hostname -s 2>/dev/null)" -f "${key}" \
+        || { Err "生成密钥失败：${key}"; return 1; }
+    chmod 600 "${key}"
+    Ok "已生成专用密钥：${key}"
+}
+
+# 指纹与已记录的一致时直接沿用；不同或首次记录时须人工确认，known_hosts 经同目录临时文件替换。
+Remote_Setup_Hostkey()
+{
+    local tmp ans old new
+    [ -d "${Remote_Known_Hosts%/*}" ] || { mkdir -p "${Remote_Known_Hosts%/*}" && chmod 700 "${Remote_Known_Hosts%/*}"; } || return 1
+    tmp=$(mktemp "${Remote_Known_Hosts%/*}/.lnmp_known_hosts.XXXXXXXX") || return 1
+    ssh-keyscan -T 10 -p "${Remote_Port}" "${Remote_Host}" 2>/dev/null | grep -v '^#' > "${tmp}"
+    if [ ! -s "${tmp}" ]; then
+        rm -f "${tmp}"
+        Err "无法从 ${Remote_Host}:${Remote_Port} 取得主机公钥，检查地址、端口与备份机防火墙。"
+        return 1
+    fi
+    if [ -s "${Remote_Known_Hosts}" ]; then
+        if [ "$(sort "${Remote_Known_Hosts}")" = "$(sort "${tmp}")" ]; then
+            rm -f "${tmp}"
+            Ok "主机公钥与 ${Remote_Known_Hosts} 中记录的一致。"
+            return 0
+        fi
+        # 公钥不变、仅地址或端口变化时更新记录，无需重新确认。
+        old=$(awk '{ print $2, $3 }' "${Remote_Known_Hosts}" | sort)
+        new=$(awk '{ print $2, $3 }' "${tmp}" | sort)
+        if [ "${old}" = "${new}" ]; then
+            chmod 600 "${tmp}" && mv -f "${tmp}" "${Remote_Known_Hosts}" || { rm -f "${tmp}"; return 1; }
+            Ok "主机公钥与已记录的一致，已按新地址或端口更新 ${Remote_Known_Hosts}。"
+            return 0
+        fi
+        Warn "主机公钥与 ${Remote_Known_Hosts} 中记录的不同。只有备份机重装或更换主机时才会这样，否则可能是中间人。"
+    fi
+    Say "备份机主机指纹："
+    ssh-keygen -l -f "${tmp}" | sed 's/^/  /'
+    Say "与备份机执行 lnmp-backup-vault setup 时显示的指纹逐字核对。"
+    printf '指纹一致？[y/N]：'
+    read -r ans || ans=''
+    case "${ans}" in
+        y|Y) : ;;
+        *) rm -f "${tmp}"; Say "已取消，配置未改动。"; return 1 ;;
+    esac
+    chmod 600 "${tmp}" && mv -f "${tmp}" "${Remote_Known_Hosts}" || { rm -f "${tmp}"; return 1; }
+    Ok "主机指纹已写入 ${Remote_Known_Hosts}"
+}
+
+# 在 .incoming 中上传并删除一个探测文件，同时验证登录、目录与写权限。
+Remote_Setup_Test()
+{
+    local probe name out rc
+    probe=$(mktemp) || return 1
+    printf 'lnmp-backup probe\n' > "${probe}"
+    name=".lnmp-probe-$$"
+    out=$(printf -- '-mkdir %s/.incoming\nput %s %s/.incoming/%s\nrm %s/.incoming/%s\nbye\n' \
+            "${Remote_Dir}" "${probe}" "${Remote_Dir}" "${name}" "${Remote_Dir}" "${name}" \
+            | Sftp_Run 2>&1); rc=$?
+    rm -f "${probe}"
+    [ "${rc}" -eq 0 ] && return 0
+    Err "试连或试写失败（sftp 退出码 ${rc}）："
+    printf '%s\n' "${out}" | grep -v '^sftp>' | tail -n 5 | sed 's/^/  /' >&2
+    case "${out}" in
+        *'Permission denied (publickey'*)
+            Err "公钥未生效：确认已在备份机执行上面的 setup 命令，且账号名一致。" ;;
+        *'Connection refused'*|*'timed out'*|*'No route'*)
+            Err "连接失败：检查地址、端口与备份机防火墙。" ;;
+        *'Host key verification failed'*)
+            Err "主机指纹校验失败：重新执行 remote-setup 并核对指纹。" ;;
+        *'No such file'*|*'not found'*)
+            Err "远端目录 ${Remote_Dir} 不存在，应与备份机配置的 Data_Dir 一致。" ;;
+        *'Permission denied'*)
+            Err "远端目录不可写：在备份机重新执行 lnmp-backup-vault setup ${Remote_User}。" ;;
+    esac
+    return 1
+}
+
+# Conf_Update <键=值>...：替换配置中同名键的首个赋值行，缺失的键追加到末尾；改名前备份，读回失败时恢复。
+Conf_Update()
+{
+    local tmp bak
+    tmp=$(mktemp "${Conf_File}.XXXXXXXX") || return 1
+    LNMP_KV="$(printf '%s\n' "$@")" awk '
+        BEGIN {
+            n = split(ENVIRON["LNMP_KV"], a, "\n")
+            for (i = 1; i <= n; i++) {
+                if (a[i] == "") continue
+                k = a[i]; sub(/=.*/, "", k)
+                val[k] = a[i]; order[++m] = k
+            }
+        }
+        match($0, /^[A-Za-z_][A-Za-z0-9_]*=/) {
+            k = substr($0, 1, RLENGTH - 1)
+            if ((k in val) && !(k in done)) { print val[k]; done[k] = 1; next }
+        }
+        { print }
+        END { for (i = 1; i <= m; i++) if (!(order[i] in done)) print val[order[i]] }
+    ' "${Conf_File}" > "${tmp}" || { rm -f "${tmp}"; return 1; }
+    chmod 600 "${tmp}" || { rm -f "${tmp}"; return 1; }
+    bak="${Conf_File}.bak.$(date '+%Y%m%d%H%M%S')"
+    cp -p "${Conf_File}" "${bak}" || { rm -f "${tmp}"; return 1; }
+    mv -f "${tmp}" "${Conf_File}" || { rm -f "${tmp}"; return 1; }
+    if ! ( Load_Conf ) >/dev/null 2>&1; then
+        cp -p "${bak}" "${Conf_File}"
+        Err "改写后的配置无法读取，已恢复原配置。"
+        return 1
+    fi
+    Say "原配置已备份：${bak}"
+}
+
+Cmd_Remote_Setup()
+{
+    local ans c pub
+    [ "$(id -u)" = "0" ] || { Err "remote-setup 需要 root 权限。"; return 1; }
+    Load_Conf || return 1
+    for c in ssh-keygen ssh-keyscan sftp; do
+        command -v "${c}" >/dev/null 2>&1 || { Err "找不到 ${c} 命令（openssh-client）。"; return 1; }
+    done
+
+    Say "配置 SFTP 异地上传：生成专用密钥、核对备份机指纹、试连试写，全部通过后才改写 ${Conf_File}。"
+    Say "备份机需先放好随包的 tools/lnmp-backup-vault.sh，步骤见 HowtoGuides 8.6。"
+    Say ""
+    if [ "${Remote_Protocol}" != "sftp" ]; then
+        Warn "当前上传方式为 ${Remote_Protocol}，完成后改为 sftp。"
+        [ "${Remote_Port}" != "21" ] || Remote_Port=22
+    fi
+
+    Ask_Valid "备份机地址" "${Remote_Host}" \
+        '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$' "地址须为域名或 IPv4，只能含字母、数字、点和连字符。" || return 1
+    Remote_Host="${Ask_Reply}"
+    while :; do
+        Ask_Valid "SSH 端口" "${Remote_Port}" '^[1-9][0-9]{0,4}$' "端口须为 1-65535。" || return 1
+        [ "${Ask_Reply}" -le 65535 ] && break
+        Err "端口须为 1-65535。"
+    done
+    Remote_Port="${Ask_Reply}"
+    Ask_Valid "备份机账号" "${Remote_User:-backupuser}" '^[a-z_][a-z0-9_-]{0,31}$' \
+        "账号名只能含小写字母、数字、下划线和连字符，且不以数字开头。" || return 1
+    Remote_User="${Ask_Reply}"
+    Ask_Valid "远端数据目录" "${Remote_Dir:-backup}" \
+        '^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$' \
+        "目录为相对 chroot 根的路径，只能含字母、数字、点、下划线和连字符，不以 / 或 . 开头。" || return 1
+    Remote_Dir="${Ask_Reply}"
+
+    Remote_Setup_Key || return 1
+    pub=$(awk '{ print $1, $2; exit }' "${Remote_SSH_Key}.pub")
+    Say ""
+    Say "在备份机上以 root 执行（安装后也可用 lnmp-backup-vault 代替 bash lnmp-backup-vault.sh）："
+    Say ""
+    Say "  bash lnmp-backup-vault.sh setup ${Remote_User} '${pub}'"
+    Say ""
+    [ "${Remote_Dir}" = "backup" ] || Warn "远端数据目录不是默认的 backup，须先把备份机配置中的 Data_Dir 改为 ${Remote_Dir}。"
+    printf '执行完成后按回车继续，输入 q 退出（配置不变）：'
+    if ! read -r ans; then
+        echo
+        Err "读取输入时遇到 EOF，配置未改动。"
+        return 1
+    fi
+    case "${ans}" in
+        q|Q) Say "已退出，配置未改动；密钥已保留，可重新执行 lnmp backup remote-setup。"; return 1 ;;
+    esac
+
+    Remote_Setup_Hostkey || return 1
+    Say "试连并试写 ${Remote_User}@${Remote_Host}:${Remote_Dir} ..."
+    if ! Remote_Setup_Test; then
+        Err "配置未改动，处理后重新执行 lnmp backup remote-setup。"
+        return 1
+    fi
+    Ok "试连与试写通过。"
+
+    Conf_Update 'Enable_Remote_Backup=1' 'Remote_Protocol="sftp"' \
+        "Remote_Host=\"${Remote_Host}\"" "Remote_Port=${Remote_Port}" \
+        "Remote_User=\"${Remote_User}\"" "Remote_Dir=\"${Remote_Dir}\"" \
+        || { Err "写入 ${Conf_File} 失败，配置未改动。"; return 1; }
+    Ok "已启用异地上传：sftp → ${Remote_User}@${Remote_Host}:${Remote_Port}/${Remote_Dir}"
+    Say "下一步：lnmp backup run all，再用 lnmp backup list 查看远端批次。"
     return 0
 }
 
@@ -1739,6 +1970,7 @@ Usage()
   restore db  <库名> [批次]  从备份恢复数据库
   restore web <域名> [批次]  从备份恢复网站文件
   test                      试恢复：把最新库备份导入临时库校验后删除
+  remote-setup              配置 SFTP 异地上传：生成密钥、核对指纹、试连后写入配置
 
 配置文件：/etc/lnmp/backup.conf（权限 600）
 日志：/var/log/lnmp/backup.log
@@ -1756,6 +1988,7 @@ Main()
         list)    Cmd_List "$@" ;;
         restore) Cmd_Restore "$@" ;;
         test)    Cmd_Test "$@" ;;
+        remote-setup) Cmd_Remote_Setup "$@" ;;
         help|-h|--help) Usage ;;
         *)       Usage; return 1 ;;
     esac
