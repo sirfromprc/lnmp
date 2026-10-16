@@ -1108,6 +1108,83 @@ define( 'WP_REDIS_PASSWORD', '读取 /root/.lnmp_redis_password 后填入的密�
 
 不改这一行的话，插件仍按无密码连接，会直接报连接失败。写入后保持 `wp-config.php`
 的 root 所有和 640 权限，不要让密码文件进入备份之外的日志、Git 或聊天记录。
+PHP 会话已存入 Redis 时，会话 ini 的 `auth` 参数也要同步写入，见下一节。
+
+### PHP 会话存入 Redis
+
+安装器不修改 `session.*`，PHP 默认 `session.save_handler = files`、`session.save_path` 为空，
+会话文件写入系统临时目录。`php-fpm`、`php-fpm@<版本>` 与 `httpd` 的 unit 均设 `PrivateTmp=true`，
+该目录是服务私有的 `/tmp`，服务停止时由 systemd 清空：重启或升级 PHP 后全部会话失效，
+多个 PHP 版本之间也不共享会话。需要会话跨重启保留时，按以下步骤手工改存 Redis。
+
+1. Redis 按 `persistent` 安装或切换（见 [6.5](#65-redis-对象缓存容量)）。`cache` 模式不持久化，
+   Redis 重启后会话全部丢失，内存满时还会按 `allkeys-lfu` 淘汰会话。
+
+2. 在 `conf.d` 新建独立 ini，不要改 `php.ini`：`upgrade.sh php` 会按模板重写 `php.ini`，
+   `conf.d` 中不含 `extension=` 声明的 ini 原样沿用到新版本。文件序号需排在 `021-redis.ini` 之后：
+
+   ```bash
+   cat > /usr/local/php/conf.d/099-session.ini <<'EOF'
+   session.save_handler = redis
+   session.save_path = "unix:///run/lnmp-redis/redis.sock?database=1"
+   redis.session.locking_enabled = 1
+   EOF
+   ```
+
+   - `database=1` 使会话与对象缓存分库，便于单独查看和清理；database 编号不是安全边界。
+   - `www` 未加入 `redis` 组时 socket 不可用，改为 `tcp://127.0.0.1:6379?database=1`。
+   - phpredis 默认不加会话锁，同一会话的并发请求后写覆盖先写；`locking_enabled = 1` 使其串行执行。
+   - 多版本 PHP 在各自的 `/usr/local/php<版本>/conf.d/` 中各放一份。
+
+   Redis 设了密码（`requirepass`，见本章前文）时，`save_path` 必须带 `auth` 参数，否则
+   `session_start()` 失败。`save_path` 的参数按 URL 查询串解析，密码中的 `+`、`&`、`%`、空格等字符
+   原样写入会被改写导致认证失败（`openssl rand -base64` 生成的密码常含 `+`），须先经 `rawurlencode` 编码。
+   以下命令从 `/root/.lnmp_redis_password` 读取密码，编码后写入，不在终端回显：
+
+   ```bash
+   REDISPW_ENC=$(/usr/local/php/bin/php -r 'echo rawurlencode(trim(file_get_contents("/root/.lnmp_redis_password")));')
+   printf '%s\n' 'session.save_handler = redis' \
+       "session.save_path = \"unix:///run/lnmp-redis/redis.sock?auth=${REDISPW_ENC}&database=1\"" \
+       'redis.session.locking_enabled = 1' > /usr/local/php/conf.d/099-session.ini
+   unset REDISPW_ENC
+   ```
+
+   - 任何 PHP 代码都可经 `ini_get('session.save_path')` 读到该密码，限制 ini 文件权限不能隐藏它；
+     多站点互不信任时的隔离方式见本章前文。
+   - Redis 启用密码后，未带 `auth` 的 PHP 立即无法读写会话；写好 ini 后依次重启 Redis 与 PHP，
+     `redis-cli -s /run/lnmp-redis/redis.sock ping` 返回 `NOAUTH` 或 `PONG` 即表示 Redis 已就绪。
+   - 更换 Redis 密码后重新执行上面的命令并重启 PHP。
+
+3. 检查并重启：
+
+   ```bash
+   /usr/local/php/bin/php -i | grep -E '^session.save_(handler|path)|locking_enabled'
+   /usr/local/php/sbin/php-fpm -t
+   systemctl restart php-fpm
+   # Redis 设了密码时先执行：export REDISCLI_AUTH="$(cat /root/.lnmp_redis_password)"
+   # 访问一个调用 session_start() 的页面后
+   redis-cli -s /run/lnmp-redis/redis.sock -n 1 --scan --pattern 'PHPREDIS_SESSION:*'
+   redis-cli -s /run/lnmp-redis/redis.sock -n 1 ttl 'PHPREDIS_SESSION:<会话 ID>'
+   # 键的 TTL 等于 session.gc_maxlifetime，默认 1440 秒
+   ```
+
+   `php -i` 的输出含密码编码后的明文，不要贴到工单或聊天记录。
+
+Redis 不可用时 `session_start()` 返回失败并在站点错误日志记录
+`Redis connection not available`，页面仍正常输出，但会话不保存，响应也不带 `session.cache_limiter`
+（默认 `nocache`）产生的 `Cache-Control: no-store`、`Expires`、`Pragma` 头。请求已带会话 Cookie 时，
+响应同时没有 `Set-Cookie`。nginx 的 FastCGI 缓存遇到 `Set-Cookie` 或禁止缓存的头时不缓存，两者都没有的
+200 响应按 `fastcgi_cache_valid` 的时长缓存，缓存键不含 Cookie，同一 URL 的所有访客都会拿到
+这份失败页面，Redis 恢复后需清除对应缓存。使用会话的站点可把 `PHPSESSID` 加入 `$skip_cache` 的
+Cookie 匹配规则，带会话 Cookie 的请求不读写缓存。
+
+`bash install.sh php` 判定主 PHP 不完整而重新编译时会清空 `conf.d`，完成后重新放置该 ini。
+撤销时删除该 ini 并重启 PHP，回到文件会话，Redis 中的会话不会迁回，用户需重新登录。
+
+实测：文件会话在 `php-fpm` 重启后丢失；改存 Redis 后跨 `php-fpm` 重启保留，`persistent` 模式下
+跨 Redis 重启保留，`cache` 模式下 Redis 重启后丢失；Redis 设密码后，含 `+`、`&`、`%`、空格的密码原样写入
+`auth` 时认证失败，经 `rawurlencode` 编码后成功；同一会话 3 个并发写请求，
+不加锁时最终计数丢失 2 次更新，加锁后计数正确。
 
 [返回顶部](#top)
 
@@ -2406,7 +2483,7 @@ appendonly no
 同时没有定期 fork 与磁盘写入，也不会因快照失败触发 `stop-writes-on-bgsave-error` 拒绝写入。
 `persistent` 内存满时拒绝写入并返回错误，不丢已有数据，`maxmemory` 需按数据量设置。
 同一实例既做缓存又存 session 时按 `persistent` 安装，或拆成两个实例；
-key 前缀与 database 编号不能隔离淘汰策略。
+key 前缀与 database 编号不能隔离淘汰策略。PHP 会话的配置见 [PHP 会话存入 Redis](#php-会话存入-redis)。
 
 安装时指定：
 
