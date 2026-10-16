@@ -769,16 +769,19 @@ check_v20()
 #
 # include/rt/svc.sh 定义的函数不得在别处重复定义；systemctl daemon-reload 只允许在该文件执行。
 # tools/lnmp-*.sh 调用这些函数时必须有以 "# @RT_SVC@" 结尾的加载行，部署时由 cli_assemble.sh 展开。
+# tools/lnmp-backup-vault.sh 在未安装 LNMP 的备份机上以单文件运行，自带 unit 写入与重载，
+# 不受上述限制，但不得含 @RT_*@ 加载行。
 # ---------------------------------------------------------------------------
 check_v21()
 {
-    local out f names
+    local out f names standalone='tools/lnmp-backup-vault.sh'
     names=$(grep -oE '^Svc_[A-Za-z_]+\(\)' include/rt/svc.sh 2>/dev/null | tr -d '()' | paste -sd '|')
     out=$( { [ -z "${names}" ] || grep -rnE --include='*.sh' -e "^[[:space:]]*(${names})\\(\\)" \
                  . conf/lnmp conf/lnmpa conf/lamp 2>/dev/null
              grep -rnE --include='*.sh' -e '(^|[;&|{(]|then|do|else)[[:space:]]*systemctl daemon-reload' \
                  . conf/lnmp conf/lnmpa conf/lamp 2>/dev/null
-           } | grep -v -E '^\./(t|src|tests)/|^\./include/rt/svc\.sh:')
+           } | grep -v -E "^\./(t|src|tests)/|^\./include/rt/svc\.sh:|^\./${standalone}:")
+    grep -qE '# @RT_[A-Z]+@$' "${standalone}" 2>/dev/null && out="${out} ${standalone}:单文件运行脚本不得含加载行"
     for f in tools/lnmp-*.sh; do
         [ -n "${names}" ] && grep -qE "(^|[^_[:alnum:]])(${names})([^_[:alnum:]]|$)" "${f}" || continue
         grep -q '# @RT_SVC@$' "${f}" || out="${out} ${f}:缺加载行"
