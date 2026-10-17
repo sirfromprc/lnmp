@@ -923,7 +923,8 @@ CheckMirror=n Bin=y bash install.sh lnmp
 `Backup_Site`、`Keep_Days_Db`、`Keep_Days_Web`、`Web_Interval_Days`、
 `Enable_Remote_Backup`、`Remote_Protocol`、`Remote_Host`、`Remote_Port`、
 `Remote_User`、`Remote_Dir`、`Remote_Password`、`Remote_Ftp_Verify`、
-`Remote_Ftp_CA`、`Remote_SSH_Key`、`Remote_Known_Hosts`、`Enable_Encrypt`、
+`Remote_Ftp_CA`、`Remote_SSH_Key`、`Remote_Known_Hosts`、`Remote_S3_Bucket`、
+`Remote_S3_Delete`、`Remote_Bwlimit`、`Rclone_Bin`、`Rclone_Conf`、`Enable_Encrypt`、
 `Encrypt_Tool`、`Encrypt_Recipient`、`Encrypt_Identity`。具体取值与验证见 8.5、8.6。
 
 通知配置支持 `TG_Enable`、`TG_Bot_Token`、`TG_Chat_Id`、`TG_Parse_Mode`、
@@ -4680,7 +4681,8 @@ lnmp backup test                     # 试恢复验证：导入临时库校验�
 - 中途失败的批次不会留下空目录：全部产物都失败时（例如目标磁盘写满）
   批次目录会被删掉；部分成功时保留已产出的文件并标为不完整，
   同时跳过旧批次清理，已有的恢复点不受影响。
-- 异地上传默认关闭，SFTP 方式执行 `lnmp backup remote-setup` 开启，备份机侧的配置见 [8.6 异地备份（SFTP）](#86-异地备份sftp)。
+- 异地上传默认关闭，SFTP 方式执行 `lnmp backup remote-setup` 开启，备份机侧的配置见 [8.6 异地备份（SFTP）](#86-异地备份sftp)；
+  S3 兼容对象存储执行 `lnmp backup remote-setup s3`，见 [8.6.9](#869-s3-兼容对象存储)。
   上传先传到远端 `.incoming/<批次>/`，逐个核对大小无误后才改名到正式目录，
   最后才清理远端旧批次 —— 传输中断不会损失已有的恢复点。
 - 同一时刻只允许一个备份在跑（flock，没有 flock 的环境退回 mkdir 锁）。
@@ -4739,6 +4741,7 @@ tar czf /root/backup/wp-content-$(date +%F).tar.gz \
 
 异地上传默认关闭，需要一台独立的备份服务器。备份机运行随包的接收端守护
 `tools/lnmp-backup-vault.sh`，生产机执行 `lnmp backup remote-setup`，两侧各配置一次。
+没有自有备份机时可上传到 S3 兼容对象存储，见 [8.6.9](#869-s3-兼容对象存储)。
 
 整体结构（默认路径）：
 
@@ -5024,6 +5027,105 @@ lnmp backup test                 # 解密 + 校验 + 试恢复，退出码必须
 
 使用 ftp、ftps 或未运行守护的 SFTP 服务器时，远端仍只有大小核对，内容校验在生产机本地
 （`restore` 与 `test` 都会先校验再操作）。最终可恢复性以 `lnmp backup test` 试恢复与整站演练为准。
+
+#### 8.6.9 S3 兼容对象存储
+
+没有自有备份机时，可上传到 S3 兼容对象存储：Cloudflare R2、AWS S3、Backblaze B2、阿里云 OSS、
+腾讯云 COS 或其他兼容服务。只需一个桶和一对访问密钥，备份机侧无需运维。上传使用 rclone。
+
+**准备**：在服务商控制台创建桶（不开放公共读），创建只作用于该桶的访问密钥。密钥权限分两种：
+
+| 权限 | `Remote_S3_Delete` | 过期批次由谁删除 | 生产机被入侵时 |
+|---|---|---|---|
+| 读、写、列表（不含删除） | `0`（默认） | 桶生命周期规则 | 无法删除已上传的批次（同名覆盖仍可能，桶开启版本控制或对象锁定可防止） |
+| 读、写、列表、删除 | `1` | 本机按 `Keep_Days_Db`、`Keep_Days_Web` 删除 | 可删除远端全部批次 |
+
+推荐不含删除权限的密钥，并配置生命周期规则。
+
+**配置**：
+
+```bash
+lnmp backup remote-setup s3
+```
+
+向导依次完成：
+
+1. 查找 rclone（`Rclone_Bin`，留空时依次找 `/usr/local/bin/rclone`、`/usr/bin/rclone`），版本不低于 1.60.0。
+   缺少或过旧时询问是否安装：从 `downloads.rclone.org` 下载固定版本 1.75.2 的官方 zip，
+   SHA-256 与随包记录一致才取出 rclone 装到 `/usr/local/bin/rclone`，不一致时拒绝安装。需要 `curl`、`unzip`。
+2. 选择服务商，填写 Endpoint（不接受 `http://`）、区域、桶名、桶内前缀（即 `Remote_Dir`，
+   多台机器共用一个桶时各用一个前缀）、Access Key ID 与 Secret（不回显；重跑时回车沿用已保存的值）。
+3. 回答密钥是否有删除权限，设置上传限速（如 `10M` 为 10 MiB/s，`0` 不限速）。
+4. 以临时配置上传探测对象 `<前缀>/.lnmp-probe/<主机名>-<进程号>` 并读回大小；声明有删除权限时同时删除探测对象。
+   任一步失败时配置不变，提示访问被拒绝、桶不存在、密钥无效或连接失败等原因。
+5. 通过后把访问密钥写入 `/etc/lnmp/backup-rclone.conf`（600，原文件备份为 `.bak.<时间>`），
+   改写 `backup.conf` 的 `Enable_Remote_Backup=1`、`Remote_Protocol="s3"`、`Remote_S3_Bucket`、
+   `Remote_Dir`、`Remote_S3_Delete`、`Remote_Bwlimit`、`Rclone_Bin`、`Rclone_Conf`。
+
+各服务商 Endpoint 示例：
+
+| 服务商 | Endpoint | 区域 |
+|---|---|---|
+| Cloudflare R2 | `https://<账户 ID>.r2.cloudflarestorage.com` | 固定 `auto`，不询问 |
+| AWS S3 | 不询问 | 如 `us-east-1`，必填 |
+| Backblaze B2 | `s3.us-west-004.backblazeb2.com`（桶详情页） | 可留空 |
+| 阿里云 OSS | `oss-cn-hangzhou.aliyuncs.com` | 可留空 |
+| 腾讯云 COS | `cos.ap-guangzhou.myqcloud.com` | 可留空 |
+
+**生命周期规则**（向导结束时按当前保留天数给出）：
+
+| 前缀 | 规则 |
+|---|---|
+| `<前缀>/db/` | 不早于 `Keep_Days_Db + 1` 天后删除 |
+| `<前缀>/www/` | 不早于 `Keep_Days_Web + 1` 天后删除 |
+| `<前缀>/.lnmp-probe/` | 1 天后删除 |
+| 未完成的分段上传 | 1 天后中止 |
+
+`Remote_S3_Delete=0` 且未配置过期规则时，远端批次不会被删除，容量持续增长。
+
+**上传与提交**：对象路径为 `<桶>/<前缀>/<db|www>/<批次>/<文件>`。对象存储没有目录改名，
+文件直接上传到批次前缀，逐个核对大小与 MD5，全部一致后写入提交清单对象 `.lnmp-commit`
+（每行为 MD5、大小、文件名）。没有提交清单的批次是未完成的上传，`lnmp backup list` 标注 `[未提交]`，
+不应用于恢复。核对不符或服务商不返回 MD5 时本次备份返回 1，不写提交清单，跳过本地与远端清理。
+访问密钥只在 rclone 配置文件中，命令行参数只有 `--config`。
+
+```bash
+lnmp backup run all
+lnmp backup list
+# === 远端 db 批次 ===
+#   20261016-010101  [未提交]
+#   20261017-095519
+lnmp backup status | grep 异地
+# 异地上传：启用（s3） → bk1/prod1，远端清理：桶生命周期规则
+```
+
+**从对象存储恢复**：先下载批次到本机备份目录，校验后按 8.5 恢复：
+
+```bash
+R="rclone --config /etc/lnmp/backup-rclone.conf"
+$R lsf lnmp:bk1/prod1/db/20261017-095519/                 # 确认含 .lnmp-commit
+$R copy lnmp:bk1/prod1/db/20261017-095519 /home/backup/db/20261017-095519 --exclude .lnmp-commit
+(cd /home/backup/db/20261017-095519 && sha256sum -c SHA256SUMS)
+lnmp backup restore db wpdb 20261017-095519
+```
+
+新机器恢复时先执行 `lnmp backup init`，再执行 `lnmp backup remote-setup s3` 或复制原机的
+`backup-rclone.conf`（600）。
+
+**出错时对照排查**：
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 试写提示访问被拒绝 | 密钥无该桶写权限，或 Secret 错误（部分服务返回 403） | 核对密钥作用范围与 Secret |
+| 试写提示桶不存在 | 桶名或 Endpoint、区域与桶不对应 | 在控制台核对桶所在区域与 Endpoint |
+| 提示删除探测对象失败 | 声明了删除权限，但密钥不含删除 | 重新执行并对删除权限选择 n |
+| `远端未返回 MD5` | 服务商不提供 MD5，或对象由其他工具以分段上传写入 | 本工具上传的对象由 rclone 附带 MD5 元数据；仍出现时换用其他服务商 |
+| 日志出现“删除远端批次失败” | `Remote_S3_Delete=1` 但密钥不含删除 | 改为 `Remote_S3_Delete=0` 并配置生命周期规则 |
+| `rclone 配置 ... 权限是 644` | 配置文件权限被改 | `chmod 600 /etc/lnmp/backup-rclone.conf` |
+| 上传失败约 1 分钟后才返回 | 网络或服务不可用，rclone 按 `--retries 3` 重试 | 检查出站网络；失败时本地批次保留 |
+
+限制：只支持访问密钥认证，不支持 IAM 角色与临时凭据；远端核对依据 MD5，内容可信性的边界与 8.6.8 相同；
+备份机守护（`lnmp-backup-vault`）不适用于对象存储，防删除依赖密钥权限、生命周期与服务商的版本控制或对象锁定。
 
 ### 8.7 日志
 

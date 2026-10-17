@@ -307,6 +307,10 @@ for v in ${Nodejs_Majors}; do
         grab "https://nodejs.org/dist/v${!nv}/node-v${!nv}-linux-${arch}.tar.xz" "node-v${!nv}-linux-${arch}.tar.xz"
     done
 done
+rclone_ver=$(sed -n 's/^Rclone_Ver="\(.*\)"$/\1/p' tools/lnmp-backup.sh)
+for arch in amd64 arm64; do
+    grab "https://downloads.rclone.org/v${rclone_ver}/rclone-v${rclone_ver}-linux-${arch}.zip" "rclone-v${rclone_ver}-linux-${arch}.zip"
+done
 grab "https://github.com/denyhosts/denyhosts/archive/refs/tags/v3.1.tar.gz" "denyhosts-3.1.tar.gz"
 grab "https://github.com/fail2ban/fail2ban/archive/refs/tags/1.1.0.tar.gz" "fail2ban-1.1.0.tar.gz"
 

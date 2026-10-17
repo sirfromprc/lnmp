@@ -10,7 +10,7 @@
 #   lnmp backup list [db|web]        列出本地批次（配了远端则一并列远端）
 #   lnmp backup restore ...          从备份恢复
 #   lnmp backup test                 试恢复：把最新库备份导入临时库再删掉
-#   lnmp backup remote-setup         配置 SFTP 异地上传（密钥、指纹、试连）
+#   lnmp backup remote-setup [s3]    配置 SFTP 或 S3 兼容对象存储异地上传
 #
 # ---------------------------------------------------------------------------
 # 备份与恢复规则
@@ -22,10 +22,11 @@
 # 全部成功后才改为最终文件名，避免将截断文件用于恢复。
 #
 # 远端文件先上传到 .incoming/<批次>/，逐个核对大小后再移入正式目录。
+# 对象存储无目录改名，核对通过后写入提交清单对象，无清单的批次视为未提交。
 # 旧批次只在新恢复点可用后清理，传输失败时仍保留现有备份。
 #
 # 数据库口令保存在权限 0600 的 option file 中，SFTP 上传使用 SSH 密钥，
-# 防止凭据出现在命令行参数中。
+# 对象存储访问密钥保存在权限 0600 的 rclone 配置中，防止凭据出现在命令行参数中。
 # ---------------------------------------------------------------------------
 
 set -u
@@ -44,6 +45,14 @@ Lock_File="/var/lock/lnmp-backup.lock"
 Systemd_Service="/etc/systemd/system/lnmp-backup.service"
 Systemd_Timer="/etc/systemd/system/lnmp-backup.timer"
 Cron_File="/etc/cron.d/lnmp-backup"
+Rclone_Remote="lnmp"
+Rclone_Commit=".lnmp-commit"
+
+# rclone 固定版本，哈希取自官方 SHA256SUMS（PGP 签名已核对），与 src/checksums.sha256 一致。
+Rclone_Ver="1.75.2"
+Rclone_Sha256_amd64="349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702"
+Rclone_Sha256_arm64="7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10"
+Rclone_Min_Ver="1.60.0"
 
 # 备份包含整站源码和整库数据，文件默认仅允许 root 读取。
 umask 077
@@ -99,6 +108,12 @@ Set_Conf_Defaults()
     Remote_Password=""
     Remote_Ftp_Verify=1
     Remote_Ftp_CA=""
+    # 仅 s3 使用。
+    Remote_S3_Bucket=""
+    Remote_S3_Delete=0
+    Remote_Bwlimit=""
+    Rclone_Bin=""
+    Rclone_Conf="${Conf_Dir}/backup-rclone.conf"
     Enable_Encrypt=0
     Encrypt_Tool="age"
     Encrypt_Recipient=""
@@ -120,8 +135,8 @@ Load_Conf()
     [ "${Keep_Days_Db}" -ge 1 ]  || Die "Keep_Days_Db 至少为 1。"
     [ "${Keep_Days_Web}" -ge 1 ] || Die "Keep_Days_Web 至少为 1。"
     case "${Remote_Protocol}" in
-        sftp|ftps|ftp) : ;;
-        *) Die "Remote_Protocol 只能是 sftp、ftps 或 ftp，当前是 '${Remote_Protocol}'" ;;
+        sftp|ftps|ftp|s3) : ;;
+        *) Die "Remote_Protocol 只能是 sftp、ftps、ftp 或 s3，当前是 '${Remote_Protocol}'" ;;
     esac
     return 0
 }
@@ -191,12 +206,14 @@ Find_Mysql_Client()
 # ---------------------------------------------------------------------------
 Lock_Dir=""
 Tmp_Work=""
+Tmp_File=""
 
-# 退出时统一删除锁目录和临时工作目录。
+# 退出时统一删除锁目录、临时工作目录和临时文件。
 Cleanup_All()
 {
     [ -n "${Lock_Dir}" ] && [ -d "${Lock_Dir}" ] && rm -rf -- "${Lock_Dir}"
     [ -n "${Tmp_Work}" ] && [ -d "${Tmp_Work}" ] && rm -rf -- "${Tmp_Work}"
+    [ -n "${Tmp_File}" ] && [ -f "${Tmp_File}" ] && rm -f -- "${Tmp_File}"
     return 0
 }
 trap Cleanup_All EXIT
@@ -447,10 +464,14 @@ Sftp_Run()
 
 Check_Remote_Conf()
 {
-    [ -n "${Remote_Host}" ] && [ -n "${Remote_User}" ] || { Log ERROR "远端主机或账号未配置"; return 1; }
+    case "${Remote_Protocol}" in
+        sftp|ftps|ftp)
+            [ -n "${Remote_Host}" ] && [ -n "${Remote_User}" ] || { Log ERROR "远端主机或账号未配置"; return 1; } ;;
+    esac
     case "${Remote_Protocol}" in
         sftp) Check_Remote_Conf_Sftp ;;
         ftps|ftp) Check_Remote_Conf_Ftp ;;
+        s3) Check_Remote_Conf_S3 ;;
         *) Log ERROR "未知的 Remote_Protocol：${Remote_Protocol}"; return 1 ;;
     esac
 }
@@ -613,14 +634,173 @@ Cleanup_Remote_Ftp()
     return 0
 }
 
-# 上传按“传输、核对、改名”的顺序执行，任一步失败都保留正式目录中的现有备份。
-# SFTP、FTP 和 FTPS 使用相同提交语义。
+# ---------------------------------------------------------------------------
+# S3 兼容对象存储（rclone）
+#
+# 对象路径为 <桶>/<Remote_Dir>/<类型>/<批次>/<文件>。文件直接上传到批次前缀，
+# 按大小与 MD5 核对后写入提交清单对象 .lnmp-commit，无清单的批次视为未提交。
+# Remote_S3_Delete=0 表示访问密钥不含删除权限，过期批次与未完成分片由桶生命周期规则清理。
+# ---------------------------------------------------------------------------
+Find_Rclone()
+{
+    local c
+    if [ -n "${Rclone_Bin}" ]; then
+        [ -x "${Rclone_Bin}" ]
+        return
+    fi
+    for c in /usr/local/bin/rclone /usr/bin/rclone; do
+        [ -x "${c}" ] || continue
+        Rclone_Bin="${c}"
+        return 0
+    done
+    return 1
+}
+
+Rclone_Version()
+{
+    "$1" version 2>/dev/null | awk 'NR == 1 { v = $2; sub(/^v/, "", v); sub(/-.*/, "", v); print v; exit }'
+}
+
+# 凭据只在 --config 指定的文件中，命令行不含访问密钥。
+Rclone_Run()
+{
+    local -a opt=(--config "${Rclone_Conf}" --contimeout 30s --timeout 5m
+                  --retries 3 --low-level-retries 5 --stats 0)
+    [ -n "${Remote_Bwlimit}" ] && opt+=(--bwlimit "${Remote_Bwlimit}")
+    "${Rclone_Bin}" "${opt[@]}" "$@"
+}
+
+S3_Path() { printf '%s:%s/%s%s' "${Rclone_Remote}" "${Remote_S3_Bucket}" "${Remote_Dir}" "${1:+/$1}"; }
+
+Check_Remote_Conf_S3()
+{
+    Find_Rclone || { Log ERROR "找不到 rclone，执行 lnmp backup remote-setup s3 安装并配置。"; return 1; }
+    [ -n "${Remote_S3_Bucket}" ] || { Log ERROR "s3 需要配置 Remote_S3_Bucket。"; return 1; }
+    [ -n "${Remote_Dir}" ] || { Log ERROR "s3 需要配置 Remote_Dir 作为对象前缀。"; return 1; }
+    [ -f "${Rclone_Conf}" ] || { Log ERROR "缺少 rclone 配置：${Rclone_Conf}"; return 1; }
+    Check_Perm "${Rclone_Conf}" || return 1
+    case "${Remote_S3_Delete}" in
+        0|1) return 0 ;;
+        *) Log ERROR "Remote_S3_Delete 只能是 0 或 1。"; return 1 ;;
+    esac
+}
+
+Upload_Batch_S3()
+{
+    local type="$1" batch="$2" dir="${Backup_Home}/$1/$2"
+    local dst f base out rc line local_size local_md5 remote_size remote_md5 manifest ok=1
+
+    dst=$(S3_Path "${type}/${batch}")
+    Log INFO "上传 ${type}/${batch} 到 s3://${Remote_S3_Bucket}/${Remote_Dir}"
+    out=$(Rclone_Run copy --max-depth 1 --exclude '.*' "${dir}" "${dst}" 2>&1); rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        Log ERROR "上传失败（rclone 退出码 ${rc}）：
+${out}"
+        return 1
+    fi
+
+    out=$(Rclone_Run lsf --files-only --format psh --hash MD5 --separator '|' "${dst}" 2>&1); rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        Log ERROR "列出远端批次失败（rclone 退出码 ${rc}）：
+${out}"
+        return 1
+    fi
+    manifest=$(mktemp) || return 1
+    Tmp_File="${manifest}"
+    for f in "${dir}"/*; do
+        [ -f "${f}" ] || continue
+        base="${f##*/}"
+        local_size=$(stat -c '%s' "${f}" 2>/dev/null || stat -f '%z' "${f}" 2>/dev/null)
+        local_md5=$(md5sum < "${f}" | awk '{ print $1 }')
+        line=$(printf '%s
+' "${out}" | awk -F'|' -v n="${base}" '$1 == n' | tail -n 1)
+        if [ -z "${line}" ]; then
+            Log ERROR "远端缺少文件：${base}"; ok=0; continue
+        fi
+        remote_size=$(printf '%s' "${line}" | cut -d'|' -f2)
+        remote_md5=$(printf '%s' "${line}" | cut -d'|' -f3)
+        if [ "${remote_size}" != "${local_size}" ]; then
+            Log ERROR "远端文件大小不符：${base} 本地 ${local_size} 远端 ${remote_size}"; ok=0; continue
+        fi
+        if [ -z "${remote_md5}" ]; then
+            Log ERROR "远端未返回 MD5，无法核对内容：${base}"; ok=0; continue
+        fi
+        if [ "${remote_md5}" != "${local_md5}" ]; then
+            Log ERROR "远端文件 MD5 不符：${base}"; ok=0; continue
+        fi
+        printf '%s  %s  %s\n' "${local_md5}" "${local_size}" "${base}" >> "${manifest}"
+    done
+    if [ "${ok}" -ne 1 ]; then
+        rm -f "${manifest}"; Tmp_File=""
+        Log ERROR "远端核对未通过，不写提交清单，批次保持未提交。"
+        return 1
+    fi
+
+    out=$(Rclone_Run copyto "${manifest}" "${dst}/${Rclone_Commit}" 2>&1); rc=$?
+    rm -f "${manifest}"; Tmp_File=""
+    if [ "${rc}" -ne 0 ]; then
+        Log ERROR "写入提交清单失败（rclone 退出码 ${rc}）：
+${out}"
+        return 1
+    fi
+    Log INFO "远端已提交：${type}/${batch}"
+    return 0
+}
+
+# 无删除权限时不发起删除；删除失败只告警，不影响本次已提交的批次。
+Cleanup_Remote_S3()
+{
+    local type="$1" days="$2" out rc b batches
+    if [ "${Remote_S3_Delete}" != "1" ]; then
+        Log INFO "Remote_S3_Delete=0，远端 ${type} 过期批次由桶生命周期规则清理。"
+        return 0
+    fi
+    batches=$(Rclone_Run lsf --dirs-only "$(S3_Path "${type}")" 2>/dev/null) \
+        || { Log WARN "无法列出远端 ${type} 目录，跳过远端清理。"; return 0; }
+    for b in ${batches}; do
+        b="${b%/}"
+        Batch_Older_Than "${b}" "${days}" || continue
+        Log INFO "清理远端过期批次：${type}/${b}"
+        out=$(Rclone_Run purge "$(S3_Path "${type}/${b}")" 2>&1); rc=$?
+        if [ "${rc}" -ne 0 ]; then
+            Log WARN "删除远端批次 ${type}/${b} 失败（rclone 退出码 ${rc}），停止本次远端清理：
+${out}
+访问密钥不含删除权限时设置 Remote_S3_Delete=0，并在桶上配置生命周期规则。"
+            return 0
+        fi
+    done
+    return 0
+}
+
+# 每行输出一个批次；缺少提交清单的批次附加“未提交”标注。
+List_Remote_Batches_S3()
+{
+    local type="$1" out rc b c
+    out=$(Rclone_Run lsf -R --max-depth 2 "$(S3_Path "${type}")" 2>&1); rc=$?
+    # 前缀不存在时 rclone 返回 3（directory not found），按空列表处理。
+    [ "${rc}" -eq 3 ] && return 0
+    if [ "${rc}" -ne 0 ]; then
+        printf '%s\n' "${out}" | tail -n 3 >&2
+        return "${rc}"
+    fi
+    printf '%s\n' "${out}" | tr -d '\r' | awk -F'/' -v c="${Rclone_Commit}" '
+        $1 !~ /^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]$/ { next }
+        { seen[$1] = 1 }
+        NF == 2 && $2 == c { done[$1] = 1 }
+        END { for (b in seen) print b, ((b in done) ? 1 : 0) }' | sort | while read -r b c; do
+        if [ "${c}" = 1 ]; then printf '%s\n' "${b}"; else printf '%s  [未提交]\n' "${b}"; fi
+    done
+}
+
+# 上传按“传输、核对、提交”的顺序执行，任一步失败都保留正式目录中的现有备份。
+# SFTP、FTP 和 FTPS 以改名提交，S3 以提交清单对象提交。
 Upload_Batch()
 {
     Check_Remote_Conf || return 1
     case "${Remote_Protocol}" in
         sftp)     Upload_Batch_Sftp "$@" ;;
         ftps|ftp) Upload_Batch_Ftp  "$@" ;;
+        s3)       Upload_Batch_S3   "$@" ;;
     esac
 }
 
@@ -694,6 +874,7 @@ Cleanup_Remote()
     case "${Remote_Protocol}" in
         sftp)     Cleanup_Remote_Sftp "$@" ;;
         ftps|ftp) Cleanup_Remote_Ftp  "$@" ;;
+        s3)       Cleanup_Remote_S3   "$@" ;;
     esac
 }
 
@@ -737,6 +918,10 @@ List_Remote_Batches()
             # curl 退出码 9 在列表阶段按空批次处理。FTP 无法区分目录不存在与权限不足，
             # 权限问题会在上传时返回明确错误。
             [ "${rc}" -eq 9 ] && return 0
+            ;;
+        s3)
+            List_Remote_Batches_S3 "${type}"
+            return
             ;;
         *)
             Log ERROR "未知的 Remote_Protocol：${Remote_Protocol}"
@@ -986,7 +1171,13 @@ Cmd_Status()
     Say "备份目录：${Backup_Home}"
     Say "保留天数：数据库 ${Keep_Days_Db} 天，网站 ${Keep_Days_Web} 天"
     Say "网站周期：每 ${Web_Interval_Days} 天"
-    Say "异地上传：$([ "${Enable_Remote_Backup}" = "1" ] && echo "启用（${Remote_Protocol}） → ${Remote_User}@${Remote_Host}:${Remote_Dir}" || echo "未启用")"
+    if [ "${Enable_Remote_Backup}" != "1" ]; then
+        Say "异地上传：未启用"
+    elif [ "${Remote_Protocol}" = "s3" ]; then
+        Say "异地上传：启用（s3） → ${Remote_S3_Bucket}/${Remote_Dir}，远端清理：$([ "${Remote_S3_Delete}" = "1" ] && echo "本机执行" || echo "桶生命周期规则")"
+    else
+        Say "异地上传：启用（${Remote_Protocol}） → ${Remote_User}@${Remote_Host}:${Remote_Dir}"
+    fi
     Say "加密    ：$([ "${Enable_Encrypt}" = "1" ] && echo "${Encrypt_Tool}" || echo "未启用")"
     Say ""
     last=$(State_Get Last_Run_Time); rc=$(State_Get Last_Run_Rc); err=$(State_Get Last_Error)
@@ -1541,6 +1732,7 @@ Cmd_Init()
     Say "init 会扫描已有站点，生成备份配置、备份目录与定时任务。"
     Say "配置生成后位于：${Conf_File}，之后可按需修改备份计划等参数，改完直接生效。"
     Say "异地上传默认关闭，SFTP 方式可执行 lnmp backup remote-setup 配置。"
+    Say "S3 兼容对象存储可执行 lnmp backup remote-setup s3 配置。"
     Say "使用 ftp/ftps 上传时，接收端需提供 FTP 服务（可用 pureftpd.sh 搭建），本机需有 curl。"
     Say ""
     printf '确认开始配置请输入 y，其它输入一律取消：'
@@ -1663,7 +1855,7 @@ Web_Interval_Days=7
 # ---- 异地上传 ----
 Enable_Remote_Backup=0
 
-# 上传方式：sftp 使用 SSH 密钥，ftps 使用 TLS 和密码，ftp 为明文传输。
+# 上传方式：sftp 使用 SSH 密钥，ftps 使用 TLS 和密码，ftp 为明文传输，s3 为 S3 兼容对象存储。
 # sftp 通常使用端口 22，ftp 和 ftps 通常使用端口 21。根据备份服务器实际端口号修改。
 Remote_Protocol="sftp"
 
@@ -1682,6 +1874,17 @@ Remote_Password=""
 # FTPS 证书校验；自签证书应通过 Remote_Ftp_CA 指定 CA。
 Remote_Ftp_Verify=1
 Remote_Ftp_CA=""
+
+# 以下各项仅 s3 使用，由 lnmp backup remote-setup s3 写入；Remote_Dir 为桶内对象前缀。
+Remote_S3_Bucket=""
+# 1 表示访问密钥有删除权限，由本机清理过期批次；0 表示由桶生命周期规则清理。
+Remote_S3_Delete=0
+# 上传限速，如 10M 表示 10 MiB/s，留空不限速。
+Remote_Bwlimit=""
+# 留空则依次查找 /usr/local/bin/rclone、/usr/bin/rclone。
+Rclone_Bin=""
+# 访问密钥所在的 rclone 配置（600）。
+Rclone_Conf="${Conf_Dir}/backup-rclone.conf"
 
 # ---- 可选加密 ----
 Enable_Encrypt=0
@@ -1736,7 +1939,7 @@ Notice_Review_Conf()
     Say "  立即备份：lnmp backup run all"
     Say "  只备份一个站点：lnmp backup run <域名>"
     Say "  验证可恢复：lnmp backup test"
-    Say "  配置异地上传：lnmp backup remote-setup"
+    Say "  配置异地上传：lnmp backup remote-setup（对象存储：remote-setup s3）"
     Say ""
     return 0
 }
@@ -1757,7 +1960,8 @@ Ask_Valid()
         if [ -n "$2" ]; then printf '%s（默认 %s）：' "$1" "$2"; else printf '%s：' "$1"; fi
         read -r Ask_Reply || { echo; Err "读取输入时遇到 EOF，配置未改动。"; return 1; }
         [ -n "${Ask_Reply}" ] || Ask_Reply="$2"
-        printf '%s' "${Ask_Reply}" | grep -Eq "$3" && return 0
+        # 补换行使空输入也构成一行，可匹配允许留空的规则。
+        printf '%s\n' "${Ask_Reply}" | grep -Eq "$3" && return 0
         Err "$4"
         tries=$((tries + 1))
     done
@@ -1889,8 +2093,16 @@ Conf_Update()
 Cmd_Remote_Setup()
 {
     local ans c pub
+    case "${1:-sftp}" in
+        sftp|s3) : ;;
+        *) Err "用法：lnmp backup remote-setup [sftp|s3]"; return 1 ;;
+    esac
     [ "$(id -u)" = "0" ] || { Err "remote-setup 需要 root 权限。"; return 1; }
     Load_Conf || return 1
+    if [ "${1:-sftp}" = "s3" ]; then
+        Cmd_Remote_Setup_S3
+        return
+    fi
     for c in ssh-keygen ssh-keyscan sftp; do
         command -v "${c}" >/dev/null 2>&1 || { Err "找不到 ${c} 命令（openssh-client）。"; return 1; }
     done
@@ -1956,6 +2168,264 @@ Cmd_Remote_Setup()
 }
 
 # ---------------------------------------------------------------------------
+# 子命令：remote-setup s3 —— 配置 S3 兼容对象存储异地上传
+#
+# 确认 rclone 可用（缺少时下载固定版本并校验 SHA-256），询问服务商参数与访问密钥，
+# 以临时 rclone 配置试写探测对象，通过后才替换 rclone 配置并改写 backup.conf。
+# ---------------------------------------------------------------------------
+Rclone_Url_Base="https://downloads.rclone.org"
+Rclone_Install_Path="/usr/local/bin/rclone"
+
+# 下载官方 zip 并核对 SHA-256，只取出 rclone 可执行文件，经同目录临时文件改名安装。
+Rclone_Install()
+{
+    local arch sum name zip got c
+    case "$(uname -m)" in
+        x86_64|amd64)  arch=amd64; sum="${Rclone_Sha256_amd64}" ;;
+        aarch64|arm64) arch=arm64; sum="${Rclone_Sha256_arm64}" ;;
+        *) Err "不支持的架构 $(uname -m)，请用发行版包安装 rclone（不低于 ${Rclone_Min_Ver}）。"; return 1 ;;
+    esac
+    for c in curl unzip sha256sum; do
+        command -v "${c}" >/dev/null 2>&1 || { Err "找不到 ${c} 命令。"; return 1; }
+    done
+    name="rclone-v${Rclone_Ver}-linux-${arch}"
+    Tmp_Work=$(mktemp -d "${TMPDIR:-/tmp}/.lnmp-rclone.XXXXXXXX") || return 1
+    zip="${Tmp_Work}/${name}.zip"
+    Say "下载 ${Rclone_Url_Base}/v${Rclone_Ver}/${name}.zip"
+    if ! curl -fsSL --proto '=https' --connect-timeout 30 --max-time 900 \
+            -o "${zip}" "${Rclone_Url_Base}/v${Rclone_Ver}/${name}.zip"; then
+        Err "下载失败。"
+        return 1
+    fi
+    got=$(sha256sum "${zip}" | awk '{ print $1 }')
+    if [ "${got}" != "${sum}" ]; then
+        Err "SHA-256 不符，已拒绝安装：期望 ${sum}，实际 ${got}"
+        return 1
+    fi
+    mkdir -p "${Rclone_Install_Path%/*}" || return 1
+    Tmp_File=$(mktemp "${Rclone_Install_Path%/*}/.rclone.XXXXXXXX") || return 1
+    if ! unzip -p "${zip}" "${name}/rclone" > "${Tmp_File}" || [ ! -s "${Tmp_File}" ]; then
+        Err "从 ${name}.zip 取出 rclone 失败。"
+        return 1
+    fi
+    chmod 755 "${Tmp_File}" || return 1
+    got=$(Rclone_Version "${Tmp_File}")
+    if [ "${got}" != "${Rclone_Ver}" ]; then
+        Err "取出的 rclone 版本为 ${got:-未知}，与 ${Rclone_Ver} 不符。"
+        return 1
+    fi
+    mv -f "${Tmp_File}" "${Rclone_Install_Path}" || return 1
+    Tmp_File=""
+    rm -rf -- "${Tmp_Work}"; Tmp_Work=""
+    Rclone_Bin="${Rclone_Install_Path}"
+    Ok "已安装 rclone ${Rclone_Ver}：${Rclone_Bin}"
+}
+
+Rclone_Ensure()
+{
+    local ver ans
+    if Find_Rclone; then
+        ver=$(Rclone_Version "${Rclone_Bin}")
+        if [ -n "${ver}" ] && [ "$(printf '%s\n%s\n' "${Rclone_Min_Ver}" "${ver}" | sort -V | head -n 1)" = "${Rclone_Min_Ver}" ]; then
+            Say "使用 rclone ${ver}：${Rclone_Bin}"
+            return 0
+        fi
+        Warn "${Rclone_Bin} 的版本为 ${ver:-未知}，低于 ${Rclone_Min_Ver}。"
+    fi
+    printf '下载官方 rclone %s 并校验 SHA-256，安装到 %s？[Y/n]：' "${Rclone_Ver}" "${Rclone_Install_Path}"
+    if ! read -r ans; then
+        echo
+        Err "读取输入时遇到 EOF，配置未改动。"
+        return 1
+    fi
+    case "${ans}" in
+        ''|y|Y) Rclone_Install ;;
+        *) Say "已取消，配置未改动。"; return 1 ;;
+    esac
+}
+
+# Rclone_Conf_Get <键>：读取现有 rclone 配置中 lnmp 段的值，用作向导默认值。
+Rclone_Conf_Get()
+{
+    [ -f "${Rclone_Conf}" ] || return 0
+    awk -v r="[${Rclone_Remote}]" -v k="$1" '
+        /^\[/ { in_r = ($0 == r); next }
+        in_r && index($0, k " = ") == 1 { print substr($0, length(k) + 4); exit }' "${Rclone_Conf}"
+}
+
+# 以指定 rclone 配置写入并读回探测对象；声明有删除权限时同时验证删除。
+Remote_S3_Probe()
+{
+    local Rclone_Conf="$1" probe dst out rc size
+    probe=$(mktemp) || return 1
+    printf 'lnmp-backup probe\n' > "${probe}"
+    dst=$(S3_Path ".lnmp-probe/$(hostname -s 2>/dev/null || echo host)-$$")
+    out=$(Rclone_Run copyto "${probe}" "${dst}" 2>&1); rc=$?
+    if [ "${rc}" -eq 0 ]; then
+        size=$(Rclone_Run lsf --format s "${dst}" 2>&1); rc=$?
+        [ "${rc}" -eq 0 ] && [ "${size}" != "$(wc -c < "${probe}" | tr -d ' ')" ] && { out="读回大小不符：${size}"; rc=1; }
+    fi
+    rm -f "${probe}"
+    if [ "${rc}" -ne 0 ]; then
+        Err "试写失败（rclone 退出码 ${rc}）："
+        printf '%s\n' "${out}" | tail -n 5 | sed 's/^/  /' >&2
+        case "${out}" in
+            *InvalidAccessKeyId*|*SignatureDoesNotMatch*|*'invalid key'*)
+                Err "访问密钥无效：核对 Access Key ID 与 Secret。" ;;
+            *NoSuchBucket*)
+                Err "桶 ${Remote_S3_Bucket} 不存在：先在服务商控制台创建。" ;;
+            *AccessDenied*|*'403'*)
+                Err "访问被拒绝：确认密钥对桶 ${Remote_S3_Bucket} 有读取与写入权限。" ;;
+            *'no such host'*|*timeout*|*'connection refused'*)
+                Err "连接失败：检查 Endpoint 与本机出站网络。" ;;
+        esac
+        return 1
+    fi
+    if [ "${Remote_S3_Delete}" = "1" ]; then
+        if ! out=$(Rclone_Run deletefile "${dst}" 2>&1); then
+            Err "删除探测对象失败，密钥可能不含删除权限："
+            printf '%s\n' "${out}" | tail -n 3 | sed 's/^/  /' >&2
+            Err "重新执行并对删除权限选择 n，由桶生命周期规则清理过期批次。"
+            return 1
+        fi
+    else
+        Say "探测对象 ${dst#*:} 保留，由生命周期规则清理。"
+    fi
+    return 0
+}
+
+Cmd_Remote_Setup_S3()
+{
+    local provider endpoint region key secret old_secret tries ans ep_re tmp bak
+
+    Say "配置 S3 兼容对象存储异地上传：确认 rclone、填写服务商参数、试写探测对象，全部通过后才改写 ${Conf_File}。"
+    Say ""
+    Rclone_Ensure || return 1
+
+    Say ""
+    Say "服务商："
+    Say "  1) Cloudflare R2   2) AWS S3   3) Backblaze B2"
+    Say "  4) 阿里云 OSS      5) 腾讯云 COS   6) 其他 S3 兼容服务"
+    Ask_Valid "选择编号" "" '^[1-6]$' "只能输入 1-6。" || return 1
+    region=''
+    case "${Ask_Reply}" in
+        1) provider=Cloudflare; region=auto
+           Say "Endpoint 形如 https://<账户 ID>.r2.cloudflarestorage.com" ;;
+        2) provider=AWS ;;
+        3) provider=Other
+           Say "Endpoint 形如 s3.us-west-004.backblazeb2.com（桶详情页的 Endpoint）" ;;
+        4) provider=Alibaba
+           Say "Endpoint 形如 oss-cn-hangzhou.aliyuncs.com" ;;
+        5) provider=TencentCOS
+           Say "Endpoint 形如 cos.ap-guangzhou.myqcloud.com" ;;
+        6) provider=Other ;;
+    esac
+    ep_re='^(https://)?[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$'
+    if [ "${provider}" = "AWS" ]; then
+        endpoint=''
+        Ask_Valid "区域（如 us-east-1）" "$(Rclone_Conf_Get region)" '^[a-z0-9-]+$' "区域只能含小写字母、数字和连字符。" || return 1
+        region="${Ask_Reply}"
+    else
+        Ask_Valid "Endpoint" "$(Rclone_Conf_Get endpoint)" "${ep_re}" \
+            "Endpoint 为域名，可带 https:// 与端口，不接受 http://。" || return 1
+        endpoint="${Ask_Reply}"
+        if [ "${provider}" != "Cloudflare" ]; then
+            Ask_Valid "区域（可留空）" "$(Rclone_Conf_Get region)" '^[A-Za-z0-9-]*$' "区域只能含字母、数字和连字符。" || return 1
+            region="${Ask_Reply}"
+        fi
+    fi
+    Ask_Valid "桶名" "${Remote_S3_Bucket}" '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$' \
+        "桶名为 3-63 位小写字母、数字、点和连字符。" || return 1
+    Remote_S3_Bucket="${Ask_Reply}"
+    Ask_Valid "桶内前缀（多台机器共用一个桶时各用一个）" "${Remote_Dir:-backup}" \
+        '^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$' \
+        "前缀只能含字母、数字、点、下划线、连字符和 /，不以 / 或 . 开头。" || return 1
+    Remote_Dir="${Ask_Reply}"
+    Ask_Valid "Access Key ID" "$(Rclone_Conf_Get access_key_id)" '^[A-Za-z0-9]{8,128}$' \
+        "Access Key ID 只能含字母和数字。" || return 1
+    key="${Ask_Reply}"
+
+    old_secret=$(Rclone_Conf_Get secret_access_key)
+    tries=0; secret=''
+    while [ -z "${secret}" ]; do
+        if [ -n "${old_secret}" ]; then
+            printf 'Secret Access Key（不回显，回车沿用已保存的）：'
+        else
+            printf 'Secret Access Key（不回显）：'
+        fi
+        if ! read -r -s secret; then
+            echo
+            Err "读取输入时遇到 EOF，配置未改动。"
+            return 1
+        fi
+        echo
+        [ -n "${secret}" ] || secret="${old_secret}"
+        case "${secret}" in
+            *[[:space:]]*) Err "Secret 不能含空白字符。"; secret='' ;;
+        esac
+        [ -n "${secret}" ] && break
+        tries=$((tries + 1))
+        [ "${tries}" -lt 3 ] || { Err "连续三次输入无效，配置未改动。"; return 1; }
+    done
+
+    printf '访问密钥是否有删除权限？有则由本机清理过期批次，无则由桶生命周期规则清理 [y/N]：'
+    if ! read -r ans; then
+        echo
+        Err "读取输入时遇到 EOF，配置未改动。"
+        return 1
+    fi
+    case "${ans}" in y|Y) Remote_S3_Delete=1 ;; *) Remote_S3_Delete=0 ;; esac
+    Ask_Valid "上传限速（如 10M 表示 10 MiB/s，0 表示不限速）" "${Remote_Bwlimit:-0}" \
+        '^[0-9]+(\.[0-9]+)?[KMGkmg]?$' "限速为数字加可选单位 K、M、G。" || return 1
+    Remote_Bwlimit="${Ask_Reply}"
+    [ "${Remote_Bwlimit}" != "0" ] || Remote_Bwlimit=''
+
+    tmp=$(mktemp "${Rclone_Conf}.XXXXXXXX") || return 1
+    Tmp_File="${tmp}"
+    {
+        printf '[%s]\ntype = s3\nprovider = %s\nenv_auth = false\n' "${Rclone_Remote}" "${provider}"
+        printf 'access_key_id = %s\nsecret_access_key = %s\n' "${key}" "${secret}"
+        [ -z "${endpoint}" ] || printf 'endpoint = %s\n' "${endpoint}"
+        [ -z "${region}" ] || printf 'region = %s\n' "${region}"
+        # 访问密钥通常不含建桶权限，上传时不检查与创建桶。
+        printf 'no_check_bucket = true\n'
+    } > "${tmp}" && chmod 600 "${tmp}" || { Err "写入临时 rclone 配置失败。"; return 1; }
+
+    Say "试写 s3://${Remote_S3_Bucket}/${Remote_Dir} ..."
+    if ! Remote_S3_Probe "${tmp}"; then
+        rm -f "${tmp}"; Tmp_File=""
+        Err "配置未改动，处理后重新执行 lnmp backup remote-setup s3。"
+        return 1
+    fi
+    Ok "试写通过。"
+
+    bak=''
+    if [ -f "${Rclone_Conf}" ]; then
+        bak="${Rclone_Conf}.bak.$(date '+%Y%m%d%H%M%S')"
+        cp -p "${Rclone_Conf}" "${bak}" || { rm -f "${tmp}"; Tmp_File=""; Err "备份 ${Rclone_Conf} 失败，配置未改动。"; return 1; }
+    fi
+    mv -f "${tmp}" "${Rclone_Conf}" || { rm -f "${tmp}"; Tmp_File=""; Err "替换 ${Rclone_Conf} 失败，配置未改动。"; return 1; }
+    Tmp_File=""
+    if ! Conf_Update 'Enable_Remote_Backup=1' 'Remote_Protocol="s3"' \
+            "Remote_S3_Bucket=\"${Remote_S3_Bucket}\"" "Remote_Dir=\"${Remote_Dir}\"" \
+            "Remote_S3_Delete=${Remote_S3_Delete}" "Remote_Bwlimit=\"${Remote_Bwlimit}\"" \
+            "Rclone_Bin=\"${Rclone_Bin}\"" "Rclone_Conf=\"${Rclone_Conf}\""; then
+        if [ -n "${bak}" ]; then cp -p "${bak}" "${Rclone_Conf}"; else rm -f "${Rclone_Conf}"; fi
+        Err "写入 ${Conf_File} 失败，已恢复原 rclone 配置。"
+        return 1
+    fi
+    Ok "已启用异地上传：s3 → ${Remote_S3_Bucket}/${Remote_Dir}"
+    Say "建议在桶上配置生命周期规则："
+    Say "  前缀 ${Remote_Dir}/db/   不早于 $((Keep_Days_Db + 1)) 天后过期"
+    Say "  前缀 ${Remote_Dir}/www/  不早于 $((Keep_Days_Web + 1)) 天后过期"
+    Say "  前缀 ${Remote_Dir}/.lnmp-probe/  1 天后过期"
+    Say "  未完成的分段上传 1 天后中止"
+    [ "${Remote_S3_Delete}" = "1" ] || Warn "Remote_S3_Delete=0：未配置过期规则时远端批次不会被删除，容量会持续增长。"
+    Say "下一步：lnmp backup run all，再用 lnmp backup list 查看远端批次。"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 Usage()
 {
     cat <<'EOF'
@@ -1971,6 +2441,7 @@ Usage()
   restore web <域名> [批次]  从备份恢复网站文件
   test                      试恢复：把最新库备份导入临时库校验后删除
   remote-setup              配置 SFTP 异地上传：生成密钥、核对指纹、试连后写入配置
+  remote-setup s3           配置 S3 兼容对象存储：安装 rclone、填写访问密钥、试写后写入配置
 
 配置文件：/etc/lnmp/backup.conf（权限 600）
 日志：/var/log/lnmp/backup.log

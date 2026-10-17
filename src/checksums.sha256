@@ -128,6 +128,14 @@ df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de  node-v22.23.3-
 fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  node-v24.21.0-linux-x64.tar.xz
 
 # ---------------------------------------------------------------------------
+# rclone（lnmp backup remote-setup s3 按需安装，amd64 与 arm64）
+# 校验值取自上游 PGP 签名的 SHA256SUMS（主密钥指纹 FBF7 37EC E9F8 AB18 604B D2AC 9393 5E02 FF3B 54FA），
+# 运行时以 tools/lnmp-backup.sh 内的同值核对。
+# ---------------------------------------------------------------------------
+349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702  rclone-v1.75.2-linux-amd64.zip
+7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10  rclone-v1.75.2-linux-arm64.zip
+
+# ---------------------------------------------------------------------------
 # 安全工具（tools/ 下按需安装）
 # ---------------------------------------------------------------------------
 7a6aee5934a56473ad54d373715da1e715ff2ffd19b9dceb54b0297fe8c3a965  denyhosts-3.1.tar.gz

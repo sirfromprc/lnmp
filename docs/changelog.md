@@ -14,6 +14,7 @@
 - PHP 默认扩展 zstd（开关 `Enable_PHP_Default_Zstd`，默认 `y`）；phpredis 支持 zstd 压缩。
 - Nginx HTTPS 站点默认启用 HTTP/3，安装期防火墙放行 UDP 443；OpenResty 源码编译按 OpenSSL 版本启用 http_v3。
 - 异地备份一键配置与备份机守护：生产机 `lnmp backup remote-setup` 生成专用密钥、核对备份机指纹、试连试写通过后才写入配置；备份机运行随包的 `tools/lnmp-backup-vault.sh setup <账号>` 创建 chroot 专用账号与 sshd 配置，定时把收到的批次移出生产机可访问的范围、校验 `SHA256SUMS` 后归档，生产机被入侵时无法删除或改写已归档的备份。
+- 异地备份支持 S3 兼容对象存储：`lnmp backup remote-setup s3` 按需安装固定版本 rclone（官方包，SHA-256 校验），试写通过后才写入配置；上传后逐个核对大小与 MD5 再写入提交清单，访问密钥可不含删除权限，过期由桶生命周期规则执行；`lnmp backup list` 列出远端批次并标注未提交的上传。
 - MySQL 与 MariaDB 导出文件互相转换：`bash tools/convert_db_dump.sh mysql|mariadb <输入> <输出>`，改写排序规则、表选项、默认值写法等不兼容语法，数据内容不变；含账号授权等无法等价转换的内容时不生成输出。
 
 ### 行为变化

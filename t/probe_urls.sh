@@ -195,6 +195,13 @@ probe pureftpd  "https://download.pureftpd.org/pub/pure-ftpd/releases/${Pureftpd
 probe composer  "https://getcomposer.org/installer"
 
 echo
+echo "=== rclone（lnmp backup remote-setup s3）==="
+rclone_ver=$(sed -n 's/^Rclone_Ver="\(.*\)"$/\1/p' tools/lnmp-backup.sh)
+for arch in amd64 arm64; do
+    probe rclone "https://downloads.rclone.org/v${rclone_ver}/rclone-v${rclone_ver}-linux-${arch}.zip"
+done
+
+echo
 echo "=== 可选：安全工具 ==="
 probe denyhosts "https://github.com/denyhosts/denyhosts/archive/refs/tags/v3.1.tar.gz"
 probe fail2ban  "https://github.com/fail2ban/fail2ban/archive/refs/tags/1.1.0.tar.gz"

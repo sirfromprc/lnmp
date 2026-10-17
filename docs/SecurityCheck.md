@@ -133,7 +133,7 @@ phpMyAdmin、Redis、PHP 扩展及编译期基础库。以下任一条件成立�
 
 | 功能 | 默认 | 发送内容与触发条件 |
 |---|---|---|
-| 异地备份 | 关闭 | `Enable_Remote_Backup=1` 后，向管理员配置的 SFTP/FTPS/FTP 目标上传备份 |
+| 异地备份 | 关闭 | `Enable_Remote_Backup=1` 后，向管理员配置的 SFTP/FTPS/FTP 目标或 S3 兼容对象存储上传备份 |
 | Telegram | 关闭 | `TG_Enable=1` 且配置 Token/Chat ID 后，发送调用者明确传入的消息文本 |
 | ACME | 按命令触发 | 管理员申请/续期证书时与所选 CA 或 DNS API 通信 |
 | 包管理器/源码下载 | 按安装触发 | 只接收软件包、元数据、签名或校验值，不上传站点和数据库内容 |
@@ -141,7 +141,10 @@ phpMyAdmin、Redis、PHP 扩展及编译期基础库。以下任一条件成立�
 备份默认协议为 SFTP，要求专用密钥和固定 known_hosts；FTPS 默认验证证书。FTP 是明确
 标注的明文兼容选项，只有管理员主动选择并提供远端配置后才会使用。上传先进入
 `.incoming`，核对大小后改名。备份机可运行随包的 `tools/lnmp-backup-vault.sh`，把收到的批次移出
-SFTP 账号可访问的范围并校验 `SHA256SUMS` 后归档。以上属于用户请求的备份行为，不是隐蔽外传。
+SFTP 账号可访问的范围并校验 `SHA256SUMS` 后归档。S3 方式经 rclone 上传到管理员指定的桶，
+访问密钥保存在 0600 的 `/etc/lnmp/backup-rclone.conf`，Endpoint 不接受 `http://`；rclone 仅在
+`remote-setup s3` 中经确认后从 `downloads.rclone.org` 下载固定版本并核对 SHA-256。
+以上属于用户请求的备份行为，不是隐蔽外传。
 
 Telegram 配置要求 0600/0400 权限，默认 `TG_Enable=0`。发送目标固定为 Telegram API，
 消息来自显式调用参数；没有收集站点文件、数据库、环境变量或系统命令输出的隐藏分支。

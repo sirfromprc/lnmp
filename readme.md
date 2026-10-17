@@ -267,6 +267,7 @@ lnmp backup run all
 lnmp backup list
 lnmp backup test
 lnmp backup remote-setup
+lnmp backup remote-setup s3
 ```
 
 - `init` 生成 `/etc/lnmp/backup.conf` 并安装定时任务。
@@ -276,6 +277,9 @@ lnmp backup remote-setup
 - 备份机运行随包的 `tools/lnmp-backup-vault.sh`：创建 chroot 专用账号与 sshd 配置，定时把收到的批次
   移出生产机可访问的范围并校验 `SHA256SUMS` 后归档，生产机密钥无法删除或改写已归档的备份。
   步骤见 `HowtoGuides.md` 第 8.6 节。
+- `remote-setup s3` 配置 S3 兼容对象存储（R2、S3、B2、OSS、COS 等）：按需安装固定版本 rclone 并校验 SHA-256，
+  试写通过后才写入配置；`Remote_S3_Delete=0`（默认）表示访问密钥不含删除权限，过期批次由桶生命周期规则清理。
+  见 `HowtoGuides.md` 第 8.6.9 节。
 - `restore` 会覆盖目标数据库或网站文件，具体语法和恢复前检查见
   `HowtoGuides.md` 第 8.5 节。
 
