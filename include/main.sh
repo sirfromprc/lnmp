@@ -169,6 +169,7 @@ PHP_Selection()
     fi
     Set_PHP_Profile "${PHPSelect}" || Invalid_Selection PHP "${PHPSelect}"
     echo "将安装 ${PHP_Info[$((PHPSelect-1))]}。"
+    PHP_Unpatched_Warn "${PHP_Branch}"
 
     if [ "${PHP_Needs_DB}" = "y" ] && [ "${DBSelect}" = "0" ]; then
         echo "未选择 MySQL/MariaDB，不能安装 ${PHP_Info[$((PHPSelect-1))]}。"

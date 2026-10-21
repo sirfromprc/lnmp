@@ -200,7 +200,7 @@ grab "https://libzip.org/download/${Libzip_Ver}.tar.xz" "${Libzip_Ver}.tar.xz"
 
 echo
 echo "# --- PHP（php.net 官方 releases API 有公布 sha256，逐个交叉核对）---"
-for v in 8.0.30 8.1.34 8.2.34 8.3.35 8.4.26 8.5.11; do
+for v in 8.0.30 8.1.34 8.2.35 8.3.36 8.4.27 8.5.12; do
     grab_upstream php "${v}" "https://www.php.net/distributions/php-${v}.tar.bz2" "php-${v}.tar.bz2"
 done
 

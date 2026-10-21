@@ -1,6 +1,6 @@
 <a id="top"></a>
 
-# LNMP 3.0.3 从零搭建 WordPress 生产环境
+# LNMP 3.0.4 从零搭建 WordPress 生产环境
 
 > 主安装、建站、WordPress、Redis、HTTPS 和备份流程已在
 > **Debian 12、Debian 13 / x86_64 / 6G 内存 / 4 核** 上实测，文中的“实测输出”来自
@@ -121,11 +121,11 @@ APT_LOCK_TIMEOUT=900 bash install.sh lnmp
 
 从项目 Release 页面下载固定版本，并使用同一 Release 公布的 SHA-256 核对文件。
 项目尚未在源码中固定公开仓库地址，因此本文不提供可能指向错误仓库的占位下载命令。
-假设已将验证通过的压缩包保存为 `/root/lnmp-v3.0.3.tar.gz`：
+假设已将验证通过的压缩包保存为 `/root/lnmp-v3.0.4.tar.gz`：
 
 ```bash
 install -d -m 700 /root/lnmp-src
-tar -xzf /root/lnmp-v3.0.3.tar.gz -C /root/lnmp-src --strip-components=1
+tar -xzf /root/lnmp-v3.0.4.tar.gz -C /root/lnmp-src --strip-components=1
 cd /root/lnmp-src
 chmod +x install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
 bash -n install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
@@ -272,7 +272,7 @@ echo $?                       # 0 无问题；1 有问题，或本次参数与�
   安装栈：lnmp
   数据库：MariaDB 11.8.9 LTS（官方通用二进制）
   启用 InnoDB：y
-  PHP：PHP 8.3.35
+  PHP：PHP 8.3.36
   Web 服务器：Nginx
   内存分配器：不安装
   数据库 root 口令不记录，沿用时需要重新输入。
@@ -500,7 +500,7 @@ bash upgrade.sh {nginx|openresty|mysql|mariadb|m2m|php|phpa|phpmyadmin|mphp}
 其余扩展与重新编译失败的扩展会列出，用 `bash addons.sh install <名字>` 补装。
 
 ```bash
-bash upgrade.sh php      # 输入目标版本，如 8.4.26；LNMP_Auto=y 时跳过确认
+bash upgrade.sh php      # 输入目标版本，如 8.4.27；LNMP_Auto=y 时跳过确认
 bash upgrade.sh mphp     # 先选实例序号，再输入同分支的目标版本
 ```
 这些入口的完整说明见 [8.1.19 不属于 lnmp 命令的入口](#8119-不属于-lnmp-命令的入口)。
@@ -564,7 +564,7 @@ unset DB_Root_Password
 | `LNMP_Auto` | `y` | 跳过安装前的所有交互确认（检查 lnmp.conf、SSH 端口提示、最终摘要确认） |
 | `DBSelect` | `1`～`6` | 1=MySQL8.0 **2=MySQL8.4(默认)** 3=MariaDB10.11 4=MariaDB11.4 5=MariaDB11.8 6=MariaDB12.3 |
 | `Bin` | `y`/`n` | `y`=下载官方通用二进制（快，几分钟）；`n`=源码编译（慢，30-60 分钟） |
-| `PHPSelect` | `1`～`6` | 1=8.0 2=8.1 3=8.2 **4=8.3(默认)** 5=8.4 6=8.5 |
+| `PHPSelect` | `1`～`6` | 1=8.0 2=8.1（均为 EOL ，未获修复，见 [10.5](#105-php-2026-10-远程代码执行漏洞)） 3=8.2 **4=8.3(默认)** 5=8.4 6=8.5 |
 | `SelectMalloc` | `1`～`3` | 1=不装 2=Jemalloc 3=TCMalloc |
 | `InstallInnodb` | `y` | WordPress 必须用 InnoDB |
 | `Enable_PhpMyAdmin` | `y`/`n` | **默认 `n`**（安全考虑）。要 phpMyAdmin 必须显式开启 |
@@ -718,7 +718,7 @@ nginx -v && php -v && mysql --version
 
 ```
 nginx version: nginx/1.30.5
-PHP 8.3.35 (cli) (built: ...) (NTS)
+PHP 8.3.36 (cli) (built: ...) (NTS)
 mysql  Ver 8.4.11 for Linux on x86_64 (MySQL Community Server - GPL)
 ```
 
@@ -892,7 +892,7 @@ CheckMirror=n Bin=y bash install.sh lnmp
 | `Bin` | `y` 通用二进制；`n` 源码 | x86_64 默认 `y`，MySQL 在 aarch64 也默认 `y`；只有确实需要定制构建才选 `n` |
 | `DB_Root_Password` | 字符串或留空 | 自动化应从受限 secret 注入；留空会随机生成到 root-only 文件 |
 | `InstallInnodb` | `y` / `n` | WordPress 必须 `y` |
-| `PHPSelect` | `1`～`6` 对应 PHP 8.0～8.5 | 新站优先仍在上游安全支持期且插件已兼容的 8.3/8.4；不要仅因“版本最新”跳过兼容测试 |
+| `PHPSelect` | `1`～`6` 对应 PHP 8.0～8.5 | 新站优先仍在上游安全支持期且插件已兼容的 8.3/8.4；8.0、8.1 未获 2026-10 远程代码执行漏洞修复，不要新装；不要仅因“版本最新”跳过兼容测试 |
 | `SelectMalloc` | `1` 无；`2` Jemalloc；`3` TCMalloc | VPS 默认 1；没有分配器碎片证据就不要增加变量 |
 | `ApacheSelect` | 当前仅 `1`=2.4 | 只在 LNMPA/LAMP 询问；Debian 13 已实测，其它发行版仍需复验 |
 
@@ -6091,6 +6091,60 @@ lnmp restart                  # 三种模式的管理命令都是 lnmp
 ```
 
 多版本 PHP 共用这两个库，重启后同样生效。
+
+### 10.5 PHP 2026-10 远程代码执行漏洞
+
+PHP 官方 2026-10-21 发布 8.2.35、8.3.36、8.4.27、8.5.12，修复 GHSA-w8hw-w9fx-j79w、
+GHSA-6wmf-4rv5-p3rp（changelog 条目为 Avoid state corruption via bailout）。本项目菜单固定版本已改为这四个版本，
+新装即为修复版。8.0、8.1 已停止官方维护，没有修复版，菜单标注“未获修复”，选择或升级这两个分支时输出风险提示。
+
+已部署机器先查版本，再按形态升级：
+
+```bash
+/usr/local/php/bin/php -v                     # 主 PHP
+ls -d /usr/local/php8.* 2>/dev/null           # 附加 PHP 实例
+
+bash upgrade.sh php      # LNMP 主 PHP，输入 8.3.36 等同分支修复版
+bash upgrade.sh phpa     # LNMPA、LAMP 主 PHP
+bash upgrade.sh mphp     # 附加实例，逐个选择并输入同分支修复版
+```
+
+主 PHP 为 8.0、8.1 时，`upgrade.sh php`/`phpa` 可跨分支升级到 8.2 及以上，先确认程序与扩展兼容（见
+[扩展与升级](#扩展与升级)）。附加的 8.0、8.1 实例不能跨分支升级：用 `bash install.sh mphp` 装 8.2 及以上分支，
+按 [8.3.1](#831-已建站点切换-php-版本) 把站点切过去。
+
+无法立即升级或必须继续使用 8.0、8.1 时，以下措施可降低风险，不能替代升级。官方公告未说明攻击途径，
+措施依据公开分析中涉及的 `multipart/form-data` 解析与 session 上传进度：
+
+1. FPM 池关闭上传进度并启用 session 严格模式。在 `/usr/local/php/etc/php-fpm.conf`
+   （附加实例为 `/usr/local/php8.x/etc/php-fpm.conf`）的 `[www]` 段加入：
+
+   ```ini
+   php_admin_flag[session.upload_progress.enabled] = off
+   php_admin_flag[session.use_strict_mode] = on
+   ```
+
+   ```bash
+   /usr/local/php/sbin/php-fpm -t && lnmp php-fpm reload
+   systemctl restart php-fpm@8.1        # 附加实例
+   ```
+
+   副作用：依赖上传进度条的程序不再收到进度；session 存于 Redis、数据库等自定义处理器时严格模式
+   取决于处理器实现，可能不生效。
+2. 不需要文件上传的站点在 Nginx `server` 段拒绝 multipart 请求：
+
+   ```nginx
+   if ($http_content_type ~* "multipart/form-data") {
+       return 415;
+   }
+   ```
+
+   ```bash
+   nginx -t && lnmp nginx reload
+   ```
+
+   副作用：该站点全部文件上传与 multipart 表单提交失败，WordPress 媒体上传、插件与主题安装都会失败。
+   此规则不写入默认站点模板，按站点手工加入，升级后删除。
 
 [返回顶部](#top)
 

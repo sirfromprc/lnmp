@@ -3,10 +3,10 @@
 # ---------------------------------------------------------------------------
 98a9cb6a0e27a6950cdf4b26dcac48f2be2d936d5224a502f066cf3d4cf19b92  php-8.0.30.tar.bz2
 98e0a08a0fae37d08dfcca2f5ff6664863097dde4b1d360af2acc8c3542f2a0f  php-8.1.34.tar.bz2
-0467d63a819016811d35fd14f734764813ab149750379790634294c723cd7562  php-8.2.34.tar.bz2
-e279d9ec90d9bcab900d146816e5b11d3e8924b80e2ba36c7d7dae7d71dcbf2d  php-8.3.35.tar.bz2
-4209694d7b0f63c45a3773e07cdc2bbfc71249265a5d951b1ff53e1147edc5ca  php-8.4.26.tar.bz2
-dc940716a8c73e531c0078eecb955d595d321ec2cc9d47149cf0089ea6e18f64  php-8.5.11.tar.bz2
+0f43efd1ac24d4f90002c8d4d570bf4c4d59fa14313bf270aae8cf04d9dfdef3  php-8.2.35.tar.bz2
+46f4b45e3688ed2b1819015a7b532c15b51cc055bdd3b13fd00ddfeebeedcd5f  php-8.3.36.tar.bz2
+b2530a877c722f4b08c9e174a30cb08bac2b7e1903ee6e9e315f0aa9f5f82c24  php-8.4.27.tar.bz2
+ffb60edc437ced63b5137e4984db379a8111c50049c711510d8b958277efc1a8  php-8.5.12.tar.bz2
 
 # ---------------------------------------------------------------------------
 # nginx 与其编译依赖

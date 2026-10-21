@@ -1,6 +1,6 @@
-# LNMP 3.0.3
+# LNMP 3.0.4
 
-LNMP 3.0.3 是一套面向 Linux 服务器的 Shell 安装与运维工具，支持：
+LNMP 3.0.4 是一套面向 Linux 服务器的 Shell 安装与运维工具，支持：
 
 - LNMP：Nginx、MySQL/MariaDB、PHP；
 - LNMPA：Nginx 前端、Apache、MySQL/MariaDB、PHP；
@@ -25,6 +25,8 @@ WordPress。Apache 栈及其它发行版的支持边界见 [HowtoGuides.md](docs
 ### 1.1 组件与安装方式
 
 - 默认使用 MySQL 8.4、PHP 8.3 和 Nginx；数据库也可选择 MariaDB。
+- PHP 可选 8.0～8.5，8.2～8.5 固定为已修复 2026-10 远程代码执行漏洞的官方版本；8.0、8.1 已 EOL ，
+  没有修复版，菜单标注“未获修复”，选择时输出风险提示。升级与临时缓解见 `HowtoGuides.md` 第 10.5 节。
 - Nginx 可替换为 OpenResty。预编译包和源码编译的选择条件见
   `HowtoGuides.md` 第 2.3 节。
 - 数据库可使用官方通用二进制，也可源码编译。普通服务器优先使用通用二进制；
@@ -92,8 +94,8 @@ ss -lntup
 
 | 包 | 组件版本 | 适用情况 |
 | --- | --- | --- |
-| `lnmp-v3.0.3.tar.gz` | 维护者手工确认，**不含自动升级** | 默认选它 |
-| `lnmp-v3.0.3-<日期>.tar.gz` | 每月自动跟进上游，仅部分 Release 提供 | 需要更新的组件版本时 |
+| `lnmp-v3.0.4.tar.gz` | 维护者手工确认，**不含自动升级** | 默认选它 |
+| `lnmp-v3.0.4-<日期>.tar.gz` | 每月自动跟进上游，仅部分 Release 提供 | 需要更新的组件版本时 |
 
 不带日期的包另以 `lnmp.tar.gz` 发布（内容相同，计入 Release 的 `SHA256SUMS`），固定下载地址
 始终指向最新一次发布：
@@ -103,11 +105,11 @@ https://github.com/<owner>/<repo>/releases/latest/download/lnmp.tar.gz
 ```
 
 从项目 Release 页面下载固定版本并按页面公布的 SHA-256 核对。假设已将下载文件保存为
-`/root/lnmp-v3.0.3.tar.gz`：
+`/root/lnmp-v3.0.4.tar.gz`：
 
 ```bash
 install -d -m 700 /root/lnmp-src
-tar -xzf /root/lnmp-v3.0.3.tar.gz -C /root/lnmp-src --strip-components=1
+tar -xzf /root/lnmp-v3.0.4.tar.gz -C /root/lnmp-src --strip-components=1
 cd /root/lnmp-src
 chmod +x install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
 bash -n install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh

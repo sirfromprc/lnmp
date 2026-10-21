@@ -6,7 +6,7 @@
 # 菜单显示文本。下标 0-based，菜单编号 1-based，二者相差 1。
 # 数组长度不匹配时立即停止，避免菜单显示空版本。
 DB_Info=('MySQL 8.0.46' 'MySQL 8.4.11 LTS' 'MariaDB 10.11.19' 'MariaDB 11.4.13 LTS' 'MariaDB 11.8.9 LTS' 'MariaDB 12.3.3 LTS')
-PHP_Info=('PHP 8.0.30' 'PHP 8.1.34' 'PHP 8.2.34' 'PHP 8.3.35' 'PHP 8.4.26' 'PHP 8.5.11')
+PHP_Info=('PHP 8.0.30' 'PHP 8.1.34' 'PHP 8.2.35' 'PHP 8.3.36' 'PHP 8.4.27' 'PHP 8.5.12')
 Apache_Info=('Apache 2.4.69')
 
 DB_Count=6
@@ -82,7 +82,7 @@ Set_DB_Profile()
 # Set_PHP_Profile <编号>
 # 产出：
 #   PHP_Branch          主版本号（如 8.3），用于拼接路径与配置文件名
-#   Php_Ver             完整版本标识（如 php-8.3.35）
+#   Php_Ver             完整版本标识（如 php-8.3.36）
 #   MPHP_Path           多版本 PHP 安装路径
 #   PHP_Apache_Module   Apache 模块文件名（libphp5.so / libphp7.so / libphp.so）
 #   Enable_PHP_Config   conf/ 下对应的 enable-php 配置文件名
@@ -98,14 +98,14 @@ Set_PHP_Profile()
 
     case "$1" in
     1)  PHP_Branch='8.0' Php_Ver='php-8.0.30'
-        PHP_Note=' (EOL)' ;;
+        printf -v PHP_Note ' (EOL ，未获修复)' ;;
     2)  PHP_Branch='8.1' Php_Ver='php-8.1.34'
-        PHP_Note=' (EOL)' ;;
-    3)  PHP_Branch='8.2' Php_Ver='php-8.2.34'
+        printf -v PHP_Note ' (EOL ，未获修复)' ;;
+    3)  PHP_Branch='8.2' Php_Ver='php-8.2.35'
         PHP_Note=' (EOL 2026-12)' ;;
-    4)  PHP_Branch='8.3' Php_Ver='php-8.3.35' ;;
-    5)  PHP_Branch='8.4' Php_Ver='php-8.4.26' ;;
-    6)  PHP_Branch='8.5' Php_Ver='php-8.5.11' ;;
+    4)  PHP_Branch='8.3' Php_Ver='php-8.3.36' ;;
+    5)  PHP_Branch='8.4' Php_Ver='php-8.4.27' ;;
+    6)  PHP_Branch='8.5' Php_Ver='php-8.5.12' ;;
     *)  Legacy_Selection_Hint PHP "$1"
         return 1 ;;
     esac
@@ -117,6 +117,18 @@ Set_PHP_Profile()
     PHP_Apache_Module='libphp.so'
     PhpMyAdmin_Ver='phpMyAdmin-5.2.3-all-languages'
 
+    return 0
+}
+
+# PHP_Unpatched_Warn <分支>：分支未获官方安全修复时输出风险提示，返回 0。
+PHP_Unpatched_Warn()
+{
+    case "$1" in
+    8.0|8.1) ;;
+    *) return 0 ;;
+    esac
+    Echo_Red "警告：PHP $1 已停止官方维护，未获 2026-10 远程代码执行漏洞 (GHSA-w8hw-w9fx-j79w, GHSA-6wmf-4rv5-p3rp) 的修复。"
+    Echo_Red "建议改用 PHP 8.2 及以上分支；必须使用时按 HowtoGuides.md 10.5 节的临时缓解措施处理。"
     return 0
 }
 

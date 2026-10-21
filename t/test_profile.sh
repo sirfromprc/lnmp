@@ -72,15 +72,23 @@ expect_php()
 
 expect_php 1 8.0 php-8.0.30 libphp.so
 expect_php 2 8.1 php-8.1.34 libphp.so
-expect_php 3 8.2 php-8.2.34 libphp.so
-expect_php 4 8.3 php-8.3.35 libphp.so
-expect_php 5 8.4 php-8.4.26 libphp.so
-expect_php 6 8.5 php-8.5.11  libphp.so
+expect_php 3 8.2 php-8.2.35 libphp.so
+expect_php 4 8.3 php-8.3.36 libphp.so
+expect_php 5 8.4 php-8.4.27 libphp.so
+expect_php 6 8.5 php-8.5.12  libphp.so
 
 # 已停止支持与临近停止支持的分支须在菜单标注
-for pair in '1: (EOL)' '2: (EOL)' '3: (EOL 2026-12)' '4:' '5:' '6:'; do
+for pair in '1: (EOL ，未获修复)' '2: (EOL ，未获修复)' '3: (EOL 2026-12)' '4:' '5:' '6:'; do
     Set_PHP_Profile "${pair%%:*}"
     check "PHP_Note(${pair%%:*})" "${pair#*:}" "${PHP_Note}"
+done
+
+# 未获安全修复的分支输出风险提示，其余分支无输出；返回码均为 0
+for pair in 8.0:y 8.1:y 8.2:n 8.3:n 8.4:n 8.5:n 8.10:n '':n; do
+    out=$(PHP_Unpatched_Warn "${pair%%:*}"); rc=$?
+    warned=n
+    printf '%s' "${out}" | grep -q 'GHSA-w8hw-w9fx-j79w' && warned=y
+    check "PHP_Unpatched_Warn(${pair%%:*})" "${pair#*:}:0" "${warned}:${rc}"
 done
 
 echo

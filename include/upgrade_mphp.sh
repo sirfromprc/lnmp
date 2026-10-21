@@ -94,6 +94,7 @@ Upgrade_Multiplephp()
         exit 1
     fi
     Echo_Blue "即将把 PHP ${Cur_MPHP_Version} 升级到 ${php_version}。"
+    PHP_Unpatched_Warn "${Cur_MPHP_Big_Ver}"
 
     Press_Start || exit 1
 

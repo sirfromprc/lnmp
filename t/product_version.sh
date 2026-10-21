@@ -3,8 +3,8 @@
 # t/product_version.sh - 输出产品版本号，供工作流与发布流程取值
 #
 # 用法：
-#   bash t/product_version.sh          输出裸版本号，如 3.0.3
-#   bash t/product_version.sh --tag    输出带 v 前缀的形式，如 v3.0.3
+#   bash t/product_version.sh          输出裸版本号，如 3.0.4
+#   bash t/product_version.sh --tag    输出带 v 前缀的形式，如 v3.0.4
 #
 # 版本号唯一来源是 include/product.sh 的 LNMP_Ver，格式 MAJOR.MINOR.PATCH。
 # 工作流不得硬编码版本号。

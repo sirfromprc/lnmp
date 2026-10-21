@@ -43,6 +43,7 @@ Upgrade_PHP()
         Echo_Red "PHP ${php_version} 已停止生命周期支持，本项目不再支持。"
         exit 1
     fi
+    PHP_Unpatched_Warn "$(echo "${php_version}" | cut -d. -f1-2)"
 
     Press_Start || exit 1
 

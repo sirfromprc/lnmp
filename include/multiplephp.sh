@@ -34,6 +34,7 @@ Install_Multiplephp()
         exit 1
     fi
     echo "即将安装 ${PHP_Info[$((PHPSelect-1))]}"
+    PHP_Unpatched_Warn "${PHP_Branch}"
 
     Press_Install
     if [ -d "${MPHP_Path}" ]; then
