@@ -255,8 +255,8 @@ FreeType 与 LuaJIT 标准库。没有未知导出入口或隐藏构造器。
 运行，数据库进程被攻破后可改写这些文件，在下次服务启动或管理员执行客户端时以 root 执行。
 MariaDB 路径同样对 `/usr/local/mariadb` 整体改为 `mariadb` 所有。
 
-成因为 `include/mod/database.sh` 在 MySQL/MariaDB 安装与升级共 5 处执行
-`chown -R <运行账号> /usr/local/<数据库>`。修复后程序目录归 root，仅数据目录归运行账号；
+成因为 `include/mod/database.sh` 在 MySQL/MariaDB 安装、升级与迁移共 5 处执行
+`chown -R <运行账号> /usr/local/<数据库>`，MySQL 升级另有 `chgrp -R mysql`。修复后程序目录归 root，仅数据目录归运行账号；
 MariaDB `auth_pam_tool_dir` 由官方初始化程序设为运行账号所有，`auth_pam_tool` 为 root 4755；
 权限基线 `DB04`、`DB05` 改为期望 root。修复与验证见第 8.3 节与 `changelogs.md`。
 
@@ -323,21 +323,22 @@ PHP 差异为构建日期时间；Redis 差异为版本串中的构建时间值�
 | `bin/mysqld` | 一致 |
 | 归档外 ELF | 0 |
 
-安装目录内归档外的文件为项目随包的 `bin/db-preflight`（Shell 脚本）与修复后预置的
-`check_sector_size`（空数据文件）。
+安装目录内归档外的文件仅有项目随包的 `bin/db-preflight`（Shell 脚本）。
 
 第 7.4 节修复在验证机实测：
 
-- 存量迁移：按 HowtoGuides 10.6 改属主后重启 MySQL，读写正常，`lnmp perm check mysql` 通过。
-- 全新安装 MySQL 8.4.11 返回 0，数据目录与 `check_sector_size` 之外无非 root 文件，错误日志无 ERROR，读写正常；
-  归档比对复跑 378/378 一致。
-- 故障注入：属主设置失败时安装返回 1，输出“设置 /usr/local/mysql 属主失败。”，不初始化、不启动服务。
-- 全新安装 MariaDB 12.3.3 返回 0：程序目录归 root，`auth_pam_tool_dir` 为 mariadb 700，
-  `auth_pam_tool` 为 root 4755，错误日志无 ERROR，读写正常，权限基线通过。
+- 全新安装：MySQL 8.4.11、MariaDB 12.3.3 返回 0，数据目录外全部 `root:root`（MariaDB 仅
+  `auth_pam_tool_dir` 为 mariadb 700，`auth_pam_tool` 为 root 4755），错误日志无 ERROR，读写正常。
+- 故障注入：属主设置失败时 `install.sh db` 返回 1，输出“设置 /usr/local/mysql 属主失败。”，不初始化、不启动服务；
+  `upgrade.sh mysql` 返回 1 并自动回滚到升级前版本，数据与服务恢复。
+- 升级链路：模拟旧属主的 MySQL 8.0.46 经 `upgrade.sh mysql` 升级到 8.4.11，再经 `upgrade.sh m2m` 迁移到
+  MariaDB 11.4.13、`upgrade.sh mariadb` 升级到 11.8.9，各步返回 0，测试数据完整，属主与权限基线符合；
+  最终 MariaDB 11.8.9 与官方归档 22614/22614 文件一致。
+- 存量迁移：HowtoGuides 10.6 的 MySQL、MariaDB 命令实跑后重启正常，`DB04`/`DB05` 告警消失。
 
-MySQL 8.4 InnoDB 启动时在数据目录上一级创建 `check_sector_size`，上一级归 root 后每次启动
-记录 `[ERROR] [MY-012655]`（errno 13）；安装器预置该文件并归 `mysql` 所有，所在目录归 root，
-数据库账号无法替换该目录项。
+MySQL 8.4 默认 O_DIRECT，InnoDB 启动时在 `innodb_data_home_dir` 最后一个 `/` 之前的目录创建
+`check_sector_size` 探测扇区大小。原模板该值不带结尾 `/`，探测落在安装目录，安装目录归 root 后
+每次启动记录 `[ERROR] [MY-012655]`（errno 13）。模板改为带结尾 `/`，探测在数据目录内完成。
 
 ## 9. HTTP 后门触发与压力测试
 
@@ -387,7 +388,7 @@ MySQL 8.4 InnoDB 启动时在数据目录上一级创建 `check_sector_size`，�
 - ImageMagick、PHP、LuaJIT、MySQL 正常包含命令执行或动态加载符号，已结合用途、字符串、
   进程映射和 HTTP 实测复核。
 - 验证机为 NAT 环境：Telegram 真实 API、外部 SFTP/FTP 与 S3 服务、公网证书签发未在本轮复测。
-- MariaDB 只验证全新安装；MySQL/MariaDB 升级路径的属主修改由离线用例覆盖，未在验证机实跑。
+- 数据库源码编译安装（`Bin=n`）与 MariaDB 10.11 未实测属主修改，由离线用例覆盖。
 - Apache/LNMPA/LAMP 只做静态对照；运行时测试针对 Debian 13 LNMP 主线。
 
 ## 11. 可复查命令

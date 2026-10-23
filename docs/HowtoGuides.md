@@ -6165,7 +6165,8 @@ lnmp perm check mysql     # MariaDB 用 lnmp perm check mariadb
 # MySQL
 chown -R root:root /usr/local/mysql
 chown -R mysql:mysql /usr/local/mysql/var
-install -o mysql -g mysql -m 600 /dev/null /usr/local/mysql/check_sector_size
+# innodb_data_home_dir 补上结尾 /，见下文说明
+sed -i 's#^\(innodb_data_home_dir = .*[^/]\)$#\1/#' /etc/my.cnf
 systemctl restart mysql
 lnmp perm check mysql
 ```
@@ -6174,15 +6175,17 @@ lnmp perm check mysql
 # MariaDB：chown 会清除 SUID 位，需恢复 auth_pam_tool 的官方权限
 chown -R root:root /usr/local/mariadb
 chown -R mariadb:mariadb /usr/local/mariadb/var
-chown mariadb:mariadb /usr/local/mariadb/lib/plugin/auth_pam_tool_dir
+chown mariadb /usr/local/mariadb/lib/plugin/auth_pam_tool_dir
 chmod 0700 /usr/local/mariadb/lib/plugin/auth_pam_tool_dir
 chmod 4755 /usr/local/mariadb/lib/plugin/auth_pam_tool_dir/auth_pam_tool
 systemctl restart mariadb
 lnmp perm check mariadb
 ```
 
-`check_sector_size` 供 MySQL 8.4 InnoDB 启动时探测扇区大小；不预置时每次启动在错误日志
-记录 `[ERROR] [MY-012655] ... errno:13`，不影响运行。
+MySQL 8.4 默认以 O_DIRECT 写数据文件，启动时在 `innodb_data_home_dir` 最后一个 `/` 之前的目录
+创建临时文件探测扇区大小。该值写成 `/usr/local/mysql/var` 时探测落在 `/usr/local/mysql`，
+目录归 root 后每次启动在错误日志记录 `[ERROR] [MY-012655] ... errno:13`，不影响运行；写成
+`/usr/local/mysql/var/` 时探测在数据目录内完成。3.0.4 起的安装模板已带结尾 `/`。
 
 [返回顶部](#top)
 

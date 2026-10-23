@@ -81,14 +81,14 @@ Log()
 #   OWNER/GROUP/MODE  期望值，- 表示不校验。
 #   SEV   hard 阻止启动；soft 仅告警。
 #   OPT   opt 不存在即跳过；req 不存在即失败；parentok 不存在时改探父目录；
-#         ex=<名> stat_r 的排除项。
+#         ex=<名|绝对路径|令牌> stat_r 的排除项，名称按文件名匹配，路径与令牌按完整路径匹配。
 # ---------------------------------------------------------------------------
 Baseline=(
 "DB01|mysql,mariadb|write|@DB_DATADIR|@DB_USER|-|-|hard|req"
 "DB02|mysql,mariadb|write|@DB_LOGERROR|@DB_USER|-|-|hard|parentok"
 "DB03|mysql,mariadb|maxmode|@MY_CNF|-|-|022|soft|opt"
-"DB04|mysql|stat_r|/usr/local/mysql|root|root|-|soft|opt,ex=var,ex=check_sector_size"
-"DB05|mariadb|stat_r|/usr/local/mariadb|root|root|-|soft|opt,ex=var,ex=auth_pam_tool_dir"
+"DB04|mysql|stat_r|/usr/local/mysql|root|root|-|soft|opt,ex=@DB_DATADIR"
+"DB05|mariadb|stat_r|/usr/local/mariadb|root|root|-|soft|opt,ex=@DB_DATADIR,ex=auth_pam_tool_dir"
 "DB06|mysql|stat|/etc/init.d/mysql|root|root|755|soft|opt"
 "DB07|mariadb|stat|/etc/init.d/mariadb|root|root|755|soft|opt"
 "DB08|mysql|marker|/etc/init.d/mysql|-|-|-|soft|opt"
@@ -243,13 +243,17 @@ Opt_Has()
     return 1
 }
 
-# 取 OPT 中所有 ex= 排除项，每行一个。
+# 取 OPT 中所有 ex= 排除项，每行一个；令牌展开为路径，展开为空时略过。
 Opt_Excludes()
 {
-    local opt="$1" item
+    local opt="$1" item val
     local IFS=','
     for item in ${opt}; do
         case "${item}" in
+        ex=@*)
+            val=$(Expand_Token "${item#ex=}") || continue
+            [ -n "${val}" ] && printf '%s\n' "${val}"
+            ;;
         ex=*) printf '%s\n' "${item#ex=}" ;;
         esac
     done
@@ -367,7 +371,10 @@ Check_Stat_R()
     find_args=("${path}")
     while IFS= read -r ex; do
         [ -n "${ex}" ] || continue
-        find_args+=(-name "${ex}" -prune -o)
+        case "${ex}" in
+        /*) find_args+=(-path "${ex%/}" -prune -o) ;;
+        *)  find_args+=(-name "${ex}" -prune -o) ;;
+        esac
     done <<EOF
 ${excludes}
 EOF

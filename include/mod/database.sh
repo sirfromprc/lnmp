@@ -263,7 +263,8 @@ early-plugin-load = ""
 
 default_storage_engine = InnoDB
 innodb_file_per_table = 1
-innodb_data_home_dir = ${MySQL_Data_Dir}
+# 结尾 / 不可省略：InnoDB 扇区探测在该值最后一个 / 之前的目录创建临时文件。
+innodb_data_home_dir = ${MySQL_Data_Dir%/}/
 innodb_data_file_path = ibdata1:10M:autoextend
 innodb_log_group_home_dir = ${MySQL_Data_Dir}
 innodb_buffer_pool_size = 16M
@@ -509,12 +510,6 @@ _Database_Own_Tree()
     if ! mkdir -p -- "${data_dir}" || ! chown -R root:root "${prefix}" \
        || ! chown "${user}:${user}" "${data_dir}"; then
         Echo_Red "设置 ${prefix} 属主失败。"
-        return 1
-    fi
-    # MySQL InnoDB 启动时在数据目录上一级创建 check_sector_size，上一级归 root 时预置该文件。
-    if [ "${user}" = mysql ] && [ "${data_dir%/*}" = "${prefix}" ] \
-       && ! install -o mysql -g mysql -m 600 /dev/null "${prefix}/check_sector_size"; then
-        Echo_Red "创建 ${prefix}/check_sector_size 失败。"
         return 1
     fi
     return 0
@@ -1782,7 +1777,8 @@ binlog_expire_logs_seconds = 864000
 early-plugin-load = ""
 
 default_storage_engine = InnoDB
-innodb_data_home_dir = ${MySQL_Data_Dir}
+# 结尾 / 不可省略：InnoDB 扇区探测在该值最后一个 / 之前的目录创建临时文件。
+innodb_data_home_dir = ${MySQL_Data_Dir%/}/
 innodb_data_file_path = ibdata1:10M:autoextend
 innodb_log_group_home_dir = ${MySQL_Data_Dir}
 innodb_buffer_pool_size = 16M
@@ -1831,7 +1827,6 @@ EOF
 
 _Database_Restore_MySQL()
 {
-    chgrp -R mysql /usr/local/mysql/.
     \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
     Svc_Install_Unit "${cur_dir}/init.d/mysql.service" /etc/systemd/system/mysql.service || exit 1
     chmod 755 /etc/init.d/mysql
