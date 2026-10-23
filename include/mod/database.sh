@@ -295,7 +295,7 @@ EOF
     # MySQL 8.4 及以上转换弃用配置，8.0 保持原配置。
     _Database_MySQL_Deprecated "${ver%.*}"
     _Database_Data_Dir_Guard MySQL "${MySQL_Data_Dir}" mysql || return 1
-    chown -R mysql:mysql /usr/local/mysql
+    _Database_Own_Tree /usr/local/mysql "${MySQL_Data_Dir}" mysql || return 1
     # 数据目录初始化失败时停止，避免继续执行无效的启动和安全设置。
     if ! /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql; then
         Echo_Red "MySQL 数据目录初始化失败：${MySQL_Data_Dir}"
@@ -419,7 +419,7 @@ EOF
     fi
     _Database_Tune
     _Database_Data_Dir_Guard MariaDB "${MariaDB_Data_Dir}" mariadb || return 1
-    chown -R mariadb:mariadb /usr/local/mariadb
+    _Database_Own_Tree /usr/local/mariadb "${MariaDB_Data_Dir}" mariadb || return 1
     install_db=$(First_Executable \
         /usr/local/mariadb/scripts/mariadb-install-db \
         /usr/local/mariadb/scripts/mysql_install_db \
@@ -496,6 +496,28 @@ _Database_Data_Dir_Guard()
     else
         mkdir -p -- "${data_dir}" || return 1
     fi
+}
+
+# _Database_Own_Tree <安装目录> <数据目录> <运行账号>：程序文件归 root，仅数据目录归运行账号。
+# mysqld_safe、db-preflight 以 root 执行，归运行账号所有时数据库进程可借服务重启提权。
+_Database_Own_Tree()
+{
+    local prefix=$1 data_dir=$2 user=$3
+
+    case "${prefix}" in ''|/) return 1 ;; esac
+    [ -n "${data_dir}" ] && [ -n "${user}" ] || return 1
+    if ! mkdir -p -- "${data_dir}" || ! chown -R root:root "${prefix}" \
+       || ! chown "${user}:${user}" "${data_dir}"; then
+        Echo_Red "设置 ${prefix} 属主失败。"
+        return 1
+    fi
+    # MySQL InnoDB 启动时在数据目录上一级创建 check_sector_size，上一级归 root 时预置该文件。
+    if [ "${user}" = mysql ] && [ "${data_dir%/*}" = "${prefix}" ] \
+       && ! install -o mysql -g mysql -m 600 /dev/null "${prefix}/check_sector_size"; then
+        Echo_Red "创建 ${prefix}/check_sector_size 失败。"
+        return 1
+    fi
+    return 0
 }
 
 # 通用二进制包解包到安装目录：目录须不存在或为空，安装后 bin 非空，并随包安装启动前检查。
@@ -1232,7 +1254,7 @@ EOF
     _Database_Tune
     # 搬迁成功后该路径应当为空；非空说明上一步没搬干净，此时拒绝而不是清空。
     Require_Empty_Data_Dir "${MariaDB_Data_Dir}" || exit 1
-    chown -R mariadb:mariadb /usr/local/mariadb
+    _Database_Own_Tree /usr/local/mariadb "${MariaDB_Data_Dir}" mariadb || exit 1
     install_db=$(First_Executable \
         /usr/local/mariadb/scripts/mariadb-install-db /usr/local/mariadb/scripts/mysql_install_db \
         /usr/local/mariadb/bin/mariadb-install-db /usr/local/mariadb/bin/mysql_install_db) || exit 1
@@ -1392,7 +1414,7 @@ EOF
     _Database_Tune
     # 搬迁成功后该路径应当为空；非空说明上一步没搬干净，此时拒绝而不是清空。
     Require_Empty_Data_Dir "${MariaDB_Data_Dir}" || exit 1
-    chown -R mariadb:mariadb /usr/local/mariadb
+    _Database_Own_Tree /usr/local/mariadb "${MariaDB_Data_Dir}" mariadb || exit 1
     install_db=$(First_Executable \
         /usr/local/mariadb/scripts/mariadb-install-db /usr/local/mariadb/scripts/mysql_install_db \
         /usr/local/mariadb/bin/mariadb-install-db /usr/local/mariadb/bin/mysql_install_db) || exit 1
@@ -1793,7 +1815,7 @@ EOF
     _Database_MySQL_Deprecated "${mysql_version%.*}"
     # 搬迁成功后该路径应当为空；非空说明上一步没搬干净，此时拒绝而不是清空。
     Require_Empty_Data_Dir "${MySQL_Data_Dir}" || exit 1
-    chown -R mysql:mysql /usr/local/mysql/
+    _Database_Own_Tree /usr/local/mysql "${MySQL_Data_Dir}" mysql || exit 1
     /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql || exit 1
     chown -R mysql:mysql ${MySQL_Data_Dir}
     _Database_Init_Password mysql mysql || exit 1

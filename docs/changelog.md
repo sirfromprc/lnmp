@@ -8,6 +8,8 @@
 
 - PHP 固定版本升级到 8.2.35、8.3.36、8.4.27、8.5.12，修复 2026-10 远程代码执行漏洞（GHSA-w8hw-w9fx-j79w、GHSA-6wmf-4rv5-p3rp）。已部署机器执行 `upgrade.sh php|phpa|mphp` 升级，见 HowtoGuides 10.5。
 - PHP 8.0、8.1 已 EOL ，没有修复版：菜单标注“未获修复”，安装或升级这两个分支时输出风险提示；HowtoGuides 10.5 给出临时缓解措施及副作用。
+- MySQL、MariaDB 程序目录改归 root，只有数据目录归数据库账号。此前整个目录归数据库账号，数据库进程被攻破后可借服务重启取得 root。新装与升级后自动生效；已部署机器执行 `lnmp perm check mysql`（或 `mariadb`），出现 `DB04`/`DB05` 告警时按 HowtoGuides 10.6 迁移。
+- 安全复查报告 `SecurityCheck.md` 按 3.0.4 重做：Nginx、PHP、Redis 独立重编机器代码与安装文件一致，MySQL 官方归档逐文件一致，未发现隐藏下载、上传或 HTTP 触发后门。
 
 ## 3.0.3
 

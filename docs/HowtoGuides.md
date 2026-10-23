@@ -6146,6 +6146,44 @@ bash upgrade.sh mphp     # 附加实例，逐个选择并输入同分支修复�
    副作用：该站点全部文件上传与 multipart 表单提交失败，WordPress 媒体上传、插件与主题安装都会失败。
    此规则不写入默认站点模板，按站点手工加入，升级后删除。
 
+### 10.6 数据库程序目录属主
+
+3.0.4 起，`/usr/local/mysql`、`/usr/local/mariadb` 的程序文件归 root，只有数据目录归数据库
+运行账号。此前的版本把整个目录交给 `mysql` 或 `mariadb` 账号，而 `mysqld_safe`、
+`db-preflight` 以 root 执行，数据库进程被攻破后可借服务重启取得 root。
+
+新装和经 `upgrade.sh` 升级数据库后自动采用新属主。存量机器先核对：
+
+```bash
+lnmp perm check mysql     # MariaDB 用 lnmp perm check mariadb
+```
+
+`DB04`（MySQL）或 `DB05`（MariaDB）告警时按下面处理。数据目录以 `/etc/my.cnf` 的 `datadir`
+为准，下例为默认的 `var`：
+
+```bash
+# MySQL
+chown -R root:root /usr/local/mysql
+chown -R mysql:mysql /usr/local/mysql/var
+install -o mysql -g mysql -m 600 /dev/null /usr/local/mysql/check_sector_size
+systemctl restart mysql
+lnmp perm check mysql
+```
+
+```bash
+# MariaDB：chown 会清除 SUID 位，需恢复 auth_pam_tool 的官方权限
+chown -R root:root /usr/local/mariadb
+chown -R mariadb:mariadb /usr/local/mariadb/var
+chown mariadb:mariadb /usr/local/mariadb/lib/plugin/auth_pam_tool_dir
+chmod 0700 /usr/local/mariadb/lib/plugin/auth_pam_tool_dir
+chmod 4755 /usr/local/mariadb/lib/plugin/auth_pam_tool_dir/auth_pam_tool
+systemctl restart mariadb
+lnmp perm check mariadb
+```
+
+`check_sector_size` 供 MySQL 8.4 InnoDB 启动时探测扇区大小；不预置时每次启动在错误日志
+记录 `[ERROR] [MY-012655] ... errno:13`，不影响运行。
+
 [返回顶部](#top)
 
 ---
