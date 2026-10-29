@@ -21,9 +21,11 @@ fi
 . "${cur_dir}/include/verify.sh"
 . "${cur_dir}/include/version.sh"
 . "${cur_dir}/include/init.sh"
+. "${cur_dir}/include/lock.sh"
 Get_Dist_Name
 Get_Dist_Version
 
+Lock_Acquire "tools/denyhosts.sh" || exit 2
 Press_Start || exit 1
 
 if [ "${PM}" = "yum" ]; then
@@ -42,30 +44,37 @@ elif [ "${PM}" = "apt" ]; then
     /etc/init.d/rsyslog restart
 fi
 
+# DenyHosts 3.1 依赖 python 命令及 distutils、ipaddr 模块，缺失时在下载与写配置前中止。
+if ! python -c 'import distutils.core, ipaddr' >/dev/null 2>&1; then
+    Echo_Red "缺少 DenyHosts 3.1 所需的 python 命令或 distutils、ipaddr 模块，未写入 DenyHosts 文件与配置。"
+    Echo_Red "Python 3.12 起已移除 distutils，Debian 13 等系统无法安装 DenyHosts，请改用 tools/fail2ban.sh。"
+    exit 1
+fi
+
 echo "正在下载 DenyHosts..."
 cd "${cur_dir}/src" || exit 1
 Download_Source_Rows "DenyHosts" < <(Lib_Sources denyhosts)
 Tar_Cd "${Denyhosts_Ver}.tar.gz" "${Denyhosts_Ver}"
 echo "正在安装 DenyHosts..."
-python setup.py install
+python setup.py install || { Echo_Red "DenyHosts 安装失败。"; exit 1; }
 
 echo "正在复制 DenyHosts 文件..."
-\cp denyhosts.conf /etc
+\cp denyhosts.conf /etc || exit 1
 
 if [ "${PM}" = "yum" ]; then
     sed -i 's@^SECURE_LOG = /var/log/auth.log@#SECURE_LOG = /var/log/auth.log@g' /etc/denyhosts.conf
     sed -i 's@^#SECURE_LOG = /var/log/secure@SECURE_LOG = /var/log/secure@g' /etc/denyhosts.conf
-    \cp /usr/bin/daemon-control-dist /usr/bin/daemon-control
+    \cp /usr/bin/daemon-control-dist /usr/bin/daemon-control || exit 1
     chown root /usr/bin/daemon-control
     chmod 700 /usr/bin/daemon-control
-    \cp /usr/bin/daemon-control /etc/init.d/denyhosts
+    \cp /usr/bin/daemon-control /etc/init.d/denyhosts || exit 1
 
     ln -sf /usr/bin/denyhosts.py /usr/sbin/denyhosts
 elif [ "${PM}" = "apt" ]; then
-    \cp /usr/local/bin/daemon-control-dist /usr/local/bin/daemon-control
+    \cp /usr/local/bin/daemon-control-dist /usr/local/bin/daemon-control || exit 1
     chown root /usr/local/bin/daemon-control
     chmod 700 /usr/local/bin/daemon-control
-    \cp /usr/local/bin/daemon-control /etc/init.d/denyhosts
+    \cp /usr/local/bin/daemon-control /etc/init.d/denyhosts || exit 1
 
     ln -sf /usr/local/bin/denyhosts.py /usr/sbin/denyhosts
     cat >lsb.ini<<EOF

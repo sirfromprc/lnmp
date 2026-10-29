@@ -22,9 +22,11 @@ fi
 . "${cur_dir}/include/verify.sh"
 . "${cur_dir}/include/version.sh"
 . "${cur_dir}/include/init.sh"
+. "${cur_dir}/include/lock.sh"
 Get_Dist_Name
 Get_Dist_Version
 
+Lock_Acquire "tools/fail2ban.sh" || exit 2
 Press_Start || exit 1
 
 if [ "${PM}" = "yum" ]; then
@@ -47,10 +49,10 @@ cd "${cur_dir}/src" || exit 1
 Download_Source_Rows "fail2ban" < <(Lib_Sources fail2ban)
 tar zxf "${Fail2ban_Ver}.tar.gz" && cd "${Fail2ban_Ver}" || exit 1
 echo "正在安装 fail2ban..."
-python3 setup.py install
+python3 setup.py install || { Echo_Red "fail2ban 安装失败。"; exit 1; }
 
 echo "正在复制 fail2ban 配置文件..."
-\cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+\cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local || exit 1
 sed -i '/^#mode   = normal/a \
 enabled  = true\
 filter   = sshd\
@@ -75,14 +77,14 @@ if [ ! -d /var/run/fail2ban ];then
     mkdir /var/run/fail2ban
 fi
 
-\cp build/fail2ban.service /etc/systemd/system/fail2ban.service
+\cp build/fail2ban.service /etc/systemd/system/fail2ban.service || exit 1
 if [ "${PM}" = "yum" ]; then
-    \cp files/redhat-initd /etc/init.d/fail2ban
+    \cp files/redhat-initd /etc/init.d/fail2ban || exit 1
     sed -i 's#^before = paths-debian.conf#before = paths-fedora.conf#' /etc/fail2ban/jail.local
     sed -i 's/^Environment="PYTHONNOUSERSITE=1"/#Environment="PYTHONNOUSERSITE=1"/' /etc/systemd/system/fail2ban.service
     sed -i 's/-xf start/-x start/' /etc/systemd/system/fail2ban.service
 elif [ "${PM}" = "apt" ]; then
-    \cp files/debian-initd /etc/init.d/fail2ban
+    \cp files/debian-initd /etc/init.d/fail2ban || exit 1
 fi
 
 chmod +x /etc/init.d/fail2ban

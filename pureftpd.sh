@@ -35,6 +35,9 @@ esac
 . "${cur_dir}/include/init.sh"
 . "${cur_dir}/include/end.sh"
 . "${cur_dir}/include/mod/pureftpd.sh"
+. "${cur_dir}/include/lock.sh"
+
+Lock_Acquire "pureftpd.sh ${action:-install}" || exit 2
 
 Validate_Service_Ports || exit 1
 Get_Dist_Name

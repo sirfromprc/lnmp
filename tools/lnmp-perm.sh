@@ -243,20 +243,25 @@ Opt_Has()
     return 1
 }
 
-# 取 OPT 中所有 ex= 排除项，每行一个；令牌展开为路径，展开为空时略过。
+# 取 OPT 中所有 ex= 排除项，每行一个；令牌展开为路径。
+# 令牌展开失败或为空时只输出该令牌并返回 1，调用方不得按缺少排除项继续核对。
 Opt_Excludes()
 {
-    local opt="$1" item val
+    local opt="$1" item val out=''
     local IFS=','
     for item in ${opt}; do
         case "${item}" in
         ex=@*)
-            val=$(Expand_Token "${item#ex=}") || continue
-            [ -n "${val}" ] && printf '%s\n' "${val}"
+            if ! val=$(Expand_Token "${item#ex=}") || [ -z "${val}" ]; then
+                printf '%s\n' "${item#ex=}"
+                return 1
+            fi
+            printf -v out '%s%s\n' "${out}" "${val}"
             ;;
-        ex=*) printf '%s\n' "${item#ex=}" ;;
+        ex=*) printf -v out '%s%s\n' "${out}" "${item#ex=}" ;;
         esac
     done
+    printf '%s' "${out}"
 }
 
 # ---------------------------------------------------------------------------
@@ -465,7 +470,7 @@ Perm_Run()
 {
     local want="$1" profile="$2"
     local entry id svc kind raw owner group mode sev opt
-    local path acct rc degraded
+    local path acct rc degraded excludes
 
     Pass_Count=0
     Soft_Count=0
@@ -520,7 +525,16 @@ EOF
             Check_Stat "${path}" "${owner}" "${group}" "${mode}" || rc=1
             ;;
         stat_r)
-            Check_Stat_R "${path}" "${owner}" "${group}" "$(Opt_Excludes "${opt}")" || rc=1
+            if ! excludes=$(Opt_Excludes "${opt}"); then
+                # 排除项缺失时数据目录等会被报为偏差，修复命令会改坏其属主。
+                printf -v Detail '排除项 %s 无法定位，未核对属主，请检查 %s 中的相关配置' \
+                    "${excludes}" "${My_Cnf}"
+                Fix=""
+                rc=1
+                sev=soft
+            else
+                Check_Stat_R "${path}" "${owner}" "${group}" "${excludes}" || rc=1
+            fi
             ;;
         write)
             acct=$(Expand_Token "${owner}")

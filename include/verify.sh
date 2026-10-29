@@ -92,7 +92,7 @@ Download_Head_Probe()
     fi
 
     # curl 不可用时使用 wget --spider（HEAD）探测，同样在失败后回退 Range GET。
-    if wget -q --spider --max-redirect=${DL_MAX_REDIRECT} --timeout="${timeout}" "${url}" 2>/dev/null; then
+    if wget -q --spider --tries=1 --max-redirect=${DL_MAX_REDIRECT} --timeout="${timeout}" "${url}" 2>/dev/null; then
         printf 'ok\t200\n'
         return 0
     fi

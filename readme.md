@@ -1,6 +1,6 @@
-# LNMP 3.0.4
+# LNMP 3.0.5
 
-LNMP 3.0.4 是一套面向 Linux 服务器的 Shell 安装与运维工具，支持：
+LNMP 3.0.5 是一套面向 Linux 服务器的 Shell 安装与运维工具，支持：
 
 - LNMP：Nginx、MySQL/MariaDB、PHP；
 - LNMPA：Nginx 前端、Apache、MySQL/MariaDB、PHP；
@@ -50,7 +50,7 @@ WordPress。Apache 栈及其它发行版的支持边界见 [HowtoGuides.md](docs
   CLI 所需的进程函数，不放宽 Web 请求的 `disable_functions`。
 - 数据库和 PHP-FPM socket 位于 `/run` 下的专用目录，不使用共享 `/tmp`。
 - 数据库 root 随机密码不会写入安装日志；需要保存时使用权限为 0600 的凭据文件。
-- `install.sh`、`upgrade.sh`、`addons.sh`、`uninstall.sh`、`bumpversion.sh` 共用一把维护锁。已有任务运行时，后到的执行以退出码 2 结束并提示持有者 PID 与命令，不会改动系统。
+- `install.sh`、`upgrade.sh`、`addons.sh`、`uninstall.sh`、`bumpversion.sh`、`pureftpd.sh` 与 `tools/denyhosts.sh`、`tools/fail2ban.sh` 共用一把维护锁。已有任务运行时，后到的执行以退出码 2 结束并提示持有者 PID 与命令，不会改动系统。
 - 安装、编译、配置测试或服务启动失败时返回非零退出码。安装收尾除了检查文件，
   还确认各服务确实在运行，并对 Web、PHP-FPM 和数据库各做一次最小协议探测。
 - Nginx、PHP 和 phpMyAdmin 的升级包含切换前检查及失败回滚；数据库升级在搬走旧实例之后
@@ -94,8 +94,8 @@ ss -lntup
 
 | 包 | 组件版本 | 适用情况 |
 | --- | --- | --- |
-| `lnmp-v3.0.4.tar.gz` | 维护者手工确认，**不含自动升级** | 默认选它 |
-| `lnmp-v3.0.4-<日期>.tar.gz` | 每月自动跟进上游，仅部分 Release 提供 | 需要更新的组件版本时 |
+| `lnmp-v3.0.5.tar.gz` | 维护者手工确认，**不含自动升级** | 默认选它 |
+| `lnmp-v3.0.5-<日期>.tar.gz` | 每月自动跟进上游，仅部分 Release 提供 | 需要更新的组件版本时 |
 
 不带日期的包另以 `lnmp.tar.gz` 发布（内容相同，计入 Release 的 `SHA256SUMS`），固定下载地址
 始终指向最新一次发布：
@@ -105,11 +105,11 @@ https://github.com/<owner>/<repo>/releases/latest/download/lnmp.tar.gz
 ```
 
 从项目 Release 页面下载固定版本并按页面公布的 SHA-256 核对。假设已将下载文件保存为
-`/root/lnmp-v3.0.4.tar.gz`：
+`/root/lnmp-v3.0.5.tar.gz`：
 
 ```bash
 install -d -m 700 /root/lnmp-src
-tar -xzf /root/lnmp-v3.0.4.tar.gz -C /root/lnmp-src --strip-components=1
+tar -xzf /root/lnmp-v3.0.5.tar.gz -C /root/lnmp-src --strip-components=1
 cd /root/lnmp-src
 chmod +x install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
 bash -n install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh

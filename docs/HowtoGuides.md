@@ -1,6 +1,6 @@
 <a id="top"></a>
 
-# LNMP 3.0.4 从零搭建 WordPress 生产环境
+# LNMP 3.0.5 从零搭建 WordPress 生产环境
 
 > 主安装、建站、WordPress、Redis、HTTPS 和备份流程已在
 > **Debian 12、Debian 13 / x86_64 / 6G 内存 / 4 核** 上实测，文中的“实测输出”来自
@@ -121,11 +121,11 @@ APT_LOCK_TIMEOUT=900 bash install.sh lnmp
 
 从项目 Release 页面下载固定版本，并使用同一 Release 公布的 SHA-256 核对文件。
 项目尚未在源码中固定公开仓库地址，因此本文不提供可能指向错误仓库的占位下载命令。
-假设已将验证通过的压缩包保存为 `/root/lnmp-v3.0.4.tar.gz`：
+假设已将验证通过的压缩包保存为 `/root/lnmp-v3.0.5.tar.gz`：
 
 ```bash
 install -d -m 700 /root/lnmp-src
-tar -xzf /root/lnmp-v3.0.4.tar.gz -C /root/lnmp-src --strip-components=1
+tar -xzf /root/lnmp-v3.0.5.tar.gz -C /root/lnmp-src --strip-components=1
 cd /root/lnmp-src
 chmod +x install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
 bash -n install.sh addons.sh pureftpd.sh uninstall.sh upgrade.sh
@@ -4091,7 +4091,7 @@ cp -a /root/lnmp-preserved-<时间>/usr/local/nginx/conf/vhost/. /usr/local/ngin
 
 ```bash
 /bin/lnmp-cutlogs                                 # Nginx 日志切割，已自动定时执行，见 8.7
-bash tools/denyhosts.sh                           # 安装 DenyHosts
+bash tools/denyhosts.sh                           # 安装 DenyHosts，Debian 13 等系统不可用，见 10.1
 bash tools/fail2ban.sh                            # 安装 Fail2ban
 bash tools/denyhosts_removeip.sh "${BLOCKED_IP}"  # 解除 DenyHosts 误封，见 8.1.13
 bash tools/reset_mysql_root_password.sh           # 重置数据库 root 密码，见 9.7
@@ -5880,6 +5880,11 @@ systemctl list-timers 'apt-daily*' 'dnf-automatic*' --all  # 下次触发时间
    fail2ban-client status sshd
    ```
 
+   `denyhosts.sh` 安装的 DenyHosts 3.1 需要 `python` 命令及 `distutils`、`ipaddr` 模块。
+   Python 3.12 起已移除 `distutils`，Debian 13 也没有 `python`、`python-ipaddr` 包，
+   脚本检查到缺失后返回 1，不写入 DenyHosts 文件与配置（依赖安装步骤可能已装上 rsyslog），这类系统请用 `fail2ban.sh`。
+   两个脚本与安装、升级共用维护锁，有其它维护任务在运行时返回 2。
+
    DenyHosts 误封时用严格地址入口解封（见 8.1）：`bash tools/denyhosts_removeip.sh <IP>`。
 
 2. **按需给 phpMyAdmin 追加来源限制**。
@@ -6148,7 +6153,7 @@ bash upgrade.sh mphp     # 附加实例，逐个选择并输入同分支修复�
 
 ### 10.6 数据库程序目录属主
 
-3.0.4 起，`/usr/local/mysql`、`/usr/local/mariadb` 的程序文件归 root，只有数据目录归数据库
+3.0.5 起，`/usr/local/mysql`、`/usr/local/mariadb` 的程序文件归 root，只有数据目录归数据库
 运行账号。此前的版本把整个目录交给 `mysql` 或 `mariadb` 账号，而 `mysqld_safe`、
 `db-preflight` 以 root 执行，数据库进程被攻破后可借服务重启取得 root。
 
@@ -6185,7 +6190,7 @@ lnmp perm check mariadb
 MySQL 8.4 默认以 O_DIRECT 写数据文件，启动时在 `innodb_data_home_dir` 最后一个 `/` 之前的目录
 创建临时文件探测扇区大小。该值写成 `/usr/local/mysql/var` 时探测落在 `/usr/local/mysql`，
 目录归 root 后每次启动在错误日志记录 `[ERROR] [MY-012655] ... errno:13`，不影响运行；写成
-`/usr/local/mysql/var/` 时探测在数据目录内完成。3.0.4 起的安装模板已带结尾 `/`。
+`/usr/local/mysql/var/` 时探测在数据目录内完成。3.0.5 起的安装模板已带结尾 `/`。
 
 [返回顶部](#top)
 
