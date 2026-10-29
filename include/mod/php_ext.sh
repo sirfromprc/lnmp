@@ -12,7 +12,7 @@
 #
 # 约定：不交互、不 exit、不改变调用方工作目录；编译在私有目录的子 shell 中进行，
 # 失败原因经结果变量名传回；产物生成并通过加载验证之后才写入 ini。
-# 输入为参数与只读配置（include/version.sh 的版本常量、cur_dir、PM）。
+# 输入为参数与只读配置（include/version.sh 的版本常量、cur_dir、PM）；PHP 源码包地址取自 include/mod/php.sh 的 PHP_Sources。
 
 # _PHPExt_Spec <扩展名>：输出 类型、包名、产物、ini、模块名，TAB 分隔。
 # 类型 pecl 取自 pecl.php.net；phpsrc 取自 PHP 源码包的 ext/<扩展名>。
@@ -123,19 +123,19 @@ _PHPExt_Apt()
 # _PHPExt_Libmemcached：编译 php-memcached 依赖的 libmemcached。
 _PHPExt_Libmemcached()
 {
-    local bdir
+    local bdir file url
 
     [ -s /usr/local/libmemcached/lib/libmemcached.so ] && return 0
+    IFS=$'\t' read -r _ _ _ file url _ < <(Libmemcached_Sources) || return 1
     bdir=$(mktemp -d "${cur_dir}/src/.libmemcached.XXXXXXXX") || return 1
     (
         # 路径在此刻展开：trap 触发时局部变量已不在作用域内。
         # shellcheck disable=SC2064
         trap "_PHPExt_Cleanup '${bdir}'" EXIT
         cd "${cur_dir}/src" || exit 1
-        Download_Files "https://launchpad.net/libmemcached/1.0/${Libmemcached_Ver#libmemcached-}/+download/${Libmemcached_Ver}.tar.gz" \
-            "${Libmemcached_Ver}.tar.gz" || exit 1
-        [ -s "${Libmemcached_Ver}.tar.gz" ] || exit 1
-        Unpack_Checked "${cur_dir}/src/${Libmemcached_Ver}.tar.gz" "${bdir}" "${Libmemcached_Ver}" || exit 1
+        Download_Files "${url}" "${file}" || exit 1
+        [ -s "${file}" ] || exit 1
+        Unpack_Checked "${cur_dir}/src/${file}" "${bdir}" "${Libmemcached_Ver}" || exit 1
         cd "${bdir}/${Libmemcached_Ver}" || exit 1
         # GCC 7 及以上需要兼容补丁。
         if gcc -dumpversion | grep -Eq '^([7-9]|[1-9][0-9])'; then
@@ -222,9 +222,16 @@ PHPExt_Files()
     printf '%s\t%s\t%s\n' "${so}" "${ini}" "${module}"
 }
 
+# Libmemcached_Sources：php-memcached 依赖的 libmemcached 下载清单。
+Libmemcached_Sources()
+{
+    printf 'libmemcached\t-\t%s\t%s.tar.gz\thttps://launchpad.net/libmemcached/1.0/%s/+download/%s.tar.gz\tsha256\tsrc/checksums.sha256\n' \
+        "${Libmemcached_Ver}" "${Libmemcached_Ver}" "${Libmemcached_Ver#libmemcached-}" "${Libmemcached_Ver}"
+}
+
 PHPExt_Sources()
 {
-    local prefix=$1 ext=$2 kind pkg so ini module ver
+    local prefix=$1 ext=$2 kind pkg so ini module ver file url
 
     IFS=$'\t' read -r kind pkg so ini module < <(_PHPExt_Spec "${ext}") || return 1
     case "${kind}" in
@@ -233,17 +240,16 @@ PHPExt_Sources()
             "${prefix}" "${ext}" "${pkg}" "${pkg}" "${pkg}"
         case "${ext}" in
         imagick) ImageMagick_Sources ;;
-        memcached)
-            printf 'libmemcached\t-\t%s\t%s.tar.gz\thttps://launchpad.net/libmemcached/1.0/%s/+download/%s.tar.gz\tsha256\tsrc/checksums.sha256\n' \
-                "${Libmemcached_Ver}" "${Libmemcached_Ver}" "${Libmemcached_Ver#libmemcached-}" "${Libmemcached_Ver}"
-            ;;
+        memcached) Libmemcached_Sources ;;
         esac
         ;;
     phpsrc)
         ver=$("${prefix}/bin/php-config" --version 2>/dev/null)
         [ -n "${ver}" ] || return 1
-        printf 'php-ext\t%s:%s\t%s\tphp-%s.tar.bz2\thttps://www.php.net/distributions/php-%s.tar.bz2\tsha256\tsrc/checksums.sha256\n' \
-            "${prefix}" "${ext}" "${ver}" "${ver}" "${ver}"
+        # 源码包地址取自 PHP 模块；扩展安装经 Download_Files 按静态清单校验。
+        IFS=$'\t' read -r _ _ _ file url _ < <(PHP_Sources "${prefix}" fpm "${ver}") || return 1
+        printf 'php-ext\t%s:%s\t%s\t%s\t%s\tsha256\tsrc/checksums.sha256\n' \
+            "${prefix}" "${ext}" "${ver}" "${file}" "${url}"
         ;;
     *) return 1 ;;
     esac

@@ -44,17 +44,34 @@ Download_Fetch()
          --max-redirect=${DL_MAX_REDIRECT} -O "${out}" "${url}"
 }
 
-# Download_Head_OK <url> [超时秒数]：确认 HTTPS 地址可下载。
-# 先发 HEAD；部分服务器禁用 HEAD（405/403），此时改用只取首字节的
-# Range GET 再判一次，避免把可下载的地址判成不可用。
-# 在修改本地配置前检查上游资源是否存在，例如 OpenResty 发行版仓库。
-Download_Head_OK()
+# _Download_Probe_Class <是否收到最终响应 0|1> <状态码>：输出“类别 TAB 状态码”，可下载返回 0。
+# ok：2xx；gone：收到最终响应且为 404/410；down：超时、DNS、连接失败、跳转未完成及其他状态。
+_Download_Probe_Class()
 {
-    local url="$1" timeout="${2:-30}" code
+    local final=$1 code=${2:-000} cls=down
+
+    case "${code}" in
+    2*) cls=ok ;;
+    404|410) [ "${final}" = 1 ] && cls=gone ;;
+    esac
+    printf '%s\t%s\n' "${cls}" "${code}"
+    [ "${cls}" = ok ]
+}
+
+# Download_Head_Probe <url> [超时秒数]：探测 HTTPS 地址，输出“类别 TAB 状态码”，可下载返回 0。
+# 先发 HEAD；部分服务器禁用 HEAD（405/403），此时改用只取首字节的
+# Range GET 再判一次，失败类别按 Range GET 的结果判定。
+Download_Head_Probe()
+{
+    local url="$1" timeout="${2:-30}" code rc out
 
     case "${url}" in
     https://*) : ;;
-    *) Echo_Red "拒绝非 HTTPS 探测：${url}"; return 1 ;;
+    *)
+        Echo_Red "拒绝非 HTTPS 探测：${url}" >&2
+        printf 'down\t000\n'
+        return 1
+        ;;
     esac
 
     if command -v curl >/dev/null 2>&1; then
@@ -63,22 +80,39 @@ Download_Head_OK()
                --proto '=https' --proto-redir '=https' \
                --max-redirs ${DL_MAX_REDIRECT} --max-time "${timeout}" "${url}" 2>/dev/null)
         case "${code}" in
-        2*) return 0 ;;
+        2*) printf 'ok\t%s\n' "${code}"; return 0 ;;
         esac
+        # curl 退出码非 0 表示跳转链未完成，此时的状态码来自中间响应。
         code=$(curl -sS -o /dev/null -w '%{http_code}' -r 0-0 -L \
                --proto '=https' --proto-redir '=https' \
                --max-redirs ${DL_MAX_REDIRECT} --max-time "${timeout}" "${url}" 2>/dev/null)
-        case "${code}" in
-        2*) return 0 ;;
-        *)  return 1 ;;
-        esac
+        rc=$?
+        _Download_Probe_Class "$([ "${rc}" = 0 ] && echo 1 || echo 0)" "${code}"
+        return
     fi
 
     # curl 不可用时使用 wget --spider（HEAD）探测，同样在失败后回退 Range GET。
-    wget -q --spider --max-redirect=${DL_MAX_REDIRECT} --timeout="${timeout}" "${url}" 2>/dev/null \
-        && return 0
-    wget -q -O /dev/null --tries=1 --header='Range: bytes=0-0' \
-         --max-redirect=${DL_MAX_REDIRECT} --timeout="${timeout}" "${url}" 2>/dev/null
+    if wget -q --spider --max-redirect=${DL_MAX_REDIRECT} --timeout="${timeout}" "${url}" 2>/dev/null; then
+        printf 'ok\t200\n'
+        return 0
+    fi
+    out=$(wget -S -O /dev/null --tries=1 --header='Range: bytes=0-0' \
+          --max-redirect=${DL_MAX_REDIRECT} --timeout="${timeout}" "${url}" 2>&1)
+    rc=$?
+    code=$(printf '%s\n' "${out}" | awk '$1 ~ /^HTTP\// {c=$2} END {print c}')
+    # wget 退出码 8 表示收到最终的错误响应。
+    case "${rc}" in
+    0) _Download_Probe_Class 1 "${code:-200}" ;;
+    8) _Download_Probe_Class 1 "${code}" ;;
+    *) _Download_Probe_Class 0 "${code}" ;;
+    esac
+}
+
+# Download_Head_OK <url> [超时秒数]：确认 HTTPS 地址可下载，判定同 Download_Head_Probe。
+# 在修改本地配置前检查上游资源是否存在，例如 OpenResty 发行版仓库。
+Download_Head_OK()
+{
+    Download_Head_Probe "$@" >/dev/null
 }
 
 # Verify_SHA256_Value <文件> <期望值>

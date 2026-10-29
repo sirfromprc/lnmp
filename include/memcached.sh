@@ -158,12 +158,15 @@ Memcached_Install()
 
 _Memcached_Install()
 {
+    local file url
+
     echo "正在安装 Memcached..."
     cd "${cur_dir}/src" || return 1
     # 重装一律重新编译：误删过二进制、init 脚本或依赖文件时，只重写配置起不来。
     # 源码包与依赖先取齐再停服务，避免服务停下后卡在下载或依赖安装失败。
-    Download_Files https://memcached.org/files/${Memcached_Ver}.tar.gz ${Memcached_Ver}.tar.gz
-    Require_File "${Memcached_Ver}.tar.gz" "memcached"
+    IFS=$'\t' read -r _ _ _ file url _ < <(Memcached_Sources)
+    Download_Files "${url}" "${file}"
+    Require_File "${file}" "memcached"
     Install_Memcached_Deps || { Memcached_Abort "缺少 libevent 开发包，无法编译 memcached。"; return 1; }
     if ! Prepare_Memcached_Rebuild; then
         Memcached_Abort "重装前的停服务或备份失败。"

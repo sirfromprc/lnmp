@@ -811,6 +811,56 @@ Deb_Dependent()
     return 0
 }
 
+# Lib_Sources <名称> [版本]：依赖库下载清单，行格式同各模块 Sources，不下载、不写文件。
+# 名称为 openssl、libiconv、jemalloc、gperftools、libunwind、freetype、curl、libzip、boost、
+# denyhosts、fail2ban；openssl 先列 GitHub 再列官网备用地址。
+# boost 版本由 MySQL 源码树决定，须传点分版本，校验取上游公布值。未知名称返回 1。
+Lib_Sources()
+{
+    local name=$1 ver file url loc=src/checksums.sha256
+
+    case "${name}" in
+    openssl)
+        ver=${Openssl_New_Ver}; file="${ver}.tar.gz"
+        printf '%s\t-\t%s\t%s\t%s\tsha256\t%s\n' "${name}" "${ver}" "${file}" \
+            "https://github.com/openssl/openssl/releases/download/${ver}/${file}" "${loc}"
+        url="https://www.openssl.org/source/${file}" ;;
+    denyhosts)
+        ver=${Denyhosts_Ver}; file="${ver}.tar.gz"
+        url="https://github.com/denyhosts/denyhosts/archive/refs/tags/v${ver#denyhosts-}.tar.gz" ;;
+    fail2ban)
+        ver=${Fail2ban_Ver}; file="${ver}.tar.gz"
+        url="https://github.com/fail2ban/fail2ban/archive/refs/tags/${ver#fail2ban-}.tar.gz" ;;
+    libiconv)
+        ver=${Libiconv_Ver}; file="${ver}.tar.gz"
+        url="https://ftp.gnu.org/gnu/libiconv/${file}" ;;
+    jemalloc)
+        ver=${Jemalloc_Ver}; file="${ver}.tar.bz2"
+        url="https://github.com/jemalloc/jemalloc/releases/download/${ver#jemalloc-}/${file}" ;;
+    gperftools)
+        ver=${TCMalloc_Ver}; file="${ver}.tar.gz"
+        url="https://github.com/gperftools/gperftools/releases/download/${ver}/${file}" ;;
+    libunwind)
+        ver=${Libunwind_Ver}; file="${ver}.tar.gz"
+        url="https://github.com/libunwind/libunwind/releases/download/v${ver#libunwind-}/${file}" ;;
+    freetype)
+        ver=${Freetype_New_Ver}; file="${ver}.tar.xz"
+        url="https://downloads.sourceforge.net/freetype/${file}" ;;
+    curl)
+        ver=${Curl_Ver}; file="${ver}.tar.bz2"
+        url="https://curl.se/download/${file}" ;;
+    libzip)
+        ver=${Libzip_Ver}; file="${ver}.tar.xz"
+        url="https://libzip.org/download/${file}" ;;
+    boost)
+        echo "${2:-}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || return 1
+        ver=$2; file="boost_${ver//./_}.tar.bz2"; loc=upstream
+        url="https://archives.boost.io/release/${ver}/source/${file}" ;;
+    *) return 1 ;;
+    esac
+    printf '%s\t-\t%s\t%s\t%s\tsha256\t%s\n' "${name}" "${ver}" "${file}" "${url}" "${loc}"
+}
+
 # 登记并取得配置中启用的默认扩展来源。
 Download_Ext_Sources()
 {
@@ -869,17 +919,13 @@ Check_Download()
     cd "${cur_dir}/src" || return 1
 
     # 组件下载统一使用上游官方源。
-    Download_Files https://ftp.gnu.org/gnu/libiconv/${Libiconv_Ver}.tar.gz ${Libiconv_Ver}.tar.gz
-    Require_File "${Libiconv_Ver}.tar.gz" "libiconv"
+    Download_Source_Rows "libiconv" < <(Lib_Sources libiconv)
 
     if [ "${SelectMalloc}" = "2" ]; then
-        Download_Files https://github.com/jemalloc/jemalloc/releases/download/${Jemalloc_Ver#jemalloc-}/${Jemalloc_Ver}.tar.bz2 ${Jemalloc_Ver}.tar.bz2
-        Require_File "${Jemalloc_Ver}.tar.bz2" "jemalloc"
+        Download_Source_Rows "jemalloc" < <(Lib_Sources jemalloc)
     elif [ "${SelectMalloc}" = "3" ]; then
-        Download_Files https://github.com/gperftools/gperftools/releases/download/${TCMalloc_Ver}/${TCMalloc_Ver}.tar.gz ${TCMalloc_Ver}.tar.gz
-        Require_File "${TCMalloc_Ver}.tar.gz" "gperftools"
-        Download_Files https://github.com/libunwind/libunwind/releases/download/v${Libunwind_Ver#libunwind-}/${Libunwind_Ver}.tar.gz ${Libunwind_Ver}.tar.gz
-        Require_File "${Libunwind_Ver}.tar.gz" "libunwind"
+        Download_Source_Rows "gperftools" < <(Lib_Sources gperftools)
+        Download_Source_Rows "libunwind" < <(Lib_Sources libunwind)
     fi
 
     local file url
@@ -1018,8 +1064,7 @@ Install_Libiconv()
 Install_Freetype()
 {
     if echo "${Ubuntu_Version}" | grep -Eqi "^1[89]\.|2[0-9]\." || echo "${Mint_Version}" | grep -Eqi "^19|2[0-9]" || echo "${Deepin_Version}" | grep -Eqi "^15\.[7-9]|15.1[0-9]|1[6-9]|2[0-9]" || echo "${Debian_Version}" | grep -Eqi "^9|1[0-9]" || echo "${Raspbian_Version}" | grep -Eqi "^9|1[0-9]" || echo "${Kali_Version}" | grep -Eqi "^202[0-9]" || echo "${UOS_Version}" | grep -Eqi "^2[0-9]" || echo "${CentOS_Version}" | grep -Eqi "^(8|9|10)" || echo "${RHEL_Version}" | grep -Eqi "^(8|9|10)" || echo "${Oracle_Version}" | grep -Eqi "^(8|9|10)" || echo "${Fedora_Version}" | grep -Eqi "^3[0-9]|29" || echo "${Rocky_Version}" | grep -Eqi "^(8|9|10)" || echo "${Alma_Version}" | grep -Eqi "^(8|9|10)" || echo "${openEuler_Version}" | grep -Eqi "^2[0-9]" || echo "${Anolis_Version}" | grep -Eqi "^(8|9|10)" || echo "${Kylin_Version}" | grep -Eqi "^V1[0-9]" || echo "${Amazon_Version}" | grep -Eqi "^202[3-9]" || echo "${OpenCloudOS_Version}" | grep -Eqi "^(8|9|10|23)" || echo "${HCE_Version}" | grep -Eqi "^2\.[0-9]"; then
-        Download_Files https://downloads.sourceforge.net/freetype/${Freetype_New_Ver}.tar.xz ${Freetype_New_Ver}.tar.xz
-        Require_File "${Freetype_New_Ver}.tar.xz" "freetype"
+        Download_Source_Rows "freetype" < <(Lib_Sources freetype)
         Echo_Blue "[+] 正在安装 ${Freetype_New_Ver}"
         Tar_Cd ${Freetype_New_Ver}.tar.xz ${Freetype_New_Ver}
         ./configure --prefix=/usr/local/freetype --enable-freetype-config
@@ -1046,8 +1091,7 @@ Install_Curl()
     if [[ ! -s /usr/local/curl/bin/curl || ! -s /usr/local/curl/lib/libcurl.so || ! -s /usr/local/curl/include/curl/curl.h ]]; then
         Echo_Blue "[+] 正在安装 ${Curl_Ver}"
         cd "${cur_dir}/src" || return 1
-        Download_Files https://curl.se/download/${Curl_Ver}.tar.bz2 ${Curl_Ver}.tar.bz2
-        Require_File "${Curl_Ver}.tar.bz2" "curl"
+        Download_Source_Rows "curl" < <(Lib_Sources curl)
         Tar_Cd ${Curl_Ver}.tar.bz2 ${Curl_Ver}
         if [ -s /usr/local/openssl/bin/openssl ] || /usr/local/openssl/bin/openssl version | grep -Eqi 'OpenSSL 1.0.2'; then
             ./configure --prefix=/usr/local/curl --enable-ares --without-libpsl --with-zlib --with-ssl=/usr/local/openssl
@@ -1116,7 +1160,7 @@ Boost_Mode()
 
 Download_Boost()
 {
-    local mode boost_dot
+    local mode boost_dot boost_file boost_url
     mode=$(Boost_Mode)
     Echo_Blue "[+] 正在下载或使用已有的 Boost..."
 
@@ -1133,10 +1177,9 @@ Download_Boost()
         boost_dot=$(echo "${Get_Boost_Ver}" | tr '_' '.')
         # 不同 MySQL 点版本可能要求不同的 Boost。通过上游 JSON 中的 SHA256
         # 校验动态解析的版本，并同时验证本地缓存，避免使用未核验的源码包。
-        Download_Verified boost "${boost_dot}" \
-            "https://archives.boost.io/release/${boost_dot}/source/boost_${Get_Boost_Ver}.tar.bz2" \
-            "boost_${Get_Boost_Ver}.tar.bz2"
-        Require_File "boost_${Get_Boost_Ver}.tar.bz2" "Boost ${boost_dot}"
+        IFS=$'\t' read -r _ _ _ boost_file boost_url _ < <(Lib_Sources boost "${boost_dot}")
+        Download_Verified boost "${boost_dot}" "${boost_url}" "${boost_file}"
+        Require_File "${boost_file}" "Boost ${boost_dot}"
         [ -d "${cur_dir}/src/boost_${Get_Boost_Ver}" ] && rm -rf "${cur_dir}/src/boost_${Get_Boost_Ver}"
         tar jxf ${cur_dir}/src/boost_${Get_Boost_Ver}.tar.bz2 -C ${cur_dir}/src
         MySQL_WITH_BOOST="-DWITH_BOOST=${cur_dir}/src/boost_${Get_Boost_Ver}"
@@ -1175,8 +1218,7 @@ Install_Libzip()
         if [ ! -s /usr/local/lib/libzip.so ]; then
             Echo_Blue "[+] 正在安装 ${Libzip_Ver}"
             cd "${cur_dir}/src" || return 1
-            Download_Files https://libzip.org/download/${Libzip_Ver}.tar.xz ${Libzip_Ver}.tar.xz
-            Require_File "${Libzip_Ver}.tar.xz" "libzip"
+            Download_Source_Rows "libzip" < <(Lib_Sources libzip)
             Tar_Cd ${Libzip_Ver}.tar.xz ${Libzip_Ver}
             ./configure
             Make_Install || exit 1

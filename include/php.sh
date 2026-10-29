@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 
+# Composer_Sources：Composer 安装程序下载清单，校验定位列为上游公布 SHA384 的地址。
+Composer_Sources()
+{
+    printf 'composer\t-\t-\tcomposer-setup.php\thttps://getcomposer.org/installer\tsha384\thttps://composer.github.io/installer.sig\n'
+}
+
 Install_Composer()
 {
-    local expected actual installer signature tmpdir php_bin
+    local expected actual installer signature tmpdir php_bin url sig_url
+
+    IFS=$'\t' read -r _ _ _ _ url _ sig_url < <(Composer_Sources) || return 1
 
     if [ "${Enable_Composer:-y}" != 'y' ]; then
         echo "已按 Enable_Composer=${Enable_Composer} 跳过 Composer 安装。"
@@ -26,7 +34,7 @@ Install_Composer()
 
     # 先取得官方 SHA384；缺少校验依据时不执行远程安装程序。
     echo "正在从 composer.github.io 获取 Composer 安装程序签名..."
-    if ! Download_Fetch https://composer.github.io/installer.sig "${signature}"; then
+    if ! Download_Fetch "${sig_url}" "${signature}"; then
         Echo_Red "Composer 安装程序签名下载失败，拒绝继续。"
         rm -rf "${tmpdir}"
         return 1
@@ -40,7 +48,7 @@ Install_Composer()
     fi
 
     echo "正在从 getcomposer.org 下载 Composer 安装程序..."
-    if ! Download_Fetch https://getcomposer.org/installer "${installer}" \
+    if ! Download_Fetch "${url}" "${installer}" \
        || [ ! -s "${installer}" ]; then
         Echo_Red "Composer 安装程序下载失败，跳过 Composer 安装。"
         rm -rf "${tmpdir}"

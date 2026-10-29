@@ -20,6 +20,8 @@ fi
 . "${cur_dir}/lnmp.conf"
 . "${cur_dir}/include/main.sh"
 . "${cur_dir}/include/verify.sh"
+. "${cur_dir}/include/version.sh"
+. "${cur_dir}/include/init.sh"
 Get_Dist_Name
 Get_Dist_Version
 
@@ -42,9 +44,8 @@ fi
 
 echo "正在下载 fail2ban..."
 cd "${cur_dir}/src" || exit 1
-Download_Files https://github.com/fail2ban/fail2ban/archive/refs/tags/1.1.0.tar.gz fail2ban-1.1.0.tar.gz
-Require_File "fail2ban-1.1.0.tar.gz" "fail2ban"
-tar zxf fail2ban-1.1.0.tar.gz && cd fail2ban-1.1.0 || exit 1
+Download_Source_Rows "fail2ban" < <(Lib_Sources fail2ban)
+tar zxf "${Fail2ban_Ver}.tar.gz" && cd "${Fail2ban_Ver}" || exit 1
 echo "正在安装 fail2ban..."
 python3 setup.py install
 
@@ -86,7 +87,7 @@ fi
 
 chmod +x /etc/init.d/fail2ban
 cd ..
-rm -rf fail2ban-1.1.0
+rm -rf -- "${Fail2ban_Ver:?}"
 
 StartUp fail2ban
 

@@ -19,6 +19,8 @@ fi
 . "${cur_dir}/lnmp.conf"
 . "${cur_dir}/include/main.sh"
 . "${cur_dir}/include/verify.sh"
+. "${cur_dir}/include/version.sh"
+. "${cur_dir}/include/init.sh"
 Get_Dist_Name
 Get_Dist_Version
 
@@ -42,9 +44,8 @@ fi
 
 echo "正在下载 DenyHosts..."
 cd "${cur_dir}/src" || exit 1
-Download_Files https://github.com/denyhosts/denyhosts/archive/refs/tags/v3.1.tar.gz denyhosts-3.1.tar.gz
-Require_File "denyhosts-3.1.tar.gz" "DenyHosts"
-Tar_Cd denyhosts-3.1.tar.gz denyhosts-3.1
+Download_Source_Rows "DenyHosts" < <(Lib_Sources denyhosts)
+Tar_Cd "${Denyhosts_Ver}.tar.gz" "${Denyhosts_Ver}"
 echo "正在安装 DenyHosts..."
 python setup.py install
 
@@ -90,7 +91,7 @@ sed -i 's#^DENY_THRESHOLD_ROOT =.*#DENY_THRESHOLD_ROOT = 3#g' /etc/denyhosts.con
 
 sed -i '/STATE_LOCK_EXISTS\ \=\ \-2/aif not os.path.exists("/var/lock/subsys"): os.makedirs("/var/lock/subsys")' /etc/init.d/denyhosts
 cd ..
-rm -rf denyhosts-3.1
+rm -rf -- "${Denyhosts_Ver:?}"
 
 StartUp denyhosts
 echo "正在启动 DenyHosts..."

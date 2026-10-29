@@ -319,8 +319,7 @@ check_openssl()
 # ---------------------------------------------------------------------------
 # 4. PHP：六个分支分别更新点版本
 # 版本号同时出现在 include/profile.sh 的 PHP_Info 数组和 Set_PHP_Profile 的
-# case 分支里，还有 t/probe_urls.sh 的 PHP_VERS，三处必须一起改
-# （由 t/bump_version.sh 保证）。
+# case 分支里，两处必须一起改（由 t/bump_version.sh 保证）。
 # ---------------------------------------------------------------------------
 check_php()
 {
@@ -344,7 +343,7 @@ check_php()
             require_value "PHP ${br} releases API" "${latest}"
             continue
         fi
-        propose "PHP_${br}" "${cur}" "${latest}" AUTO "profile.sh + probe_urls.sh 三处同步"
+        propose "PHP_${br}" "${cur}" "${latest}" AUTO "profile.sh 两处同步"
     done
 }
 

@@ -77,7 +77,7 @@ jobs:
           set -e
           git checkout "origin/${BRANCH}" -- \
               include/version.sh include/profile.sh src/checksums.sha256 \
-              t/probe_urls.sh t/gen_checksums.sh t/test_profile.sh
+              t/test_profile.sh
           echo "--- 与当前主分支的差异 ---"
           git --no-pager diff --cached --stat
 

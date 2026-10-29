@@ -56,32 +56,34 @@ check_v1()
 }
 
 # ---------------------------------------------------------------------------
-# V2 t/probe_urls.sh 与 t/gen_checksums.sh 的版本列表 必须与 profile.sh 一致
-# 防止探测、采集的版本与实际安装版本不一致；缺少采集条目时，安装会因无校验值而中止。
+# V2 t/list_sources.sh 覆盖 profile.sh 菜单表的全部 PHP、数据库、Apache、phpMyAdmin 版本
+# t/probe_urls.sh 与 t/gen_checksums.sh 由它取得地址；缺少条目时新版本不会被探测和采集，
+# 安装会因无校验值而中止。
 # ---------------------------------------------------------------------------
 check_v2()
 {
-    local drift='' v
-    for v in $(grep -oE "Php_Ver='php-[0-9.]+'" include/profile.sh | sed -e "s/.*php-\([0-9.]*\)'/\1/"); do
-        grep -qE "${v//./\\.}" t/gen_checksums.sh || drift="${drift} 采集PHP:${v}"
+    local rows drift='' v
+    if ! rows=$(bash t/list_sources.sh all 2>&1); then
+        bad V2 "t/list_sources.sh 执行失败：$(echo "${rows}" | tail -n 3 | tr '\n' ' ')"
+        return
+    fi
+    for v in $(sed -nE "s/.*[[:space:]]Php_Ver='([^']+)'.*/\1/p" include/profile.sh); do
+        printf '%s\n' "${rows}" | cut -f4 | grep -qxF "${v}.tar.bz2" || drift="${drift} ${v}"
     done
-    for v in $(grep -oE "DB_Ver='(mysql|mariadb)-[0-9.]+'" include/profile.sh | sed -e "s/.*-\([0-9.]*\)'/\1/"); do
-        grep -qE "${v//./\\.}" t/gen_checksums.sh || drift="${drift} 采集DB:${v}"
+    for v in $(sed -nE "s/.*[[:space:]]DB_Ver='([^']+)'.*/\1/p" include/profile.sh); do
+        printf '%s\n' "${rows}" | cut -f4 | grep -qxF "${v}.tar.gz" || drift="${drift} ${v}"
     done
-    for v in $(grep -oE "Php_Ver='php-[0-9.]+'" include/profile.sh | sed -e "s/.*php-\([0-9.]*\)'/\1/"); do
-        grep -qE "PHP_VERS=.*${v//./\\.}" t/probe_urls.sh || drift="${drift} PHP:${v}"
+    for v in $(sed -nE "s/.*[[:space:]]Apache_Ver='([^']+)'.*/\1/p" include/profile.sh); do
+        printf '%s\n' "${rows}" | cut -f4 | grep -qxF "${v}.tar.bz2" || drift="${drift} ${v}"
     done
-    for v in $(grep -oE "DB_Ver='mysql-[0-9.]+'" include/profile.sh | sed -e "s/.*mysql-\([0-9.]*\)'/\1/"); do
-        grep -qE "MYSQL_VERS=.*${v//./\\.}" t/probe_urls.sh || drift="${drift} MySQL:${v}"
-    done
-    for v in $(grep -oE "DB_Ver='mariadb-[0-9.]+'" include/profile.sh | sed -e "s/.*mariadb-\([0-9.]*\)'/\1/"); do
-        grep -qE "MARIADB_VERS=.*${v//./\\.}" t/probe_urls.sh || drift="${drift} MariaDB:${v}"
+    for v in $(sed -nE "s/.*[[:space:]]PhpMyAdmin_Ver='([^']+)'.*/\1/p" include/profile.sh); do
+        printf '%s\n' "${rows}" | cut -f4 | grep -qxF "${v}.tar.xz" || drift="${drift} ${v}"
     done
 
     if [ -z "${drift}" ]; then
-        ok V2 "probe_urls.sh 与 gen_checksums.sh 的版本列表与 profile.sh 一致"
+        ok V2 "t/list_sources.sh 覆盖 profile.sh 的全部版本"
     else
-        bad V2 "版本列表缺少：${drift}"
+        bad V2 "t/list_sources.sh 缺少：${drift}"
     fi
 }
 
@@ -859,6 +861,33 @@ check_v24()
     fi
 }
 
+# ---------------------------------------------------------------------------
+# V25 源码包下载地址只写在 *_Sources 函数内
+# 探测、采集与安装共用 *_Sources 输出；函数外的地址字面量不会被 t/probe_urls.sh
+# 探测，也不会被 t/gen_checksums.sh 采集。注释行、t/、tests/、src/ 与 docs/ 不检查。
+# ---------------------------------------------------------------------------
+check_v25()
+{
+    local out
+    out=$(find . \( -path ./t -o -path ./tests -o -path ./src -o -path ./docs -o -path ./.git \) -prune -o \
+              -type f \( -name '*.sh' -o -path ./conf/lnmp -o -path ./conf/lnmpa -o -path ./conf/lamp \) -print \
+          | sort | xargs awk '
+              FNR == 1 { fn = "" }
+              /^[A-Za-z_][A-Za-z_0-9]*\(\)/ { fn = $0; sub(/\(\).*/, "", fn) }
+              /^}/ { fn = ""; next }
+              /^[[:space:]]*#/ { next }
+              /https:\/\/[^[:space:]"]*\.(tar\.gz|tar\.bz2|tar\.xz|tgz|zip)([^A-Za-z0-9]|$)|getcomposer\.org\/installer/ {
+                  if (fn !~ /_Sources$/) print FILENAME ":" FNR
+              }
+              # 单行函数在本行结束，后续行不再归入该函数。
+              /^[A-Za-z_][A-Za-z_0-9]*\(\).*}[[:space:]]*$/ { fn = "" }')
+    if [ -z "${out}" ]; then
+        ok V25 "源码包下载地址只出现在 *_Sources 函数内"
+    else
+        bad V25 "*_Sources 之外的下载地址：$(echo "${out}" | tr '\n' ' ')"
+    fi
+}
+
 echo "=== 跨文件一致性检查 ==="
 check_v1
 check_v2
@@ -884,6 +913,7 @@ check_v21
 check_v22
 check_v23
 check_v24
+check_v25
 
 echo
 echo "通过 ${pass} 项，失败 ${fail} 项。"

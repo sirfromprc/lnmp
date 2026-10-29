@@ -25,7 +25,7 @@ Fake_Next()
     printf '%s' "$1" | sed 's/[0-9][0-9]*$/77777/'
 }
 
-# 组件在 gen_checksums.sh 采集列表中的文件名前缀
+# 组件在 gen_checksums.sh 采集列表（取自 t/list_sources.sh）中的文件名前缀
 Gensum_Prefix()
 {
     case "$1" in
@@ -38,7 +38,7 @@ Gensum_Prefix()
 }
 
 # 采集列表是否跟上升版：refresh_checksums.sh 按新文件名到 gen_checksums.sh
-# 取下载地址，列表漏改会让升版分支停在重算校验值这一步。
+# 取下载地址，清单未取到新版本会让升版分支停在重算校验值这一步。
 Gensum_Synced()
 {
     local work="$1" key="$2" old="$3" new="$4" prefix names
@@ -50,6 +50,15 @@ Gensum_Synced()
     ! printf '%s\n' "${names}" | grep -qE "^${prefix}${old//./\\.}[-.]"
 }
 
+# Copy_Tree <目录>：复制 t/list_sources.sh 加载链所需文件，不含下载缓存。
+Copy_Tree()
+{
+    mkdir -p "$1/src" "$1/.upstream" || return 1
+    cp -r include t tools conf "$1/" || return 1
+    cp lnmp.conf "$1/" || return 1
+    cp src/checksums.sha256 "$1/src/"
+}
+
 # run_case <说明> <bumps.tsv 的 key> <当前版本> <目标版本>
 run_case()
 {
@@ -57,10 +66,7 @@ run_case()
     local work out rc
 
     work=$(mktemp -d) || { echo "FAIL 无法创建临时目录"; fail=1; return 1; }
-    mkdir -p "${work}/include" "${work}/t" "${work}/.upstream"
-    cp include/main.sh include/version.sh include/profile.sh include/verify.sh "${work}/include/"
-    cp t/bump_version.sh t/test_profile.sh t/probe_urls.sh t/gen_checksums.sh "${work}/t/"
-    [ -f lnmp.conf ] && cp lnmp.conf "${work}/"
+    Copy_Tree "${work}" || { echo "FAIL 无法复制源码"; fail=1; rm -rf "${work}"; return 1; }
 
     printf '%s\t%s\t%s\tAUTO\n' "${key}" "${old}" "${new}" > "${work}/.upstream/bumps.tsv"
 
@@ -98,23 +104,21 @@ run_case()
 
 run_collision_case()
 {
-    local work same mdb next='8.3.77777'
+    local work same mdb names next='8.3.77777'
     same=$(grep -oE 'php-8\.3\.[0-9]+' include/profile.sh | head -1); same="${same#php-}"
     mdb=$(grep -oE 'mariadb-10\.11\.[0-9]+' include/profile.sh | head -1); mdb="${mdb#mariadb-}"
     work=$(mktemp -d) || { fail=1; return 1; }
-    mkdir -p "${work}/include" "${work}/t" "${work}/.upstream"
-    cp include/main.sh include/version.sh include/profile.sh include/verify.sh "${work}/include/"
-    cp t/bump_version.sh t/test_profile.sh t/probe_urls.sh t/gen_checksums.sh "${work}/t/"
-    cp lnmp.conf "${work}/"
+    Copy_Tree "${work}" || { fail=1; rm -rf "${work}"; return 1; }
 
     # 人为让 MariaDB 与 PHP 使用同一个三段版本号，再只升级 PHP。
-    perl -pi -e "s/\\Q${mdb}\\E/${same}/g" "${work}/include/profile.sh" \
-        "${work}/t/probe_urls.sh" "${work}/t/gen_checksums.sh" "${work}/t/test_profile.sh"
+    perl -pi -e "s/\\Q${mdb}\\E/${same}/g" "${work}/include/profile.sh" "${work}/t/test_profile.sh"
     printf 'PHP_8.3\t%s\t%s\tAUTO\n' "${same}" "${next}" > "${work}/.upstream/bumps.tsv"
 
     if ( cd "${work}" && bash t/bump_version.sh --kinds AUTO ) >/dev/null 2>&1 &&
-       grep -q "MARIADB_VERS='${same}" "${work}/t/probe_urls.sh" &&
-       grep -q "PHP_VERS=.*${next}" "${work}/t/probe_urls.sh" &&
+       names=$( cd "${work}" && bash t/list_sources.sh all 2>/dev/null | cut -f4 ) &&
+       printf '%s\n' "${names}" | grep -qxF "mariadb-${same}.tar.gz" &&
+       printf '%s\n' "${names}" | grep -qxF "php-${next}.tar.bz2" &&
+       ! printf '%s\n' "${names}" | grep -qxF "php-${same}.tar.bz2" &&
        grep -q "^PHP_8.3"$'\t'"${same}"$'\t'"${next}\$" "${work}/.upstream/changed.tsv"; then
         printf 'ok   %-30s %s\n' '组件版本号碰撞隔离' '只修改 PHP'
     else

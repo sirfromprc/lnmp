@@ -105,8 +105,6 @@ jobs:
             include/version.sh
             include/profile.sh
             src/checksums.sha256
-            t/probe_urls.sh
-            t/gen_checksums.sh
             t/test_profile.sh
             .upstream/report.md
           retention-days: 7
@@ -154,7 +152,7 @@ jobs:
 
           git checkout -B "${BRANCH}"
           git add include/version.sh include/profile.sh src/checksums.sha256 \
-                  t/probe_urls.sh t/gen_checksums.sh t/test_profile.sh
+                  t/test_profile.sh
 
           if git diff --cached --quiet; then
             echo "升级结果与 ${BASE} 无差异，不推分支。"

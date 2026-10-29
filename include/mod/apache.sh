@@ -14,7 +14,8 @@
 #   Apache_Remove                停止服务，删除启动项、init 脚本与安装目录；0 已删除；1 有残留
 #
 # 约定：不交互、不 exit、不改变调用方工作目录；编译在 src/ 下的私有目录与子 shell 中进行。
-# 输入为参数与只读配置（lnmp.conf 的 Default_Website_Dir、ServerAdmin，include/version.sh，cur_dir）。
+# 输入为参数与只读配置（lnmp.conf 的 Default_Website_Dir、ServerAdmin，include/version.sh，cur_dir）；
+# OpenSSL 地址取自 include/init.sh 的 Lib_Sources。
 # 例外：MPM 调优在模块内调用 Tune_Plan（codetradeoffs.md 19.42）。
 
 _Apache_Prefix()
@@ -54,7 +55,7 @@ _Apache_Row()
 
 Apache_Sources()
 {
-    local _apache_ver=$1 stack=$2
+    local _apache_ver=$1 stack=$2 file url
 
     _Apache_Args "${_apache_ver}" "${stack}" || return 1
     _Apache_Row "httpd-${_apache_ver}.tar.bz2" "https://archive.apache.org/dist/httpd/httpd-${_apache_ver}.tar.bz2"
@@ -64,9 +65,9 @@ Apache_Sources()
     _Apache_Row "${Nghttp2_Ver}.tar.xz" \
         "https://github.com/nghttp2/nghttp2/releases/download/v${Nghttp2_Ver#nghttp2-}/${Nghttp2_Ver}.tar.xz"
     if _Apache_Need_Openssl "${stack}"; then
-        _Apache_Row "${Openssl_New_Ver}.tar.gz" \
-            "https://github.com/openssl/openssl/releases/download/${Openssl_New_Ver}/${Openssl_New_Ver}.tar.gz"
-        _Apache_Row "${Openssl_New_Ver}.tar.gz" "https://www.openssl.org/source/${Openssl_New_Ver}.tar.gz"
+        while IFS=$'\t' read -r _ _ _ file url _; do
+            _Apache_Row "${file}" "${url}"
+        done < <(Lib_Sources openssl)
     fi
     return 0
 }

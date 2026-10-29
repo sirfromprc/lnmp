@@ -115,8 +115,22 @@ Lua 组件不能拆开升级。`lua-resty-core` 会在运行时核对
 - 下载源存活探测关注当前版本是否仍能下载。
 
 MySQL 探测与安装器使用相同顺序：先查 `Downloads`，再查 `archives`。两处都不可用
-才算失败。失败时工作流会查找现有的 `url-health` issue；有则追加评论，没有则新建，
-避免每周生成重复 issue。
+才算失败。探测判定与安装预检相同（`include/verify.sh` 的 `Download_Head_Probe`），
+失败条目在同一次运行内间隔 30 秒重试，共 3 轮，仍失败的分两类：
+
+| 类别 | 判定 | issue 标题 | 标签 |
+|---|---|---|---|
+| 已下线 | 最终响应为 404/410 | 下载源失效：部分组件已无法下载 | `url-health`、`bug` |
+| 暂不可达 | 超时、DNS 或连接失败、跳转未完成、403、429、5xx 等 | 下载源暂不可达：部分组件探测失败 | `url-health` |
+
+同标题的 issue 已打开时追加评论，没有则新建，避免每周生成重复 issue。暂不可达多为
+网络波动，可手动触发本工作流重跑确认。`t/probe_urls.sh` 退出码：0 全部可达，1 存在
+已下线，2 仅有暂不可达，3 下载清单生成失败；上游版本检查与版本同步中任一非零都会中止。本地运行可用
+`PROBE_TRIES`、`PROBE_INTERVAL` 调整重试，`PROBE_REPORT=<文件>` 输出失败清单：
+
+```bash
+PROBE_TRIES=1 PROBE_REPORT=/tmp/probe-failed.tsv bash t/probe_urls.sh
+```
 
 ## Build Test
 
@@ -138,11 +152,10 @@ PHP `PHP_Install`/`Install_PHP_Default_Ext`），并把产物的编译参数与 
 
 ## 同步组件版本到主分支
 
-`sync-versions.yml` 只能手动触发，把升级分支上的 6 个版本相关文件取到主分支：
+`sync-versions.yml` 只能手动触发，把升级分支上的 4 个版本相关文件取到主分支：
 
 ```text
-include/version.sh   include/profile.sh   src/checksums.sha256
-t/probe_urls.sh      t/gen_checksums.sh   t/test_profile.sh
+include/version.sh   include/profile.sh   src/checksums.sha256   t/test_profile.sh
 ```
 
 取完先跑 `t/consistency.sh`、`t/test_profile.sh` 和 `t/probe_urls.sh`，
@@ -224,15 +237,16 @@ GPG 分离签名是可选项。仓库配置了 `GPG_PRIVATE_KEY` 和 `GPG_PASSPH
 ## 维护版本号
 
 数据库、PHP、Apache 和 phpMyAdmin 的菜单版本在 `include/profile.sh`，其它大部分版本
-在 `include/version.sh`。相关列表还会出现在：
+在 `include/version.sh`。相关值还会出现在：
 
-- `t/probe_urls.sh`
-- `t/gen_checksums.sh`
 - `t/test_profile.sh`
 - `src/checksums.sha256`
 
-修改版本时应同步这些位置，并运行一致性检查。`Boost_Ver`、`Boost_New_Ver` 是下载探测
-和校验清单使用的版本；MySQL 安装所需的 Boost 仍从源码树的 `cmake/boost.cmake`
+修改版本时应同步这些位置，并运行一致性检查。下载地址只写在各模块的 `*_Sources` 函数内
+（`t/consistency.sh` V25），`t/list_sources.sh` 汇总这些函数的输出，`t/probe_urls.sh` 与
+`t/gen_checksums.sh` 由它取得地址和文件名，升版时不需要修改这两个脚本。
+
+`Boost_Ver`、`Boost_New_Ver` 是下载探测和校验清单使用的版本；MySQL 安装所需的 Boost 仍从源码树的 `cmake/boost.cmake`
 动态读取，两者不要混用。
 
 `t/refresh_checksums.sh` 只更新当前升版涉及的条目。不要用全量生成脚本替代日常增量
@@ -255,12 +269,13 @@ GPG 分离签名是可选项。仓库配置了 `GPG_PRIVATE_KEY` 和 `GPG_PASSPH
 以下命令在 Linux 环境运行：
 
 ```bash
-bash -n include/version.sh t/probe_urls.sh t/gen_checksums.sh
+bash -n include/version.sh t/list_sources.sh t/probe_urls.sh t/gen_checksums.sh
 bash t/lint.sh
 bash t/consistency.sh
 bash t/test_profile.sh
 bash t/test_bump.sh
 bash t/test_upstream.sh
+bash t/list_sources.sh             # 全部下载清单，core 仅默认安装路径
 LIST_ONLY=1 bash t/gen_checksums.sh
 bash t/product_version.sh          # 产品版本，两处不一致时报错
 ```

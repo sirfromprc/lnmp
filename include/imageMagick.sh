@@ -4,6 +4,8 @@
 # 默认扩展安装共用。此函数不处理用户交互或 PHP 扩展配置。
 Build_ImageMagick_Lib()
 {
+    local file url
+
     if [ "$PM" = "yum" ]; then
         if [ "${DISTRO}" = "Oracle" ]; then
             yum -y install oracle-epel-release
@@ -24,9 +26,10 @@ Build_ImageMagick_Lib()
         echo "ImageMagick 已存在。"
     else
         # GitHub 标签归档可长期定位指定版本，避免上游 releases 清理旧文件后无法下载。
-        Download_Files https://github.com/ImageMagick/ImageMagick/archive/refs/tags/${ImageMagick_Ver#ImageMagick-}.tar.gz ${ImageMagick_Ver}.tar.gz
-        Require_File "${ImageMagick_Ver}.tar.gz" "ImageMagick"
-        Tar_Cd ${ImageMagick_Ver}.tar.gz ${ImageMagick_Ver}
+        IFS=$'\t' read -r _ _ _ file url _ < <(ImageMagick_Sources)
+        Download_Files "${url}" "${file}"
+        Require_File "${file}" "ImageMagick"
+        Tar_Cd "${file}" "${ImageMagick_Ver}"
 
         ./configure --prefix=/usr/local/imagemagick
         Make_Install || return 1

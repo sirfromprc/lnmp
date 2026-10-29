@@ -452,12 +452,15 @@ Redis_Install()
 
 _Redis_Install()
 {
+    local file url
+
     cd "${cur_dir}/src" || return 1
 
     # 重装一律重新编译：误删过二进制、init 脚本或依赖文件时，只重写配置起不来。
     # 服务端源码包同样先取齐再动系统，避免服务停下后卡在下载失败。
-    Download_Files https://download.redis.io/releases/${Redis_Stable_Ver}.tar.gz ${Redis_Stable_Ver}.tar.gz
-    Require_File "${Redis_Stable_Ver}.tar.gz" "Redis server"
+    IFS=$'\t' read -r _ _ _ file url _ < <(Redis_Sources)
+    Download_Files "${url}" "${file}"
+    Require_File "${file}" "Redis server"
     if ! Prepare_Redis_Rebuild; then
         return 1
     fi

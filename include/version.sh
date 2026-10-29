@@ -111,6 +111,10 @@ PHPMemcache_Ver='memcache-3.0.8'
 PHP7Memcache_Ver='memcache-4.0.5.2'
 PHP8Memcache_Ver='memcache-8.2'
 
+# --- 安全工具（tools/denyhosts.sh、tools/fail2ban.sh）---
+Denyhosts_Ver='denyhosts-3.1'
+Fail2ban_Ver='fail2ban-1.1.0'
+
 # --- Node.js ---
 # 官方二进制按主版本并存；固定到具体补丁版，校验值写入 src/checksums.sha256。
 Nodejs_Majors='22 24'

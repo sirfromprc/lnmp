@@ -245,8 +245,7 @@ Install_PHP_Base_Libs()
 {
     if [ ! -e /usr/local/lib/libiconv.so ]; then
         cd "${cur_dir}/src" || return 1
-        Download_Files "https://ftp.gnu.org/gnu/libiconv/${Libiconv_Ver}.tar.gz" "${Libiconv_Ver}.tar.gz"
-        Require_File "${Libiconv_Ver}.tar.gz" "libiconv"
+        Download_Source_Rows "libiconv" < <(Lib_Sources libiconv)
         Install_Libiconv
     fi
     if [ ! -e /usr/local/freetype/lib/libfreetype.so ]; then

@@ -3,214 +3,136 @@
 # t/probe_urls.sh - 下载 URL 可达性探测
 #
 # 下载 URL 由各上游项目的命名规则生成，且部分上游会移除旧版本文件，
-# 因此需要定期验证 version.sh 所引用文件的可达性。
+# 因此需要定期验证所引用文件的可达性。地址取自 t/list_sources.sh，
+# 即生产代码各 *_Sources 的输出，本脚本不维护地址与版本。
 #
-# 本脚本只发 HEAD 请求（wget --spider），不下载文件、不改动系统。
+# 判定复用 include/verify.sh 的 Download_Head_Probe：HEAD 失败时回退只取首字节的
+# Range GET，不下载完整文件、不改动系统。同一文件有多个地址时按顺序尝试，任一可达
+# 即算可下载；全部最终响应 404/410 才判为已下线。失败条目间隔 PROBE_INTERVAL 秒重试，
+# 共探测 PROBE_TRIES 轮；PROBE_REPORT 指定文件时写入最终失败条目。
 # 在能出网的机器上执行：bash t/probe_urls.sh
 #
-# 退出码：全部可达返回 0，有不可达返回 1。
+# 退出码：0 全部可达；1 存在已下线；2 仅有暂不可达；3 下载清单生成失败。
 
 cd "$(dirname "$0")/.." || exit 1
 
-. include/version.sh
-
-# profile.sh 里的版本由菜单选择填充，这里直接取表中全部取值逐一探测。
-MYSQL_VERS='8.0.46 8.4.11'
-MARIADB_VERS='10.11.19 11.4.13 11.8.9 12.3.3'
-PHP_VERS='8.0.30 8.1.34 8.2.35 8.3.36 8.4.27 8.5.12'
-APACHE_VER='httpd-2.4.69'
-PMA_VER='phpMyAdmin-5.2.3-all-languages'
+Echo_Red()    { printf '%s\n' "$*" >&2; }
+Echo_Yellow() { printf '%s\n' "$*" >&2; }
+Echo_Green()  { printf '%s\n' "$*" >&2; }
+. include/verify.sh
 
 TIMEOUT=15
+# 失败条目在本次运行内重试：总探测次数与重试间隔秒数。
+PROBE_TRIES=${PROBE_TRIES:-3}
+PROBE_INTERVAL=${PROBE_INTERVAL:-30}
+# 非空时写入最终失败条目，每行：类别、分类、状态码、URL，TAB 分隔。
+PROBE_REPORT=${PROBE_REPORT:-}
 ok=0
-fail=0
-FAILED=''
+# 先清空失败清单，清单生成失败时不残留上次结果。
+[ -n "${PROBE_REPORT}" ] && : > "${PROBE_REPORT}"
 
-probe()
-{
-    # probe <分类> <URL>
-    local tag="$1" url="$2" code
-    printf '%-14s %-72s ' "${tag}" "$(echo "${url}" | cut -c1-72)"
+if ! rows=$(bash t/list_sources.sh all); then
+    echo "下载清单生成失败：bash t/list_sources.sh all" >&2
+    exit 3
+fi
 
-    code=$(wget --spider --server-response --timeout=${TIMEOUT} --tries=1 \
-                --max-redirect=10 "${url}" 2>&1 \
-           | awk '/^  HTTP\/|^HTTP\//{c=$2} END{print c}')
-
-    # 405 = 该站点不接受 HEAD（files.phpmyadmin.net 就是如此），
-    # 不代表文件不存在。退化成 GET 取头几个字节判断。
-    if [ "${code}" = "405" ] || [ "${code}" = "501" ]; then
-        if [ -n "$(wget -qO- --timeout=${TIMEOUT} --tries=1 --max-redirect=10 \
-                        "${url}" 2>/dev/null | head -c 4)" ]; then
-            code=200
-        fi
+# 按文件分组：FILES 保持清单顺序，URLS 为该文件的候选地址，每行一个。
+declare -A URLS TAGS CLASS FAILS
+FILES=()
+while IFS=$'\t' read -r comp _ _ file url _; do
+    [ -n "${file}" ] || continue
+    if [ -z "${URLS[${file}]+x}" ]; then
+        FILES+=("${file}")
+        TAGS[${file}]=${comp}
     fi
+    URLS[${file}]+="${url}"$'\n'
+done <<< "${rows}"
+# 失败的文件名，留待重试。
+PENDING=()
 
-    case "${code}" in
-        200|204)
+probe_file()
+{
+    # probe_file <文件名>：逐个探测候选地址，任一可达即返回；全部失败时记录分类与各地址状态码。
+    local file=$1 tag=${TAGS[$1]} url cls code all_gone=y fails=''
+
+    while IFS= read -r url; do
+        [ -n "${url}" ] || continue
+        printf '%-14s %-72s ' "${tag}" "${url:0:72}"
+        IFS=$'\t' read -r cls code < <(Download_Head_Probe "${url}" "${TIMEOUT}")
+        if [ "${cls}" = ok ]; then
             echo "OK ${code}"
             ok=$((ok+1))
-            ;;
-        '')
-            echo "FAIL (无响应/DNS/超时)"
-            fail=$((fail+1))
-            FAILED="${FAILED}
-  ${tag}  ${url}  → 无响应"
-            ;;
-        *)
-            echo "FAIL ${code}"
-            fail=$((fail+1))
-            FAILED="${FAILED}
-  ${tag}  ${url}  → HTTP ${code}"
-            ;;
-    esac
+            return 0
+        fi
+        echo "FAIL ${code:-000}"
+        [ "${cls}" = gone ] || all_gone=n
+        fails+="${code:-000}"$'\t'"${url}"$'\n'
+    done <<< "${URLS[${file}]}"
+    if [ "${all_gone}" = y ]; then CLASS[${file}]=gone; else CLASS[${file}]=down; fi
+    FAILS[${file}]=${fails}
+    PENDING+=("${file}")
 }
 
-probe_mysql()
-{
-    # MySQL 安装器先访问 Downloads，失败后回退到 archives。
-    # 健康检查按同一条链路判断，任一路径可用即算可下载。
-    local tag="$1" branch="$2" name="$3"
-    local primary="https://cdn.mysql.com/Downloads/MySQL-${branch}/${name}"
-    local fallback="https://cdn.mysql.com/archives/mysql-${branch}/${name}"
-
-    if wget -q --spider --timeout=${TIMEOUT} --tries=1 --max-redirect=10 "${primary}"; then
-        probe "${tag}" "${primary}"
-    else
-        probe "${tag}" "${fallback}"
-    fi
-}
-
-echo "=== 核心组件（lnmp 默认路径必经）==="
-probe nginx    "https://nginx.org/download/${Nginx_Ver}.tar.gz"
-probe openssl  "https://github.com/openssl/openssl/releases/download/${Openssl_New_Ver}/${Openssl_New_Ver}.tar.gz"
-probe openssl备 "https://www.openssl.org/source/${Openssl_New_Ver}.tar.gz"
-probe pcre     "https://downloads.sourceforge.net/pcre/${Pcre_Ver}.tar.bz2"
-probe libiconv "https://ftp.gnu.org/gnu/libiconv/${Libiconv_Ver}.tar.gz"
-probe curl     "https://curl.se/download/${Curl_Ver}.tar.bz2"
-probe freetype "https://downloads.sourceforge.net/freetype/${Freetype_New_Ver}.tar.xz"
-probe libzip   "https://libzip.org/download/${Libzip_Ver}.tar.xz"
-
-echo
-echo "=== 可选：OpenResty（仅 ORMode=src 源码编译方式使用）==="
-# 走官方 apt/yum 仓库时装的是仓库里的当前版本，不经过这个地址；
-# 源码编译方式由 include/mod/openresty.sh 下载它。
-# 它只有 PGP 签名、不进 src/checksums.sha256（见 consistency.sh V3 的豁免），
-# 但可达性仍需探测：上游同样会下线旧点版本。
-probe openresty "https://openresty.org/download/${OpenResty_Ver}.tar.gz"
-
-echo
-echo "=== PHP 源码 ==="
-for v in ${PHP_VERS}; do
-    probe php "https://www.php.net/distributions/php-${v}.tar.bz2"
+echo "=== 下载地址（t/list_sources.sh all，共 ${#FILES[@]} 个文件）==="
+for file in "${FILES[@]}"; do
+    probe_file "${file}"
 done
 
-echo
-echo "=== MySQL（源码 + 二进制）==="
-for v in ${MYSQL_VERS}; do
-    branch="${v%.*}"
-    probe_mysql mysql源码 "${branch}" "mysql-${v}.tar.gz"
-done
-probe_mysql mysql二进制 8.0 mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz
-probe_mysql mysql二进制 8.4 mysql-8.4.11-linux-glibc2.28-x86_64.tar.xz
-probe_mysql mysql二进制 8.0 mysql-8.0.46-linux-glibc2.28-aarch64.tar.xz
-probe_mysql mysql二进制 8.4 mysql-8.4.11-linux-glibc2.28-aarch64.tar.xz
-
-echo
-echo "=== MariaDB（源码 + 二进制）==="
-for v in ${MARIADB_VERS}; do
-    probe mariadb源码 "https://downloads.mariadb.org/rest-api/mariadb/${v}/mariadb-${v}.tar.gz"
-    probe mariadb二进制 "https://downloads.mariadb.org/rest-api/mariadb/${v}/mariadb-${v}-linux-systemd-x86_64.tar.gz"
-done
-
-echo
-echo "=== boost（MySQL 源码编译需要）==="
-for boost in "${Boost_Ver}" "${Boost_New_Ver}"; do
-    boost_ver=$(echo "${boost#boost_}" | tr '_' '.')
-    probe boost "https://archives.boost.io/release/${boost_ver}/source/${boost}.tar.bz2"
-done
-
-echo
-echo "=== Node.js（addons.sh install nodejs）==="
-for v in ${Nodejs_Majors}; do
-    nv="Nodejs_${v}_Ver"
-    for arch in x64 arm64; do
-        probe nodejs "https://nodejs.org/dist/v${!nv}/node-v${!nv}-linux-${arch}.tar.xz"
+try=1
+while [ ${#PENDING[@]} -gt 0 ] && [ "${try}" -lt "${PROBE_TRIES}" ]; do
+    try=$((try+1))
+    echo
+    echo "=== 第 ${try} 次探测：${#PENDING[@]} 个失败条目，${PROBE_INTERVAL} 秒后重试 ==="
+    sleep "${PROBE_INTERVAL}"
+    left=("${PENDING[@]}")
+    PENDING=()
+    for file in "${left[@]}"; do
+        probe_file "${file}"
     done
-    probe nodejs签名 "https://nodejs.org/dist/v${!nv}/SHASUMS256.txt.sig"
 done
 
-echo
-echo "=== Apache / phpMyAdmin ==="
-probe apache   "https://archive.apache.org/dist/httpd/${APACHE_VER}.tar.bz2"
-probe apr      "https://archive.apache.org/dist/apr/${APR_Ver}.tar.bz2"
-probe apr-util "https://archive.apache.org/dist/apr/${APR_Util_Ver}.tar.bz2"
-PMA_NUM="${PMA_VER#phpMyAdmin-}"; PMA_NUM="${PMA_NUM%-all-languages}"
-probe phpmyadmin "https://files.phpmyadmin.net/phpMyAdmin/${PMA_NUM}/${PMA_VER}.tar.xz"
+# list_failed <类别>：输出该类别失败文件的各地址，每行：分类、状态码、URL，TAB 分隔。
+list_failed()
+{
+    local file code url
+    for file in "${PENDING[@]}"; do
+        [ "${CLASS[${file}]}" = "$1" ] || continue
+        while IFS=$'\t' read -r code url; do
+            [ -n "${url}" ] && printf '%s\t%s\t%s\n' "${TAGS[${file}]}" "${code}" "${url}"
+        done <<< "${FAILS[${file}]}"
+    done
+}
 
-echo
-echo "=== 可选：内存分配器 ==="
-probe jemalloc   "https://github.com/jemalloc/jemalloc/releases/download/${Jemalloc_Ver#jemalloc-}/${Jemalloc_Ver}.tar.bz2"
-probe gperftools "https://github.com/gperftools/gperftools/releases/download/${TCMalloc_Ver}/${TCMalloc_Ver}.tar.gz"
-probe libunwind  "https://github.com/libunwind/libunwind/releases/download/v${Libunwind_Ver#libunwind-}/${Libunwind_Ver}.tar.gz"
-
-echo
-echo "=== 可选：nginx 模块 ==="
-probe nghttp2    "https://github.com/nghttp2/nghttp2/releases/download/v${Nghttp2_Ver#nghttp2-}/${Nghttp2_Ver}.tar.xz"
-probe fancyindex "https://github.com/aperezdc/ngx-fancyindex/releases/download/v${NgxFancyIndex_Ver#ngx-fancyindex-}/${NgxFancyIndex_Ver}.tar.xz"
-probe luajit2    "https://github.com/openresty/luajit2/archive/refs/tags/v${Luajit_Ver#luajit2-}.tar.gz"
-probe lua-nginx  "https://github.com/openresty/lua-nginx-module/archive/refs/tags/v${LuaNginxModule#lua-nginx-module-}.tar.gz"
-probe ngx-devel  "https://github.com/vision5/ngx_devel_kit/archive/refs/tags/v${NgxDevelKit#ngx_devel_kit-}.tar.gz"
-probe lua-core   "https://github.com/openresty/lua-resty-core/archive/refs/tags/v${LuaRestyCore#lua-resty-core-}.tar.gz"
-probe lua-lru    "https://github.com/openresty/lua-resty-lrucache/archive/refs/tags/v${LuaRestyLrucache#lua-resty-lrucache-}.tar.gz"
-probe lua-cjson  "https://github.com/openresty/lua-cjson/archive/refs/tags/${LuaCjson#lua-cjson-}.tar.gz"
-# 纯 Lua 的 resty 库，命名规律一致，用与 include/mod/nginx.sh 相同的方式推导仓库名与 tag
-for lib in "${LuaRestyLock}" "${LuaRestyString}" "${LuaRestyRedis}" \
-           "${LuaRestyMysql}" "${LuaRestyUpload}" "${LuaRestyWebsocket}" \
-           "${LuaRestyDns}" "${LuaRestyMemcached}" "${LuaRestyLimitTraffic}"; do
-    repo=$(echo "${lib}" | sed -E 's/-[0-9][0-9.]*([a-zA-Z]+[0-9]*)?$//')
-    probe "${repo#lua-resty-}" "https://github.com/openresty/${repo}/archive/refs/tags/v${lib##${repo}-}.tar.gz"
+gone=0
+down=0
+for file in "${PENDING[@]}"; do
+    if [ "${CLASS[${file}]}" = gone ]; then gone=$((gone+1)); else down=$((down+1)); fi
 done
-probe brotli     "https://github.com/google/ngx_brotli/archive/${NgxBrotli_Commit}.tar.gz"
-probe cache_purge "https://github.com/FRiCKLE/ngx_cache_purge/archive/${NgxCachePurge_Ver#ngx_cache_purge-}.tar.gz"
-
-echo
-echo "=== 可选：PHP 扩展（pecl）==="
-probe apcu      "https://pecl.php.net/get/${PHPNewApcu_Ver}.tgz"
-probe imagick   "https://pecl.php.net/get/${Imagick_Ver}.tgz"
-probe swoole    "https://pecl.php.net/get/${PHPSwoole_Ver}.tgz"
-probe memcache  "https://pecl.php.net/get/${PHP8Memcache_Ver}.tgz"
-probe memcached "https://pecl.php.net/get/${PHP8Memcached_Ver}.tgz"
-probe phpredis  "https://pecl.php.net/get/${PHPRedis_Ver}.tgz"
-probe igbinary  "https://pecl.php.net/get/${PHPIgbinary_Ver}.tgz"
-probe zstd      "https://pecl.php.net/get/${PHPZstd_Ver}.tgz"
-
-echo
-echo "=== 可选：缓存 / 其他服务 ==="
-probe memcached库 "https://memcached.org/files/${Memcached_Ver}.tar.gz"
-probe libmemcached "https://launchpad.net/libmemcached/1.0/${Libmemcached_Ver#libmemcached-}/+download/${Libmemcached_Ver}.tar.gz"
-probe redis     "https://download.redis.io/releases/${Redis_Stable_Ver}.tar.gz"
-probe imagemagick "https://github.com/ImageMagick/ImageMagick/archive/refs/tags/${ImageMagick_Ver#ImageMagick-}.tar.gz"
-probe ioncube   "https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_x86-64.tar.gz"
-probe pureftpd  "https://download.pureftpd.org/pub/pure-ftpd/releases/${Pureftpd_Ver}.tar.bz2"
-probe composer  "https://getcomposer.org/installer"
-
-echo
-echo "=== rclone（lnmp backup remote-setup s3）==="
-rclone_ver=$(sed -n 's/^Rclone_Ver="\(.*\)"$/\1/p' tools/lnmp-backup.sh)
-for arch in amd64 arm64; do
-    probe rclone "https://downloads.rclone.org/v${rclone_ver}/rclone-v${rclone_ver}-linux-${arch}.zip"
-done
-
-echo
-echo "=== 可选：安全工具 ==="
-probe denyhosts "https://github.com/denyhosts/denyhosts/archive/refs/tags/v3.1.tar.gz"
-probe fail2ban  "https://github.com/fail2ban/fail2ban/archive/refs/tags/1.1.0.tar.gz"
+if [ -n "${PROBE_REPORT}" ]; then
+    for cls in gone down; do
+        list_failed "${cls}" | sed "s/^/${cls}\t/" >> "${PROBE_REPORT}"
+    done
+fi
 
 echo
 echo "============================================================"
-echo "可达 ${ok} 个，不可达 ${fail} 个"
-if [ ${fail} -gt 0 ]; then
-    echo "不可达清单：${FAILED}"
-    exit 1
+echo "可达 ${ok} 个，已下线 ${gone} 个，暂不可达 ${down} 个（共探测 ${try} 轮）"
+if [ ${gone} -gt 0 ]; then
+    echo "已下线清单（全部地址最终响应为 404/410）："
+    list_failed gone | while IFS=$'\t' read -r tag code url; do
+        printf '  %s  %s  → HTTP %s\n' "${tag}" "${url}" "${code}"
+    done
 fi
+if [ ${down} -gt 0 ]; then
+    echo "暂不可达清单（超时、连接失败、跳转未完成或其他状态）："
+    list_failed down | while IFS=$'\t' read -r tag code url; do
+        if [ "${code}" = 000 ]; then
+            printf '  %s  %s  → 无响应\n' "${tag}" "${url}"
+        else
+            printf '  %s  %s  → HTTP %s\n' "${tag}" "${url}" "${code}"
+        fi
+    done
+fi
+[ ${gone} -gt 0 ] && exit 1
+[ ${down} -gt 0 ] && exit 2
 exit 0

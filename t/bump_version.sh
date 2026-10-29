@@ -12,15 +12,14 @@
 # ---------------------------------------------------------------------------
 # 跨文件版本同步
 #
-# 同一个版本号在本仓库里最多出现在 5 个功能性位置：
+# 同一个版本号在本仓库里最多出现在以下功能性位置：
 #
 #   include/version.sh    大部分组件的唯一定义处
 #   include/profile.sh    DB / PHP / Apache / phpMyAdmin，包含两处：
 #                         菜单文本数组（DB_Info…）和 Set_*_Profile 的 case 分支
-#   t/probe_urls.sh       硬编码的 MYSQL_VERS / MARIADB_VERS / PHP_VERS…
-#   t/gen_checksums.sh    同样硬编码的采集列表
 #   t/test_profile.sh     断言的期望值
 #
+# t/probe_urls.sh 与 t/gen_checksums.sh 经 t/list_sources.sh 读取上述版本，无需修改。
 # 各位置必须同步更新，最后由 t/consistency.sh 执行交叉检查。
 # ---------------------------------------------------------------------------
 
@@ -79,65 +78,8 @@ subst()
     done
 }
 
-# 只替换探测脚本里指定组件的版本，避免相同裸版本号误伤其它组件。
-subst_probe()
-{
-    local family="$1" old="$2" new="$3"
-    if [ -n "${DRY}" ]; then
-        echo "    [dry] ${PROBE}: ${family} ${old} -> ${new}"
-    else
-        case "${family}" in
-        php)
-            OLD_VALUE="${old}" NEW_VALUE="${new}" perl -pi -e \
-                'if (/^PHP_VERS=/ || /probe php /) { s/\Q$ENV{OLD_VALUE}\E/$ENV{NEW_VALUE}/g }' "${PROBE}"
-            ;;
-        mysql)
-            OLD_VALUE="${old}" NEW_VALUE="${new}" perl -pi -e \
-                'if (/^MYSQL_VERS=/ || /mysql-/) { s/\Q$ENV{OLD_VALUE}\E/$ENV{NEW_VALUE}/g }' "${PROBE}"
-            ;;
-        mariadb)
-            OLD_VALUE="${old}" NEW_VALUE="${new}" perl -pi -e \
-                'if (/^MARIADB_VERS=/ || /mariadb-/) { s/\Q$ENV{OLD_VALUE}\E/$ENV{NEW_VALUE}/g }' "${PROBE}"
-            ;;
-        *) return 1 ;;
-        esac
-        echo "    ${PROBE}"
-    fi
-}
-
-# gen_checksums.sh 的 PHP/MariaDB 采集列表是 for-loop 里的裸版本号（如
-# "for v in 8.4.24 8.5.9; do"），不是 subst() 匹配的 "prefix-版本" 字面量，
-# 普通全文替换不会命中，需要按 for-loop 所在代码块定位替换。
-subst_gensum_ver()
-{
-    local family="$1" old="$2" new="$3" before after
-    if [ -n "${DRY}" ]; then
-        echo "    [dry] ${GENSUM}: grab_upstream ${family} 列表 ${old} -> ${new}"
-        return 0
-    fi
-    before=$(sha256sum "${GENSUM}" | awk '{print $1}')
-    OLD_VALUE="${old}" NEW_VALUE="${new}" FAMILY="${family}" perl -0777 -pi -e '
-        my $old = quotemeta($ENV{OLD_VALUE});
-        my $new = $ENV{NEW_VALUE};
-        my $fam = quotemeta($ENV{FAMILY});
-        s/(for v in )([^\n]*)(\n\s*grab_upstream $fam )/
-            my ($pre, $list, $post) = ($1, $2, $3);
-            $list =~ s{(?<![\w.])$old(?![\w.])}{$new};
-            $pre . $list . $post
-        /e;
-    ' "${GENSUM}"
-    after=$(sha256sum "${GENSUM}" | awk '{print $1}')
-    if [ "${before}" = "${after}" ]; then
-        echo "    !! ${GENSUM} 的 ${family} 采集列表未替换 ${old}，需手工核对" >&2
-        return 1
-    fi
-    echo "    ${GENSUM}"
-}
-
 VERSION_SH='include/version.sh'
 PROFILE_SH='include/profile.sh'
-PROBE='t/probe_urls.sh'
-GENSUM='t/gen_checksums.sh'
 TESTPF='t/test_profile.sh'
 
 while IFS=$'\t' read -r key old new kind extra; do
@@ -162,28 +104,23 @@ while IFS=$'\t' read -r key old new kind extra; do
         # 漏掉它会让升版后的常规 CI 因断言旧版本而失败。
         subst "php-${old}" "php-${new}" "${PROFILE_SH}" "${TESTPF}"
         subst "PHP ${old}" "PHP ${new}" "${PROFILE_SH}"
-        subst_probe php "${old}" "${new}"
-        subst_gensum_ver php "${old}" "${new}"
         ;;
     MySQL_*)
-        subst "mysql-${old}" "mysql-${new}" "${PROFILE_SH}" "${GENSUM}" "${TESTPF}"
+        subst "mysql-${old}" "mysql-${new}" "${PROFILE_SH}" "${TESTPF}"
         subst "MySQL ${old}" "MySQL ${new}" "${PROFILE_SH}"
-        subst_probe mysql "${old}" "${new}"
         # 二进制包 URL 中的 MySQL-8.4/ 为分支号，无需修改
         ;;
     MariaDB_*)
         subst "mariadb-${old}" "mariadb-${new}" "${PROFILE_SH}" "${TESTPF}"
         subst "MariaDB ${old}" "MariaDB ${new}" "${PROFILE_SH}"
-        subst_probe mariadb "${old}" "${new}"
-        subst_gensum_ver mariadb "${old}" "${new}"
         ;;
     Apache_Ver)
         # 同 PHP：t/test_profile.sh 断言 httpd-<版本>，需一并更新。
-        subst "httpd-${old}" "httpd-${new}" "${PROFILE_SH}" "${GENSUM}" "${PROBE}" "${TESTPF}"
+        subst "httpd-${old}" "httpd-${new}" "${PROFILE_SH}" "${TESTPF}"
         subst "Apache ${old}" "Apache ${new}" "${PROFILE_SH}"
         ;;
     PhpMyAdmin_Ver)
-        subst "${old}" "${new}" "${PROFILE_SH}" "${PROBE}" "${GENSUM}"
+        subst "${old}" "${new}" "${PROFILE_SH}"
         ;;
     *)
         # include/version.sh 中的普通变量：Key='old' -> Key='new'

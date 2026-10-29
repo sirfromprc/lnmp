@@ -2176,10 +2176,23 @@ Cmd_Remote_Setup()
 Rclone_Url_Base="https://downloads.rclone.org"
 Rclone_Install_Path="/usr/local/bin/rclone"
 
+# Rclone_Sources [amd64|arm64]：rclone 固定版本的下载清单，缺省输出两种架构；
+# 安装核对内置的 Rclone_Sha256_<架构>，其值与 src/checksums.sha256 一致。
+Rclone_Sources()
+{
+    local arch file
+    for arch in ${1:-amd64 arm64}; do
+        case "${arch}" in amd64|arm64) ;; *) return 1 ;; esac
+        file="rclone-v${Rclone_Ver}-linux-${arch}.zip"
+        printf 'rclone\t%s\t%s\t%s\t%s/v%s/%s\tsha256\tsrc/checksums.sha256\n' \
+            "${Rclone_Install_Path}" "${Rclone_Ver}" "${file}" "${Rclone_Url_Base}" "${Rclone_Ver}" "${file}"
+    done
+}
+
 # 下载官方 zip 并核对 SHA-256，只取出 rclone 可执行文件，经同目录临时文件改名安装。
 Rclone_Install()
 {
-    local arch sum name zip got c
+    local arch sum name zip got c url
     case "$(uname -m)" in
         x86_64|amd64)  arch=amd64; sum="${Rclone_Sha256_amd64}" ;;
         aarch64|arm64) arch=arm64; sum="${Rclone_Sha256_arm64}" ;;
@@ -2189,11 +2202,12 @@ Rclone_Install()
         command -v "${c}" >/dev/null 2>&1 || { Err "找不到 ${c} 命令。"; return 1; }
     done
     name="rclone-v${Rclone_Ver}-linux-${arch}"
+    url=$(Rclone_Sources "${arch}" | cut -f5)
     Tmp_Work=$(mktemp -d "${TMPDIR:-/tmp}/.lnmp-rclone.XXXXXXXX") || return 1
     zip="${Tmp_Work}/${name}.zip"
-    Say "下载 ${Rclone_Url_Base}/v${Rclone_Ver}/${name}.zip"
+    Say "下载 ${url}"
     if ! curl -fsSL --proto '=https' --connect-timeout 30 --max-time 900 \
-            -o "${zip}" "${Rclone_Url_Base}/v${Rclone_Ver}/${name}.zip"; then
+            -o "${zip}" "${url}"; then
         Err "下载失败。"
         return 1
     fi

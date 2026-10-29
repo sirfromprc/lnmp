@@ -19,7 +19,7 @@
 # 功能为逗号分隔的 openssl、lua、brotli、purge、fancy，缺省取 lnmp.conf 的开关。
 # 约定：不交互、不 exit、不改变调用方工作目录；编译在 src/ 下的私有目录与子 shell 中进行。
 # 输入为参数与只读配置（lnmp.conf 的 Enable_Nginx_*、Enable_Ngx_*、Nginx_Modules_Options、
-# Default_Website_Dir，include/version.sh，cur_dir）。
+# Default_Website_Dir，include/version.sh，cur_dir）；OpenSSL 地址取自 include/init.sh 的 Lib_Sources。
 
 _Nginx_Prefix()
 {
@@ -122,8 +122,8 @@ Nginx_Sources()
         "${ver}" "${file}" "${file}" "${check}" "${loc}"
 
     {
-        _Nginx_Has "${feats}" openssl && printf '%s\t%s\n' "${Openssl_New_Ver}.tar.gz" \
-            "https://github.com/openssl/openssl/releases/download/${Openssl_New_Ver}/${Openssl_New_Ver}.tar.gz"
+        # 只取主地址：_Nginx_Fetch 逐行下载，同一文件列多行会在主地址失败时直接中止。
+        _Nginx_Has "${feats}" openssl && Lib_Sources openssl | head -n 1 | cut -f4,5
         _Nginx_Pcre_Src "${feats}" && printf '%s\t%s\n' "${Pcre_Ver}.tar.bz2" \
             "https://downloads.sourceforge.net/pcre/${Pcre_Ver}.tar.bz2"
         if _Nginx_Has "${feats}" lua; then

@@ -27,7 +27,7 @@ jobs:
         id: probe
         run: |
           set +e
-          bash t/probe_urls.sh 2>&1 | tee /tmp/probe.log
+          PROBE_REPORT=/tmp/probe-failed.tsv bash t/probe_urls.sh 2>&1 | tee /tmp/probe.log
           echo "rc=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       - name: 写摘要
@@ -43,55 +43,89 @@ jobs:
       - name: 有失效链接就开 issue
         if: steps.probe.outputs.rc != '0'
         uses: actions/github-script@v8
+        env:
+          PROBE_RC: ${{ steps.probe.outputs.rc }}
         with:
           script: |
             const fs = require('fs');
-            const log = fs.readFileSync('/tmp/probe.log', 'utf8');
-            const failed = log.split('\n')
-                              .filter(l => /FAIL|404/.test(l))
-                              .slice(0, 40).join('\n');
-            const title = '下载源失效：部分组件已无法下载';
+            // 每行：类别（gone/down）、分类、状态码、URL，TAB 分隔。
+            let rows = [];
+            try {
+              rows = fs.readFileSync('/tmp/probe-failed.tsv', 'utf8')
+                       .split('\n').filter(Boolean).map(l => l.split('\t'));
+            } catch (e) {}
+            if (rows.length === 0) {
+              core.setFailed(`探测脚本异常退出（rc=${process.env.PROBE_RC}），未生成失败清单，见 Actions 日志。`);
+              return;
+            }
+            const fmt = r => `${r[1]}  ${r[3]}  → ${r[2] === '000' ? '无响应' : 'HTTP ' + r[2]}`;
+            const kinds = [
+              {
+                cls: 'gone', title: '下载源失效：部分组件已无法下载', labels: ['url-health', 'bug'],
+                head: '已下线条目（最终响应 404/410）：',
+                tail: [
+                  '**影响**：所有新安装会在下载这一步中止。',
+                  '',
+                  '**通常原因**：上游只保留最新的几个点版本，我们钉着的版本被下线了。',
+                  '**处理**：手动触发 `上游版本检查` 工作流，把版本推到上游还提供的那个，',
+                  '并确认 `src/checksums.sha256` 一并更新。',
+                ],
+              },
+              {
+                cls: 'down', title: '下载源暂不可达：部分组件探测失败', labels: ['url-health'],
+                head: '暂不可达条目（同次运行内重试后仍超时、连接失败、跳转未完成或返回其他状态）：',
+                tail: [
+                  '**通常原因**：网络波动或上游临时故障，地址本身未必失效。',
+                  '**处理**：手动触发本工作流重跑；多次重跑仍失败时，按失效处理或更换上游地址。',
+                ],
+              },
+            ];
 
-            // 同名 issue 存在时追加评论，避免重复创建。
+            // 按标题查找已开的同类 issue，存在时追加评论，避免重复创建。
             const { data: issues } = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,
-              state: 'open', labels: 'url-health'
+              state: 'open', labels: 'url-health', per_page: 100
             });
 
-            const body = [
-              `探测时间：${new Date().toISOString()}`,
-              '',
-              '失效条目：',
-              '```',
-              failed || '(见 Actions 日志)',
-              '```',
-              '',
-              '**影响**：所有新安装会在下载这一步中止。',
-              '',
-              '**通常原因**：上游只保留最新的几个点版本，我们钉着的版本被下线了。',
-              '**处理**：手动触发 `上游版本检查` 工作流，把版本推到上游还提供的那个，',
-              '并确认 `src/checksums.sha256` 一并更新。',
-            ].join('\n');
+            const errors = [];
+            for (const k of kinds) {
+              const hit = rows.filter(r => r[0] === k.cls);
+              if (hit.length === 0) continue;
+              const body = [
+                `探测时间：${new Date().toISOString()}`,
+                '',
+                k.head,
+                '```',
+                hit.slice(0, 40).map(fmt).join('\n'),
+                '```',
+                '',
+                ...k.tail,
+              ].join('\n');
 
-            // 仓库关闭 Issues 或收紧权限时 API 返回 403/410。
-            // 此时不能静默吞掉探测结果，改为写进作业摘要并让作业失败。
-            try {
-              if (issues.length > 0) {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner, repo: context.repo.repo,
-                  issue_number: issues[0].number, body
-                });
-              } else {
-                await github.rest.issues.create({
-                  owner: context.repo.owner, repo: context.repo.repo,
-                  title, body, labels: ['url-health', 'bug']
-                });
+              // 仓库关闭 Issues 或收紧权限时 API 返回 403/410。
+              // 此时不能静默吞掉探测结果，改为写进作业摘要并让作业失败。
+              try {
+                const old = issues.find(i => i.title === k.title && !i.pull_request);
+                if (old) {
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    issue_number: old.number, body
+                  });
+                } else {
+                  await github.rest.issues.create({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    title: k.title, body, labels: k.labels
+                  });
+                }
+              } catch (e) {
+                await core.summary
+                  .addHeading(`${k.title}（issue 创建失败）`, 2)
+                  .addRaw(`创建 issue 被拒绝：${e.status || ''} ${e.message}`)
+                  .addCodeBlock(body, 'text')
+                  .write();
+                errors.push(e.message);
               }
-            } catch (e) {
-              await core.summary
-                .addHeading('下载源失效（issue 创建失败）', 2)
-                .addRaw(`创建 issue 被拒绝：${e.status || ''} ${e.message}`)
-                .addCodeBlock(body, 'text')
-                .write();
-              core.setFailed(`下载源失效，且无法创建 issue：${e.message}`);
+            }
+            if (errors.length > 0) {
+              core.setFailed(`下载源探测失败，且无法创建 issue：${errors.join('；')}`);
             }

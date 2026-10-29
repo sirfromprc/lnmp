@@ -3950,9 +3950,16 @@ Detect_Server_IP()
     printf '%s' "${ip}"
 }
 
+# Acme_Sources：acme.sh 固定版本的下载清单，校验定位列为固定 SHA256 所在变量。
+Acme_Sources()
+{
+    printf 'acme.sh\t/usr/local/acme.sh\t%s\tacme.sh-%s.tar.gz\thttps://github.com/acmesh-official/acme.sh/archive/refs/tags/%s.tar.gz\tsha256\tAcme_Sh_SHA256\n' \
+        "${Acme_Sh_Ver}" "${Acme_Sh_Ver}" "${Acme_Sh_Ver}"
+}
+
 Install_Check_Acme.sh()
 {
-    local tmpdir tarball srcdir actual
+    local tmpdir tarball srcdir actual url
     local acme_home_pre='n'
     local -a email_opt=()
 
@@ -3979,9 +3986,9 @@ Install_Check_Acme.sh()
     tarball="${tmpdir}/acme.sh-${Acme_Sh_Ver}.tar.gz"
     srcdir="${tmpdir}/acme.sh-${Acme_Sh_Ver}"
 
+    url=$(Acme_Sources | cut -f5)
     echo "正在从 github.com/acmesh-official 下载 acme.sh ${Acme_Sh_Ver} ..."
-    if ! wget --prefer-family=IPv4 --max-redirect=5 -O "${tarball}" \
-         "https://github.com/acmesh-official/acme.sh/archive/refs/tags/${Acme_Sh_Ver}.tar.gz"; then
+    if ! wget --prefer-family=IPv4 --max-redirect=5 -O "${tarball}" "${url}"; then
         Echo_Red "acme.sh 下载失败，未做任何修改。"
         rm -rf "${tmpdir}"
         return 1
